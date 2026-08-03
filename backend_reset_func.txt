@@ -1,0 +1,40 @@
+    sub = payload.subject if payload.subject is not None else student.get("subject")
+    lvl = payload.level if payload.level is not None else student.get("level")
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE users SET first_name=%s, last_name=%s, phone=%s, parent_phone=%s, subject=%s, level=%s WHERE id=%s",
+            (fn, ln, ph, pp, sub, lvl, student_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "Student updated"}
+
+@app.post("/teacher/my-students/{student_id}/reset-password")
+async def teacher_reset_student_password(student_id: int, payload: TeacherResetPasswordRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    groups = _safe_call(lambda: get_groups_by_teacher(user["id"]), []) or []
+    is_my_student = False
+    for g in groups:
+        members = _safe_call(lambda gid=g["id"]: get_group_users(int(gid)), []) or []
+        if any(int(m.get("id") or 0) == student_id for m in members):
+            is_my_student = True
+            break
+    if not is_my_student:
+        raise HTTPException(status_code=403, detail="Student not found in your groups")
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE users SET password=%s, password_used=0 WHERE id=%s",
+            (payload.password, student_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "Password reset"}

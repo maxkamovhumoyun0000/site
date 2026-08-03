@@ -1,0 +1,22 @@
+{
+  "id": "/",
+  "name": "Diamond Education",
+  "short_name": "Diamond",
+  "description": "Telegram Mini App and Web Application for Diamond Education",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "lang": "en",
+  "background_color": "#0A2540",
+  "theme_color": "#0A2540",
+  "categories": ["education", "productivity"],
+  "icons": [
+    {
+      "src": "/logo.jpg",
+      "sizes": "640x640",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
