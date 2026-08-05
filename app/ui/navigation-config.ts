@@ -58,10 +58,11 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "homework",
     "support",
     "attendance",
+    "notes",
     "profile",
   ],
-  teacher: ["home", "chats", "groups", "substitutions", "attendance", "arena", "performance", "students", "analytics", "dcoin", "homework", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "competitions-history", "attendance", "analytics", "holidays", "support", "generator", "videos", "books", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  teacher: ["home", "chats", "groups", "substitutions", "attendance", "arena", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
   support: ["home", "chats", "bookings", "calendar", "attendance", "homework", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
@@ -157,4 +158,7 @@ export const SECTION_LABELS: Record<string, string> = {
   substitutions: "Vaqtinchalik O'qituvchi",
   analytics: "Analitika",
   "voice-rooms": "Voiceroom",
+  materials: "Materiallar Kutubxonasi",
+  kpi: "Mening KPI",
+  notes: "Mening Notlarim",
 };

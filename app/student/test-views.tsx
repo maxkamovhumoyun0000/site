@@ -457,20 +457,28 @@ function normalizeSubjectList(values: Array<string | null | undefined>, fallback
 }
 
 export function studentSubjectNames(data: GenericRow, fallback: string[] = ["English"]) {
+  // Primary source: subjects derived from the student's ACTIVE group memberships.
+  // The backend serialises this as data.subjects (array from _user_subjects_from_row
+  // which already reads only from live group rows for students).
+  // We use this as the single authoritative list and do NOT merge other stale
+  // fields like data.user.subjects or data.user.subject to avoid showing
+  // subjects from groups the student has already left.
   const values: Array<string | null | undefined> = [];
+
+  // 1st priority: pre-computed group subjects array from backend
   const subjectRows = Array.isArray(data?.subjects) ? data.subjects : [];
   for (const item of subjectRows) {
     values.push(typeof item === "string" ? item : String(item?.name || item?.subject || ""));
   }
-  const userSubjects = Array.isArray(data?.user?.subjects) ? data.user.subjects : [];
-  for (const item of userSubjects) {
-    values.push(String(item || ""));
+
+  // 2nd priority: placement_subject (used when groups haven't loaded yet)
+  if (values.filter(Boolean).length === 0) {
+    const placementSubject = String(
+      data?.user?.placement_subject || data?.placement?.subject || data?.subject || ""
+    ).trim();
+    if (placementSubject) values.push(placementSubject);
   }
-  values.push(
-    ...String(data?.subject || data?.selected_subject || data?.placement?.subject || data?.user?.placement_subject || data?.user?.subject || "")
-      .split(",")
-      .map((item) => item.trim()),
-  );
+
   return normalizeSubjectList(values, fallback);
 }
 
@@ -3582,12 +3590,12 @@ export function StudentDailyTestProcess({
                                     ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 font-bold"
                                     : isSelected && !isCorrect
                                     ? "bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 font-bold"
-                                    : "text-ink-600 dark:text-navy-300 font-medium"
+                                    : "text-gray-700 dark:text-navy-300 font-medium"
                                 }`}>
                                   <span className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-black ${
                                     isCorrectOpt ? "bg-emerald-500 text-white" :
                                     isSelected && !isCorrect ? "bg-rose-500 text-white" :
-                                    "bg-surface-soft dark:bg-white/10 text-ink-500"
+                                    "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-ink-500"
                                   }`}>{String.fromCharCode(65 + oi)}</span>
                                   {opt}
                                   {isCorrectOpt && <svg className="ml-auto w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>}

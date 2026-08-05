@@ -6085,33 +6085,52 @@ def cleanup_expired_daily_tests(days: int = 1) -> int:
     """
     Delete used daily-test bank questions once they are no longer today's active set.
     Student attempt history stays intact because question details are stored in attempt_items.
+    Works on both PostgreSQL and SQLite.
     """
-    if not _is_postgres_enabled():
-        return 0
-
     conn = get_conn()
     cur = conn.cursor()
-    if int(days or 1) <= 1:
-        cur.execute(
-            '''
-            DELETE FROM daily_tests_bank
-            WHERE first_used_at IS NOT NULL
-              AND DATE(first_used_at) < CURRENT_DATE
-            '''
-        )
-    else:
-        cur.execute(
-            '''
-            DELETE FROM daily_tests_bank
-            WHERE first_used_at IS NOT NULL
-              AND first_used_at < (CURRENT_TIMESTAMP - (? * INTERVAL '1 day'))
-            ''',
-            (days,),
-        )
-    deleted = getattr(cur, "rowcount", 0) or 0
-    conn.commit()
-    conn.close()
-    return int(deleted)
+    try:
+        days_int = max(1, int(days or 1))
+        if days_int <= 1:
+            cur.execute(
+                '''
+                DELETE FROM daily_tests_bank
+                WHERE first_used_at IS NOT NULL
+                  AND DATE(first_used_at) < CURRENT_DATE
+                '''
+            )
+        else:
+            # PostgreSQL supports INTERVAL; SQLite uses datetime offset arithmetic.
+            if _is_postgres_enabled():
+                cur.execute(
+                    '''
+                    DELETE FROM daily_tests_bank
+                    WHERE first_used_at IS NOT NULL
+                      AND first_used_at < (CURRENT_TIMESTAMP - (%s * INTERVAL '1 day'))
+                    ''',
+                    (days_int,),
+                )
+            else:
+                cur.execute(
+                    '''
+                    DELETE FROM daily_tests_bank
+                    WHERE first_used_at IS NOT NULL
+                      AND first_used_at < datetime('now', ? || ' days')
+                    ''',
+                    (f"-{days_int}",),
+                )
+        deleted = getattr(cur, "rowcount", 0) or 0
+        conn.commit()
+        return int(deleted)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("cleanup_expired_daily_tests failed")
+        return 0
+    finally:
+        conn.close()
 
 
 def _pick_unused_daily_test_bank_rows(
@@ -21922,4 +21941,611 @@ def get_active_telegram_group_chats() -> list[dict]:
         return []
     finally:
         conn.close()
+
+
+# ============================================================
+# TEACHER NOTES SCHEMA + CRUD
+# ============================================================
+
+def ensure_teacher_notes_schema() -> None:
+    """Create teacher_student_notes table if not exists."""
+    if _schema_ready("teacher_notes"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS teacher_student_notes (
+                    id          BIGSERIAL PRIMARY KEY,
+                    teacher_id  BIGINT NOT NULL,
+                    student_id  BIGINT NOT NULL,
+                    note_text   TEXT NOT NULL,
+                    is_visible  BOOLEAN DEFAULT TRUE,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS teacher_student_notes (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id  INTEGER NOT NULL,
+                    student_id  INTEGER NOT NULL,
+                    note_text   TEXT NOT NULL,
+                    is_visible  INTEGER DEFAULT 1,
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tsn_student ON teacher_student_notes(student_id)")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tsn_teacher_student ON teacher_student_notes(teacher_id, student_id)")
+        except Exception:
+            pass
+        conn.commit()
+        _mark_schema_ready("teacher_notes")
+    finally:
+        conn.close()
+
+
+def get_teacher_notes(teacher_id: int, student_id: int) -> list[dict]:
+    ensure_teacher_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT * FROM teacher_student_notes WHERE teacher_id=? AND student_id=? ORDER BY id DESC",
+            (int(teacher_id), int(student_id)),
+        )
+        return [_row_to_dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+
+def get_student_visible_notes(student_id: int) -> list[dict]:
+    """Notes visible to the student (from any teacher, is_visible=1)."""
+    ensure_teacher_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT n.*, u.first_name AS teacher_first_name, u.last_name AS teacher_last_name,
+                   u.profile_image_url AS teacher_avatar
+            FROM teacher_student_notes n
+            LEFT JOIN users u ON u.id = n.teacher_id
+            WHERE n.student_id=? AND n.is_visible=1
+            ORDER BY n.id DESC
+            LIMIT 50
+            """,
+            (int(student_id),),
+        )
+        return [_row_to_dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+
+def create_teacher_note(teacher_id: int, student_id: int, note_text: str, is_visible: bool = True) -> dict | None:
+    ensure_teacher_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO teacher_student_notes(teacher_id, student_id, note_text, is_visible) VALUES (?, ?, ?, ?)",
+            (int(teacher_id), int(student_id), str(note_text).strip(), 1 if is_visible else 0),
+        )
+        note_id = int(getattr(cur, "lastrowid", 0) or 0)
+        if note_id <= 0 and _is_postgres_enabled():
+            cur.execute("SELECT id FROM teacher_student_notes ORDER BY id DESC LIMIT 1")
+            row = _row_to_dict(cur.fetchone())
+            note_id = int(row.get("id") or 0)
+        conn.commit()
+    finally:
+        conn.close()
+    if note_id <= 0:
+        return None
+    notes = get_teacher_notes(int(teacher_id), int(student_id))
+    return next((n for n in notes if int(n.get("id") or 0) == note_id), None)
+
+
+def update_teacher_note(note_id: int, teacher_id: int, *, note_text: str | None = None, is_visible: bool | None = None) -> bool:
+    ensure_teacher_notes_schema()
+    updates = ["updated_at=CURRENT_TIMESTAMP"]
+    params: list = []
+    if note_text is not None:
+        updates.append("note_text=?")
+        params.append(str(note_text).strip())
+    if is_visible is not None:
+        updates.append("is_visible=?")
+        params.append(1 if is_visible else 0)
+    if not params:
+        return False
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE teacher_student_notes SET {', '.join(updates)} WHERE id=? AND teacher_id=?",
+            (*params, int(note_id), int(teacher_id)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def delete_teacher_note(note_id: int, teacher_id: int) -> bool:
+    ensure_teacher_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM teacher_student_notes WHERE id=? AND teacher_id=?",
+            (int(note_id), int(teacher_id)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+# ============================================================
+# TEACHER MATERIALS SCHEMA + CRUD
+# ============================================================
+
+def ensure_teacher_materials_schema() -> None:
+    """Create teacher_materials table if not exists."""
+    if _schema_ready("teacher_materials"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS teacher_materials (
+                    id             BIGSERIAL PRIMARY KEY,
+                    teacher_id     BIGINT NOT NULL,
+                    title          TEXT NOT NULL,
+                    description    TEXT,
+                    file_url       TEXT NOT NULL,
+                    file_type      TEXT DEFAULT 'other',
+                    file_size      BIGINT DEFAULT 0,
+                    subject        TEXT,
+                    is_public      BOOLEAN DEFAULT FALSE,
+                    download_count INTEGER DEFAULT 0,
+                    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS teacher_materials (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id     INTEGER NOT NULL,
+                    title          TEXT NOT NULL,
+                    description    TEXT,
+                    file_url       TEXT NOT NULL,
+                    file_type      TEXT DEFAULT 'other',
+                    file_size      INTEGER DEFAULT 0,
+                    subject        TEXT,
+                    is_public      INTEGER DEFAULT 0,
+                    download_count INTEGER DEFAULT 0,
+                    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tm_teacher ON teacher_materials(teacher_id)")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tm_subject ON teacher_materials(subject)")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tm_public ON teacher_materials(is_public)")
+        except Exception:
+            pass
+        conn.commit()
+        _mark_schema_ready("teacher_materials")
+    finally:
+        conn.close()
+
+
+def list_teacher_materials(
+    teacher_id: int | None = None,
+    *,
+    subject: str | None = None,
+    my_only: bool = False,
+    limit: int = 80,
+    offset: int = 0,
+) -> list[dict]:
+    ensure_teacher_materials_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        where = []
+        params: list = []
+        if my_only and teacher_id:
+            where.append("m.teacher_id=?")
+            params.append(int(teacher_id))
+        else:
+            # Show own + public
+            if teacher_id:
+                where.append("(m.is_public=1 OR m.teacher_id=?)")
+                params.append(int(teacher_id))
+            else:
+                where.append("m.is_public=1")
+        if subject:
+            where.append("LOWER(m.subject)=LOWER(?)")
+            params.append(str(subject).strip())
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        cur.execute(
+            f"""
+            SELECT m.*,
+                   u.first_name AS teacher_first_name, u.last_name AS teacher_last_name,
+                   u.profile_image_url AS teacher_avatar
+            FROM teacher_materials m
+            LEFT JOIN users u ON u.id = m.teacher_id
+            {where_sql}
+            ORDER BY m.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, int(limit), int(offset)),
+        )
+        return [_row_to_dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+
+def get_teacher_material(material_id: int) -> dict | None:
+    ensure_teacher_materials_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT m.*, u.first_name AS teacher_first_name, u.last_name AS teacher_last_name
+            FROM teacher_materials m
+            LEFT JOIN users u ON u.id = m.teacher_id
+            WHERE m.id=? LIMIT 1
+            """,
+            (int(material_id),),
+        )
+        return _row_to_dict(cur.fetchone()) or None
+    finally:
+        conn.close()
+
+
+def create_teacher_material(
+    teacher_id: int,
+    title: str,
+    file_url: str,
+    *,
+    description: str | None = None,
+    file_type: str = "other",
+    file_size: int = 0,
+    subject: str | None = None,
+    is_public: bool = False,
+) -> dict | None:
+    ensure_teacher_materials_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO teacher_materials(teacher_id, title, description, file_url, file_type, file_size, subject, is_public)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(teacher_id),
+                str(title).strip(),
+                str(description or "").strip() or None,
+                str(file_url).strip(),
+                str(file_type or "other").strip(),
+                int(file_size or 0),
+                str(subject or "").strip() or None,
+                1 if is_public else 0,
+            ),
+        )
+        mat_id = int(getattr(cur, "lastrowid", 0) or 0)
+        if mat_id <= 0 and _is_postgres_enabled():
+            cur.execute("SELECT id FROM teacher_materials ORDER BY id DESC LIMIT 1")
+            row = _row_to_dict(cur.fetchone())
+            mat_id = int(row.get("id") or 0)
+        conn.commit()
+    finally:
+        conn.close()
+    return get_teacher_material(mat_id) if mat_id > 0 else None
+
+
+def update_teacher_material(
+    material_id: int,
+    teacher_id: int,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    subject: str | None = None,
+    is_public: bool | None = None,
+) -> bool:
+    ensure_teacher_materials_schema()
+    updates = ["updated_at=CURRENT_TIMESTAMP"]
+    params: list = []
+    if title is not None:
+        updates.append("title=?")
+        params.append(str(title).strip())
+    if description is not None:
+        updates.append("description=?")
+        params.append(str(description).strip() or None)
+    if subject is not None:
+        updates.append("subject=?")
+        params.append(str(subject).strip() or None)
+    if is_public is not None:
+        updates.append("is_public=?")
+        params.append(1 if is_public else 0)
+    if not params:
+        return False
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE teacher_materials SET {', '.join(updates)} WHERE id=? AND teacher_id=?",
+            (*params, int(material_id), int(teacher_id)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def delete_teacher_material(material_id: int, teacher_id: int) -> bool:
+    ensure_teacher_materials_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM teacher_materials WHERE id=? AND teacher_id=?",
+            (int(material_id), int(teacher_id)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def increment_material_download(material_id: int) -> None:
+    ensure_teacher_materials_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE teacher_materials SET download_count=COALESCE(download_count,0)+1 WHERE id=?",
+            (int(material_id),),
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+# ============================================================
+# TEACHER KPI SCHEMA + CRUD
+# ============================================================
+
+def ensure_teacher_kpi_schema() -> None:
+    """Create teacher_kpi_cache table if not exists."""
+    if _schema_ready("teacher_kpi"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS teacher_kpi_cache (
+                    id                    BIGSERIAL PRIMARY KEY,
+                    teacher_id            BIGINT NOT NULL UNIQUE,
+                    attendance_rate       DOUBLE PRECISION DEFAULT 0,
+                    homework_review_rate  DOUBLE PRECISION DEFAULT 0,
+                    avg_student_score     DOUBLE PRECISION DEFAULT 0,
+                    response_speed_score  DOUBLE PRECISION DEFAULT 0,
+                    group_completion_rate DOUBLE PRECISION DEFAULT 0,
+                    kpi_score             DOUBLE PRECISION DEFAULT 0,
+                    total_students        INTEGER DEFAULT 0,
+                    groups_count          INTEGER DEFAULT 0,
+                    total_homeworks       INTEGER DEFAULT 0,
+                    reviewed_homeworks    INTEGER DEFAULT 0,
+                    computed_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS teacher_kpi_cache (
+                    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                    teacher_id            INTEGER NOT NULL UNIQUE,
+                    attendance_rate       REAL DEFAULT 0,
+                    homework_review_rate  REAL DEFAULT 0,
+                    avg_student_score     REAL DEFAULT 0,
+                    response_speed_score  REAL DEFAULT 0,
+                    group_completion_rate REAL DEFAULT 0,
+                    kpi_score             REAL DEFAULT 0,
+                    total_students        INTEGER DEFAULT 0,
+                    groups_count          INTEGER DEFAULT 0,
+                    total_homeworks       INTEGER DEFAULT 0,
+                    reviewed_homeworks    INTEGER DEFAULT 0,
+                    computed_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_tkpi_score ON teacher_kpi_cache(kpi_score DESC)")
+        except Exception:
+            pass
+        conn.commit()
+        _mark_schema_ready("teacher_kpi")
+    finally:
+        conn.close()
+
+
+def upsert_teacher_kpi(
+    teacher_id: int,
+    *,
+    attendance_rate: float = 0.0,
+    homework_review_rate: float = 0.0,
+    avg_student_score: float = 0.0,
+    response_speed_score: float = 0.0,
+    group_completion_rate: float = 0.0,
+    kpi_score: float = 0.0,
+    total_students: int = 0,
+    groups_count: int = 0,
+    total_homeworks: int = 0,
+    reviewed_homeworks: int = 0,
+) -> dict | None:
+    ensure_teacher_kpi_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO teacher_kpi_cache(
+                teacher_id, attendance_rate, homework_review_rate,
+                avg_student_score, response_speed_score, group_completion_rate,
+                kpi_score, total_students, groups_count, total_homeworks,
+                reviewed_homeworks, computed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(teacher_id) DO UPDATE SET
+                attendance_rate=EXCLUDED.attendance_rate,
+                homework_review_rate=EXCLUDED.homework_review_rate,
+                avg_student_score=EXCLUDED.avg_student_score,
+                response_speed_score=EXCLUDED.response_speed_score,
+                group_completion_rate=EXCLUDED.group_completion_rate,
+                kpi_score=EXCLUDED.kpi_score,
+                total_students=EXCLUDED.total_students,
+                groups_count=EXCLUDED.groups_count,
+                total_homeworks=EXCLUDED.total_homeworks,
+                reviewed_homeworks=EXCLUDED.reviewed_homeworks,
+                computed_at=CURRENT_TIMESTAMP
+            """,
+            (
+                int(teacher_id),
+                round(float(attendance_rate), 4),
+                round(float(homework_review_rate), 4),
+                round(float(avg_student_score), 4),
+                round(float(response_speed_score), 4),
+                round(float(group_completion_rate), 4),
+                round(float(kpi_score), 2),
+                int(total_students),
+                int(groups_count),
+                int(total_homeworks),
+                int(reviewed_homeworks),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_teacher_kpi(int(teacher_id))
+
+
+def get_teacher_kpi(teacher_id: int) -> dict | None:
+    ensure_teacher_kpi_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT * FROM teacher_kpi_cache WHERE teacher_id=? LIMIT 1",
+            (int(teacher_id),),
+        )
+        return _row_to_dict(cur.fetchone()) or None
+    finally:
+        conn.close()
+
+
+def get_teacher_kpi_leaderboard(limit: int = 50) -> list[dict]:
+    ensure_teacher_kpi_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT k.*, u.first_name, u.last_name, u.profile_image_url,
+                   ROW_NUMBER() OVER (ORDER BY k.kpi_score DESC) AS rank_pos
+            FROM teacher_kpi_cache k
+            LEFT JOIN users u ON u.id = k.teacher_id
+            ORDER BY k.kpi_score DESC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+        return [_row_to_dict(r) for r in (cur.fetchall() or [])]
+    except Exception:
+        # Fallback without window function for older SQLite
+        conn2 = get_conn()
+        cur2 = conn2.cursor()
+        try:
+            cur2.execute(
+                """
+                SELECT k.*, u.first_name, u.last_name, u.profile_image_url
+                FROM teacher_kpi_cache k
+                LEFT JOIN users u ON u.id = k.teacher_id
+                ORDER BY k.kpi_score DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            )
+            rows = [_row_to_dict(r) for r in (cur2.fetchall() or [])]
+            for i, row in enumerate(rows):
+                row["rank_pos"] = i + 1
+            return rows
+        finally:
+            conn2.close()
+    finally:
+        conn.close()
+
+
+# ============================================================
+# HOMEWORK SUBMISSIONS: AI fields helper
+# ============================================================
+
+def update_homework_submission_ai(homework_id: int, student_id: int, *, ai_transcript: str | None = None, ai_feedback: str | None = None) -> bool:
+    """Save AI transcript and feedback to a homework submission."""
+    # Ensure columns exist (lazy migration)
+    ensure_homework_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Add columns if they don't exist yet (safe ALTER)
+        for col, col_type in [("ai_transcript", "TEXT"), ("ai_feedback", "TEXT"), ("ai_analyzed_at", "TIMESTAMP")]:
+            try:
+                cur.execute(f"ALTER TABLE web_homework_submissions ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
+        cur.execute(
+            """
+            UPDATE web_homework_submissions
+            SET ai_transcript=?, ai_feedback=?, ai_analyzed_at=CURRENT_TIMESTAMP
+            WHERE homework_id=? AND student_id=?
+            """,
+            (
+                str(ai_transcript or "").strip() or None,
+                str(ai_feedback or "").strip() or None,
+                int(homework_id),
+                int(student_id),
+            ),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
 

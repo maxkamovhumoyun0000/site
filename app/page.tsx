@@ -49,11 +49,14 @@ import { StudentSurveyScreen } from "./ui/student-survey";
 import { StudentVoiceRoom } from "./ui/voice-room/student-voice-room";
 import { ModeratorVoiceRoom } from "./ui/voice-room/moderator-voice-room";
 import { ErrorBoundary } from "./ui/error-boundary";
+import { TeacherMaterialsPanel } from "./ui/teacher-materials";
+import { TeacherKpiPanel } from "./ui/teacher-kpi";
 
 import { ModalPortal } from "./ui/modal-portal";
 import { StudentVideos } from "./ui/student-videos";
 import { StudentBooks } from "./ui/student-books";
 import { StudentAttendance } from "./ui/student-attendance";
+import { StudentNotesPanel } from "./ui/student-notes";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
@@ -6227,7 +6230,13 @@ function StudentHomework() {
               {!isVoiceroom && !requiresFile && !requiresVoiceMessage ? (
                 <p className="chip">{tt("homework.testOnlyNote", "Bu homework faqat testdan iborat. Test tugashi bilan avtomatik topshiriladi.")}</p>
               ) : null}
-              <div className="row-between">
+              {row.review_note ? (
+                <div style={{ marginTop: 14, padding: "14px", borderRadius: 12, background: "var(--surface-2, #10b98111)", border: "1px solid #10b98144", fontSize: 13 }}>
+                  <strong style={{ color: "#10b981", display: "block", marginBottom: 6 }}>💬 {tt("homework.teacherFeedback", "O'qituvchi xulosasi va bahosi")}:</strong>
+                  <p style={{ margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{String(row.review_note)}</p>
+                </div>
+              ) : null}
+              <div className="row-between" style={{ marginTop: 14 }}>
                 {!isVoiceroom && (requiresFile || requiresVoiceMessage) ? (() => {
                   const missingUpload = requiresFile && (!proofDraft[hid] || proofDraft[hid].length === 0);
                   const missingVoice = requiresVoiceMessage && !voiceDraft[hid];
@@ -6250,6 +6259,7 @@ function StudentHomework() {
                 {reviewed ? <p className="chip">{statusLabel}: Δ {Number(row.dpoints_delta ?? row.dcoin_delta ?? 0).toFixed(1)} D'point</p> : null}
               </div>
               {success[hid] ? <p className="chip">{success[hid]}</p> : null}
+
             </article>
           </div>
           </ModalPortal>
@@ -6299,6 +6309,11 @@ function TeacherHomeworkPanel({
   const [isVoiceroom, setIsVoiceroom] = useState(false);
   const [voiceroomGroups, setVoiceroomGroups] = useState<any[]>([]);
   const [previewingPairs, setPreviewingPairs] = useState(false);
+  // AI Evaluator state
+  const [aiAnalyzeBusy, setAiAnalyzeBusy] = useState<Record<string, boolean>>({});
+  const [aiAnalyzeResult, setAiAnalyzeResult] = useState<Record<string, GenericRow>>({});
+  const [aiCheckBusy, setAiCheckBusy] = useState<Record<string, boolean>>({});
+  const [aiCheckResult, setAiCheckResult] = useState<Record<string, GenericRow>>({});
 
   function datetimeLocalValue(raw: unknown) {
     const value = String(raw || "").trim();
@@ -7125,6 +7140,56 @@ function TeacherHomeworkPanel({
 	                    <section className="homework-review-voice mb-4 p-4 border border-line dark:border-white/10 rounded-xl bg-surface-soft dark:bg-white/5">
 	                      <h4 className="font-bold mb-3">{row.is_voiceroom ? tt("homework.voiceRoomRecording", "Voice Room suhbati") : tt("homework.voiceMessage", "Voice Message")}</h4>
 	                      <audio src={resolveAssetUrl(submittedVoiceUrl)} controls className="w-full" />
+	                      {/* AI Speaking Evaluator */}
+	                      <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                        <button
+	                          className="btn btn-soft small"
+	                          disabled={aiAnalyzeBusy[reviewKey]}
+	                          onClick={async () => {
+	                            const hwId = Number(row.id || 0);
+	                            if (!hwId || !reviewStudentId) return;
+	                            setAiAnalyzeBusy((p) => ({ ...p, [reviewKey]: true }));
+	                            const res = await onApiCall(`/api/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-analyze`, undefined, 'POST', '');
+	                            if (res?.result) setAiAnalyzeResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
+	                            setAiAnalyzeBusy((p) => ({ ...p, [reviewKey]: false }));
+	                          }}
+	                          type="button"
+	                        >
+	                          {aiAnalyzeBusy[reviewKey] ? tt('hw.aiAnalyzing', 'AI tahlil qilmoqda...') : tt('hw.aiAnalyze', '🎤 AI Tahlil')}
+	                        </button>
+	                        {aiAnalyzeResult[reviewKey] && (
+	                          <button
+	                            className="btn btn-soft small"
+	                            type="button"
+	                            onClick={() => {
+	                              const r = aiAnalyzeResult[reviewKey];
+	                              const summary = [r.summary || '', ...(r.suggestions as string[] || [])].filter(Boolean).join(' | ');
+	                              setReviewNote((p) => ({ ...p, [reviewKey]: (p[reviewKey] ? p[reviewKey] + ' | ' : '') + `[AI] ${summary}` }));
+	                            }}
+	                          >
+	                            {tt('hw.aiAddToNote', 'Review notega qo\'shish')}
+	                          </button>
+	                        )}
+	                      </div>
+	                      {/* AI Result Panel */}
+	                      {aiAnalyzeResult[reviewKey] ? (() => {
+	                        const r = aiAnalyzeResult[reviewKey];
+	                        return (
+	                          <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#6c63ff11', border: '1px solid #6c63ff33', fontSize: 13 }}>
+	                            <strong>🎤 {tt('hw.aiResult', 'AI tahlil natijasi')}</strong>
+	                            <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+	                              {r.overall_score !== undefined && <span>⭐ {tt('hw.aiScore','Ball')}: <strong>{Number(r.overall_score).toFixed(1)}/10</strong></span>}
+	                              {r.fluency_score !== undefined && <span>💬 {tt('hw.aiFluency','Ravonlik')}: <strong>{Number(r.fluency_score).toFixed(1)}/10</strong></span>}
+	                              {r.vocabulary_score !== undefined && <span>📚 {tt('hw.aiVocabulary','Lug\'at')}: <strong>{Number(r.vocabulary_score).toFixed(1)}/10</strong></span>}
+	                            </div>
+	                            {r.transcript && <p style={{ marginTop: 8, opacity: 0.8 }}><strong>{tt('hw.aiTranscript','Transkript')}:</strong> {String(r.transcript).slice(0, 300)}</p>}
+	                            {(r.pronunciation_errors as any[] || []).length > 0 && (
+	                              <p style={{ marginTop: 6, color: '#f59e0b' }}><strong>{tt('hw.aiPronunciation','Talaffuz xatolari')}:</strong> {(r.pronunciation_errors as any[]).map((e: any) => e.word).join(', ')}</p>
+	                            )}
+	                            {r.summary && <p style={{ marginTop: 6, opacity: 0.75 }}>{String(r.summary).slice(0, 200)}</p>}
+	                          </div>
+	                        );
+	                      })() : null}
 	                    </section>
 	                  ) : null}
 	                  <section className="homework-review-gallery">
@@ -7142,11 +7207,73 @@ function TeacherHomeworkPanel({
 	                            <button className="btn btn-soft small" type="button" onClick={() => setReviewImageIndex((prev) => (prev + 1) % proofUrls.length)}>Keyingi</button>
 	                          </div>
 	                        ) : null}
+	                        {/* AI Check Images */}
+	                        <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                          <button
+	                            className="btn btn-soft small"
+	                            disabled={aiCheckBusy[reviewKey]}
+	                            onClick={async () => {
+	                              const hwId = Number(row.id || 0);
+	                              if (!hwId || !reviewStudentId) return;
+	                              setAiCheckBusy((p) => ({ ...p, [reviewKey]: true }));
+	                              const res = await onApiCall(`/api/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-check-images`, undefined, 'POST', '');
+	                              if (res?.result) setAiCheckResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
+	                              setAiCheckBusy((p) => ({ ...p, [reviewKey]: false }));
+	                            }}
+	                            type="button"
+	                          >
+	                            {aiCheckBusy[reviewKey] ? tt('hw.aiChecking', 'AI tekshirmoqda...') : tt('hw.aiCheckImages', '🖼️ AI Tekshirish')}
+	                          </button>
+	                          {aiCheckResult[reviewKey] && (
+	                            <button
+	                              className="btn btn-soft small"
+	                              type="button"
+	                              onClick={() => {
+	                                const r = aiCheckResult[reviewKey];
+	                                const txt = String(r.overall_feedback || r.writing_content || '').slice(0, 200);
+	                                const score = r.suggested_score !== undefined ? ` [Ball: ${r.suggested_score}]` : '';
+	                                const aiProb = r.ai_generated_probability !== undefined ? ` [AI Probability: ${r.ai_generated_probability}%]` : '';
+	                                setReviewNote((p) => ({ ...p, [reviewKey]: (p[reviewKey] ? p[reviewKey] + ' | ' : '') + `[AI Writing]${score}${aiProb} ${txt}` }));
+	                              }}
+	                            >
+	                              {tt('hw.aiAddToNote', "Review notega qo'shish")}
+	                            </button>
+	                          )}
+	                        </div>
+	                        {aiCheckResult[reviewKey] ? (() => {
+	                          const r = aiCheckResult[reviewKey];
+	                          const aiProb = Number(r.ai_generated_probability ?? -1);
+	                          const aiColor = aiProb >= 70 ? "#ef4444" : aiProb >= 40 ? "#f59e0b" : "#10b981";
+	                          const aiLabel = r.ai_detection_label ? String(r.ai_detection_label) : (aiProb >= 70 ? "Likely AI-Generated" : aiProb >= 40 ? "Uncertain" : "Likely Human");
+	                          return (
+	                            <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#a855f711', border: '1px solid #a855f733', fontSize: 13 }}>
+	                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+	                                <strong>🖼️ {tt('hw.aiResult','AI tekshirish natijasi')}</strong>
+	                                {r.suggested_score !== undefined && <span style={{ background: '#a855f722', borderRadius: 8, padding: '2px 10px', fontWeight: 700 }}>Ball: {Number(r.suggested_score)}/100</span>}
+	                              </div>
+	                              {aiProb >= 0 && (
+	                                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: aiColor + '18', border: `1px solid ${aiColor}44`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+	                                  <span style={{ fontSize: 12, fontWeight: 700, color: aiColor }}>🤖 AI Matn Detektor: {aiLabel}</span>
+	                                  <span style={{ fontSize: 13, fontWeight: 900, color: aiColor }}>{aiProb}% AI ehtimoli</span>
+	                                </div>
+	                              )}
+	                              {r.overall_feedback && <p style={{ marginTop: 8, opacity: 0.8 }}>{String(r.overall_feedback).slice(0, 300)}</p>}
+	                              {(r.grammar_errors as any[] || []).length > 0 && (
+	                                <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{tt('hw.aiGrammarErrors','Grammatika xatolari')}:</strong> {(r.grammar_errors as any[]).map((e: any) => e.original).join(', ')}</p>
+	                              )}
+	                              {(r.strengths as string[] || []).length > 0 && (
+	                                <p style={{ marginTop: 6, color: '#10b981' }}><strong>{tt('hw.aiStrengths','Kuchli tomonlar')}:</strong> {(r.strengths as string[]).join(', ')}</p>
+	                              )}
+	                            </div>
+	                          );
+	                        })() : null}
 	                      </>
+
 	                    ) : (
 	                      <div className="homework-proof-placeholder">Fayl yuklanmagan</div>
 	                    )}
 	                  </section>
+
 	                  <section className="homework-review-actions">
 	                    <select
 	                      value={reviewStatus[reviewKey] || "done"}
@@ -12017,6 +12144,14 @@ if (section === "attendance") {
     return <AdminCompetitions />;
   }
 
+  if (section === "materials") {
+    return <TeacherMaterialsPanel onApiCall={onApiCall} groups={groups} />;
+  }
+
+  if (section === "kpi") {
+    return <TeacherKpiPanel onApiCall={onApiCall} />;
+  }
+
   if (section === "leaderboard") {
     return (
       <RoleLeaderboardPanel
@@ -15170,6 +15305,11 @@ function AdminSection({
     );
   }
 
+  if (section === "kpi") {
+    return <TeacherKpiPanel onApiCall={onAdminCallRaw} />;
+  }
+
+
   if (section === "purchases") {
     return <AdminPurchases apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
   }
@@ -18178,10 +18318,6 @@ function AdminSection({
     );
   }
 
-  if (section === "support") {
-    return <AdminSupportTeachersPanel />;
-  }
-
   if (section === "settings") {
     return (
       <div className="page-stack">
@@ -20758,7 +20894,9 @@ function DashboardShell({
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} />;
     }
     else if (currentSection === "attendance") content = <StudentAttendance />;
+    else if (currentSection === "notes") content = <StudentNotesPanel />;
     else content = <StudentHome user={user} data={roleData} onNavigate={handleNavigate} />;
+
   } else if (activeRole === "teacher") {
     if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;

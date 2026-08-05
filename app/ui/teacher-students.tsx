@@ -13,7 +13,63 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
   const [resetPasswordInfo, setResetPasswordInfo] = useState<any>(null);
   const [resettingId, setResettingId] = useState<number | null>(null);
 
+  const [notesStudent, setNotesStudent] = useState<any | null>(null);
+  const [studentNotesList, setStudentNotesList] = useState<any[]>([]);
+  const [loadingNotes, setLoadingNotes] = useState(false);
+  const [newNoteText, setNewNoteText] = useState("");
+  const [newNoteVisible, setNewNoteVisible] = useState(true);
+  const [savingNote, setSavingNote] = useState(false);
+
+  const handleOpenNotes = async (s: any) => {
+    setNotesStudent(s);
+    setLoadingNotes(true);
+    try {
+      const res = await onApiCall(`/teacher/students/${s.id}/notes`, undefined, "GET");
+      setStudentNotesList(res?.items || []);
+    } catch {
+      setStudentNotesList([]);
+    } finally {
+      setLoadingNotes(false);
+    }
+  };
+
+  const handleCreateNote = async () => {
+    if (!newNoteText.trim() || !notesStudent) return;
+    setSavingNote(true);
+    try {
+      await onApiCall(
+        `/teacher/students/${notesStudent.id}/notes`,
+        { note_text: newNoteText.trim(), is_visible: newNoteVisible },
+        "POST",
+        "Eslatma yaratildi"
+      );
+      setNewNoteText("");
+      const res = await onApiCall(`/teacher/students/${notesStudent.id}/notes`, undefined, "GET");
+      setStudentNotesList(res?.items || []);
+    } catch (err: any) {
+      alert("Xatolik: " + err.message);
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: number) => {
+    if (!notesStudent) return;
+    try {
+      await onApiCall(
+        `/teacher/students/${notesStudent.id}/notes/${noteId}`,
+        undefined,
+        "DELETE",
+        "Eslatma o'chirildi"
+      );
+      setStudentNotesList((prev) => prev.filter((n) => n.id !== noteId));
+    } catch (err: any) {
+      alert("Xatolik: " + err.message);
+    }
+  };
+
   const copyText = async (txt: string) => {
+
     try {
       await navigator.clipboard.writeText(txt);
       alert(tt("common.copied", "Nusxalandi"));
@@ -132,11 +188,19 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
                     </button>
                     <button
                       className="btn btn-soft small"
+                      style={{ color: "#a78bfa" }}
+                      onClick={() => handleOpenNotes(s)}
+                    >
+                      📝 {tt("teacher.notes", "Notes")}
+                    </button>
+                    <button
+                      className="btn btn-soft small"
                       onClick={() => handleResetPassword(s)}
                       disabled={resettingId === s.id}
                     >
                       {resettingId === s.id ? "..." : tt("admin.users.action.resetPass", "Parol")}
                     </button>
+
                   </div>
                 </td>
               </tr>
@@ -311,6 +375,91 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
           </div>
         )}
       </ModalPortal>
+
+      {/* Student Notes Modal */}
+      <ModalPortal open={Boolean(notesStudent)}>
+        {notesStudent && (
+          <div className="overlay-modal-backdrop" onClick={() => setNotesStudent(null)}>
+            <article className="overlay-modal-card admin-wide-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640 }}>
+              <div className="row-between gap-3 mb-4">
+                <div>
+                  <h3 className="font-bold text-lg">📝 Student Eslatmalari</h3>
+                  <p className="text-xs text-ink-500">{notesStudent.first_name} {notesStudent.last_name}</p>
+                </div>
+                <button className="btn btn-soft small" type="button" onClick={() => setNotesStudent(null)}>
+                  ✕
+                </button>
+              </div>
+
+              {/* Add Note Form */}
+              <div className="p-4 bg-surface-soft dark:bg-white/5 rounded-xl border border-line dark:border-white/10 mb-4 flex flex-col gap-3">
+                <textarea
+                  className="w-full p-3 rounded-lg border border-line dark:border-white/10 bg-white dark:bg-navy-900 text-sm outline-none resize-none"
+                  rows={3}
+                  placeholder="Yangi izoh yozing (masalan: Grammatikaga ko'proq urg'u berish kerak)..."
+                  value={newNoteText}
+                  onChange={(e) => setNewNoteText(e.target.value)}
+                />
+                <div className="flex items-center justify-between gap-3">
+                  <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newNoteVisible}
+                      onChange={(e) => setNewNoteVisible(e.target.checked)}
+                      className="accent-primary"
+                    />
+                    Student o'zida ko'rishi mumkin (Visible)
+                  </label>
+                  <button
+                    type="button"
+                    className="btn btn-primary small"
+                    disabled={savingNote || !newNoteText.trim()}
+                    onClick={handleCreateNote}
+                  >
+                    {savingNote ? "Saqlanmoqda..." : "➕ Saqlash"}
+                  </button>
+                </div>
+              </div>
+
+              {/* Existing Notes List */}
+              {loadingNotes ? (
+                <p className="text-center py-6 text-sm text-ink-400">Yuklanmoqda...</p>
+              ) : studentNotesList.length === 0 ? (
+                <p className="text-center py-6 text-sm text-ink-400">Hali izoh biriktirilmagan.</p>
+              ) : (
+                <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
+                  {studentNotesList.map((n: any) => (
+                    <div
+                      key={n.id}
+                      className="p-3 rounded-xl border border-line dark:border-white/10 bg-white dark:bg-navy-900/60 flex items-start justify-between gap-3"
+                    >
+                      <div className="flex-1 text-sm">
+                        <p className="whitespace-pre-wrap font-medium">{n.note_text}</p>
+                        <div className="flex items-center gap-3 mt-2 text-[11px] opacity-60">
+                          <span>{String(n.created_at || "").slice(0, 16)}</span>
+                          {n.is_visible ? (
+                            <span className="text-green-600 dark:text-green-400 font-bold">👁️ Ko'rinadigan</span>
+                          ) : (
+                            <span className="text-amber-600 dark:text-amber-400 font-bold">🔒 Maxfiy</span>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="text-red-500 hover:text-red-600 text-xs font-bold p-1"
+                        onClick={() => handleDeleteNote(n.id)}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          </div>
+        )}
+      </ModalPortal>
     </div>
   );
 }
+

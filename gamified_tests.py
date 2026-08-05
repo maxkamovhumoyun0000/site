@@ -464,7 +464,7 @@ def _make_reading_from_ai(r: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _make_word_match(bank: list[dict[str, str]], idx: int, pairs: int = 4) -> dict[str, Any]:
+def _make_word_match(bank: list[dict[str, str]], idx: int, pairs: int = 4, subject: str = "English") -> dict[str, Any]:
     """`pairs` words shown against `pairs` shuffled translations (4 of each
     by default). Each individual pairing is scored separately (see
     `_score_units`/`score_session`), so one word_match block counts as
@@ -476,10 +476,14 @@ def _make_word_match(bank: list[dict[str, str]], idx: int, pairs: int = 4) -> di
     right = [p["tr"] for p in picks]
     shuffled_right = right[:]
     random.shuffle(shuffled_right)
+    if _norm_subject(subject) == "Russian":
+        prompt = "Сопоставьте слова с переводом"
+    else:
+        prompt = "Match the words with their translations"
     return {
         "index": idx,
         "type": "word_match",
-        "prompt": "So'zlarni tarjimasi bilan moslang",
+        "prompt": prompt,
         "left": left,
         "right": shuffled_right,
         "_answer": {p["word"]: p["tr"] for p in picks},
@@ -490,22 +494,26 @@ def _tokenize(sentence: str) -> list[str]:
     return [w for w in sentence.replace(".", "").replace(",", "").split() if w]
 
 
-def _make_word_order(bank: list[dict[str, str]], idx: int) -> dict[str, Any]:
+def _make_word_order(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
     row = random.choice(bank)
     tokens = _tokenize(row["ex"])
     distractors = _distractor_words(bank, {row["word"]}, 2)
     chips = tokens + distractors
     random.shuffle(chips)
+    if _norm_subject(subject) == "Russian":
+        prompt = "Составьте предложение в правильном порядке"
+    else:
+        prompt = "Arrange the words in the correct order"
     return {
         "index": idx,
         "type": "word_order",
-        "prompt": "Gapni to'g'ri tartibda tuzing",
+        "prompt": prompt,
         "words": chips,
         "_answer": tokens,
     }
 
 
-def _make_fill_gap(bank: list[dict[str, str]], idx: int) -> dict[str, Any]:
+def _make_fill_gap(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
     row = random.choice(bank)
     tokens = _tokenize(row["ex"])
     target = row["word"]
@@ -518,55 +526,71 @@ def _make_fill_gap(bank: list[dict[str, str]], idx: int) -> dict[str, Any]:
     display[blank_pos] = "____"
     options = [target] + _distractor_words(bank, {row["word"], target}, 3)
     random.shuffle(options)
+    if _norm_subject(subject) == "Russian":
+        prompt = "Заполните пропуск"
+    else:
+        prompt = "Fill in the blank"
     return {
         "index": idx,
         "type": "fill_gap",
-        "prompt": "Bo'sh joyni to'ldiring",
+        "prompt": prompt,
         "sentence": " ".join(display),
         "options": options,
         "_answer": options.index(target),
     }
 
 
-def _make_mcq(bank: list[dict[str, str]], idx: int) -> dict[str, Any]:
+def _make_mcq(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
     row = random.choice(bank)
     options = [row["tr"]] + _distractor_translations(bank, {row["tr"]}, 3)
     random.shuffle(options)
+    if _norm_subject(subject) == "Russian":
+        prompt = f"Какой перевод слова \"{row['word']}\"?"
+    else:
+        prompt = f"What is the translation of \"{row['word']}\"?"
     return {
         "index": idx,
         "type": "mcq",
-        "prompt": f"\"{row['word']}\" so'zining tarjimasi qaysi?",
+        "prompt": prompt,
         "options": options,
         "_answer": options.index(row["tr"]),
     }
 
 
-def _make_reading_heading(passage_row: dict[str, Any], distractor_headings: list[str], idx: int) -> dict[str, Any]:
+def _make_reading_heading(passage_row: dict[str, Any], distractor_headings: list[str], idx: int, subject: str = "English") -> dict[str, Any]:
     """A single reading passage matched against its heading among a few
     distractor headings pulled from other passages in the same pool —
     reuses the exact `items`/`headings` wire shape the old bundled version
     used, just with exactly one item so it's individually scored."""
     headings = [passage_row["heading"]] + distractor_headings
     random.shuffle(headings)
+    if _norm_subject(subject) == "Russian":
+        prompt = "Выберите подходящий заголовок к тексту"
+    else:
+        prompt = "Select the correct heading for the passage"
     return {
         "index": idx,
         "type": "heading_match",
-        "prompt": "Matnga mos sarlavhani tanlang",
+        "prompt": prompt,
         "items": [{"id": "0", "text": passage_row["passage"]}],
         "headings": headings,
         "_answer": {"0": passage_row["heading"]},
     }
 
 
-def _make_reading_true_false(passage_row: dict[str, Any], idx: int) -> dict[str, Any]:
+def _make_reading_true_false(passage_row: dict[str, Any], idx: int, subject: str = "English") -> dict[str, Any]:
     tf = passage_row["true_false"]
     answer_index = 0 if tf["correct"] else 1
+    if _norm_subject(subject) == "Russian":
+        options = ["Верно", "Неверно"]
+    else:
+        options = ["True", "False"]
     return {
         "index": idx,
         "type": "reading_true_false",
         "prompt": tf["statement"],
         "passage": passage_row["passage"],
-        "options": ["To'g'ri", "Noto'g'ri"],
+        "options": options,
         "_answer": answer_index,
     }
 
@@ -631,9 +655,9 @@ def build_questions(
             kind = kind_order[i % len(kind_order)]
             if kind == "heading":
                 other_headings = [r["heading"] for r in readings_pool if r is not passage_row]
-                questions.append(_make_reading_heading(passage_row, _sample(other_headings, 3), 0))
+                questions.append(_make_reading_heading(passage_row, _sample(other_headings, 3), 0, subj))
             elif kind == "true_false":
-                questions.append(_make_reading_true_false(passage_row, 0))
+                questions.append(_make_reading_true_false(passage_row, 0, subj))
             else:
                 questions.append(_make_reading_mcq(passage_row, 0))
             units += 1
@@ -648,20 +672,20 @@ def build_questions(
         if t == "word_match":
             pairs = min(4, len(bank), count - units)
             if pairs < 2:
-                questions.append(_make_mcq(bank, 0))
+                questions.append(_make_mcq(bank, 0, subj))
                 units += 1
             else:
-                q = _make_word_match(bank, 0, pairs=pairs)
+                q = _make_word_match(bank, 0, pairs=pairs, subject=subj)
                 questions.append(q)
                 units += _score_units(q)
         elif t == "word_order":
-            questions.append(_make_word_order(bank, 0))
+            questions.append(_make_word_order(bank, 0, subj))
             units += 1
         elif t == "fill_gap":
-            questions.append(_make_fill_gap(bank, 0))
+            questions.append(_make_fill_gap(bank, 0, subj))
             units += 1
         else:
-            questions.append(_make_mcq(bank, 0))
+            questions.append(_make_mcq(bank, 0, subj))
             units += 1
 
     random.shuffle(questions)

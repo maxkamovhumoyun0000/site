@@ -881,12 +881,12 @@ function StudentGrammarTopicContent() {
                                         ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-200 font-bold"
                                         : isSelected && !isCorrect
                                         ? "bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-300 font-bold"
-                                        : "text-ink-600 dark:text-slate-300 font-medium"
+                                        : "text-gray-700 dark:text-slate-300 font-medium"
                                     }`}>
                                       <span className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-black ${
                                         isCorrectOpt ? "bg-emerald-500 text-white" :
                                         isSelected && !isCorrect ? "bg-rose-500 text-white" :
-                                        "bg-surface-soft text-ink-500 dark:bg-white/10 dark:text-slate-300"
+                                        "bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-slate-300"
                                       }`}>{String.fromCharCode(65 + oi)}</span>
                                       {opt}
                                       {isCorrectOpt && <svg className="ml-auto w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>}

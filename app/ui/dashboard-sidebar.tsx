@@ -45,7 +45,7 @@ export function orderSections(sections: string[]) {
   const roleOrder = sectionSet.has("grammar") && sectionSet.has("vocabulary")
     ? [
         "home", "grammar", "vocabulary", "daily-test", "gamified", "arena", "leaderboard", "dcoin",
-        "videos", "books", "homework", "support", "chats", "notifications", "profile",
+        "videos", "books", "homework", "notes", "support", "chats", "notifications", "profile",
       ]
     : sectionSet.has("users") && sectionSet.has("reviews")
       ? [
