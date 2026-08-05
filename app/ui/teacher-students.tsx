@@ -53,6 +53,27 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
     }
   };
 
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [editNoteText, setEditNoteText] = useState("");
+  const [editNoteVisible, setEditNoteVisible] = useState(true);
+
+  const handleUpdateNote = async (noteId: number) => {
+    if (!editNoteText.trim() || !notesStudent) return;
+    try {
+      await onApiCall(
+        `/teacher/students/${notesStudent.id}/notes/${noteId}`,
+        { note_text: editNoteText.trim(), is_visible: editNoteVisible },
+        "PUT",
+        "Eslatma tahrirlandi"
+      );
+      setEditingNoteId(null);
+      const res = await onApiCall(`/teacher/students/${notesStudent.id}/notes`, undefined, "GET");
+      setStudentNotesList(res?.items || []);
+    } catch (err: any) {
+      alert("Xatolik: " + err.message);
+    }
+  };
+
   const handleDeleteNote = async (noteId: number) => {
     if (!notesStudent) return;
     try {
@@ -67,6 +88,7 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
       alert("Xatolik: " + err.message);
     }
   };
+
 
   const copyText = async (txt: string) => {
 
@@ -431,28 +453,81 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
                   {studentNotesList.map((n: any) => (
                     <div
                       key={n.id}
-                      className="p-3 rounded-xl border border-line dark:border-white/10 bg-white dark:bg-navy-900/60 flex items-start justify-between gap-3"
+                      className="p-3 rounded-xl border border-line dark:border-white/10 bg-white dark:bg-navy-900/60 flex flex-col gap-2"
                     >
-                      <div className="flex-1 text-sm">
-                        <p className="whitespace-pre-wrap font-medium">{n.note_text}</p>
-                        <div className="flex items-center gap-3 mt-2 text-[11px] opacity-60">
-                          <span>{String(n.created_at || "").slice(0, 16)}</span>
-                          {n.is_visible ? (
-                            <span className="text-green-600 dark:text-green-400 font-bold">👁️ Ko'rinadigan</span>
-                          ) : (
-                            <span className="text-amber-600 dark:text-amber-400 font-bold">🔒 Maxfiy</span>
-                          )}
+                      {editingNoteId === n.id ? (
+                        <div className="flex flex-col gap-2">
+                          <textarea
+                            className="w-full p-2 rounded-lg border border-line dark:border-white/10 bg-white dark:bg-navy-900 text-sm outline-none resize-none"
+                            rows={2}
+                            value={editNoteText}
+                            onChange={(e) => setEditNoteText(e.target.value)}
+                          />
+                          <div className="flex items-center justify-between">
+                            <label className="flex items-center gap-2 text-xs font-semibold">
+                              <input
+                                type="checkbox"
+                                checked={editNoteVisible}
+                                onChange={(e) => setEditNoteVisible(e.target.checked)}
+                              />
+                              Visible
+                            </label>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="btn btn-primary small"
+                                onClick={() => handleUpdateNote(n.id)}
+                              >
+                                Saqlash
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-soft small"
+                                onClick={() => setEditingNoteId(null)}
+                              >
+                                Bekor qilish
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="text-red-500 hover:text-red-600 text-xs font-bold p-1"
-                        onClick={() => handleDeleteNote(n.id)}
-                      >
-                        ✕
-                      </button>
+                      ) : (
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 text-sm">
+                            <p className="whitespace-pre-wrap font-medium">{n.note_text}</p>
+                            <div className="flex items-center gap-3 mt-2 text-[11px] opacity-60">
+                              <span>{String(n.created_at || "").slice(0, 16)}</span>
+                              {n.is_visible ? (
+                                <span className="text-green-600 dark:text-green-400 font-bold">👁️ Ko'rinadigan</span>
+                              ) : (
+                                <span className="text-amber-600 dark:text-amber-400 font-bold">🔒 Maxfiy</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              className="text-blue-500 hover:text-blue-600 text-xs font-bold p-1"
+                              onClick={() => {
+                                setEditingNoteId(n.id);
+                                setEditNoteText(n.note_text);
+                                setEditNoteVisible(Boolean(n.is_visible));
+                              }}
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              type="button"
+                              className="text-red-500 hover:text-red-600 text-xs font-bold p-1"
+                              onClick={() => handleDeleteNote(n.id)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ))}
+
                 </div>
               )}
             </article>

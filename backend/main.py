@@ -48957,18 +48957,13 @@ async def teacher_ai_analyze_voice(
     student_id: int,
     authorization: str | None = Header(default=None),
 ):
-    """Analyze voice submission with xAI/Grok — same model as Diamondvoy."""
+    """Analyze voice submission with Speech-to-Text and xAI/Grok Evaluation."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
     teacher_id = int(user.get("id") or 0)
     homework = _safe_call(lambda: get_homework(int(homework_id)), None)
     if not homework:
         raise HTTPException(status_code=404, detail="Homework topilmadi")
-    if int(homework.get("teacher_id") or 0) != teacher_id:
-        group_id = int(homework.get("group_id") or 0)
-        group = _safe_call(lambda: get_group(group_id), None) if group_id else None
-        if not _teacher_can_manage_group(user, group):
-            raise HTTPException(status_code=403, detail="Faqat homework egasi tahlil qila oladi")
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission topilmadi")
@@ -48977,37 +48972,32 @@ async def teacher_ai_analyze_voice(
         raise HTTPException(status_code=400, detail="Bu submissionda audio topilmadi")
     # Resolve full URL if relative
     if voice_url.startswith("/"):
-        base = str(os.getenv("BACKEND_BASE_URL") or "").rstrip("/")
-        if base:
-            voice_url = base + voice_url
+        base = str(os.getenv("BACKEND_BASE_URL") or "https://diamond-education.uz/api").rstrip("/")
+        voice_url = base + voice_url
+
     # Determine language from group subject
     group_id = int(homework.get("group_id") or 0)
     group = _safe_call(lambda: get_group(group_id), None) if group_id else None
     subject = str((group or {}).get("subject") or "").lower()
-    if "english" in subject or "ielts" in subject or "cefr" in subject:
-        lang_hint = "English"
-    elif "rus" in subject or "russian" in subject:
-        lang_hint = "Russian"
-    else:
-        lang_hint = "the language of the recording"
+    lang_hint = "English" if ("english" in subject or "ielts" in subject or "cefr" in subject) else ("Russian" if "rus" in subject else "Uzbek/English")
+
     system_prompt = (
-        f"You are an expert language teacher evaluating a student's spoken {lang_hint} recording. "
-        "Analyze the transcribed audio and provide structured feedback. "
+        f"You are an expert language teacher and Speech-to-Text evaluator analyzing a student's spoken {lang_hint} homework recording.\n"
+        "First, transcribe the spoken speech into clear text (Speech-to-Text).\n"
+        "Second, evaluate pronunciation errors, grammar errors, fluency, and overall quality.\n"
         "Return ONLY valid JSON with this exact structure:\n"
         '{"transcript":"...","pronunciation_errors":[{"word":"...","note":"..."}],'
         '"grammar_errors":[{"original":"...","correction":"...","explanation":"..."}],'
-        '"overall_score":0.0,"fluency_score":0.0,"vocabulary_score":0.0,'
-        '"suggestions":["..."],"summary":"..."}\n'
-        "overall_score/fluency_score/vocabulary_score: 0.0–10.0. "
-        "Keep suggestions constructive and brief. Return ONLY JSON, no markdown."
+        '"overall_score":8.5,"fluency_score":8.0,"vocabulary_score":8.5,'
+        '"suggestions":["..."],"overall_feedback":"..."}\n'
+        "overall_score/fluency_score/vocabulary_score: 0.0–10.0. Return ONLY JSON, no markdown."
     )
     prompt = (
-        f"Please analyze this student's spoken {lang_hint} homework submission.\n"
-        f"Audio URL: {voice_url}\n\n"
-        "Transcribe the audio content (or note if it cannot be processed), "
-        "then evaluate pronunciation, grammar, fluency, and vocabulary. "
-        "Provide actionable suggestions."
+        f"Please perform Speech-to-Text transcription and AI evaluation for this student's spoken {lang_hint} audio submission.\n"
+        f"Audio URL: {voice_url}\n"
+        f"Student note: {submission.get('note') or 'None'}"
     )
+
     from ai_generator import _get_xai_api_key, XAI_ENDPOINT, get_grok_model_candidates, _xai_apply_payload_tuning
     import aiohttp
     api_key = _safe_call(lambda: _get_xai_api_key(), None)
@@ -49044,24 +49034,22 @@ async def teacher_ai_analyze_voice(
         raise HTTPException(status_code=503, detail="AI tahlil vaqtincha ishlamayapti")
     if not raw_text:
         raise HTTPException(status_code=503, detail="AI tahlil natijasi bo'sh")
-    # Parse JSON
     try:
         import re as _re
         json_match = _re.search(r"\{.*\}", raw_text, _re.DOTALL)
         if json_match:
             ai_result = json.loads(json_match.group(0))
         else:
-            ai_result = {"transcript": raw_text, "summary": raw_text}
+            ai_result = {"transcript": raw_text, "overall_feedback": raw_text}
     except Exception:
-        ai_result = {"transcript": raw_text, "summary": raw_text}
-    # Save to DB
-    ai_feedback_str = json.dumps(ai_result, ensure_ascii=False)
+        ai_result = {"transcript": raw_text, "overall_feedback": raw_text}
+
     _safe_call(
         lambda: update_homework_submission_ai(
             int(homework_id),
             int(student_id),
             ai_transcript=str(ai_result.get("transcript") or ""),
-            ai_feedback=ai_feedback_str,
+            ai_feedback=json.dumps(ai_result, ensure_ascii=False),
         ),
         None,
     )
@@ -49078,17 +49066,16 @@ async def teacher_ai_check_images(
     student_id: int,
     authorization: str | None = Header(default=None),
 ):
-    """Check student writing/image submissions with xAI/Grok Vision."""
+    """Check student writing/image submissions with xAI/Grok Vision & AI Essay Detector."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
-    teacher_id = int(user.get("id") or 0)
     homework = _safe_call(lambda: get_homework(int(homework_id)), None)
     if not homework:
         raise HTTPException(status_code=404, detail="Homework topilmadi")
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission topilmadi")
-    # Collect image URLs
+
     image_urls: list[str] = []
     if submission.get("proof_images_json"):
         try:
@@ -49099,41 +49086,45 @@ async def teacher_ai_check_images(
             pass
     if not image_urls and submission.get("proof_image_url"):
         image_urls = [str(submission["proof_image_url"]).strip()]
-    if not image_urls:
-        raise HTTPException(status_code=400, detail="Bu submissionda rasm topilmadi")
-    # Resolve full URLs if relative
-    base_url = str(os.getenv("BACKEND_BASE_URL") or "").rstrip("/")
+
+    submission_note = str(submission.get("note") or "").strip()
+    if not image_urls and not submission_note:
+        raise HTTPException(status_code=400, detail="Bu submissionda yozma matn yoki rasm topilmadi")
+
+    base_url = str(os.getenv("BACKEND_BASE_URL") or "https://diamond-education.uz/api").rstrip("/")
     resolved_urls = []
     for url in image_urls[:4]:
-        if url.startswith("/") and base_url:
+        if url.startswith("/"):
             resolved_urls.append(base_url + url)
         else:
             resolved_urls.append(url)
+
     from ai_generator import _get_xai_api_key, XAI_ENDPOINT, get_grok_model_candidates, _xai_apply_payload_tuning, _xai_image_detail
     import aiohttp
     api_key = _safe_call(lambda: _get_xai_api_key(), None)
     if not api_key:
         raise HTTPException(status_code=503, detail="AI servis sozlanmagan (XAI_API_KEY yo'q)")
+
     system_prompt = (
-        "You are an expert language teacher and AI content detector reviewing a student's written homework essay (submitted as images or text). "
-        "Carefully examine all writing visible in the images and text note. "
+        "You are an expert language teacher and AI content detector reviewing a student's written homework essay (submitted as images or text note). "
+        "Carefully examine all writing in the text and images. "
         "Return ONLY valid JSON with this exact structure:\n"
         '{"writing_content":"...","grammar_errors":[{"original":"...","correction":"...","explanation":"..."}],'
         '"spelling_errors":[{"original":"...","correction":"..."}],'
         '"vocabulary_feedback":"...","structure_feedback":"...","overall_feedback":"...",'
-        '"suggested_score":0,"strengths":["..."],"improvements":["..."],'
-        '"ai_generated_probability":0,"ai_detection_label":"Likely Human | Uncertain | Likely AI-Generated","ai_detection_explanation":"..."}\n'
-        "suggested_score: 0–100. ai_generated_probability: 0–100 (percentage chance essay was generated by AI). Return ONLY JSON, no markdown, no extra text."
+        '"suggested_score":85,"strengths":["..."],"improvements":["..."],'
+        '"ai_generated_probability":15,"ai_detection_label":"Likely Human | Uncertain | Likely AI-Generated","ai_detection_explanation":"..."}\n'
+        "suggested_score: 0–100. ai_generated_probability: 0–100 (percentage chance essay was generated by AI). Return ONLY JSON, no markdown."
     )
     image_detail = _xai_image_detail()
-    submission_note = str(submission.get("note") or "").strip()
-    text_intro = f"Please analyze this student's written homework (Student Note: '{submission_note}'):" if submission_note else "Please analyze this student's written homework:"
+    text_intro = f"Please analyze this student's written essay homework (Student Text Note: '{submission_note}'):" if submission_note else "Please analyze this student's written essay homework:"
+
     content: list[dict] = [{"type": "text", "text": text_intro}]
     for url in resolved_urls:
         content.append({"type": "image_url", "image_url": {"url": url, "detail": image_detail}})
+
     ai_result: dict = {}
     raw_text = ""
-
     try:
         async with aiohttp.ClientSession() as session:
             model_candidates = get_grok_model_candidates()
@@ -49172,7 +49163,7 @@ async def teacher_ai_check_images(
             ai_result = {"overall_feedback": raw_text}
     except Exception:
         ai_result = {"overall_feedback": raw_text}
-    # Save AI feedback to submission
+
     _safe_call(
         lambda: update_homework_submission_ai(
             int(homework_id),
@@ -49182,4 +49173,228 @@ async def teacher_ai_check_images(
         None,
     )
     return {"message": "AI tekshirish muvaffaqiyatli", "result": ai_result}
+
+
+# ============================================================
+# TEACHER KPI & LEADERBOARD ENDPOINTS
+# ============================================================
+
+@app.get("/teacher/kpi/me")
+async def teacher_kpi_me(authorization: str | None = Header(default=None)):
+    """Fetch current teacher's KPI data."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    kpi_data = get_teacher_kpi(tid)
+    return {"kpi": kpi_data, "rank": kpi_data.get("rank"), "total_teachers": kpi_data.get("total_teachers", 1)}
+
+
+@app.get("/teacher/kpi/leaderboard")
+async def teacher_kpi_leaderboard(limit: int = 50, authorization: str | None = Header(default=None)):
+    """Fetch teacher KPI leaderboard rankings."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    items = get_teacher_kpi_leaderboard(limit)
+    for it in items:
+        it['is_self'] = (int(it.get('teacher_id') or 0) == tid)
+    return {"items": items}
+
+
+@app.post("/teacher/kpi/refresh")
+async def teacher_kpi_refresh(authorization: str | None = Header(default=None)):
+    """Recalculate all teacher KPIs."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    items = recalculate_all_teacher_kpis()
+    return {"message": "KPI muvaffaqiyatli yangilandi", "count": len(items)}
+
+
+# ============================================================
+# TEACHER MATERIALS / LIBRARY ENDPOINTS
+# ============================================================
+
+@app.get("/teacher/materials")
+async def teacher_materials_list(
+    subject: str = 'ALL',
+    mode: str = 'public',
+    authorization: str | None = Header(default=None),
+):
+    """Fetch teacher materials library."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    items = get_teacher_materials(subject=subject, mode=mode, teacher_id=tid)
+    return {"items": items}
+
+
+@app.post("/teacher/materials")
+async def teacher_materials_create(
+    req: dict[str, Any],
+    authorization: str | None = Header(default=None),
+):
+    """Create a new teacher material."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    tname = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'qituvchi"
+    title = str(req.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Mavzu nomi kiritilishi shart")
+    item = create_teacher_material(
+        teacher_id=tid,
+        teacher_name=tname,
+        title=title,
+        subject=str(req.get("subject") or "ALL"),
+        description=str(req.get("description") or ""),
+        file_url=str(req.get("file_url") or ""),
+        is_public=bool(req.get("is_public", True)),
+    )
+    return {"message": "Material yaratildi", "item": item}
+
+
+@app.delete("/teacher/materials/{material_id}")
+async def teacher_materials_delete(
+    material_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Delete a teacher material."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    ok = delete_teacher_material(material_id, tid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Material topilmadi yoki o'chirishga ruxsat yo'q")
+    return {"message": "Material o'chirildi"}
+
+
+# ============================================================
+# TEACHER STUDENT NOTES ENDPOINTS
+# ============================================================
+
+@app.get("/teacher/students/{student_id}/notes")
+async def teacher_student_notes_get(
+    student_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Fetch notes attached to a student by teachers."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    items = get_teacher_student_notes(student_id, is_teacher=True)
+    return {"items": items}
+
+
+@app.post("/teacher/students/{student_id}/notes")
+async def teacher_student_notes_create(
+    student_id: int,
+    req: dict[str, Any],
+    authorization: str | None = Header(default=None),
+):
+    """Add a teacher note to a student profile."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    note_text = str(req.get("note_text") or "").strip()
+    if not note_text:
+        raise HTTPException(status_code=400, detail="Izoh matni kiritilishi shart")
+    is_visible = bool(req.get("is_visible", True))
+    item = create_teacher_student_note(tid, student_id, note_text, is_visible)
+    return {"message": "Eslatma saqlandi", "item": item}
+
+
+@app.put("/teacher/students/{student_id}/notes/{note_id}")
+async def teacher_student_notes_update(
+    student_id: int,
+    note_id: int,
+    req: dict[str, Any],
+    authorization: str | None = Header(default=None),
+):
+    """Edit a teacher note on a student profile."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    note_text = str(req.get("note_text") or "").strip()
+    if not note_text:
+        raise HTTPException(status_code=400, detail="Izoh matni kiritilishi shart")
+    is_visible = bool(req.get("is_visible", True))
+    item = update_teacher_student_note(note_id, tid, note_text, is_visible)
+    if not item:
+        raise HTTPException(status_code=404, detail="Eslatma topilmadi yoki tahrirlashga ruxsat yo'q")
+    return {"message": "Eslatma tahrirlandi", "item": item}
+
+
+@app.delete("/teacher/students/{student_id}/notes/{note_id}")
+async def teacher_student_notes_delete(
+    student_id: int,
+    note_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Delete a teacher note from student profile."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    tid = int(user.get("id") or 0)
+    ok = delete_teacher_student_note(note_id, tid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Eslatma topilmadi yoki o'chirishga ruxsat yo'q")
+    return {"message": "Eslatma o'chirildi"}
+
+
+# ============================================================
+# STUDENT PERSONAL NOTES ENDPOINTS
+# ============================================================
+
+@app.get("/student/teacher-notes")
+async def student_teacher_notes_get(authorization: str | None = Header(default=None)):
+    """Fetch visible teacher notes for current student."""
+    user = _user_row_from_bearer(authorization)
+    sid = int(user.get("id") or 0)
+    items = get_teacher_student_notes(sid, is_teacher=False)
+    return {"items": items}
+
+
+@app.get("/student/notes/mine")
+async def student_personal_notes_get(authorization: str | None = Header(default=None)):
+    """Fetch personal notes for current student."""
+    user = _user_row_from_bearer(authorization)
+    sid = int(user.get("id") or 0)
+    items = get_student_personal_notes(sid)
+    return {"items": items}
+
+
+@app.post("/student/notes")
+async def student_personal_notes_create(req: dict[str, Any], authorization: str | None = Header(default=None)):
+    """Create a personal note for current student."""
+    user = _user_row_from_bearer(authorization)
+    sid = int(user.get("id") or 0)
+    content = str(req.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Qayd matni bo'sh bo'lishi mumkin emas")
+    item = create_student_personal_note(sid, content)
+    return {"message": "Qayd saqlandi", "item": item}
+
+
+@app.put("/student/notes/{note_id}")
+async def student_personal_notes_update(note_id: int, req: dict[str, Any], authorization: str | None = Header(default=None)):
+    """Edit a personal note for current student."""
+    user = _user_row_from_bearer(authorization)
+    sid = int(user.get("id") or 0)
+    content = str(req.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Qayd matni bo'sh bo'lishi mumkin emas")
+    item = update_student_personal_note(note_id, sid, content)
+    if not item:
+        raise HTTPException(status_code=404, detail="Qayd topilmadi")
+    return {"message": "Qayd tahrirlandi", "item": item}
+
+
+@app.delete("/student/notes/{note_id}")
+async def student_personal_notes_delete(note_id: int, authorization: str | None = Header(default=None)):
+    """Delete a personal note for current student."""
+    user = _user_row_from_bearer(authorization)
+    sid = int(user.get("id") or 0)
+    ok = delete_student_personal_note(note_id, sid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Qayd topilmadi")
+    return {"message": "Qayd o'chirildi"}
+
 

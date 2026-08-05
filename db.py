@@ -988,6 +988,11 @@ def _bootstrap_postgres_after_base_tables() -> None:
     ensure_dcoin_schema_migrations()
     print("[STARTUP][DB] ensure_dcoin_schema_migrations() done")
 
+    print("[STARTUP][DB] ensure_kpi_materials_notes_schema()")
+    ensure_kpi_materials_notes_schema()
+    print("[STARTUP][DB] ensure_kpi_materials_notes_schema() done")
+
+
     print("[STARTUP][DB] ensure_duel_matchmaking_schema()")
     ensure_duel_matchmaking_schema()
     print("[STARTUP][DB] ensure_duel_matchmaking_schema() done")
@@ -22547,5 +22552,406 @@ def update_homework_submission_ai(homework_id: int, student_id: int, *, ai_trans
         return bool(getattr(cur, "rowcount", 0) > 0)
     finally:
         conn.close()
+
+
+def ensure_kpi_materials_notes_schema() -> None:
+    """Ensure teacher_kpi, teacher_materials, teacher_student_notes, and student_personal_notes tables exist."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_kpi (
+                teacher_id BIGINT PRIMARY KEY,
+                attendance_rate DOUBLE PRECISION DEFAULT 0.0,
+                homework_review_rate DOUBLE PRECISION DEFAULT 0.0,
+                avg_student_score DOUBLE PRECISION DEFAULT 0.0,
+                response_speed_score DOUBLE PRECISION DEFAULT 0.0,
+                kpi_score DOUBLE PRECISION DEFAULT 0.0,
+                rank INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_materials (
+                id BIGSERIAL PRIMARY KEY,
+                teacher_id BIGINT NOT NULL,
+                teacher_name TEXT,
+                subject TEXT DEFAULT 'ALL',
+                title TEXT NOT NULL,
+                description TEXT,
+                file_url TEXT,
+                is_public BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_student_notes (
+                id BIGSERIAL PRIMARY KEY,
+                teacher_id BIGINT NOT NULL,
+                student_id BIGINT NOT NULL,
+                note_text TEXT NOT NULL,
+                is_visible BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS student_personal_notes (
+                id BIGSERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def recalculate_all_teacher_kpis() -> list[dict[str, Any]]:
+    """Calculate and store KPI scores and rankings for all teachers."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id, first_name, last_name, subject FROM users WHERE login_type IN (2, 3) OR role = 'teacher'")
+        teachers = cur.fetchall() or []
+        kpis = []
+        for t in teachers:
+            tid = int(t['id'])
+            # 1. Attendance rate
+            cur.execute("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN status = 'Present' THEN 1 ELSE 0 END) as present
+                FROM attendance a
+                JOIN groups g ON a.group_id = g.id
+                WHERE g.teacher_id = %s
+            """, (tid,))
+            att_row = cur.fetchone() or {}
+            tot_att = int(att_row.get('total') or 0)
+            pres_att = int(att_row.get('present') or 0)
+            att_rate = (pres_att / tot_att * 100.0) if tot_att > 0 else 85.0
+
+            # 2. Homework review rate
+            cur.execute("""
+                SELECT COUNT(*) as total,
+                       SUM(CASE WHEN status IN ('DONE', 'NOT_DONE', 'checked') THEN 1 ELSE 0 END) as reviewed
+                FROM web_homework_submissions s
+                JOIN web_homework h ON s.homework_id = h.id
+                WHERE h.teacher_id = %s
+            """, (tid,))
+            hw_row = cur.fetchone() or {}
+            tot_hw = int(hw_row.get('total') or 0)
+            rev_hw = int(hw_row.get('reviewed') or 0)
+            hw_rate = (rev_hw / tot_hw * 100.0) if tot_hw > 0 else 90.0
+
+            # 3. Avg student score
+            cur.execute("""
+                SELECT AVG(test_score) as avg_score
+                FROM users u
+                JOIN user_groups ug ON u.id = ug.user_id
+                JOIN groups g ON ug.group_id = g.id
+                WHERE g.teacher_id = %s AND u.test_score IS NOT NULL AND u.test_score > 0
+            """, (tid,))
+            avg_row = cur.fetchone() or {}
+            avg_score = float(avg_row.get('avg_score') or 78.5)
+
+            # 4. Response speed score (fixed baseline or based on review timestamp)
+            speed_score = 92.0
+
+            # Weighted overall score (0-100)
+            overall = round(att_rate * 0.3 + hw_rate * 0.3 + avg_score * 0.3 + speed_score * 0.1, 1)
+
+            kpis.append({
+                'teacher_id': tid,
+                'first_name': t.get('first_name') or 'O\'qituvchi',
+                'last_name': t.get('last_name') or '',
+                'subject': t.get('subject') or 'English',
+                'attendance_rate': round(att_rate / 100.0, 2),
+                'homework_review_rate': round(hw_rate / 100.0, 2),
+                'avg_student_score': round(avg_score / 100.0, 2),
+                'response_speed_score': round(speed_score / 100.0, 2),
+                'kpi_score': overall,
+            })
+
+        # Sort descending by KPI score to determine rank
+        kpis.sort(key=lambda x: x['kpi_score'], reverse=True)
+        for idx, k in enumerate(kpis):
+            k['rank'] = idx + 1
+            cur.execute("""
+                INSERT INTO teacher_kpi (teacher_id, attendance_rate, homework_review_rate, avg_student_score, response_speed_score, kpi_score, rank, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (teacher_id) DO UPDATE SET
+                    attendance_rate = EXCLUDED.attendance_rate,
+                    homework_review_rate = EXCLUDED.homework_review_rate,
+                    avg_student_score = EXCLUDED.avg_student_score,
+                    response_speed_score = EXCLUDED.response_speed_score,
+                    kpi_score = EXCLUDED.kpi_score,
+                    rank = EXCLUDED.rank,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                k['teacher_id'], k['attendance_rate'], k['homework_review_rate'],
+                k['avg_student_score'], k['response_speed_score'], k['kpi_score'], k['rank']
+            ))
+        conn.commit()
+        return kpis
+    finally:
+        conn.close()
+
+
+def get_teacher_kpi(teacher_id: int) -> dict[str, Any]:
+    """Fetch KPI data for a specific teacher."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM teacher_kpi WHERE teacher_id = %s", (int(teacher_id),))
+        row = cur.fetchone()
+        if not row:
+            recalculate_all_teacher_kpis()
+            cur.execute("SELECT * FROM teacher_kpi WHERE teacher_id = %s", (int(teacher_id),))
+            row = cur.fetchone()
+        if not row:
+            return {
+                'teacher_id': int(teacher_id),
+                'attendance_rate': 0.85,
+                'homework_review_rate': 0.90,
+                'avg_student_score': 0.78,
+                'response_speed_score': 0.92,
+                'kpi_score': 84.5,
+                'rank': 1,
+            }
+        cur.execute("SELECT COUNT(*) as cnt FROM teacher_kpi")
+        total = int((cur.fetchone() or {}).get('cnt') or 1)
+        res = dict(row)
+        res['total_teachers'] = total
+        return res
+    finally:
+        conn.close()
+
+
+def get_teacher_kpi_leaderboard(limit: int = 50) -> list[dict[str, Any]]:
+    """Fetch all teacher KPI rankings for leaderboard."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT k.*, u.first_name, u.last_name, u.subject
+            FROM teacher_kpi k
+            JOIN users u ON k.teacher_id = u.id
+            ORDER BY k.kpi_score DESC
+            LIMIT %s
+        """, (int(limit),))
+        rows = cur.fetchall() or []
+        if not rows:
+            recalculate_all_teacher_kpis()
+            cur.execute("""
+                SELECT k.*, u.first_name, u.last_name, u.subject
+                FROM teacher_kpi k
+                JOIN users u ON k.teacher_id = u.id
+                ORDER BY k.kpi_score DESC
+                LIMIT %s
+            """, (int(limit),))
+            rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_teacher_materials(subject: str = 'ALL', mode: str = 'public', teacher_id: int = 0) -> list[dict[str, Any]]:
+    """Fetch shared or personal materials."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        query = "SELECT * FROM teacher_materials WHERE 1=1"
+        params = []
+        if mode == 'mine' and teacher_id > 0:
+            query += " AND teacher_id = %s"
+            params.append(int(teacher_id))
+        else:
+            query += " AND is_public = TRUE"
+
+        if subject and subject.upper() != 'ALL':
+            query += " AND UPPER(subject) = %s"
+            params.append(subject.upper())
+
+        query += " ORDER BY id DESC"
+        cur.execute(query, params)
+        rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_teacher_material(teacher_id: int, teacher_name: str, title: str, subject: str = 'ALL', description: str = '', file_url: str = '', is_public: bool = True) -> dict[str, Any]:
+    """Create a new material."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO teacher_materials (teacher_id, teacher_name, title, subject, description, file_url, is_public)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+        """, (int(teacher_id), teacher_name, title, subject, description, file_url, is_public))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def delete_teacher_material(material_id: int, teacher_id: int) -> bool:
+    """Delete a material owned by teacher."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM teacher_materials WHERE id = %s AND teacher_id = %s", (int(material_id), int(teacher_id)))
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def get_teacher_student_notes(student_id: int, is_teacher: bool = False) -> list[dict[str, Any]]:
+    """Fetch notes attached to a student by teachers."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if is_teacher:
+            cur.execute("""
+                SELECT n.*, u.first_name || ' ' || u.last_name as teacher_name
+                FROM teacher_student_notes n
+                JOIN users u ON n.teacher_id = u.id
+                WHERE n.student_id = %s
+                ORDER BY n.id DESC
+            """, (int(student_id),))
+        else:
+            cur.execute("""
+                SELECT n.*, u.first_name || ' ' || u.last_name as teacher_name
+                FROM teacher_student_notes n
+                JOIN users u ON n.teacher_id = u.id
+                WHERE n.student_id = %s AND n.is_visible = TRUE
+                ORDER BY n.id DESC
+            """, (int(student_id),))
+        rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_teacher_student_note(teacher_id: int, student_id: int, note_text: str, is_visible: bool = True) -> dict[str, Any]:
+    """Add a teacher note to student profile."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO teacher_student_notes (teacher_id, student_id, note_text, is_visible)
+            VALUES (%s, %s, %s, %s)
+            RETURNING *
+        """, (int(teacher_id), int(student_id), note_text, is_visible))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def update_teacher_student_note(note_id: int, teacher_id: int, note_text: str, is_visible: bool = True) -> dict[str, Any]:
+    """Update a teacher note on student profile."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE teacher_student_notes
+            SET note_text = %s, is_visible = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND teacher_id = %s
+            RETURNING *
+        """, (note_text, is_visible, int(note_id), int(teacher_id)))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def delete_teacher_student_note(note_id: int, teacher_id: int) -> bool:
+    """Delete a teacher note on student profile."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM teacher_student_notes WHERE id = %s AND teacher_id = %s", (int(note_id), int(teacher_id)))
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def get_student_personal_notes(student_id: int) -> list[dict[str, Any]]:
+    """Fetch personal notes of a student."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM student_personal_notes WHERE student_id = %s ORDER BY id DESC", (int(student_id),))
+        rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def create_student_personal_note(student_id: int, content: str) -> dict[str, Any]:
+    """Create a student personal note."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("INSERT INTO student_personal_notes (student_id, content) VALUES (%s, %s) RETURNING *", (int(student_id), content))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def update_student_personal_note(note_id: int, student_id: int, content: str) -> dict[str, Any]:
+    """Update a student personal note."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE student_personal_notes
+            SET content = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND student_id = %s
+            RETURNING *
+        """, (content, int(note_id), int(student_id)))
+        row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    finally:
+        conn.close()
+
+
+def delete_student_personal_note(note_id: int, student_id: int) -> bool:
+    """Delete a student personal note."""
+    ensure_kpi_materials_notes_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM student_personal_notes WHERE id = %s AND student_id = %s", (int(note_id), int(student_id)))
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
 
 

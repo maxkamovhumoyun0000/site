@@ -24,17 +24,19 @@ function NoteCard({
   note,
   isTeacher,
   onDelete,
+  onEdit,
 }: {
   note: GenericRow;
   isTeacher: boolean;
   onDelete?: (id: number) => void;
+  onEdit?: (note: GenericRow) => void;
 }) {
   const id = Number(note.id || 0);
   const text = String(note.note || note.content || "");
   const createdAt = String(note.created_at || "").slice(0, 16).replace("T", " ");
-  const teacherName = note.teacher_first_name
+  const teacherName = note.teacher_name || (note.teacher_first_name
     ? `${note.teacher_first_name} ${note.teacher_last_name || ""}`.trim()
-    : null;
+    : null);
   const isPinned = Boolean(note.is_pinned);
   const tagColor = String(note.tag_color || "#6c63ff");
   const tag = String(note.tag || "");
@@ -50,14 +52,6 @@ function NoteCard({
         padding: "16px 18px",
         transition: "box-shadow .2s, transform .2s",
         cursor: "default",
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLElement).style.boxShadow = `0 4px 24px ${tagColor}22`;
-        (e.currentTarget as HTMLElement).style.transform = "translateY(-2px)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.boxShadow = "none";
-        (e.currentTarget as HTMLElement).style.transform = "none";
       }}
     >
       {/* Top row */}
@@ -114,6 +108,15 @@ function NoteCard({
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <span style={{ fontSize: 11, opacity: 0.45, whiteSpace: "nowrap" }}>{createdAt}</span>
+          {!isTeacher && onEdit && (
+            <button
+              onClick={() => onEdit(note)}
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, opacity: 0.7, color: "#3b82f6" }}
+              title="Tahrirlash"
+            >
+              ✏️
+            </button>
+          )}
           {!isTeacher && onDelete && (
             <button
               onClick={() => onDelete(id)}
@@ -127,7 +130,6 @@ function NoteCard({
                 padding: "2px 4px",
                 borderRadius: 6,
                 color: "#ef4444",
-                transition: "opacity .2s",
               }}
               title="O'chirish"
             >
@@ -150,6 +152,7 @@ function NoteCard({
   );
 }
 
+
 const TAG_OPTIONS = [
   { label: "Grammatika", color: "#6c63ff" },
   { label: "Lug'at", color: "#10b981" },
@@ -165,6 +168,7 @@ export function StudentNotesPanel() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<"teacher" | "mine">("teacher");
   const [addOpen, setAddOpen] = useState(false);
+  const [editingNote, setEditingNote] = useState<GenericRow | null>(null);
   const [noteText, setNoteText] = useState("");
   const [selectedTag, setSelectedTag] = useState(TAG_OPTIONS[0]);
   const [isPinned, setIsPinned] = useState(false);
@@ -188,21 +192,36 @@ export function StudentNotesPanel() {
   const handleSave = async () => {
     if (!noteText.trim()) return;
     setSaving(true);
-    await apiFetch("/student/notes", {
-      method: "POST",
-      body: JSON.stringify({ content: noteText.trim(), tag: selectedTag.label, tag_color: selectedTag.color, is_pinned: isPinned }),
-    });
+    if (editingNote) {
+      await apiFetch(`/student/notes/${editingNote.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ content: noteText.trim() }),
+      });
+    } else {
+      await apiFetch("/student/notes", {
+        method: "POST",
+        body: JSON.stringify({ content: noteText.trim(), tag: selectedTag.label, tag_color: selectedTag.color, is_pinned: isPinned }),
+      });
+    }
     setNoteText("");
+    setEditingNote(null);
     setAddOpen(false);
     setIsPinned(false);
     await load();
     setSaving(false);
   };
 
+  const handleStartEdit = (n: GenericRow) => {
+    setEditingNote(n);
+    setNoteText(String(n.content || n.note || ""));
+    setAddOpen(true);
+  };
+
   const handleDelete = async (id: number) => {
     await apiFetch(`/student/notes/${id}`, { method: "DELETE" });
     setMyNotes((prev) => prev.filter((n) => Number(n.id) !== id));
   };
+
 
   const teacherFiltered = teacherNotes.filter((n) => {
     const text = String(n.note || n.content || "").toLowerCase();
@@ -443,8 +462,9 @@ export function StudentNotesPanel() {
         ) : (
           <div className="notes-grid">
             {pinnedFirst(myFiltered).map((note) => (
-              <NoteCard key={String(note.id)} note={note} isTeacher={false} onDelete={handleDelete} />
+              <NoteCard key={String(note.id)} note={note} isTeacher={false} onDelete={handleDelete} onEdit={handleStartEdit} />
             ))}
+
           </div>
         )
       )}
