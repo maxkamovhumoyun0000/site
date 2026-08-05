@@ -34,9 +34,12 @@ function NoteCard({
   const id = Number(note.id || 0);
   const text = String(note.note || note.content || "");
   const createdAt = String(note.created_at || "").slice(0, 16).replace("T", " ");
-  const teacherName = note.teacher_name || (note.teacher_first_name
-    ? `${note.teacher_first_name} ${note.teacher_last_name || ""}`.trim()
-    : null);
+  const teacherName = note.teacher_name
+    ? String(note.teacher_name)
+    : note.teacher_first_name
+    ? `${String(note.teacher_first_name)} ${note.teacher_last_name ? String(note.teacher_last_name) : ""}`.trim()
+    : null;
+
   const isPinned = Boolean(note.is_pinned);
   const tagColor = String(note.tag_color || "#6c63ff");
   const tag = String(note.tag || "");
