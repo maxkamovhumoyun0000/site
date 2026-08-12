@@ -1,0 +1,22 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "uz.diamondeducation.diamond_students",
+      "sha256_cert_fingerprints": [
+        "AD:26:8B:B1:12:00:D6:E6:5D:6B:41:AA:29:F3:9D:94:27:39:84:7C:59:B4:49:10:90:20:21:EB:6E:75:FD:01"
+      ]
+    }
+  },
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "uz.diamondeducation.diamond_teachers",
+      "sha256_cert_fingerprints": [
+        "67:05:34:EC:E6:F1:FE:1A:33:FC:6E:2F:E8:3A:EB:BD:B4:16:B3:05:79:CC:91:C5:DD:BE:07:9A:2E:4B:EE:89"
+      ]
+    }
+  }
+]
