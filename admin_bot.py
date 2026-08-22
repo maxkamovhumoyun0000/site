@@ -3290,8 +3290,7 @@ async def handle_user_reset_password(callback: CallbackQuery):
     
     user_id = int(callback.data.split('_')[-1])
     from db import reset_user_password
-    import random
-    import string
+    from passwords import generate_otp
 
     lang = detect_lang_from_user(callback.from_user)
     user_row = get_user_by_id(user_id)
@@ -3299,7 +3298,7 @@ async def handle_user_reset_password(callback: CallbackQuery):
         await callback.answer(t(lang, "admin_auto_msg_6"), show_alert=True)
         return
 
-    new_password = "".join(random.choices(string.digits, k=6))
+    new_password = generate_otp(6)
     reset_user_password(user_id, new_password)
 
     lid = html_module.escape(str(user_row.get("login_id") or ""))
@@ -4203,17 +4202,11 @@ async def handle_teacher_password_reset(callback: CallbackQuery):
     lang = detect_lang_from_user(callback.from_user)
     
     # Generate new password
-    import random
     import string
-    new_password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    
-    # Update password in database
-    from db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute('UPDATE users SET password = ?, password_used = 0 WHERE id = ?', (new_password, teacher_id))
-    conn.commit()
-    conn.close()
+    from passwords import generate_password
+    from db import reset_user_password
+    new_password = generate_password(8, string.ascii_letters + string.digits)
+    reset_user_password(teacher_id, new_password)
     
     # Send confirmation to admin
     await callback.message.answer(
@@ -5318,11 +5311,10 @@ async def handle_callback(callback: CallbackQuery):
             return
         
         from db import reset_user_password
-        import random
-        import string
+        from passwords import generate_otp
         
         # Generate random password
-        new_password = ''.join(random.choices(string.digits, k=6))
+        new_password = generate_otp(6)
         reset_user_password(teacher_id, new_password)
         
         lang = detect_lang_from_user(callback.from_user)
@@ -7547,19 +7539,12 @@ async def handle_teacher_reset_password(callback: CallbackQuery):
     
     # Reset password for an existing teacher record.
     # (This handler should not create a new user row.)
-    import random
     import string
+    from passwords import generate_password
+    from db import reset_user_password
 
-    new_password = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
-    from db import get_conn
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "UPDATE users SET password = ?, password_used = 0 WHERE id = ?",
-        (new_password, teacher_id),
-    )
-    conn.commit()
-    conn.close()
+    new_password = generate_password(8, string.ascii_letters + string.digits)
+    reset_user_password(teacher_id, new_password)
 
     text = t(
         lang,

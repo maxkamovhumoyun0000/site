@@ -133,6 +133,7 @@ from db import (
     insert_arena_group_session_answer,
     enqueue_arena_group_teacher_refresh,
     user_is_present_for_group_on_date,
+    approve_mobile_telegram_login_request,
 )
 from lesson_window import is_group_lesson_window_active
 from auth import (
@@ -2718,10 +2719,9 @@ async def cmd_otp(message: types.Message):
         await message.answer(msg)
         return
 
-    import random
-    import string
     from db import reset_user_password
-    otp_code = "".join(random.choices(string.digits, k=6))
+    from passwords import generate_otp
+    otp_code = generate_otp(6)
     reset_user_password(int(user["id"]), otp_code)
 
     message_text = {
@@ -2733,6 +2733,102 @@ async def cmd_otp(message: types.Message):
     await message.answer(message_text, parse_mode="HTML")
 
 
+_MOBILE_APP_LOGIN_CALLBACK_PREFIX = "mobile_login:"
+
+
+def _mobile_app_login_token_from_start(message: types.Message) -> str:
+    """Read and sanity-check the opaque token passed by Telegram's /start."""
+    parts = str(message.text or "").strip().split(maxsplit=1)
+    token = parts[1].strip() if len(parts) == 2 else ""
+    if re.fullmatch(r"app_login_[A-Za-z0-9_-]{24,64}", token):
+        return token
+    return ""
+
+
+def _mobile_app_login_copy(lang: str, key: str) -> str:
+    copy = {
+        "uz": {
+            "prompt": "Diamond Students ilovasiga kirishni tasdiqlaysizmi? Tasdiqlagach ilovaga qayting.",
+            "button": "✅ Ilovaga kirishni tasdiqlash",
+            "need_login": "Ilovaga kirishdan oldin Student Botda Login ID va parol bilan kiring.",
+            "approved": "✅ Tasdiqlandi. Endi Diamond Students ilovasiga qayting — kirish avtomatik yakunlanadi.",
+            "expired": "Bu ilovaga kirish so‘rovi tugagan yoki avval ishlatilgan. Ilovadan qayta urinib ko‘ring.",
+        },
+        "ru": {
+            "prompt": "Подтвердить вход в приложение Diamond Students? После подтверждения вернитесь в приложение.",
+            "button": "✅ Подтвердить вход в приложение",
+            "need_login": "Сначала войдите в Student Bot с помощью Login ID и пароля.",
+            "approved": "✅ Подтверждено. Вернитесь в Diamond Students — вход завершится автоматически.",
+            "expired": "Запрос на вход истек или уже использован. Повторите попытку в приложении.",
+        },
+        "en": {
+            "prompt": "Confirm sign-in to Diamond Students? Return to the app after confirming.",
+            "button": "✅ Confirm app sign-in",
+            "need_login": "First sign in to the Student Bot using your Login ID and password.",
+            "approved": "✅ Confirmed. Return to Diamond Students — sign-in will finish automatically.",
+            "expired": "This sign-in request expired or was already used. Try again from the app.",
+        },
+    }
+    return copy.get(lang, copy["uz"])[key]
+
+
+async def _send_mobile_app_login_confirmation(
+    message: types.Message,
+    *,
+    request_token: str,
+    lang: str,
+) -> None:
+    """Ask for explicit consent before binding a bot session to an app request."""
+    callback_data = f"{_MOBILE_APP_LOGIN_CALLBACK_PREFIX}{request_token}"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=_mobile_app_login_copy(lang, "button"),
+                callback_data=callback_data,
+            ),
+        ]],
+    )
+    await message.answer(
+        _mobile_app_login_copy(lang, "prompt"),
+        reply_markup=keyboard,
+    )
+
+
+@dp.callback_query(lambda c: str(c.data or "").startswith(_MOBILE_APP_LOGIN_CALLBACK_PREFIX))
+async def confirm_mobile_app_login(callback: CallbackQuery):
+    """Approve the app's one-time request for this authenticated student."""
+    request_token = str(callback.data or "")[len(_MOBILE_APP_LOGIN_CALLBACK_PREFIX):]
+    if not re.fullmatch(r"app_login_[A-Za-z0-9_-]{24,64}", request_token):
+        await callback.answer("So‘rov yaroqsiz", show_alert=True)
+        return
+
+    telegram_id = str(callback.from_user.id)
+    user = get_user_by_telegram(telegram_id)
+    lang = detect_lang_from_user(user or callback.from_user)
+    if (
+        not user
+        or int(user.get("login_type") or 0) not in (1, 2)
+    ):
+        await callback.answer(_mobile_app_login_copy(lang, "need_login"), show_alert=True)
+        return
+
+    approved = approve_mobile_telegram_login_request(
+        request_token,
+        user_id=int(user.get("id") or 0),
+        telegram_id=telegram_id,
+    )
+    if not approved:
+        await callback.answer(_mobile_app_login_copy(lang, "expired"), show_alert=True)
+        return
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer()
+    await callback.message.answer(_mobile_app_login_copy(lang, "approved"))
+
+
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
     """Handle /start command - check login status or show login instructions"""
@@ -2742,6 +2838,19 @@ async def cmd_start(message: types.Message):
     user = get_user_by_telegram(telegram_id)
     lang = detect_lang_from_user(user or message.from_user)
     if not await check_subscription_and_notify(message.bot, message, lang=lang):
+        return
+
+    mobile_login_token = _mobile_app_login_token_from_start(message)
+
+    # A student already linked by the Student Bot or its Mini App can approve
+    # the app request immediately. Do this before the normal group-access
+    # check: the app itself will show the existing no-group state if needed.
+    if mobile_login_token and user and int(user.get('login_type') or 0) in (1, 2):
+        await _send_mobile_app_login_confirmation(
+            message,
+            request_token=mobile_login_token,
+            lang=detect_lang_from_user(user),
+        )
         return
 
     # If user is already logged in, show main menu
@@ -2766,10 +2875,22 @@ async def cmd_start(message: types.Message):
     reset_placement_state(message.from_user.id)
     
     # Start two-step login flow
-    set_login_state(telegram_id, {'step': 'ask_login', 'data': {}})
+    set_login_state(
+        telegram_id,
+        {
+            'step': 'ask_login',
+            'data': {},
+            # Keep the token only in the bot's in-memory login flow.  It is
+            # still verified atomically in Postgres when the student taps the
+            # explicit confirmation button after signing in.
+            'mobile_login_request_token': mobile_login_token or None,
+        },
+    )
     
     lang = detect_lang_from_user(message.from_user)
     
+    if mobile_login_token:
+        await message.answer(_mobile_app_login_copy(lang, "need_login"))
     await message.answer(t(lang, 'student_login_title'))
     await message.answer(t(lang, 'ask_login_id'))
 
@@ -2830,10 +2951,18 @@ async def handle_login_and_messages(message: types.Message):
     if login_state.get('step') in ('ask_login', 'ask_password') or (
         ':' in (message.text or '') and not is_diamondvoy_chat_trigger(message.text)
     ):
+        mobile_login_token = str(login_state.get('mobile_login_request_token') or '').strip()
         success = await process_login_message(message, expected_login_type=2)
         if success:
             user = get_user_by_telegram(telegram_id)
             lang = detect_lang_from_user(user or message.from_user)
+            if mobile_login_token:
+                await _send_mobile_app_login_confirmation(
+                    message,
+                    request_token=mobile_login_token,
+                    lang=lang,
+                )
+                return
             if not is_access_active(user):
                 if not bool(int((user or {}).get("placement_required") or 0)):
                     await _send_no_group_block_message(message.chat.id, lang, user=user)
@@ -4831,10 +4960,9 @@ async def handle_get_my_otp(callback: CallbackQuery):
 
     lang = detect_lang_from_user(user)
 
-    import random
-    import string
     from db import reset_user_password
-    otp_code = "".join(random.choices(string.digits, k=6))
+    from passwords import generate_otp
+    otp_code = generate_otp(6)
     reset_user_password(int(user["id"]), otp_code)
 
     message_text = {

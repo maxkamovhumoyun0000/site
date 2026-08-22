@@ -467,6 +467,7 @@ TRANSLATIONS = {
         'login_format_error': "❌ Noto'g'ri format!\n\nTo'g'ri format: <code>LoginID:Parol</code>\n\nMasalan: <code>Diamond-ABC12:123456</code>",
         'login_credentials_error': "❌ Login ID yoki parol noto'g'ri!",
         'login_blocked_error': "❌ Sizning profilingiz bloklangan!",
+        'login_throttled_error': "⏳ Juda ko'p noto'g'ri urinish! Iltimos, 15 daqiqadan keyin qayta urinib ko'ring.",
         'login_success': "✅ Muvaffaqiyatli kirildi!",
         # Subject selection
         'subject_selection_title': "📚 <b>Fan tanlang</b>\n\nQaysi fanda davom etishni istaysiz?",
@@ -4328,6 +4329,7 @@ TRANSLATIONS = {
         'login_format_error': "❌ Invalid format!\n\nCorrect format: <code>LoginID:Password</code>\n\nExample: <code>Diamond-ABC12:123456</code>",
         'login_credentials_error': "❌ Login ID or password incorrect!",
         'login_blocked_error': "❌ Your profile is blocked!",
+        'login_throttled_error': "⏳ Too many failed attempts! Please try again in 15 minutes.",
         # Subject selection
         'subject_selection_title': "📚 <b>Choose Subject</b>\n\nWhich subject would you like to continue with?",
         'english_subject': "🇬🇧 English",

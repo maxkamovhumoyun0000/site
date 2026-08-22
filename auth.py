@@ -181,9 +181,9 @@ def generate_login_id(login_type: int = 1, length=5, max_attempts=10):
 
 
 def generate_password(length=6):
-    # 6-character alphanumeric password
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choices(chars, k=length))
+    # 6-character alphanumeric password (kriptografik tasodifiy)
+    from passwords import generate_password as _secure_generate_password
+    return _secure_generate_password(length)
 
 
 def _correct_count_from_score(score: int) -> int:
@@ -815,8 +815,14 @@ async def process_login_message(message, expected_login_type: int):
                     await message.answer(t(lang, 'wrong_bot_type_teacher'), parse_mode='HTML')
                 return False
         
-        # Store login_id and ask for password
-        set_login_state(telegram_id, {'step': 'ask_password', 'login_id': login_id})
+        # Store login_id and ask for password. Preserve an optional native-app
+        # hand-off token started by the Student Bot deep link; the bot will
+        # ask for explicit approval after this normal credential check.
+        next_state = {'step': 'ask_password', 'login_id': login_id}
+        mobile_login_request_token = str(login_state.get('mobile_login_request_token') or '').strip()
+        if mobile_login_request_token:
+            next_state['mobile_login_request_token'] = mobile_login_request_token
+        set_login_state(telegram_id, next_state)
         await message.answer(t(lang, 'enter_password'))
         return False
     
@@ -831,6 +837,8 @@ async def process_login_message(message, expected_login_type: int):
         if not user:
             if status == 'blocked':
                 await message.answer(t(lang, 'login_blocked_error'))
+            elif status == 'throttled':
+                await message.answer(t(lang, 'login_throttled_error'))
             elif status == 'wrong_type':
                 await message.answer(t(lang, 'wrong_bot_type_student' if expected_login_type == 2 else 'wrong_bot_type_teacher'), parse_mode='HTML')
             else:
@@ -939,6 +947,19 @@ class AuthMiddleware(BaseMiddleware):
                 await self._send_wrong_bot_type_message(event, user)
                 return
         
+        # A linked Telegram identity is also the existing Mini App sign-in
+        # factor. Let a native-app approval through even if the bot's separate
+        # `logged_in` flag was cleared, so a student who already uses the Mini
+        # App can enter the same account on the native app. Role validation
+        # above still rejects staff accounts, and the API consumes the
+        # device-bound one-time request before issuing any session.
+        if (
+            isinstance(event, CallbackQuery)
+            and str(event.data or "").startswith("mobile_login:")
+        ):
+            data['user'] = user
+            return await handler(event, data)
+
         # Validate session (preserves sessions across restarts)
         if not validate_user_session(user['id']):
             # === 140 KUNLIK TO'LIQ AVTOMATIK O'CHIRISH (startupda ham ishlaydi) ===
@@ -946,7 +967,7 @@ class AuthMiddleware(BaseMiddleware):
             
             await self._send_session_expired_message(event)
             return
-        
+
         # Update activity
         update_user_activity(user['id'])
         

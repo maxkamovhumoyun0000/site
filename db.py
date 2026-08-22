@@ -14,6 +14,11 @@ from typing import List, Dict, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
 from config import ADMIN_CHAT_IDS, ALL_ADMIN_IDS, DATABASE_URL
 from logging_config import get_logger
+from passwords import (
+    generate_password as _generate_secure_password,
+    hash_password,
+    verify_password,
+)
 import psycopg
 from psycopg.rows import dict_row
 import time
@@ -9835,19 +9840,164 @@ def prepare_user_for_new_test(user_id, subject):
 
 # ====================== ASOSIY FUNKSIYALAR ======================
 
+# ---- Login brute-force throttle (shared by web /auth/login and bot logins) ----
+# Persistent (DB) sliding-window counter per throttle key so limits survive
+# restarts and apply across all processes that share the database.
+LOGIN_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_THROTTLE_MAX_FAILURES", "5") or 5))
+LOGIN_THROTTLE_WINDOW_SEC = max(60, int(os.getenv("LOGIN_THROTTLE_WINDOW_SEC", "900") or 900))
+_LOGIN_THROTTLE_SCHEMA_READY = False
+
+
+def ensure_login_throttle_schema():
+    global _LOGIN_THROTTLE_SCHEMA_READY
+    if _LOGIN_THROTTLE_SCHEMA_READY:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS login_throttle (
+                throttle_key TEXT PRIMARY KEY,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                window_started_at BIGINT NOT NULL DEFAULT 0,
+                last_failed_at BIGINT NOT NULL DEFAULT 0
+            )
+        ''')
+        conn.commit()
+        _LOGIN_THROTTLE_SCHEMA_READY = True
+    finally:
+        conn.close()
+
+
+def is_login_throttled(throttle_key: str, max_failures: int | None = None) -> bool:
+    """True while the key has >= max_failures failures inside the window.
+
+    Fails open (allows login) on unexpected DB errors so a throttle-table
+    problem can never lock the whole platform out.
+    """
+    if not throttle_key:
+        return False
+    limit = max(1, int(max_failures or LOGIN_THROTTLE_MAX_FAILURES))
+    try:
+        ensure_login_throttle_schema()
+        now = int(time.time())
+        with DB_WRITE_LOCK:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT failed_count, window_started_at FROM login_throttle WHERE throttle_key=?",
+                    (throttle_key,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                count = int(row["failed_count"] or 0)
+                started = int(row["window_started_at"] or 0)
+                if now - started >= LOGIN_THROTTLE_WINDOW_SEC:
+                    cur.execute("DELETE FROM login_throttle WHERE throttle_key=?", (throttle_key,))
+                    conn.commit()
+                    return False
+                return count >= limit
+            finally:
+                conn.close()
+    except Exception:
+        logger.exception("is_login_throttled failed (fail-open) key=%s", throttle_key)
+        return False
+
+
+def record_login_failure(throttle_key: str) -> None:
+    if not throttle_key:
+        return
+    try:
+        ensure_login_throttle_schema()
+        now = int(time.time())
+        with DB_WRITE_LOCK:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT failed_count, window_started_at FROM login_throttle WHERE throttle_key=?",
+                    (throttle_key,),
+                )
+                row = cur.fetchone()
+                if row and now - int(row["window_started_at"] or 0) >= LOGIN_THROTTLE_WINDOW_SEC:
+                    row = None
+                if row:
+                    cur.execute(
+                        "UPDATE login_throttle SET failed_count=?, last_failed_at=? WHERE throttle_key=?",
+                        (int(row["failed_count"] or 0) + 1, now, throttle_key),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO login_throttle (throttle_key, failed_count, window_started_at, last_failed_at) VALUES (?,1,?,?)",
+                        (throttle_key, now, now),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        logger.exception("record_login_failure failed key=%s", throttle_key)
+
+
+def clear_login_throttle(throttle_key: str) -> None:
+    if not throttle_key:
+        return
+    try:
+        with DB_WRITE_LOCK:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("DELETE FROM login_throttle WHERE throttle_key=?", (throttle_key,))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        logger.exception("clear_login_throttle failed key=%s", throttle_key)
+
+
+def increment_failed_logins(user_id: int) -> None:
+    """Keep the legacy users.failed_logins column in sync for admin visibility."""
+    try:
+        with DB_WRITE_LOCK:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET failed_logins=failed_logins+1 WHERE id=?", (int(user_id),))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        logger.exception("increment_failed_logins failed user_id=%s", user_id)
+
+
+def clear_failed_logins(user_id: int) -> None:
+    try:
+        with DB_WRITE_LOCK:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute("UPDATE users SET failed_logins=0 WHERE id=?", (int(user_id),))
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        logger.exception("clear_failed_logins failed user_id=%s", user_id)
+
+
 def create_user(first_name, last_name, phone, subject, login_type, owner_admin_id: int | None = None, parent_phone: str | None = None):
     logger.info(f"db.create_user(login_type={login_type}, subject={subject}, first_name={first_name}, last_name={last_name})")
     conn = get_conn()
     cur = conn.cursor()
     try:
-        # Login ID va parol generatsiya
-        import random, string
+        # Login ID va parol generatsiya (kriptografik tasodifiy)
+        import secrets as _secrets, string as _string
         while True:
-            login_id = 'ST' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-            cur.execute("SELECT 1 FROM users WHERE login_id=%s", (login_id,))
+            login_id = 'ST' + ''.join(_secrets.choice(_string.ascii_uppercase + _string.digits) for _ in range(4))
+            cur.execute("SELECT 1 FROM users WHERE login_id=?", (login_id,))
             if not cur.fetchone(): break
 
-        password = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        password = _generate_secure_password(6)
 
         cur.execute('''
             INSERT INTO users (login_id, password, first_name, last_name, phone, parent_phone, subject, login_type, blocked, access_enabled, owner_admin_id)
@@ -9855,7 +10005,7 @@ def create_user(first_name, last_name, phone, subject, login_type, owner_admin_i
             RETURNING id
         ''', (
             login_id,
-            password,
+            hash_password(password),
             first_name,
             last_name,
             phone,
@@ -9878,19 +10028,26 @@ def verify_login(login_id, password):
     cur = conn.cursor()
     login_id_clean = (login_id or "").strip().upper()
     password_clean = (password or "").strip()
-    # Passwords are generated as uppercase alnum; accept lowercase input too.
-    password_upper = password_clean.upper()
+    throttle_key = f"login:{login_id_clean}" if login_id_clean else ""
+    if throttle_key and is_login_throttled(throttle_key):
+        conn.close()
+        return None, 'throttled'
     cur.execute("SELECT * FROM users WHERE UPPER(login_id)=?", (login_id_clean,))
     user = cur.fetchone()
     conn.close()
 
     if not user:
+        record_login_failure(throttle_key)
         return None, 'not_found'
     if user['blocked']:
         return None, 'blocked'
     stored_password = (user['password'] or "").strip()
-    if stored_password != password_clean and stored_password != password_upper:
+    if not verify_password(password_clean, stored_password):
+        record_login_failure(throttle_key)
+        increment_failed_logins(int(user['id'] or 0))
         return None, 'invalid'
+    clear_login_throttle(throttle_key)
+    clear_failed_logins(int(user['id'] or 0))
     return dict(user), 'ok'
 
 def activate_user(user_id, telegram_id):
@@ -10133,6 +10290,219 @@ def update_user_telegram_id(user_id: int, telegram_id: str):
         finally:
             conn.close()
 
+
+# ====================== MOBILE TELEGRAM APP LOGIN ======================
+
+def ensure_mobile_telegram_login_schema() -> None:
+    """Create the short-lived hand-off table used by the native student app.
+
+    The app creates an opaque request token, the student bot approves it for
+    the Telegram account currently signed in to the bot, and the API consumes
+    it exactly once.  Keeping this state in Postgres lets the independently
+    deployed API and bot processes coordinate without sharing a bot token or
+    a JWT through a Telegram deep link.
+    """
+    schema_key = "mobile_telegram_login"
+    if _schema_ready(schema_key):
+        return
+    with DB_WRITE_LOCK:
+        if _schema_ready(schema_key):
+            return
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS mobile_telegram_login_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    request_token TEXT UNIQUE NOT NULL,
+                    device_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+                    telegram_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    approved_at TIMESTAMPTZ,
+                    consumed_at TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_mobile_telegram_login_lookup
+                ON mobile_telegram_login_requests (request_token, status, expires_at)
+                """
+            )
+            conn.commit()
+            _mark_schema_ready(schema_key)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def create_mobile_telegram_login_request(
+    request_token: str,
+    device_id: str,
+    expires_at: datetime,
+) -> None:
+    """Persist a pending native-app login request.
+
+    ``request_token`` is generated by the API with cryptographic randomness;
+    this function deliberately does not generate or expose credentials.
+    """
+    ensure_mobile_telegram_login_schema()
+    token = str(request_token or "").strip()
+    device = str(device_id or "").strip()
+    if not token or not device:
+        raise ValueError("request_token and device_id are required")
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            # Retain just enough history to diagnose an expired hand-off while
+            # preventing this tiny coordination table from accumulating rows.
+            cur.execute(
+                """
+                DELETE FROM mobile_telegram_login_requests
+                WHERE expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                   OR consumed_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO mobile_telegram_login_requests
+                    (request_token, device_id, status, expires_at)
+                VALUES (?, ?, 'pending', ?)
+                """,
+                (token, device, expires_at),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def get_mobile_telegram_login_request(request_token: str) -> dict | None:
+    """Return a hand-off request without exposing it to untrusted clients."""
+    ensure_mobile_telegram_login_schema()
+    token = str(request_token or "").strip()
+    if not token:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT * FROM mobile_telegram_login_requests WHERE request_token=? LIMIT 1",
+            (token,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def approve_mobile_telegram_login_request(
+    request_token: str,
+    *,
+    user_id: int,
+    telegram_id: str | int,
+) -> bool:
+    """Approve one pending request from the student bot.
+
+    The bot supplies the authenticated Telegram sender and the account it has
+    already resolved for that sender.  Approval is atomic and refuses expired,
+    previously approved, or consumed requests.
+    """
+    ensure_mobile_telegram_login_schema()
+    token = str(request_token or "").strip()
+    uid = int(user_id or 0)
+    tg = str(telegram_id or "").strip()
+    if not token or uid <= 0 or not tg:
+        return False
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE mobile_telegram_login_requests
+                SET status='approved',
+                    user_id=?,
+                    telegram_id=?,
+                    approved_at=CURRENT_TIMESTAMP
+                WHERE request_token=?
+                  AND status='pending'
+                  AND user_id IS NULL
+                  AND consumed_at IS NULL
+                  AND expires_at > CURRENT_TIMESTAMP
+                RETURNING id
+                """,
+                (uid, tg, token),
+            )
+            approved = cur.fetchone() is not None
+            conn.commit()
+            return approved
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def consume_mobile_telegram_login_request(
+    request_token: str,
+    *,
+    device_id: str,
+) -> dict | None:
+    """Atomically exchange an approved request for its linked student ID."""
+    ensure_mobile_telegram_login_schema()
+    token = str(request_token or "").strip()
+    device = str(device_id or "").strip()
+    if not token or not device:
+        return None
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE mobile_telegram_login_requests
+                SET status='consumed', consumed_at=CURRENT_TIMESTAMP
+                WHERE request_token=?
+                  AND device_id=?
+                  AND status='approved'
+                  AND user_id IS NOT NULL
+                  AND consumed_at IS NULL
+                  AND expires_at > CURRENT_TIMESTAMP
+                RETURNING user_id, telegram_id
+                """,
+                (token, device),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
 def enable_access(user_id, days=None):
     logger.info(f"db.enable_access(user_id={user_id}, days={days})")
     conn = get_conn()
@@ -10182,7 +10552,7 @@ def reset_user_password(user_id, password):
     logger.info(f"db.reset_user_password(user_id={user_id})")
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET password=?, password_used=0 WHERE id=?", (password, user_id))
+    cur.execute("UPDATE users SET password=?, password_used=0 WHERE id=?", (hash_password(password), user_id))
     conn.commit()
     conn.close()
 
@@ -17161,7 +17531,7 @@ def set_standard_admin_account_credentials(*args: Any, **kwargs: Any) -> list[di
                     WHERE id=?
                     """,
                     (
-                        password,
+                        hash_password(password),
                         "Main" if label.startswith("main_") else "Limited",
                         "Admin",
                         user_id,
@@ -17178,7 +17548,7 @@ def set_standard_admin_account_credentials(*args: Any, **kwargs: Any) -> list[di
                     """,
                     (
                         login_id,
-                        password,
+                        hash_password(password),
                         "Main" if label.startswith("main_") else "Limited",
                         "Admin",
                         "",
@@ -20254,6 +20624,9 @@ def ensure_homework_schema() -> None:
                 ("reviewed_by", "BIGINT"),
                 ("reviewed_at", "TIMESTAMP"),
                 ("voice_message_url", "TEXT"),
+                ("ai_transcript", "TEXT"),
+                ("ai_feedback", "TEXT"),
+                ("ai_analyzed_at", "TIMESTAMP"),
                 ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
             ],
@@ -21425,6 +21798,9 @@ def list_homeworks_for_teacher(teacher_id: int) -> list[dict]:
                    s.review_note,
                    s.reviewed_by,
                    s.reviewed_at,
+                   s.ai_transcript,
+                   s.ai_feedback,
+                   s.ai_analyzed_at,
                    COALESCE(u.first_name, direct_u.first_name) AS student_first_name,
                    COALESCE(u.last_name, direct_u.last_name) AS student_last_name,
                    COALESCE(u.profile_image_url, direct_u.profile_image_url) AS student_profile_image_url,
@@ -22522,8 +22898,15 @@ def get_teacher_kpi_leaderboard(limit: int = 50) -> list[dict]:
 # HOMEWORK SUBMISSIONS: AI fields helper
 # ============================================================
 
-def update_homework_submission_ai(homework_id: int, student_id: int, *, ai_transcript: str | None = None, ai_feedback: str | None = None) -> bool:
-    """Save AI transcript and feedback to a homework submission."""
+def update_homework_submission_ai(
+    homework_id: int,
+    student_id: int,
+    *,
+    ai_transcript: str | None = None,
+    ai_feedback: str | None = None,
+    analysis_kind: str | None = None,
+) -> bool:
+    """Save an AI result without losing a previous speaking, image, or note result."""
     # Ensure columns exist (lazy migration)
     ensure_homework_schema()
     conn = get_conn()
@@ -22535,15 +22918,46 @@ def update_homework_submission_ai(homework_id: int, student_id: int, *, ai_trans
                 cur.execute(f"ALTER TABLE web_homework_submissions ADD COLUMN {col} {col_type}")
             except Exception:
                 pass
+        feedback_to_save = str(ai_feedback or "").strip() or None
+        kind = str(analysis_kind or "").strip().lower()
+        if feedback_to_save and kind in {"speaking", "writing", "note"}:
+            cur.execute(
+                "SELECT ai_feedback FROM web_homework_submissions WHERE homework_id=? AND student_id=? LIMIT 1",
+                (int(homework_id), int(student_id)),
+            )
+            existing = _row_to_dict(cur.fetchone()) or {}
+            bundle: dict[str, Any] = {"version": 2}
+            raw_existing = str(existing.get("ai_feedback") or "").strip()
+            if raw_existing:
+                try:
+                    parsed = json.loads(raw_existing)
+                    if isinstance(parsed, dict):
+                        if "speaking" in parsed or "writing" in parsed or "note" in parsed:
+                            bundle.update(parsed)
+                        elif "transcript" in parsed:
+                            bundle["speaking"] = parsed
+                        else:
+                            bundle["writing"] = parsed
+                except Exception:
+                    pass
+            try:
+                parsed_new = json.loads(feedback_to_save)
+                bundle[kind] = parsed_new if isinstance(parsed_new, dict) else {"overall_feedback": feedback_to_save}
+            except Exception:
+                bundle[kind] = {"overall_feedback": feedback_to_save}
+            feedback_to_save = json.dumps(bundle, ensure_ascii=False)
+
         cur.execute(
             """
             UPDATE web_homework_submissions
-            SET ai_transcript=?, ai_feedback=?, ai_analyzed_at=CURRENT_TIMESTAMP
+            SET ai_transcript=COALESCE(?, ai_transcript),
+                ai_feedback=COALESCE(?, ai_feedback),
+                ai_analyzed_at=CURRENT_TIMESTAMP
             WHERE homework_id=? AND student_id=?
             """,
             (
                 str(ai_transcript or "").strip() or None,
-                str(ai_feedback or "").strip() or None,
+                feedback_to_save,
                 int(homework_id),
                 int(student_id),
             ),
@@ -22952,6 +23366,3 @@ def delete_student_personal_note(note_id: int, student_id: int) -> bool:
         return bool(getattr(cur, "rowcount", 0) > 0)
     finally:
         conn.close()
-
-
-

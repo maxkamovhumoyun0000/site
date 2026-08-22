@@ -44,6 +44,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 import push_notifications
+from passwords import generate_password, hash_password, verify_password
 from config import (
     ADMIN_CHAT_IDS,
     DATABASE_URL,
@@ -75,8 +76,11 @@ from db import (
     cancel_temporary_assignments_for_pair,
     cleanup_expired_daily_tests,
     cleanup_student_subject_side_effects,
+    clear_failed_logins,
+    clear_login_throttle,
     clear_placement_session,
     complete_face_enrollment,
+    consume_mobile_telegram_login_request,
     consume_dcoins_allow_negative,
     copy_daily_tests_bank_rows_to_arena_questions,
     count_available_daily_tests_global,
@@ -84,6 +88,7 @@ from db import (
     create_arena_group_session,
     create_duel_session,
     create_media_asset,
+    create_mobile_telegram_login_request,
     create_diamondvoy_chat,
     create_lesson_booking_request,
     create_or_update_proctoring_device_session,
@@ -134,6 +139,7 @@ from db import (
     get_diamondvoy_chat_for_user,
     get_chat_thread,
     get_media_asset,
+    get_mobile_telegram_login_request,
     get_student_ai_daily_requests,
     get_vocab_allowed_levels_for_user,
     get_vocab_cooldown_word_ids,
@@ -248,6 +254,10 @@ from db import (
     reschedule_lesson_booking,
     reset_user_password,
     record_vocab_word_result,
+    LOGIN_THROTTLE_WINDOW_SEC,
+    increment_failed_logins,
+    is_login_throttled,
+    record_login_failure,
     save_placement_session,
     save_test_result,
     set_arena_group_session_status,
@@ -267,6 +277,7 @@ from db import (
     set_support_booking_attendance,
     set_teacher_ai_generation_permission,
     set_video_upload_permission,
+    ensure_mobile_telegram_login_schema,
     get_video_upload_permission,
     set_user_login_type,
     share_student_between_admins,
@@ -406,14 +417,6 @@ app = FastAPI(
     title="Diamond Education API",
     description="Unified API for web, mobile and Telegram bot integrations",
     version="2.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 GENERATOR_JOBS: dict[str, dict[str, Any]] = {}
@@ -646,7 +649,17 @@ async def localized_http_exception_handler(request: Request, exc: HTTPException)
     return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-_RAW_JWT_SECRET = str(os.getenv("JWT_SECRET") or "change-this-in-production").strip()
+_RAW_JWT_SECRET = str(os.getenv("JWT_SECRET") or "").strip()
+if not _RAW_JWT_SECRET or _RAW_JWT_SECRET == "change-this-in-production":
+    _is_production = (os.getenv("REQUIRE_POSTGRES", "true").strip().lower() in ("1", "true", "yes", "on")) or (
+        os.getenv("DIAMOND_ENV", "").strip().lower() == "production"
+    )
+    if _is_production:
+        raise RuntimeError(
+            "JWT_SECRET is missing or set to the default value. Refusing to start: "
+            "set JWT_SECRET to a >=32-byte random value (e.g. `openssl rand -hex 32`) in the environment."
+        )
+    _RAW_JWT_SECRET = "change-this-in-production"
 if len(_RAW_JWT_SECRET.encode("utf-8")) < 32:
     # Keep runtime stable if env is misconfigured: derive a strong key from configured
     # value. This removes insecure key warnings while preserving deterministic behavior.
@@ -684,6 +697,38 @@ WEBAPP_URL = (
     or os.getenv("WEBHOOK_BASE_URL")
     or ""
 ).strip().rstrip("/")
+
+
+def _cors_allowed_origins() -> list[str]:
+    """Explicit CORS allow-list.
+
+    Set CORS_ALLOWED_ORIGINS (comma separated) to override. Defaults cover
+    the production site, the Telegram Mini App host (web clients inside
+    Telegram come from web.telegram.org origins) and local Next.js dev
+    servers. Native mobile apps don't use browser CORS at all.
+    """
+    raw = (os.getenv("CORS_ALLOWED_ORIGINS") or "").strip()
+    if raw:
+        return list(dict.fromkeys(o.strip().rstrip("/") for o in raw.split(",") if o.strip()))
+    origins = [
+        "https://diamond-education.uz",
+        "https://www.diamond-education.uz",
+        "https://web.telegram.org",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+    if WEBAPP_URL.startswith("http"):
+        origins.append(WEBAPP_URL)
+    return list(dict.fromkeys(origins))
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_allowed_origins(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 GRAMMAR_TOPIC_ATTEMPT_LIMIT = 1
 ARTICLE_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "article_uploads"
 ARTICLE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -718,6 +763,17 @@ MOBILE_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
 # real-world Telegram camera/share flow. Keep security by one-time use and
 # signature checks, while allowing enough time to scan on mobile.
 WEB_QR_LOGIN_TTL_SECONDS = max(300, int(os.getenv("WEB_QR_LOGIN_TTL_SECONDS", "1800")))
+# A native app starts this short hand-off, opens the Student Bot with the
+# opaque token, and then exchanges the bot's confirmation for a session.  The
+# token is one-time and device-bound, so neither a JWT nor a Telegram secret
+# ever appears in a deep link.
+MOBILE_TELEGRAM_LOGIN_TTL_SECONDS = max(
+    120,
+    int(os.getenv("MOBILE_TELEGRAM_LOGIN_TTL_SECONDS", "300")),
+)
+STUDENT_BOT_USERNAME = (
+    os.getenv("STUDENT_BOT_USERNAME") or "Diamond_Edu_StudentBot"
+).strip().lstrip("@")
 MEDIA_STREAM_TOKEN_TTL_SECONDS = int(os.getenv("MEDIA_STREAM_TOKEN_TTL_SECONDS", "86400"))
 MEDIA_STREAM_TOKEN_SECRET = (
     os.getenv("MEDIA_STREAM_TOKEN_SECRET")
@@ -1149,10 +1205,13 @@ def _lang_from_auth_header(auth_header: str | None) -> str | None:
     if not token:
         return None
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": False})
-        user_id = int(payload.get("sub") or 0)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        # Expired token: fall back to request-header locale detection below.
+        return None
     except Exception:
         return None
+    user_id = int(payload.get("sub") or 0)
     if user_id <= 0:
         return None
     row = _safe_call(lambda: get_user_by_id(user_id), None)
@@ -1273,6 +1332,21 @@ class QrConsumeRequest(BaseModel):
     telegram_id: int | None = None
     init_data: str | None = None
     sync_bot_session: bool = True
+
+
+class TelegramMobileLoginStartRequest(BaseModel):
+    device_id: str
+
+
+class TelegramMobileLoginStartResponse(BaseModel):
+    request_token: str
+    bot_url: str
+    expires_at: str
+
+
+class TelegramMobileLoginCompleteRequest(BaseModel):
+    request_token: str
+    device_id: str
 
 
 class UserPasswordUpdateRequest(BaseModel):
@@ -5792,10 +5866,10 @@ def _generate_unique_student_credentials() -> tuple[str, str]:
     """
     alphabet = string.ascii_uppercase + string.digits
     for _ in range(40):
-        login_id = "ST" + "".join(random.choices(alphabet, k=4))
+        login_id = "ST" + "".join(secrets.choice(alphabet) for _ in range(4))
         if _safe_call(lambda lid=login_id: get_user_by_login_id(lid), None):
             continue
-        password = "".join(random.choices(alphabet, k=6))
+        password = generate_password(6)
         return login_id, password
     raise HTTPException(status_code=500, detail="Could not generate unique login credentials")
 
@@ -16715,7 +16789,7 @@ async def shutdown_event() -> None:
 async def register(user: UserCreate):
     login_id = (user.login_id or "").strip().upper()
     if not login_id:
-        login_id = "WEB" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        login_id = "WEB" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     if get_user_by_login_id(login_id):
         raise HTTPException(status_code=409, detail="Login ID already exists")
 
@@ -16733,7 +16807,7 @@ async def register(user: UserCreate):
         """,
         (
             login_id,
-            (user.password or "").strip(),
+            hash_password((user.password or "").strip()),
             first_name,
             last_name,
             (user.phone or "").strip() or None,
@@ -16754,26 +16828,59 @@ async def register(user: UserCreate):
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(created))
 
 
+def _client_ip(req: Request) -> str:
+    """Client IP for rate limiting.
+
+    Uses the LAST X-Forwarded-For entry — the address appended by our own
+    nginx proxy — so a client cannot spoof earlier entries; falls back to
+    the socket peer address when no proxy header is present.
+    """
+    xff = (req.headers.get("x-forwarded-for") or "").strip()
+    if xff:
+        for candidate in reversed(xff.split(",")):
+            cleaned = candidate.strip()
+            if cleaned:
+                return cleaned
+    return (req.client.host if req.client else "") or ""
+
+
+LOGIN_IP_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_IP_THROTTLE_MAX_FAILURES", "20") or 20))
+
+
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, req: Request):
+    # Brute-force throttle: per login_id (targeted guessing) and per IP
+    # (password spraying across many accounts from one host).
+    login_key = f"login:{(request.login_id or '').strip().upper()}"
+    client_ip = _client_ip(req)
+    ip_key = f"ip:{client_ip}" if client_ip else ""
+    if is_login_throttled(login_key) or (
+        ip_key and is_login_throttled(ip_key, max_failures=LOGIN_IP_THROTTLE_MAX_FAILURES)
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many login attempts. Please try again later.",
+            headers={"Retry-After": str(LOGIN_THROTTLE_WINDOW_SEC)},
+        )
     user = get_user_by_login_id(request.login_id)
     if not user:
+        record_login_failure(login_key)
+        if ip_key:
+            record_login_failure(ip_key)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     incoming = (request.password or "").strip()
     stored = (user.get("password") or "").strip()
-    # Security: support both bcrypt hashes and legacy plaintext (allows gradual migration)
-    import secrets
-    _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    stored_is_hash = stored.startswith("$2b$") or stored.startswith("$2a$")
-    if stored_is_hash:
-        # bcrypt hash comparison — constant-time
-        if not _pwd_ctx.verify(incoming, stored) and not _pwd_ctx.verify(incoming.upper(), stored):
-            raise HTTPException(status_code=401, detail="Invalid credentials")
-    else:
-        # Legacy plaintext — constant-time compare to prevent timing attacks
-        match = secrets.compare_digest(incoming, stored) or secrets.compare_digest(incoming.upper(), stored.upper())
-        if not match:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Supports bcrypt hashes and legacy plaintext rows (see passwords.py)
+    if not verify_password(incoming, stored):
+        record_login_failure(login_key)
+        if ip_key:
+            record_login_failure(ip_key)
+        increment_failed_logins(int(user.get("id") or 0))
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    clear_login_throttle(login_key)
+    if ip_key:
+        clear_login_throttle(ip_key)
+    clear_failed_logins(int(user.get("id") or 0))
     if int(user.get("login_type") or 0) == 6:
         raise HTTPException(status_code=403, detail="Accountless student cannot log in")
     if int(user.get("blocked") or 0) == 1:
@@ -16781,9 +16888,7 @@ async def login(request: LoginRequest):
 
     # Invalidate student OTP immediately upon successful verification
     if int(user.get("login_type") or 0) in (1, 2):
-        import random
-        import string
-        new_pw = "".join(random.choices(string.ascii_uppercase + string.digits, k=16))
+        new_pw = generate_password(16)
         try:
             reset_user_password(int(user["id"]), new_pw)
         except Exception:
@@ -16824,6 +16929,103 @@ async def login(request: LoginRequest):
     session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="login")
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+
+
+def _validate_mobile_telegram_login_token(value: str) -> str:
+    """Accept only the opaque token shape that fits Telegram start payloads."""
+    token = str(value or "").strip()
+    if not re.fullmatch(r"app_login_[A-Za-z0-9_-]{24,64}", token):
+        raise HTTPException(status_code=400, detail="Invalid Telegram login request")
+    return token
+
+
+def _mobile_telegram_login_status(record: dict) -> str:
+    """Resolve an API-safe status without returning student information."""
+    expires_at = _parse_utc_timestamp(str(record.get("expires_at") or ""))
+    if expires_at is None or expires_at <= _now_utc():
+        return "expired"
+    status = str(record.get("status") or "pending").strip().lower()
+    if status in {"pending", "approved", "consumed"}:
+        return status
+    return "expired"
+
+
+@app.post("/auth/telegram/mobile/start", response_model=TelegramMobileLoginStartResponse)
+async def start_mobile_telegram_login(payload: TelegramMobileLoginStartRequest):
+    """Start a one-time native-app sign-in request for the Student Bot."""
+    device_id = str(payload.device_id or "").strip()
+    if len(device_id) < 8 or len(device_id) > 200:
+        raise HTTPException(status_code=400, detail="A valid device ID is required")
+    if not STUDENT_BOT_USERNAME:
+        raise HTTPException(status_code=503, detail="Student bot is not configured")
+
+    ensure_mobile_telegram_login_schema()
+    request_token = f"app_login_{secrets.token_urlsafe(24)}"
+    expires_at = _now_utc() + timedelta(seconds=MOBILE_TELEGRAM_LOGIN_TTL_SECONDS)
+    create_mobile_telegram_login_request(request_token, device_id, expires_at)
+    return TelegramMobileLoginStartResponse(
+        request_token=request_token,
+        bot_url=f"https://t.me/{STUDENT_BOT_USERNAME}?start={request_token}",
+        expires_at=expires_at.isoformat(),
+    )
+
+
+@app.get("/auth/telegram/mobile/status/{request_token}")
+async def get_mobile_telegram_login_status(request_token: str):
+    """Let the originating app poll its opaque request while the bot is open."""
+    token = _validate_mobile_telegram_login_token(request_token)
+    record = get_mobile_telegram_login_request(token)
+    if not record:
+        raise HTTPException(status_code=404, detail="Telegram login request was not found")
+    return {"status": _mobile_telegram_login_status(record)}
+
+
+@app.post("/auth/telegram/mobile/complete", response_model=TokenResponse)
+async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteRequest):
+    """Atomically exchange an approved bot hand-off for a student session."""
+    token = _validate_mobile_telegram_login_token(payload.request_token)
+    device_id = str(payload.device_id or "").strip()
+    if len(device_id) < 8 or len(device_id) > 200:
+        raise HTTPException(status_code=400, detail="A valid device ID is required")
+
+    handoff = consume_mobile_telegram_login_request(token, device_id=device_id)
+    if not handoff:
+        # Do not reveal whether a request belongs to another device or was
+        # already used.  The opaque token remains single-use in either case.
+        raise HTTPException(status_code=401, detail="Telegram login request is invalid or expired")
+
+    user = get_user_by_id(int(handoff.get("user_id") or 0))
+    approved_telegram_id = str(handoff.get("telegram_id") or "").strip()
+    if not user or not approved_telegram_id:
+        raise HTTPException(status_code=401, detail="Telegram login request is invalid or expired")
+    if str(user.get("telegram_id") or "").strip() != approved_telegram_id:
+        raise HTTPException(status_code=401, detail="Telegram account is no longer linked")
+    if int(user.get("login_type") or 0) not in (1, 2):
+        raise HTTPException(status_code=403, detail="This application is for students only")
+    if int(user.get("blocked") or 0) == 1:
+        raise HTTPException(status_code=403, detail="Account is blocked")
+
+    user = _apply_web_login_policy(user, device_id)
+    session_id, ttl_hours = _issue_web_session(
+        user,
+        device_id=device_id,
+        source="telegram_mobile_bot",
+    )
+    try:
+        telegram_id = int(approved_telegram_id)
+    except (TypeError, ValueError):
+        telegram_id = None
+    access_token = _create_access_token(
+        user,
+        telegram_id=telegram_id,
+        session_id=session_id,
+        ttl_hours=ttl_hours,
+    )
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user=_build_user_payload(user),
+    )
 
 
 @app.post("/auth/telegram", response_model=TokenResponse)
@@ -17127,7 +17329,7 @@ async def update_user_password(payload: UserPasswordUpdateRequest, authorization
                 session_version=COALESCE(session_version, 1) + 1
             WHERE id=?
             """,
-            (new_password, user_id),
+            (hash_password(new_password), user_id),
         )
         conn.commit()
     finally:
@@ -21626,7 +21828,7 @@ async def student_gamified_tests_start(
     try:
         material = await asyncio.wait_for(
             generate_gamified_material(subject=subject, level=level, session_nonce=session_id),
-            timeout=25.0,
+            timeout=8.0,
         )
         vocab = material.get("vocab") or None
         ai_readings = material.get("readings") or None
@@ -25341,6 +25543,8 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
                     break
                 session["generation_percent"] = i
                 session["stage_generation_percent"] = i
+                if i % 10 == 0:
+                    _duel_persist_session(session)
                 await asyncio.sleep(12.0 / (80 - 18 + 1))
         except asyncio.CancelledError:
             pass
@@ -40877,7 +41081,7 @@ async def admin_convert_accountless_student(
         """,
         (
             login_id,
-            password,
+            hash_password(password),
             converted_login_type,
             placement_subject,
             level_to_store,
@@ -41584,7 +41788,7 @@ async def admin_reset_password(user_id: int, payload: AdminPasswordResetRequest,
 
     password = (payload.password or "").strip().upper()
     if not password:
-        password = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        password = generate_password(6)
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     reset_user_password(int(user_id), password)
@@ -47572,7 +47776,18 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
     my_role = "student"
     my_subject = "english"
     my_avatar_url = ""
-    
+
+    # Auth: Authorization header preferred (native apps set it on the
+    # handshake; keeps the JWT out of proxy/access logs). The query-param
+    # form is kept only so already-shipped browser mini-app builds keep
+    # working.
+    if not token:
+        auth_header = (websocket.headers.get("authorization") or "").strip()
+        if auth_header.lower().startswith("bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+    elif str(token or "").strip():
+        logger.warning("voice-room-ws: token received via query param (deprecated); use Authorization header")
+
     # Try to auth
     if token:
         try:
@@ -48289,7 +48504,7 @@ async def teacher_reset_student_password(student_id: int, authorization: str | N
     if not target:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    password = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    password = generate_password(6)
     reset_user_password(int(student_id), password)
     
     conn = get_conn()
@@ -48384,6 +48599,7 @@ async def teacher_create_student_note(
     return {"message": "Note yaratildi", "item": note}
 
 
+@app.put("/teacher/students/{student_id}/notes/{note_id}")
 @app.patch("/teacher/students/{student_id}/notes/{note_id}")
 async def teacher_update_student_note(
     student_id: int,
@@ -48438,6 +48654,21 @@ class StudentPersonalNoteCreateRequest(BaseModel):
     is_pinned: bool = False
 
 
+class StudentPersonalNoteUpdateRequest(BaseModel):
+    content: str | None = None
+    tag: str | None = None
+    tag_color: str | None = None
+    is_pinned: bool | None = None
+
+
+def _ensure_student_personal_note_columns(cur: Any) -> None:
+    for column, definition in (("tag", "TEXT"), ("tag_color", "TEXT"), ("is_pinned", "INTEGER DEFAULT 0")):
+        try:
+            cur.execute(f"ALTER TABLE student_personal_notes ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+
 @app.get("/student/notes/mine")
 async def student_get_my_notes(authorization: str | None = Header(default=None)):
     """Return the student's own personal notes."""
@@ -48460,6 +48691,7 @@ async def student_get_my_notes(authorization: str | None = Header(default=None))
             )
             """
         )
+        _ensure_student_personal_note_columns(cur)
         conn.commit()
         cur.execute(
             "SELECT * FROM student_personal_notes WHERE student_id=? ORDER BY is_pinned DESC, created_at DESC",
@@ -48495,6 +48727,7 @@ async def student_create_my_note(payload: StudentPersonalNoteCreateRequest, auth
             )
             """
         )
+        _ensure_student_personal_note_columns(cur)
         cur.execute(
             "INSERT INTO student_personal_notes (student_id, content, tag, tag_color, is_pinned) VALUES (?, ?, ?, ?, ?)",
             (student_id, payload.content.strip(), payload.tag, payload.tag_color, int(bool(payload.is_pinned)))
@@ -48504,6 +48737,49 @@ async def student_create_my_note(payload: StudentPersonalNoteCreateRequest, auth
         cur.execute("SELECT * FROM student_personal_notes WHERE id=?", (note_id,))
         row = dict(cur.fetchone() or {})
         return {"message": "Not saqlandi", "item": row}
+    finally:
+        conn.close()
+
+
+@app.put("/student/notes/{note_id}")
+@app.patch("/student/notes/{note_id}")
+async def student_update_my_note(
+    note_id: int,
+    payload: StudentPersonalNoteUpdateRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    student_id = int(user.get("id") or 0)
+    if payload.content is not None and not payload.content.strip():
+        raise HTTPException(status_code=400, detail="content majburiy")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _ensure_student_personal_note_columns(cur)
+        cur.execute(
+            """
+            UPDATE student_personal_notes
+            SET content=COALESCE(?, content),
+                tag=COALESCE(?, tag),
+                tag_color=COALESCE(?, tag_color),
+                is_pinned=COALESCE(?, is_pinned)
+            WHERE id=? AND student_id=?
+            """,
+            (
+                payload.content.strip() if payload.content is not None else None,
+                payload.tag,
+                payload.tag_color,
+                int(payload.is_pinned) if payload.is_pinned is not None else None,
+                int(note_id),
+                student_id,
+            ),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Not topilmadi yoki ruxsat yo'q")
+        cur.execute("SELECT * FROM student_personal_notes WHERE id=? AND student_id=?", (int(note_id), student_id))
+        return {"message": "Not yangilandi", "item": dict(cur.fetchone() or {})}
     finally:
         conn.close()
 
@@ -48636,27 +48912,55 @@ async def teacher_delete_material(material_id: int, authorization: str | None = 
     return {"message": "Material o'chirildi"}
 
 
+# .html/.svg atalgan kontent fayllar atalmagan: bir xil domenda berilsa stored XSS mumkin
+MATERIAL_UPLOAD_MAX_BYTES = max(1 * 1024 * 1024, int(os.getenv("MATERIAL_UPLOAD_MAX_BYTES", str(200 * 1024 * 1024))))
+MATERIAL_UPLOAD_ALLOWED_EXTS = {
+    ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp4", ".mov", ".m4v", ".webm", ".mkv",
+    ".mp3", ".wav", ".m4a", ".aac", ".ogg",
+    ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".txt",
+    ".zip",
+}
+
+
 @app.post("/teacher/upload/material")
 async def teacher_upload_material_file(
     file: UploadFile,
     authorization: str | None = Header(default=None),
 ):
-    """Upload any file as a teacher material. Returns public URL."""
+    """Upload a whitelisted file type as a teacher material. Returns public URL."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
     import uuid, mimetypes, os as _os
     fname = str(file.filename or "upload")
-    ext = _os.path.splitext(fname)[1] or ""
+    ext = (_os.path.splitext(fname)[1] or "").lower()
+    if ext not in MATERIAL_UPLOAD_ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Fayl turi ruxsat etilmagan ({ext or 'kengaytmasiz'}). Ruxsat etilgan: pdf, rasm, video, audio, hujjat, zip",
+        )
     uid = str(uuid.uuid4())[:8]
     safe_name = f"material_{uid}{ext}"
     upload_dir = _os.path.join(_os.path.dirname(__file__), "public", "uploads", "materials")
     _os.makedirs(upload_dir, exist_ok=True)
     dest = _os.path.join(upload_dir, safe_name)
     try:
-        content = await file.read()
+        # Stream to disk in chunks, enforcing the size cap as we write.
+        file_size = 0
         with open(dest, "wb") as fh:
-            fh.write(content)
-        file_size = len(content)
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > MATERIAL_UPLOAD_MAX_BYTES:
+                    fh.close()
+                    _os.remove(dest)
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Fayl hajmi juda katta (limit: %d MB)" % (MATERIAL_UPLOAD_MAX_BYTES // (1024 * 1024)),
+                    )
+                fh.write(chunk)
         mime, _ = mimetypes.guess_type(fname)
         if mime:
             cat = mime.split("/")[0]
@@ -48667,7 +48971,14 @@ async def teacher_upload_material_file(
             file_type = "other"
         url = f"/uploads/materials/{safe_name}"
         return {"url": url, "file_type": file_type, "file_size": file_size, "original_name": fname}
+    except HTTPException:
+        raise
     except Exception as exc:
+        if _os.path.exists(dest):
+            try:
+                _os.remove(dest)
+            except Exception:
+                pass
         logger.exception("teacher.upload.material failed: %s", exc)
         raise HTTPException(status_code=500, detail="Fayl yuklab bo'lmadi")
 
@@ -48951,11 +49262,71 @@ async def admin_teacher_kpi_list(
 # AI SPEAKING EVALUATOR ENDPOINT
 # ============================================================
 
+def _ai_result_language(value: str | None) -> str:
+    """Language for explanatory AI fields. Transcripts stay in their spoken language."""
+    code = str(value or "").strip().lower()[:2]
+    return {"uz": "Uzbek", "ru": "Russian", "en": "English"}.get(code, "Uzbek")
+
+
+def _speech_language_code(subject: str, interface_language: str | None = None) -> str:
+    subject_lower = str(subject or "").lower()
+    if any(token in subject_lower for token in ("english", "ingliz", "ingiliz", "ielts", "cefr")):
+        return "en"
+    if any(token in subject_lower for token in ("rus", "рус", "russian")):
+        return "ru"
+    interface_code = str(interface_language or "").strip().lower()[:2]
+    if interface_code in {"en", "ru"}:
+        return interface_code
+    # xAI STT requires this field whenever `format=true`. Speaking homework
+    # is English/Russian by product scope; English is the conservative fallback.
+    return "en"
+
+
+def _homework_ai_model_candidates() -> list[str]:
+    """Use a fast model first and keep fallbacks only for provider availability."""
+    from ai_generator import get_grok_model_candidates
+
+    configured = str(os.getenv("XAI_HOMEWORK_MODEL") or "grok-4-1-fast").strip()
+    candidates = [configured, *get_grok_model_candidates()]
+    unique: list[str] = []
+    for model in candidates:
+        if model and model not in unique:
+            unique.append(model)
+    return unique
+
+
+def _stored_homework_ai_result(submission: dict | None, kind: str) -> dict | None:
+    """Read a current saved per-kind AI result, including the legacy format."""
+    raw = str((submission or {}).get("ai_feedback") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    nested = parsed.get(kind)
+    result = nested if isinstance(nested, dict) else None
+    if result is None and kind == "speaking" and "transcript" in parsed:
+        result = parsed
+    if result is None and kind == "writing" and "transcript" not in parsed:
+        result = parsed
+    if not isinstance(result, dict):
+        return None
+    # Version 2 separates image and note analysis and uses a more conservative
+    # AI-authorship classifier. Old results get one migration re-check.
+    try:
+        return result if int(result.get("analysis_version") or 0) >= 2 else None
+    except Exception:
+        return None
+
 @app.post("/teacher/homework/{homework_id}/submissions/{student_id}/ai-analyze")
 async def teacher_ai_analyze_voice(
     homework_id: int,
     student_id: int,
     authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
 ):
     """Analyze voice submission with Speech-to-Text and xAI/Grok Evaluation."""
     user = _user_row_from_bearer(authorization)
@@ -48967,6 +49338,9 @@ async def teacher_ai_analyze_voice(
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission topilmadi")
+    cached_result = _stored_homework_ai_result(submission, "speaking")
+    if cached_result:
+        return {"message": "AI tahlil saqlangan", "result": cached_result, "cached": True}
     voice_url = str(submission.get("voice_message_url") or "").strip()
     if not voice_url:
         raise HTTPException(status_code=400, detail="Bu submissionda audio topilmadi")
@@ -48979,12 +49353,63 @@ async def teacher_ai_analyze_voice(
     group_id = int(homework.get("group_id") or 0)
     group = _safe_call(lambda: get_group(group_id), None) if group_id else None
     subject = str((group or {}).get("subject") or "").lower()
-    lang_hint = "English" if ("english" in subject or "ielts" in subject or "cefr" in subject) else ("Russian" if "rus" in subject else "Uzbek/English")
+    lang_hint = "English" if ("english" in subject or "ielts" in subject or "cefr" in subject) else ("Russian" if "rus" in subject else "the detected language")
+    stt_language = _speech_language_code(subject, x_language)
+    result_language = _ai_result_language(x_language)
+
+    from ai_generator import _get_xai_api_key, XAI_ENDPOINT, _xai_apply_payload_tuning
+    import aiohttp
+    api_key = _safe_call(lambda: _get_xai_api_key(), None)
+    if not api_key:
+        raise HTTPException(status_code=503, detail="AI servis sozlanmagan (XAI_API_KEY yo'q)")
+
+    # xAI STT expects audio bytes. Sending our URL made the provider try to parse
+    # the URL field itself as an audio file and return "Could not detect format".
+    transcript = ""
+    try:
+        stt_form = aiohttp.FormData()
+        stt_form.add_field("language", stt_language)
+        stt_form.add_field("format", "true")
+        local_filename = Path(urlparse(voice_url).path).name
+        local_audio_path = HOMEWORK_UPLOAD_DIR / local_filename
+        if not local_filename or not local_audio_path.is_file():
+            raise HTTPException(status_code=404, detail="Audio fayli serverda topilmadi")
+        content_type = mimetypes.guess_type(local_audio_path.name)[0] or "application/octet-stream"
+        with local_audio_path.open("rb") as audio_file:
+            # The file must be the final multipart field for xAI STT.
+            stt_form.add_field("file", audio_file, filename=local_audio_path.name, content_type=content_type)
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.x.ai/v1/stt",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    data=stt_form,
+                    timeout=aiohttp.ClientTimeout(total=120),
+                ) as stt_response:
+                    if stt_response.status != 200:
+                        error_text = (await stt_response.text())[:400]
+                        logger.warning(
+                            "ai-analyze stt failed homework_id=%s student_id=%s status=%s detail=%s",
+                            homework_id,
+                            student_id,
+                            stt_response.status,
+                            error_text,
+                        )
+                        raise HTTPException(status_code=503, detail="Audio transkript qilinmadi. Qayta urinib ko'ring.")
+                    stt_payload = await stt_response.json(content_type=None)
+                    transcript = str((stt_payload or {}).get("text") or "").strip()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("ai-analyze stt call failed homework_id=%s student_id=%s: %s", homework_id, student_id, exc)
+        raise HTTPException(status_code=503, detail="Audio transkript qilish vaqtincha ishlamayapti")
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Audio ichida aniq nutq topilmadi. Boshqa audio yuboring.")
 
     system_prompt = (
-        f"You are an expert language teacher and Speech-to-Text evaluator analyzing a student's spoken {lang_hint} homework recording.\n"
-        "First, transcribe the spoken speech into clear text (Speech-to-Text).\n"
-        "Second, evaluate pronunciation errors, grammar errors, fluency, and overall quality.\n"
+        f"You are an expert language teacher evaluating a student's spoken {lang_hint} homework.\n"
+        "Evaluate ONLY the supplied audio transcript. Do not use or infer information from any image, homework description, or student note.\n"
+        "Evaluate pronunciation errors, grammar errors, fluency, and overall quality.\n"
+        f"All explanatory string values in the JSON MUST be written in {result_language}. Keep the transcript exactly as transcribed; do not translate it.\n"
         "Return ONLY valid JSON with this exact structure:\n"
         '{"transcript":"...","pronunciation_errors":[{"word":"...","note":"..."}],'
         '"grammar_errors":[{"original":"...","correction":"...","explanation":"..."}],'
@@ -48992,23 +49417,12 @@ async def teacher_ai_analyze_voice(
         '"suggestions":["..."],"overall_feedback":"..."}\n'
         "overall_score/fluency_score/vocabulary_score: 0.0–10.0. Return ONLY JSON, no markdown."
     )
-    prompt = (
-        f"Please perform Speech-to-Text transcription and AI evaluation for this student's spoken {lang_hint} audio submission.\n"
-        f"Audio URL: {voice_url}\n"
-        f"Student note: {submission.get('note') or 'None'}"
-    )
-
-    from ai_generator import _get_xai_api_key, XAI_ENDPOINT, get_grok_model_candidates, _xai_apply_payload_tuning
-    import aiohttp
-    api_key = _safe_call(lambda: _get_xai_api_key(), None)
-    if not api_key:
-        raise HTTPException(status_code=503, detail="AI servis sozlanmagan (XAI_API_KEY yo'q)")
+    prompt = f"Analyze only this audio transcript:\n\n{transcript}"
     ai_result: dict = {}
     raw_text = ""
     try:
         async with aiohttp.ClientSession() as session:
-            model_candidates = get_grok_model_candidates()
-            for model in model_candidates[:3]:
+            for model in _homework_ai_model_candidates()[:2]:
                 payload_data = {
                     "model": model,
                     "messages": [
@@ -49016,7 +49430,7 @@ async def teacher_ai_analyze_voice(
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 4000,
+                    "max_tokens": 1800,
                 }
                 _xai_apply_payload_tuning(payload_data, model=model, stream=False)
                 async with session.post(
@@ -49040,16 +49454,20 @@ async def teacher_ai_analyze_voice(
         if json_match:
             ai_result = json.loads(json_match.group(0))
         else:
-            ai_result = {"transcript": raw_text, "overall_feedback": raw_text}
+            ai_result = {"transcript": transcript, "overall_feedback": raw_text}
     except Exception:
-        ai_result = {"transcript": raw_text, "overall_feedback": raw_text}
+        ai_result = {"transcript": transcript, "overall_feedback": raw_text}
+    if not str(ai_result.get("transcript") or "").strip():
+        ai_result["transcript"] = transcript
+    ai_result["analysis_version"] = 2
 
     _safe_call(
         lambda: update_homework_submission_ai(
             int(homework_id),
             int(student_id),
-            ai_transcript=str(ai_result.get("transcript") or ""),
+            ai_transcript=str(ai_result.get("transcript") or transcript),
             ai_feedback=json.dumps(ai_result, ensure_ascii=False),
+            analysis_kind="speaking",
         ),
         None,
     )
@@ -49057,25 +49475,10 @@ async def teacher_ai_analyze_voice(
 
 
 # ============================================================
-# AI WRITING FEEDBACK ENDPOINT
+# AI WRITING / NOTE FEEDBACK ENDPOINTS
 # ============================================================
 
-@app.post("/teacher/homework/{homework_id}/submissions/{student_id}/ai-check-images")
-async def teacher_ai_check_images(
-    homework_id: int,
-    student_id: int,
-    authorization: str | None = Header(default=None),
-):
-    """Check student writing/image submissions with xAI/Grok Vision & AI Essay Detector."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-    if not homework:
-        raise HTTPException(status_code=404, detail="Homework topilmadi")
-    submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
-    if not submission:
-        raise HTTPException(status_code=404, detail="Submission topilmadi")
-
+def _submission_image_urls(submission: dict) -> list[str]:
     image_urls: list[str] = []
     if submission.get("proof_images_json"):
         try:
@@ -49086,6 +49489,220 @@ async def teacher_ai_check_images(
             pass
     if not image_urls and submission.get("proof_image_url"):
         image_urls = [str(submission["proof_image_url"]).strip()]
+    image_extensions = {".avif", ".gif", ".jpeg", ".jpg", ".png", ".webp"}
+    return [
+        url for url in image_urls
+        if Path(urlparse(url).path).suffix.lower() in image_extensions
+    ]
+
+
+def _ai_detection_copy(language: str) -> dict[str, str]:
+    code = str(language or "").strip().lower()[:2]
+    if code == "ru":
+        return {
+            "uncertain": "Неопределенно",
+            "insufficient": "Авторство по одному тексту нельзя подтвердить надежно; результат отмечен как неопределенный, а не как человеческий текст.",
+        }
+    if code == "en":
+        return {
+            "uncertain": "Uncertain",
+            "insufficient": "Authorship cannot be reliably proven from text alone; the result is marked uncertain rather than human-written.",
+        }
+    return {
+        "uncertain": "Noaniq",
+        "insufficient": "Faqat matnga qarab mualliflikni ishonchli tasdiqlab bo'lmaydi; natija odam yozgan deb emas, noaniq deb belgilandi.",
+    }
+
+
+def _stabilize_ai_authorship_result(result: dict, interface_language: str | None) -> dict:
+    """Never turn an unverified text-only guess into a false human verdict."""
+    copy = _ai_detection_copy(str(interface_language or ""))
+    try:
+        probability = max(0, min(100, int(round(float(result.get("ai_generated_probability"))))))
+    except Exception:
+        probability = 50
+    writing_content = str(result.get("writing_content") or "").strip()
+    word_count = len(re.findall(r"\w+", writing_content, flags=re.UNICODE))
+    signals = result.get("ai_detection_signals")
+    signal_items = [str(value).strip() for value in signals] if isinstance(signals, list) else []
+    if word_count and word_count < 80:
+        signal_items.append(copy["insufficient"])
+    # Text quality or lack of grammar mistakes is not evidence of human
+    # authorship. A low-confidence result remains explicitly uncertain.
+    if probability < 40:
+        probability = 50
+        original_explanation = str(result.get("ai_detection_explanation") or "").strip()
+        result["ai_detection_label"] = copy["uncertain"]
+        result["ai_detection_explanation"] = " ".join(
+            part for part in (copy["insufficient"], original_explanation) if part
+        )
+    result["ai_generated_probability"] = probability
+    if not str(result.get("ai_detection_label") or "").strip():
+        result["ai_detection_label"] = copy["uncertain"]
+    result["ai_detection_signals"] = list(dict.fromkeys(signal_items))[:6]
+    return result
+
+
+async def _run_teacher_writing_analysis(
+    *,
+    source_type: str,
+    note: str,
+    image_urls: list[str],
+    interface_language: str | None,
+) -> dict:
+    """Analyze exactly one selected written source, with calibrated AI authorship output."""
+    from ai_generator import _get_xai_api_key, XAI_ENDPOINT, _xai_apply_payload_tuning, _xai_image_detail
+    import aiohttp
+
+    api_key = _safe_call(lambda: _get_xai_api_key(), None)
+    if not api_key:
+        raise HTTPException(status_code=503, detail="AI servis sozlanmagan (XAI_API_KEY yo'q)")
+    result_language = _ai_result_language(interface_language)
+    source_description = "typed student note" if source_type == "note" else "attached homework images"
+    system_prompt = (
+        "You are an expert language teacher and calibrated AI-authorship assessor reviewing a student's written homework. "
+        f"Evaluate ONLY the supplied {source_description}; do not use homework metadata, audio, or any other source. "
+        "First assess writing quality. Then separately assess possible AI authorship. AI authorship is probabilistic, never proof. "
+        "Do NOT label text as human-written merely because it is grammatical, polished, or lacks mistakes. "
+        "Use Likely AI-Generated (70-100) only when multiple concrete signals exist, such as generic boilerplate, uniform sentence rhythm, "
+        "template-like organization, repetitive transitions, impersonal over-polished wording, or a level/style mismatch. "
+        "Use Uncertain (40-69) whenever evidence is limited or mixed, especially for short texts. "
+        "Use Likely Human-Written (0-39) only with direct positive evidence of an authentic personal draft; otherwise use Uncertain. "
+        f"All explanatory string values, labels, and signals in the JSON MUST be written in {result_language}. "
+        "Return ONLY valid JSON with this exact structure:\n"
+        '{"writing_content":"...","grammar_errors":[{"original":"...","correction":"...","explanation":"..."}],'
+        '"spelling_errors":[{"original":"...","correction":"..."}],'
+        '"vocabulary_feedback":"...","structure_feedback":"...","overall_feedback":"...",'
+        '"suggested_score":85,"strengths":["..."],"improvements":["..."],'
+        '"ai_generated_probability":50,"ai_detection_label":"...","ai_detection_explanation":"...","ai_detection_signals":["..."]}\n'
+        "suggested_score and ai_generated_probability: 0-100. Return ONLY JSON, no markdown."
+    )
+    content: list[dict] = []
+    if source_type == "note":
+        content.append({"type": "text", "text": f"Analyze ONLY this student's typed homework note:\n\n{note}"})
+    else:
+        content.append({"type": "text", "text": "Analyze ONLY the attached images containing this student's written homework."})
+        image_detail = _xai_image_detail()
+        for url in image_urls[:4]:
+            content.append({"type": "image_url", "image_url": {"url": url, "detail": image_detail}})
+
+    raw_text = ""
+    try:
+        async with aiohttp.ClientSession() as session:
+            for model in _homework_ai_model_candidates()[:2]:
+                payload_data = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": content},
+                    ],
+                    "temperature": 0.15,
+                    "max_tokens": 2000 if source_type == "image" else 1800,
+                }
+                _xai_apply_payload_tuning(payload_data, model=model, stream=False)
+                async with session.post(
+                    XAI_ENDPOINT,
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=payload_data,
+                    timeout=aiohttp.ClientTimeout(total=90),
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json(content_type=None)
+                        raw_text = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+                        if raw_text:
+                            break
+    except Exception as exc:
+        logger.exception("teacher writing AI call failed source_type=%s: %s", source_type, exc)
+        raise HTTPException(status_code=503, detail="AI tekshirish vaqtincha ishlamayapti") from exc
+    if not raw_text:
+        raise HTTPException(status_code=503, detail="AI tekshirish natijasi bo'sh")
+    try:
+        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+        result = json.loads(json_match.group(0)) if json_match else {"overall_feedback": raw_text}
+    except Exception:
+        result = {"overall_feedback": raw_text}
+    if not isinstance(result, dict):
+        result = {"overall_feedback": raw_text}
+    if source_type == "note" and not str(result.get("writing_content") or "").strip():
+        result["writing_content"] = note
+    result = _stabilize_ai_authorship_result(result, interface_language)
+    result["analysis_version"] = 2
+    result["analysis_source"] = source_type
+    return result
+
+
+def _teacher_ai_submission(homework_id: int, student_id: int, authorization: str | None) -> dict:
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+    if not homework:
+        raise HTTPException(status_code=404, detail="Homework topilmadi")
+    submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
+    if not submission:
+        raise HTTPException(status_code=404, detail="Submission topilmadi")
+    return submission
+
+
+@app.post("/teacher/homework/{homework_id}/submissions/{student_id}/ai-check-images")
+async def teacher_ai_check_images(
+    homework_id: int,
+    student_id: int,
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
+    """Analyze only the selected proof images; student notes have their own teacher action."""
+    submission = _teacher_ai_submission(homework_id, student_id, authorization)
+    cached_result = _stored_homework_ai_result(submission, "writing")
+    if cached_result:
+        return {"message": "AI tahlil saqlangan", "result": cached_result, "cached": True}
+    image_urls = _submission_image_urls(submission)
+    if not image_urls:
+        raise HTTPException(status_code=400, detail="Bu submissionda rasm yoki fayl topilmadi")
+    base_url = str(os.getenv("BACKEND_BASE_URL") or "https://diamond-education.uz/api").rstrip("/")
+    resolved_urls = [base_url + url if url.startswith("/") else url for url in image_urls]
+    ai_result = await _run_teacher_writing_analysis(
+        source_type="image",
+        note="",
+        image_urls=resolved_urls,
+        interface_language=x_language,
+    )
+    _safe_call(
+        lambda: update_homework_submission_ai(
+            int(homework_id), int(student_id), ai_feedback=json.dumps(ai_result, ensure_ascii=False), analysis_kind="writing"
+        ),
+        None,
+    )
+    return {"message": "AI rasm tahlili muvaffaqiyatli", "result": ai_result}
+
+
+@app.post("/teacher/homework/{homework_id}/submissions/{student_id}/ai-check-note")
+async def teacher_ai_check_note(
+    homework_id: int,
+    student_id: int,
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
+    """Analyze only the submitted student note and its AI-authorship probability."""
+    submission = _teacher_ai_submission(homework_id, student_id, authorization)
+    cached_result = _stored_homework_ai_result(submission, "note")
+    if cached_result:
+        return {"message": "AI note tahlili saqlangan", "result": cached_result, "cached": True}
+    note = str(submission.get("note") or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="Bu submissionda student note topilmadi")
+    ai_result = await _run_teacher_writing_analysis(
+        source_type="note",
+        note=note,
+        image_urls=[],
+        interface_language=x_language,
+    )
+    _safe_call(
+        lambda: update_homework_submission_ai(
+            int(homework_id), int(student_id), ai_feedback=json.dumps(ai_result, ensure_ascii=False), analysis_kind="note"
+        ),
+        None,
+    )
+    return {"message": "AI note tahlili muvaffaqiyatli", "result": ai_result}
 
     submission_note = str(submission.get("note") or "").strip()
     if not image_urls and not submission_note:
@@ -49099,25 +49716,32 @@ async def teacher_ai_check_images(
         else:
             resolved_urls.append(url)
 
-    from ai_generator import _get_xai_api_key, XAI_ENDPOINT, get_grok_model_candidates, _xai_apply_payload_tuning, _xai_image_detail
+    from ai_generator import _get_xai_api_key, XAI_ENDPOINT, _xai_apply_payload_tuning, _xai_image_detail
     import aiohttp
     api_key = _safe_call(lambda: _get_xai_api_key(), None)
     if not api_key:
         raise HTTPException(status_code=503, detail="AI servis sozlanmagan (XAI_API_KEY yo'q)")
 
+    result_language = _ai_result_language(x_language)
     system_prompt = (
         "You are an expert language teacher and AI content detector reviewing a student's written homework essay (submitted as images or text note). "
-        "Carefully examine all writing in the text and images. "
+        "Carefully examine only the writing in the supplied text note and images. Never use a voice message or infer information from audio. "
+        f"All explanatory string values in the JSON MUST be written in {result_language}. "
         "Return ONLY valid JSON with this exact structure:\n"
         '{"writing_content":"...","grammar_errors":[{"original":"...","correction":"...","explanation":"..."}],'
         '"spelling_errors":[{"original":"...","correction":"..."}],'
         '"vocabulary_feedback":"...","structure_feedback":"...","overall_feedback":"...",'
         '"suggested_score":85,"strengths":["..."],"improvements":["..."],'
-        '"ai_generated_probability":15,"ai_detection_label":"Likely Human | Uncertain | Likely AI-Generated","ai_detection_explanation":"..."}\n'
+        '"ai_generated_probability":15,"ai_detection_label":"...","ai_detection_explanation":"..."}\n'
         "suggested_score: 0–100. ai_generated_probability: 0–100 (percentage chance essay was generated by AI). Return ONLY JSON, no markdown."
     )
     image_detail = _xai_image_detail()
-    text_intro = f"Please analyze this student's written essay homework (Student Text Note: '{submission_note}'):" if submission_note else "Please analyze this student's written essay homework:"
+    if submission_note and resolved_urls:
+        text_intro = f"Analyze this student's written homework using both the typed submission text and the attached images. Typed submission text:\n{submission_note}"
+    elif submission_note:
+        text_intro = f"Analyze ONLY this student's typed submission text. There are no images for this analysis:\n{submission_note}"
+    else:
+        text_intro = "Analyze ONLY the attached images containing this student's written homework."
 
     content: list[dict] = [{"type": "text", "text": text_intro}]
     for url in resolved_urls:
@@ -49127,8 +49751,7 @@ async def teacher_ai_check_images(
     raw_text = ""
     try:
         async with aiohttp.ClientSession() as session:
-            model_candidates = get_grok_model_candidates()
-            for model in model_candidates[:3]:
+            for model in _homework_ai_model_candidates()[:2]:
                 payload_data = {
                     "model": model,
                     "messages": [
@@ -49136,7 +49759,7 @@ async def teacher_ai_check_images(
                         {"role": "user", "content": content},
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 4000,
+                    "max_tokens": 2200,
                 }
                 _xai_apply_payload_tuning(payload_data, model=model, stream=False)
                 async with session.post(
@@ -49169,6 +49792,7 @@ async def teacher_ai_check_images(
             int(homework_id),
             int(student_id),
             ai_feedback=json.dumps(ai_result, ensure_ascii=False),
+            analysis_kind="writing",
         ),
         None,
     )
@@ -49396,5 +50020,3 @@ async def student_personal_notes_delete(note_id: int, authorization: str | None 
     if not ok:
         raise HTTPException(status_code=404, detail="Qayd topilmadi")
     return {"message": "Qayd o'chirildi"}
-
-
