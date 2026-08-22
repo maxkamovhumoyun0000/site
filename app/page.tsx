@@ -1715,11 +1715,11 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
       >
         {duplicatedItems.map((video, idx) => (
           <div
-            className="group relative flex flex-col bg-white border border-line rounded-2xl shadow-premium overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer shrink-0 w-[260px] sm:w-[280px]"
+            className="group relative flex flex-col bg-white border border-line rounded-2xl shadow-premium overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer shrink-0 w-[170px] sm:w-[190px]"
             onClick={onVideoClick}
             key={`video-${video.id}-${idx}`}
           >
-            <div className="relative aspect-video bg-surface-soft overflow-hidden">
+            <div className="relative aspect-square bg-surface-soft overflow-hidden">
               <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 backdrop-blur-[2px]">
                 <svg className="w-10 h-10 text-white drop-shadow-md" fill="currentColor" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
               </div>
@@ -1746,14 +1746,14 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
                 {video.subject || "General"}
               </span>
             </div>
-            <div className="p-3 sm:p-4 flex-grow flex flex-col bg-white">
-              <h3 className="font-display font-bold text-sm sm:text-base text-navy-900 mb-1 line-clamp-2 group-hover:text-cyan-500 transition-colors">
+            <div className="p-2.5 sm:p-3 flex-grow flex flex-col bg-white">
+              <h3 className="font-display font-bold text-xs sm:text-sm text-navy-900 mb-1 line-clamp-2 group-hover:text-cyan-500 transition-colors">
                 {video.title || "Video Lesson"}
               </h3>
-              <p className="text-xs sm:text-sm font-medium text-ink-600 line-clamp-2 mb-2 flex-grow leading-relaxed">
+              <p className="text-[11px] sm:text-xs font-medium text-ink-600 line-clamp-1 mb-1.5 flex-grow leading-relaxed">
                 {video.description || "—"}
               </p>
-              <div className="mt-auto flex items-center justify-between text-xs font-semibold text-gray-500">
+              <div className="mt-auto flex items-center justify-between text-[11px] font-semibold text-gray-500">
                 <span>{formatViews(video.view_count)}</span>
               </div>
             </div>

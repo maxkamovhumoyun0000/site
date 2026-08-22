@@ -1965,6 +1965,75 @@ async def generate_missing_word_entry(
     return {"main": main_item, "related": related, "inserted": inserted}
 
 
+async def generate_book_questions(
+    *,
+    book_title: str,
+    subject: str,
+    description: str = "",
+    count: int = 10,
+    level: str = "",
+) -> list[dict[str, Any]]:
+    """Kitobga mos MCQ savollari AI bilan yaratadi (to'g'ri javob belgilangan).
+
+    SharedTestEditor formatida qaytaradi:
+    [{question, options: [...], correct: "...", explanation: "...", time_limit_sec: 30}]
+    """
+    title = str(book_title or "").strip()
+    if not title:
+        return []
+    target = max(1, min(50, int(count or 10)))
+    subj = (subject or "").strip().title() or "English"
+    desc = (description or "").strip()[:600]
+    prompt = (
+        "BOOK READING COMPREHENSION TEST GENERATOR.\n"
+        f"book_title={json.dumps(title, ensure_ascii=False)}\n"
+        f"subject={subj}\n"
+        + (f"level={level.strip().upper()}\n" if level and level.strip() else "")
+        + (f"book_description={json.dumps(desc, ensure_ascii=False)}\n" if desc else "")
+        + f"target_count={target}\n\n"
+        "Generate reading-comprehension / content questions about this book.\n"
+        "Each question MUST follow this exact JSON schema:\n"
+        '{"question": "...", "options": ["opt1", "opt2", "opt3", "opt4"], '
+        '"correct": "<EXACT string of the correct option>", "explanation": "<why this is correct>"}\n'
+        "Rules:\n"
+        "- exactly 4 options per question, only ONE correct\n"
+        '- "correct" must be the EXACT full string of one of the options\n'
+        "- questions in the book's subject language style; vary difficulty\n"
+        "- no markdown, no numbering inside strings\n"
+        "Return ONLY a valid JSON array."
+    )
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        text = await _xai_generate(prompt, session=session)
+    raw_items = _parse_json_like_to_list(text) or []
+    out: list[dict[str, Any]] = []
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        question = str(it.get("question") or "").strip()
+        options = [str(o or "").strip() for o in (it.get("options") or []) if str(o or "").strip()]
+        correct = str(it.get("correct") or "").strip()
+        explanation = str(it.get("explanation") or "").strip()
+        if not question or len(options) < 2:
+            continue
+        if correct not in options:
+            correct = options[0]
+        out.append({
+            "question": question,
+            "options": options[:6],
+            "correct": correct,
+            "explanation": explanation,
+            "time_limit_sec": 30,
+        })
+        if len(out) >= target:
+            break
+    logger.info(
+        "book questions generated title=%s subject=%s requested=%s generated=%s",
+        title, subj, target, len(out),
+    )
+    return out
+
+
 def parse_vocabulary_json(raw_text: str, subject: str, level: str) -> list[dict]:
     items = _parse_json_like_to_list(raw_text)
     if not items:

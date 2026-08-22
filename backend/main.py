@@ -407,6 +407,7 @@ from vocabulary import generate_balanced_mixed_quiz, get_student_preference, get
 from ai_generator import (
     GenerationResult,
     generate_arena_questions_and_insert,
+    generate_book_questions,
     generate_daily_tests_and_insert,
     generate_gamified_material,
     generate_vocabulary_and_insert,
@@ -47585,6 +47586,61 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
 @app.get("/content-tests/{content_type}/{content_id}")
 async def content_test_get(content_type: str, content_id: int, authorization: str | None = Header(default=None)):
     return await _manage_get_content_test(content_type, content_id, authorization)
+
+
+class BookTestGenerateRequest(BaseModel):
+    count: int = Field(default=10, ge=1, le=50)
+
+
+async def _book_test_generate(content_id: int, payload: BookTestGenerateRequest, authorization: str | None):
+    """Kitobga AI bilan test savollari yaratadi (to'g'ri javoblar belgilangan).
+
+    Savollar SharedTestEditor formatida qaytadi — admin/teacher ko'rib, tahrirlab
+    POST /content-tests/book/{id} orqali saqlaydi."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin", "teacher"})
+    _require_content_test_manage_access(user, "book", int(content_id))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, title, subject, description, level FROM books WHERE id=? LIMIT 1",
+            (int(content_id),),
+        )
+        book = cur.fetchone()
+    finally:
+        conn.close()
+    if not book:
+        raise HTTPException(status_code=404, detail="Book not found")
+    questions = await generate_book_questions(
+        book_title=str(book.get("title") or ""),
+        subject=str(book.get("subject") or "English"),
+        description=str(book.get("description") or ""),
+        level=str(book.get("level") or ""),
+        count=max(1, int(payload.count)),
+    )
+    if not questions:
+        raise HTTPException(status_code=502, detail="AI savol yaratib olmadi, qayta urinib ko'ring")
+    return {
+        "message": f"{len(questions)} ta savol AI tomonidan yaratildi (to'g'ri javoblar belgilangan)",
+        "generated": len(questions),
+        "questions": questions,
+    }
+
+
+@app.post("/books/{content_id}/test/generate")
+async def book_test_generate(content_id: int, payload: BookTestGenerateRequest, authorization: str | None = Header(default=None)):
+    return await _book_test_generate(content_id, payload, authorization)
+
+
+@app.post("/admin/books/{content_id}/test/generate")
+async def admin_book_test_generate(content_id: int, payload: BookTestGenerateRequest, authorization: str | None = Header(default=None)):
+    return await _book_test_generate(content_id, payload, authorization)
+
+
+@app.post("/teacher/books/{content_id}/test/generate")
+async def teacher_book_test_generate(content_id: int, payload: BookTestGenerateRequest, authorization: str | None = Header(default=None)):
+    return await _book_test_generate(content_id, payload, authorization)
 
 
 @app.post("/content-tests/{content_type}/{content_id}")

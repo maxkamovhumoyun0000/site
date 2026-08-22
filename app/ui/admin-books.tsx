@@ -115,6 +115,10 @@ export function AdminBooks({
   const [testBookTitle, setTestBookTitle] = useState("");
   const [testQuestions, setTestQuestions] = useState<TestQuestion[]>([]);
   const [testBusy, setTestBusy] = useState(false);
+  // AI test generatsiya (kitobga mos savollar, to'g'ri javoblar belgilangan)
+  const [aiCount, setAiCount] = useState(10);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiNotice, setAiNotice] = useState("");
   
   const [subjectFilter, setSubjectFilter] = useState("all");
   const apiFetchRef = useRef(apiFetch);
@@ -492,6 +496,43 @@ export function AdminBooks({
     }
   }
 
+  async function generateAiTestQuestions() {
+    if (!testBookId || aiBusy || testBusy) return;
+    const count = Math.max(1, Math.min(50, Number(aiCount || 10)));
+    setAiBusy(true);
+    setError("");
+    setAiNotice("");
+    try {
+      const token = typeof window !== "undefined" ? localStorage.getItem("diamond_token") : "";
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 150000);
+      const res = await fetch(`${API_BASE}/books/${testBookId}/test/generate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ count }),
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeout);
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(String(data?.detail || "AI generatsiya xatosi"));
+      }
+      const questions = (data?.questions || []) as TestQuestion[];
+      if (!questions.length) {
+        throw new Error("AI savol yaratib olmadi, qayta urinib ko'ring");
+      }
+      setTestQuestions(questions);
+      setAiNotice(`✅ ${data?.generated ?? questions.length} ta savol AI tomonidan yaratildi — to'g'ri javoblar belgilangan. Ko'rib chiqib saqlang.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "AI generatsiya xatosi");
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
       <div className="flex justify-between items-center bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-700">
@@ -584,7 +625,9 @@ export function AdminBooks({
                         </>
                       ) : null}
                       {canManageTests ? (
-                        <button onClick={() => openTestModal(b)} className="text-cyan-600 hover:text-cyan-800 dark:text-cyan-400 font-medium text-xs">Testlar</button>
+                        <button onClick={() => openTestModal(b)} className="text-cyan-600 hover:text-cyan-800 dark:text-cyan-400 font-medium text-xs">
+                          Testlar{Number(b.question_count || 0) > 0 ? ` (${b.question_count})` : ""}
+                        </button>
                       ) : null}
                     </div>
                   </article>
@@ -696,6 +739,41 @@ export function AdminBooks({
               <button onClick={() => !testBusy && setTestModalOpen(false)} disabled={testBusy} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">X</button>
             </div>
             
+            <div className="px-6 pt-5">
+              <div className="rounded-2xl border border-cyan-200 bg-cyan-50/70 dark:border-cyan-500/20 dark:bg-cyan-500/5 p-4">
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    AI savollar soni
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={aiCount}
+                      disabled={aiBusy}
+                      onChange={(e) => setAiCount(Math.max(1, Math.min(50, Number(e.target.value || 10))))}
+                      className="mt-1 block w-24 rounded-xl border border-cyan-200 bg-white dark:border-cyan-500/20 dark:bg-slate-950 px-3 py-2 text-sm font-bold text-slate-800 dark:text-white"
+                    />
+                  </label>
+                  <button
+                    onClick={() => generateAiTestQuestions()}
+                    disabled={aiBusy || testBusy}
+                    className="rounded-xl bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50 text-white text-sm font-bold px-5 py-2.5 shadow-sm shadow-cyan-500/30 transition-colors"
+                  >
+                    {aiBusy ? "🤖 AI ishlayapti..." : "🤖 AI bilan yaratish"}
+                  </button>
+                  <p className="flex-1 min-w-[200px] text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                    Kitob mazmuniga mos savollar yaratiladi — to'g'ri javoblar avtomatik belgilangan holda tahrirlagichga tushadi.
+                  </p>
+                </div>
+                {aiNotice ? (
+                  <p className="mt-2 text-xs font-bold text-emerald-600 dark:text-emerald-400">{aiNotice}</p>
+                ) : null}
+                {testQuestions.length > 0 ? (
+                  <p className="mt-1 text-xs font-bold text-slate-500 dark:text-slate-400">Joriy savollar: {testQuestions.length} ta</p>
+                ) : null}
+              </div>
+            </div>
+
             <div className="p-6 overflow-y-auto max-h-[70vh]">
               {error ? <div className="mb-4 rounded-xl bg-red-50 text-red-700 border border-red-200 px-4 py-3 text-sm font-medium">{error}</div> : null}
               {testBusy && testQuestions.length === 0 ? (
