@@ -1278,6 +1278,10 @@ export function StudentVocabulary({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [vocabularyStatus, setVocabularyStatus] = useState("");
+  // Qidirilgan so'z bazada yo'q bo'lsa backend AI bilan tayyorlaydi —
+  // 1 sekunddan ortiq ketsa kutish banneri chiqadi (i18n).
+  const [aiPreparing, setAiPreparing] = useState(false);
+  const aiPrepareTimerRef = useRef<number | null>(null);
   const [speakingKey, setSpeakingKey] = useState("");
   const [testStarting, setTestStarting] = useState(false);
   const vocabularyCacheRef = useRef(new Map<string, { items: GenericRow[]; total: number; has_more: boolean }>());
@@ -1343,6 +1347,17 @@ export function StudentVocabulary({
       setLoading(!displayedCached);
       setError("");
       setVocabularyStatus(displayedCached ? "Lug'at yangilanmoqda..." : "");
+      const isSearchFetch = debouncedQuery.trim().length > 0 && !displayedCached;
+      if (aiPrepareTimerRef.current !== null) {
+        window.clearTimeout(aiPrepareTimerRef.current);
+        aiPrepareTimerRef.current = null;
+      }
+      setAiPreparing(false);
+      if (isSearchFetch) {
+        aiPrepareTimerRef.current = window.setTimeout(() => {
+          if (!cancelled) setAiPreparing(true);
+        }, 1000);
+      }
       try {
         const path = `/vocabulary?subject=${encodeURIComponent(selectedSubject)}&query=${encodeURIComponent(debouncedQuery)}&page=${page}&limit=${VOCABULARY_PAGE_LIMIT}`;
         const payload = await requestJson<{ items: GenericRow[]; total?: number; has_more?: boolean }>(path, {
@@ -1375,12 +1390,23 @@ export function StudentVocabulary({
           }
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (aiPrepareTimerRef.current !== null) {
+          window.clearTimeout(aiPrepareTimerRef.current);
+          aiPrepareTimerRef.current = null;
+        }
+        if (!cancelled) {
+          setAiPreparing(false);
+          setLoading(false);
+        }
       }
     }
     loadWords();
     return () => {
       cancelled = true;
+      if (aiPrepareTimerRef.current !== null) {
+        window.clearTimeout(aiPrepareTimerRef.current);
+        aiPrepareTimerRef.current = null;
+      }
       controller.abort();
     };
   }, [selectedSubject, debouncedQuery, page]);
@@ -1463,6 +1489,12 @@ export function StudentVocabulary({
       </section>
       
       {error ? <div className="px-4 py-3 text-sm font-semibold text-red-200 bg-red-500/20 border border-red-500/30 rounded-xl">{error}</div> : null}
+      {aiPreparing && !error ? (
+        <div className="px-4 py-3 flex items-center justify-center gap-3 text-sm font-bold text-cyan-700 bg-cyan-500/10 border border-cyan-500/20 rounded-xl dark:text-cyan-200">
+          <span className="inline-block w-4 h-4 border-2 border-cyan-500 border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
+          {tt("student.vocabulary.aiPreparing", "So'z bazada topilmadi — AI tayyorlamoqda, biroz kuting...")}
+        </div>
+      ) : null}
       {vocabularyStatus ? (
         <div className="px-4 py-2 text-xs font-bold text-cyan-700 bg-cyan-500/10 border border-cyan-500/20 rounded-xl dark:text-cyan-200">
           {vocabularyStatus}

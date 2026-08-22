@@ -1868,6 +1868,79 @@ def _insert_vocab_items_into_words(
     return inserted, skipped_existing, skipped_invalid
 
 
+_MISSING_WORD_INPUT_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9' \-]{2,64}$")
+
+
+async def generate_missing_word_entry(
+    *,
+    subject: str,
+    word: str,
+    added_by: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Vocabulary qidiruvida topilmagan BIRTA so'zni AI bilan boyitib, words
+    jadvaliga qo'shadi (translation_uz/ru, definition, example, level).
+
+    So'z real lug'aviy birlik bo'lmasa (spam/nonsense) yoki AI yaratolmasa —
+    None qaytaradi. Qo'shilsa — qo'shilgan item dict qaytadi.
+    """
+    subject_clean = (subject or "").strip().title()
+    if subject_clean not in ("English", "Russian"):
+        return None
+    raw_word = (word or "").strip()
+    if not _MISSING_WORD_INPUT_RE.fullmatch(raw_word):
+        return None
+    key = _normalize_word_key(raw_word)
+    if not key:
+        return None
+    language = _subject_to_vocab_language(subject_clean)
+    if key in _load_existing_word_keys(subject_clean, language):
+        return None  # poyga paytida boshqa so'rov qo'shib bo'lgan
+
+    if subject_clean == "Russian":
+        word_kind = "a real Russian dictionary word or a common Russian phrase (Cyrillic)"
+    else:
+        word_kind = "a real English dictionary word or a common English phrase"
+    prompt = (
+        "STRICT VOCABULARY LOOKUP — single word enrichment.\n"
+        f"subject={subject_clean}\n"
+        f"input_word={json.dumps(raw_word, ensure_ascii=False)}\n\n"
+        "STEP 1 — validity gate: if input_word is NOT " + word_kind + ",\n"
+        "including random letters, keyboard mashing, typos of nonexistent words,\n"
+        "names/spam or offensive content — return [] (empty JSON array). Be strict.\n"
+        "STEP 2 — only if valid, return a JSON array with EXACTLY ONE object:\n"
+        '{"word": "<the input word unchanged>", "level": "<BEGINNER|ELEMENTARY|PRE-INTERMEDIATE|INTERMEDIATE|UPPER-INTERMEDIATE|ADVANCED>", '
+        '"translation_uz": "<Uzbek translation>", "translation_ru": "<Russian translation>", '
+        '"definition": "<concise definition in the word\'s language>", "example": "<one natural example sentence>"}\n'
+        "Return ONLY the JSON array."
+    )
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        text = await _gemini_generate(prompt, session=session)
+    items = parse_vocabulary_json(text, subject_clean, "MIXED")
+    item = next(
+        (p for p in items if _normalize_word_key(p.get("word")) == key),
+        None,
+    )
+    if not item:
+        return None
+    inserted, _skipped_existing, _skipped_invalid = _insert_vocab_items_into_words(
+        subject=subject_clean,
+        level="MIXED",
+        items=[item],
+        added_by=added_by,
+        max_insert=1,
+    )
+    if inserted <= 0:
+        return None
+    logger.info(
+        "vocabulary AI auto-add subject=%s word=%s added_by=%s",
+        subject_clean,
+        raw_word,
+        added_by,
+    )
+    return item
+
+
 def parse_vocabulary_json(raw_text: str, subject: str, level: str) -> list[dict]:
     items = _parse_json_like_to_list(raw_text)
     if not items:

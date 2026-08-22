@@ -21120,9 +21120,12 @@ async def student_grammar_topics(
     raw_level = str(level or "A1").strip().upper()
     selected_level = level_mapping.get(raw_level, raw_level)
     
-    if selected_subject == "Russian" and selected_level == "ALL":
+    if selected_subject == "Russian":
+        # Rus tili grammatikasi: daraja tanlovi YO'Q — barcha mavzular bitta
+        # ro'yxatda, katalog tartibida (A1->C1). Sayt va ilova bir xil
+        # tartibni ko'radi (level parametri ignore qilinadi).
         selected_level = "ALL"
-    elif selected_level not in {"A1", "A2", "B1", "B2", "C1"}:
+    elif selected_level not in {"A1", "A2", "B1", "B2", "C1", "ALL"}:
         selected_level = "A1"
 
     meta = grammar_catalog_meta()
@@ -45152,7 +45155,8 @@ async def vocabulary(
     offset = (max(1, page) - 1) * limit
     level_filter = None if role == "student" else selected_level
     conn = get_conn()
-    try:
+
+    def run_search() -> tuple[int, list[dict[str, Any]], bool]:
         cur = conn.cursor()
         clauses = ["LOWER(subject)=LOWER(?)", "LOWER(language)=LOWER(?)"]
         params: list[Any] = [selected_subject, vocab_lang]
@@ -45189,6 +45193,26 @@ async def vocabulary(
         )
         rows = [dict(row) for row in cur.fetchall()]
         has_more = offset + len(rows) < total
+        return total, rows, has_more
+
+    try:
+        total, rows, has_more = run_search()
+
+        # AI auto-add: qidirilgan so'z bazada yo'q bo'lsa — AI darhol
+        # boyitib words jadvaliga qo'shadi va natija qayta olinadi.
+        # Sayt ham, ilova ham shu endpointni ishlatadi — ikkalasida ham ishlaydi.
+        ai_generated = False
+        if normalized_query and total == 0 and len(normalized_query) >= 2:
+            try:
+                added = await _vocab_ai_try_add_missing_word(
+                    selected_subject, normalized_query, int(user.get("id") or 0)
+                )
+            except Exception:
+                logger.exception("vocabulary AI auto-add hook failed word=%s", normalized_query)
+                added = False
+            if added:
+                ai_generated = True
+                total, rows, has_more = run_search()
     finally:
         conn.close()
     return {
@@ -45199,7 +45223,59 @@ async def vocabulary(
         "limit": limit,
         "total": total,
         "has_more": has_more,
+        "ai_generated": ai_generated,
     }
+
+
+# --- Vocabulary AI auto-add guardlari (qidiruvda topilmagan so'z uchun) ---
+_VOCAB_AI_FAIL_CACHE: dict[str, float] = {}
+_VOCAB_AI_USER_HITS: dict[int, list[float]] = {}
+_VOCAB_AI_INFLIGHT: set[str] = set()
+_VOCAB_AI_FAIL_TTL_SEC = 180.0
+_VOCAB_AI_USER_LIMIT_PER_HOUR = 20
+
+
+def _vocab_ai_search_key(subject: str, q: str) -> str:
+    return f"{(subject or '').strip().lower()}:{(q or '').strip().lower()}"
+
+
+async def _vocab_ai_try_add_missing_word(subject: str, query: str, user_id: int) -> bool:
+    """So'z bazada yo'q bo'lsa, AI bilan yaratib qo'shadi. Bir xil so'rovni
+    takrorlayvermaslik uchun: in-flight dedup + 3 daq. failure cache +
+    foydalanuvchiga soatiga 20 ta AI qo'shish limiti."""
+    now = time.time()
+    key = _vocab_ai_search_key(subject, query)
+    if now - _VOCAB_AI_FAIL_CACHE.get(key, 0.0) < _VOCAB_AI_FAIL_TTL_SEC:
+        return False
+    if key in _VOCAB_AI_INFLIGHT:
+        return False
+    uid = int(user_id or 0)
+    if uid > 0:
+        hits = [ts for ts in _VOCAB_AI_USER_HITS.get(uid, []) if now - ts < 3600.0]
+        if len(hits) >= _VOCAB_AI_USER_LIMIT_PER_HOUR:
+            return False
+    _VOCAB_AI_INFLIGHT.add(key)
+    try:
+        from ai_generator import generate_missing_word_entry
+
+        added = await asyncio.wait_for(
+            generate_missing_word_entry(subject=subject, word=query, added_by=uid or None),
+            timeout=28.0,
+        )
+        if added:
+            if uid > 0:
+                hits = [ts for ts in _VOCAB_AI_USER_HITS.get(uid, []) if now - ts < 3600.0]
+                hits.append(now)
+                _VOCAB_AI_USER_HITS[uid] = hits
+            return True
+        _VOCAB_AI_FAIL_CACHE[key] = now
+        return False
+    except Exception as exc:
+        _VOCAB_AI_FAIL_CACHE[key] = now
+        logger.warning("vocabulary AI auto-add failed subject=%s word=%s err=%s", subject, query, exc)
+        return False
+    finally:
+        _VOCAB_AI_INFLIGHT.discard(key)
 
 
 @app.get("/learning/tts")
