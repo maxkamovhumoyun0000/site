@@ -73,7 +73,6 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
   const [wallet, setWallet] = useState(0);
   const [buyingBookId, setBuyingBookId] = useState<number | null>(null);
   const [purchaseCandidate, setPurchaseCandidate] = useState<BookItem | null>(null);
-  const [nowTs, setNowTs] = useState(() => Date.now());
   
   const subjects = useMemo<string[]>(() => {
     if (!user || !user.subjects || !Array.isArray(user.subjects)) return [];
@@ -156,34 +155,10 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
     };
   }, [fetchBooks]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
   function mediaUrl(url?: string | null) {
     const raw = String(url || "").trim();
     if (!raw) return "";
     return raw.startsWith("/") ? `${API_BASE}${raw}` : raw;
-  }
-
-  function secondsLeft(deadlineAt?: string | null) {
-    const raw = String(deadlineAt || "").trim();
-    if (!raw) return null;
-    const ts = Date.parse(raw);
-    if (!Number.isFinite(ts)) return null;
-    return Math.floor((ts - nowTs) / 1000);
-  }
-
-  function formatCountdown(seconds: number | null) {
-    if (seconds === null) return tt("library.noDeadline", "No deadline");
-    const sec = Math.max(0, seconds);
-    const days = Math.floor(sec / 86400);
-    const hours = Math.floor((sec % 86400) / 3600);
-    const mins = Math.floor((sec % 3600) / 60);
-    if (days > 0) return `${days} ${tt("library.day", "kun")} ${hours} ${tt("library.hour", "soat")}`;
-    if (hours > 0) return `${hours} ${tt("library.hour", "soat")} ${mins} ${tt("library.minute", "daqiqa")}`;
-    return `${mins} ${tt("library.minute", "daqiqa")}`;
   }
 
   function deriveBookFlags(book: BookItem) {
@@ -194,15 +169,15 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
         expired: false,
         canTakeTest: false,
         testSubmitted: false,
-        seconds: null as number | null,
       };
     }
-    const seconds = secondsLeft(purchase.deadline_at);
-    const expired = seconds !== null ? seconds <= 0 : Boolean(purchase.deadline_expired);
+    const hasDeadline = Boolean(String(purchase.deadline_at || "").trim());
+    const expired = Boolean(purchase.deadline_expired);
     const status = String(purchase.status || "").toLowerCase();
     const testSubmitted = Boolean(purchase.test_submitted) || status === "test_passed" || status === "test_failed";
-    const canTakeTest = expired && !testSubmitted;
-    return { purchased: true, expired, canTakeTest, testSubmitted, seconds };
+    // Deadline olib tashlangan: muddat yo'q bo'lsa test darhol ochiq
+    const canTakeTest = !testSubmitted && (!hasDeadline || expired);
+    return { purchased: true, expired, canTakeTest, testSubmitted };
   }
 
   async function buyBook(book: BookItem) {
@@ -347,9 +322,7 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
                     }`}>
                       {flags.testSubmitted
                         ? tt("library.testSubmitted", "✅ Test topshirilgan")
-                        : flags.canTakeTest
-                          ? tt("library.testReady", "⏳ Deadline tugadi. Testni boshlang.")
-                          : `${tt("library.deadline", "⏳ Deadline:")} ${formatCountdown(flags.seconds)}`}
+                        : tt("library.testReady", "📝 Testni topshiring")}
                     </div>
                   ) : null}
                   

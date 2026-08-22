@@ -26,7 +26,6 @@ type BookItem = {
   cover_url?: string;
   pdf_url?: string;
   question_count?: number;
-  deadline_days?: number;
   price?: number;
 };
 

@@ -21347,7 +21347,7 @@ def purchase_book_with_dcoins(
     user_id: int,
     book_id: int,
     price_dcoin: float,
-    deadline_at: str,
+    deadline_at: str | None,
     book_title: str | None = None,
     deadline_days: int | None = None,
 ) -> dict[str, Any]:

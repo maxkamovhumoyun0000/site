@@ -12899,7 +12899,8 @@ def _serialize_book_purchase_row(row: dict | None) -> dict | None:
         "effective_status": effective_status,
         "deadline_expired": deadline_expired,
         "seconds_until_deadline": seconds_until_deadline,
-        "can_take_test": bool(deadline_expired and not test_submitted),
+        # Deadline olib tashlangan: muddat yo'q bo'lsa test darhol ochiq
+        "can_take_test": bool((deadline_dt is None or deadline_expired) and not test_submitted),
         "test_submitted": test_submitted,
     }
 
@@ -12953,7 +12954,7 @@ def _serialize_book_row(
         "pdf_url": protected_pdf_url or pdf_url,
         "pdf_asset_id": pdf_asset_id or None,
         "price": float(row.get("price") or 0),
-        "deadline_days": max(1, int(row.get("deadline_days") or 0) or 7),
+        "deadline_days": (max(1, int(row.get("deadline_days") or 0)) if int(row.get("deadline_days") or 0) > 0 else None),
         "is_published": int(row.get("is_published") or 0) == 1,
         "created_at": _as_iso_timestamp(row.get("created_at")),
         "updated_at": _as_iso_timestamp(row.get("updated_at")),
@@ -12989,7 +12990,7 @@ def _serialize_book_list_row(
         "pdf_url": str(row.get("pdf_url") or "").strip() or None,
         "pdf_asset_id": int(row.get("pdf_asset_id") or 0) or None,
         "price": float(row.get("price") or 0),
-        "deadline_days": max(1, int(row.get("deadline_days") or 0) or 7),
+        "deadline_days": (max(1, int(row.get("deadline_days") or 0)) if int(row.get("deadline_days") or 0) > 0 else None),
         "is_published": int(row.get("is_published") or 0) == 1,
         "created_at": _as_iso_timestamp(row.get("created_at")),
         "updated_at": _as_iso_timestamp(row.get("updated_at")),
@@ -46649,7 +46650,9 @@ async def admin_create_book(payload: BookCreateRequest, authorization: str | Non
         raise HTTPException(status_code=400, detail="Book thumbnail is required")
     asset_id = int(payload.pdf_asset_id or 0) or None
     price_value = max(0.0, float(payload.price or 0.0))
-    deadline_days = max(1, int(payload.deadline_days or 7))
+    # Deadline olib tashlangan: deadline_days kelmasa yoki 0 bo'lsa — NULL
+    raw_deadline_days = int(payload.deadline_days or 0)
+    deadline_days = max(1, raw_deadline_days) if raw_deadline_days > 0 else None
     conn = get_conn()
     cur = conn.cursor()
     params = (
@@ -46716,7 +46719,9 @@ async def admin_update_book(
     if "price" in updates:
         updates["price"] = max(0.0, float(updates.get("price") or 0.0))
     if "deadline_days" in updates:
-        updates["deadline_days"] = max(1, int(updates.get("deadline_days") or 7))
+        # Deadline ixtiyoriy: 0/bo'sh -> NULL
+        raw_dd = int(updates.get("deadline_days") or 0)
+        updates["deadline_days"] = max(1, raw_dd) if raw_dd > 0 else None
     if "is_published" in updates:
         updates["is_published"] = 1 if bool(updates.get("is_published")) else 0
 
@@ -47089,8 +47094,10 @@ async def student_buy_book(book_id: int, authorization: str | None = Header(defa
         }
 
     price = max(0.0, float(book.get("price") or 0.0))
-    deadline_days = max(1, int(book.get("deadline_days") or 7))
-    deadline = (_now_utc() + timedelta(days=deadline_days)).isoformat()
+    # Deadline olib tashlangan: kitobda deadline_days bo'lmasa — cheksiz muddat
+    raw_days = int(book.get("deadline_days") or 0)
+    deadline_days = max(1, raw_days) if raw_days > 0 else None
+    deadline = (_now_utc() + timedelta(days=deadline_days)).isoformat() if deadline_days else None
     conn.close()
 
     purchase_result = purchase_book_with_dcoins(

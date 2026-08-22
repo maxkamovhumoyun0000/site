@@ -18,7 +18,6 @@ type BookItem = {
   pdf_url?: string;
   pdf_asset_id?: number | null;
   price?: number;
-  deadline_days?: number;
   purchase_count?: number;
   read_count?: number;
   like_count?: number;
@@ -51,7 +50,6 @@ type BookFormState = {
   pdf_url: string;
   pdf_asset_id: number | null;
   price: string;
-  deadline_days: string;
   is_published: boolean;
 };
 
@@ -66,7 +64,6 @@ const EMPTY_BOOK_FORM: BookFormState = {
   pdf_url: "",
   pdf_asset_id: null,
   price: "",
-  deadline_days: "",
   is_published: true,
 };
 
@@ -251,7 +248,6 @@ export function AdminBooks({
       pdf_url: String(book.pdf_url || ""),
       pdf_asset_id: Number(book.pdf_asset_id || 0) || null,
       price: (book.price ?? null) === null ? "" : String(Number(book.price || 0)),
-      deadline_days: (book.deadline_days ?? null) === null ? "" : String(Number(book.deadline_days || 7)),
       is_published: Boolean(book.is_published),
     };
   }
@@ -302,7 +298,7 @@ export function AdminBooks({
         pdf_url: bookForm.pdf_url.trim(),
         pdf_asset_id: bookForm.pdf_asset_id || null,
         price: String(bookForm.price || "").trim() === "" ? null : Math.max(0, Number(bookForm.price || 0)),
-        deadline_days: String(bookForm.deadline_days || "").trim() === "" ? null : Math.max(1, Number(bookForm.deadline_days || 7)),
+        deadline_days: null,
         is_published: true,
       };
       if (editingBookId) {
@@ -679,7 +675,6 @@ export function AdminBooks({
               ) : null}
 	              <input value={bookForm.pdf_url} onChange={(e) => setBookForm((prev) => ({ ...prev, pdf_url: e.target.value }))} placeholder="PDF yoki ePub URL (masalan: https://...book.epub)" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm sm:col-span-2" />
 	              <input type="number" min={0} value={bookForm.price} onChange={(e) => setBookForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Narx (D'coin)" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm" />
-	              <input type="number" min={1} value={bookForm.deadline_days} onChange={(e) => setBookForm((prev) => ({ ...prev, deadline_days: e.target.value }))} placeholder="Deadline (kun)" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm" />
 	              <textarea value={bookForm.description} onChange={(e) => setBookForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Tavsif" rows={4} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm sm:col-span-2 resize-none" />
             </div>
             <div className="flex justify-end gap-2">
