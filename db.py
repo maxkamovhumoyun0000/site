@@ -21728,6 +21728,13 @@ def list_homeworks_for_student(student_id: int) -> list[dict]:
                         SELECT 1
                         FROM user_groups ug
                         WHERE ug.user_id=? AND ug.group_id=h.group_id
+                          -- Guruhga KEYIN qo'shilgan o'quvchi qo'shilishidan OLDIN
+                          -- berilgan homeworklarni ko'rmaydi.
+                          AND (
+                            ug.joined_date IS NULL
+                            OR h.created_at IS NULL
+                            OR ug.joined_date <= h.created_at
+                          )
                     )
                 )
               )
@@ -21812,6 +21819,13 @@ def list_homeworks_for_teacher(teacher_id: int) -> list[dict]:
               ON h.group_id IS NOT NULL
              AND ug.group_id=h.group_id
              AND (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='')
+             -- Guruhga keyin qo'shilgan o'quvchi eski homeworklar uchun
+             -- ko'rsatilmaydi (student tomonida ham ko'rinmaydi).
+             AND (
+                ug.joined_date IS NULL
+                OR h.created_at IS NULL
+                OR ug.joined_date <= h.created_at
+             )
             LEFT JOIN users u
               ON u.id=ug.user_id
              AND COALESCE(u.login_type, 0) IN (1, 2, 6)

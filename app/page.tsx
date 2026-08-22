@@ -5961,14 +5961,17 @@ function StudentHomework() {
     const reviewed = Boolean(row.reviewed_at);
     const hasSubmission = Boolean(persistedStatusRaw);
     const teacherMarkedNotDone = persistedStatusRaw === "not_done";
+    // Deadline o'tib topshirilmagan — backend avtomatik "qilinmadi" deb belgilaydi
+    const deadlineMissed = Boolean(row.deadline_missed) && !hasSubmission && !reviewed;
     const statusLabel = reviewed
       ? teacherMarkedNotDone ? tt("homework.statusNotDone", "✕ Bajarilmadi") : tt("homework.statusDone", "✓ Bajarildi")
-      : hasSubmission ? tt("homework.statusPending", "… Kutilmoqda") : tt("homework.statusMissing", "— Topshirilmagan");
+      : hasSubmission ? tt("homework.statusPending", "… Kutilmoqda")
+      : deadlineMissed ? tt("homework.statusAutoMissed", "✕ Qilinmadi (muddati o'tdi)") : tt("homework.statusMissing", "— Topshirilmagan");
     const statusClass = reviewed
       ? teacherMarkedNotDone ? "not-done" : "done"
-      : hasSubmission ? "pending" : "missing";
-    const statusShort = reviewed ? (teacherMarkedNotDone ? "✕" : "✓") : hasSubmission ? "…" : "—";
-    const isOverdue = !hasSubmission && row.due_at && new Date(row.due_at).getTime() < Date.now();
+      : hasSubmission ? "pending" : deadlineMissed ? "not-done" : "missing";
+    const statusShort = reviewed ? (teacherMarkedNotDone ? "✕" : "✓") : hasSubmission ? "…" : deadlineMissed ? "✕" : "—";
+    const isOverdue = deadlineMissed || (!hasSubmission && row.due_at && new Date(row.due_at).getTime() < Date.now());
     return { hid, teacherName, reviewed, hasSubmission, statusLabel, statusClass, statusShort, isOverdue };
   }
 
@@ -6411,6 +6414,7 @@ function TeacherHomeworkPanel({
   const [reviewModalRow, setReviewModalRow] = useState<GenericRow | null>(null);
   const [reviewImageIndex, setReviewImageIndex] = useState(0);
   const [editingHomeworkId, setEditingHomeworkId] = useState<number | null>(null);
+  const [deletingHomeworkId, setDeletingHomeworkId] = useState<number | null>(null);
   const [savingHomework, setSavingHomework] = useState(false);
   const [isVoiceroom, setIsVoiceroom] = useState(false);
   const [voiceroomGroups, setVoiceroomGroups] = useState<any[]>([]);
@@ -6544,6 +6548,22 @@ function TeacherHomeworkPanel({
     }
   }
 
+  // Teacher FAQAT o'zi bergan homeworkni o'chiradi (backend ownershipni tekshiradi)
+  async function deleteHomeworkRow(hid: number) {
+    if (!hid || deletingHomeworkId) return;
+    if (!window.confirm("Ushbu homework o'chirib tashlanadi — barcha o'quvchilar uchun yo'qoladi. Davom etamizmi?")) return;
+    setDeletingHomeworkId(hid);
+    setPanelError("");
+    try {
+      await onApiCall(`/teacher/homework/${hid}`, undefined, "DELETE", "Homework o'chirildi");
+      await loadAll();
+    } catch (err) {
+      setPanelError(err instanceof Error ? err.message : "Homeworkni o'chirib bo'lmadi");
+    } finally {
+      setDeletingHomeworkId(null);
+    }
+  }
+
   useEffect(() => {
     loadAll().catch(() => null);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -6670,7 +6690,10 @@ function TeacherHomeworkPanel({
   function homeworkStatusKind(row: GenericRow, hasSubmission: boolean) {
     const statusRaw = String(row.submission_status || "").trim().toLowerCase();
     if (row.reviewed_at) return statusRaw === "not_done" ? "not-done" : "done";
-    return hasSubmission ? "pending" : "missing";
+    if (hasSubmission) return "pending";
+    // Deadline o'tib topshirilmagan — avtomatik "qilinmadi" (test topshirilmagan bo'lsa)
+    if (Boolean(row.deadline_missed) && !row.test_completed) return "not-done";
+    return "missing";
   }
 
   function homeworkIsOverdue(row: GenericRow, hasSubmission: boolean) {
@@ -6679,7 +6702,7 @@ function TeacherHomeworkPanel({
 
   function homeworkStatusLabelFromKind(kind: string) {
     if (kind === "done") return "✓ Bajarildi";
-    if (kind === "not-done") return "✕ Bajarilmadi";
+    if (kind === "not-done") return "✕ Qilinmadi";
     if (kind === "pending") return "… Kutilmoqda";
     return "— Topshirilmadi";
   }
@@ -7150,36 +7173,47 @@ function TeacherHomeworkPanel({
                   <p className="chip mt-2">Fayl yo'q</p>
                 )}
                 <div className="mt-3">
-	                {row.reviewed_at ? (
-	                  <div className="row-between gap-2">
-	                    <span className="chip">{teacherStatusLabel} ({Number(row.dpoints_delta ?? row.dcoin_delta ?? 0).toFixed(1)} D'point)</span>
-	                    <button
-	                      className="btn btn-soft small"
-	                      disabled={reviewBusyNow}
-	                      onClick={() => {
-	                        setReviewImageIndex(0);
-	                        setReviewModalRow(row);
-	                      }}
-	                    >
-	                      Ko'rish
-	                    </button>
-	                  </div>
-	                ) : !hasSubmission ? (
-	                  <span className="chip">Submission kutilmoqda</span>
-	                ) : (
+		                {row.reviewed_at ? (
+		                  <div className="row-between gap-2">
+		                    <span className="chip">{teacherStatusLabel} ({Number(row.dpoints_delta ?? row.dcoin_delta ?? 0).toFixed(1)} D'point)</span>
+		                    <button
+		                      className="btn btn-soft small"
+		                      disabled={reviewBusyNow}
+		                      onClick={() => {
+		                        setReviewImageIndex(0);
+		                        setReviewModalRow(row);
+		                      }}
+		                    >
+		                      Ko'rish
+		                    </button>
+		                  </div>
+		                ) : !hasSubmission ? (
+		                  <span className="chip">{row.deadline_missed && !row.test_completed ? "✕ Qilinmadi (muddati o'tdi)" : "Submission kutilmoqda"}</span>
+		                ) : (
+		                  <button
+		                    className="btn btn-soft w-full"
+		                    disabled={reviewBusyNow}
+		                    onClick={() => {
+		                      setReviewImageIndex(0);
+		                      setReviewModalRow(row);
+		                    }}
+		                  >
+		                    {reviewBusyNow ? "Saving..." : "Ko'rish / tekshirish"}
+		                  </button>
+		                )}
+	                </div>
+	                <div className="mt-2 row-between gap-2">
+	                  <span className="text-xs font-semibold text-ink-500 dark:text-navy-300">Homework #{row.id}</span>
 	                  <button
-	                    className="btn btn-soft w-full"
-	                    disabled={reviewBusyNow}
-	                    onClick={() => {
-	                      setReviewImageIndex(0);
-	                      setReviewModalRow(row);
-	                    }}
+	                    className="btn btn-soft small"
+	                    style={{ color: "#ef4444" }}
+	                    disabled={deletingHomeworkId === Number(row.id || 0)}
+	                    onClick={() => deleteHomeworkRow(Number(row.id || 0))}
 	                  >
-	                    {reviewBusyNow ? "Saving..." : "Ko'rish / tekshirish"}
+	                    {deletingHomeworkId === Number(row.id || 0) ? "O'chirilmoqda..." : "🗑 O'chirish"}
 	                  </button>
-	                )}
-                </div>
-	              </article>
+	                </div>
+		              </article>
 	            );
 	          })}
 	        </div>

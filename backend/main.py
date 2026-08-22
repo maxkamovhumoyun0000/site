@@ -27744,6 +27744,12 @@ def _attach_homework_runtime_fields(row: dict) -> dict:
     row["requires_test"] = kind in {"test", "both"}
     row["proof_images"] = _homework_proof_images_from_row(row)
     row["dpoints_delta"] = float(row.get("dpoints_delta") if row.get("dpoints_delta") is not None else row.get("dcoin_delta") or 0.0)
+    # Deadline o'tib, hech narsa topshirilmagan — avtomatik "qilinmadi".
+    # (test_topshirilgan bo'lsa keyingi qadamda tozalanadi)
+    row["deadline_missed"] = bool(
+        not (row.get("submission_status") or row.get("submission_student_id") or row.get("reviewed_at"))
+        and _homework_deadline_has_passed(row)
+    )
     return row
 
 
@@ -28100,6 +28106,34 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
     return {"message": "Homework updated", "item": updated}
 
 
+@app.delete("/teacher/homework/{homework_id}")
+async def teacher_delete_homework(homework_id: int, authorization: str | None = Header(default=None)):
+    """Teacher O'ZI bergan homeworkni o'chiradi (soft delete — status='deleted',
+    student va teacher ro'yxatlaridan yo'qoladi). Admin har qanday homeworkni."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    teacher_id = int(user.get("id") or 0)
+    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+    if not homework:
+        raise HTTPException(status_code=404, detail="Homework not found")
+    role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
+    is_owner = int(homework.get("teacher_id") or 0) == teacher_id
+    if not is_owner and role != "admin":
+        raise HTTPException(status_code=403, detail="Faqat o'zingiz bergan homeworkni o'chira olasiz")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE web_homeworks SET status='deleted', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (int(homework_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _safe_call(lambda: deactivate_content_test("homework", int(homework_id)), None)
+    return {"message": "Homework o'chirildi"}
+
+
 @app.get("/teacher/homework")
 async def teacher_homework_list(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -28117,6 +28151,8 @@ async def teacher_homework_list(authorization: str | None = Header(default=None)
         result = _safe_call(lambda student_id=sid, homework_id=hid: get_content_test_result(student_id, "homework", homework_id), None) if sid > 0 and hid > 0 else None
         row["test_available"] = bool(tests.get(hid))
         row["test_completed"] = bool(result)
+        if row["test_completed"]:
+            row["deadline_missed"] = False  # test topshirilgan — bajarilgan hisoblanadi
         row["test_result"] = result
         row["test_correct_count"] = int((result or {}).get("correct_count") or 0)
         row["test_wrong_count"] = int((result or {}).get("wrong_count") or 0)
@@ -28226,6 +28262,8 @@ async def student_homework_list(authorization: str | None = Header(default=None)
         result = _safe_call(lambda homework_id=hid: get_content_test_result(user_id, "homework", homework_id), None) if hid > 0 else None
         row["test_available"] = bool(test)
         row["test_completed"] = bool(result)
+        if row["test_completed"]:
+            row["deadline_missed"] = False  # test topshirilgan — bajarilgan hisoblanadi
         row["test_result"] = result
         row["test_correct_count"] = int((result or {}).get("correct_count") or 0)
         row["test_wrong_count"] = int((result or {}).get("wrong_count") or 0)
