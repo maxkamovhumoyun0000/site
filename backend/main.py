@@ -45199,20 +45199,29 @@ async def vocabulary(
         total, rows, has_more = run_search()
 
         # AI auto-add: qidirilgan so'z bazada yo'q bo'lsa — AI darhol
-        # boyitib words jadvaliga qo'shadi va natija qayta olinadi.
-        # Sayt ham, ilova ham shu endpointni ishlatadi — ikkalasida ham ishlaydi.
+        # asosiy so'zni HAMDA o'xshash so'zlarni qo'shadi, natija qayta
+        # olinadi. Sayt ham, ilova ham shu endpointni ishlatadi.
         ai_generated = False
         if normalized_query and total == 0 and len(normalized_query) >= 2:
             try:
-                added = await _vocab_ai_try_add_missing_word(
+                ai_result = await _vocab_ai_try_add_missing_word(
                     selected_subject, normalized_query, int(user.get("id") or 0)
                 )
             except Exception:
                 logger.exception("vocabulary AI auto-add hook failed word=%s", normalized_query)
-                added = False
-            if added:
+                ai_result = None
+            if ai_result:
                 ai_generated = True
                 total, rows, has_more = run_search()
+                if not rows:
+                    # Asosiy so'z LIKE bilan topilmadi (masalan typo edikin,
+                    # AI to'g'ri so'zni taklif qildi) — qo'shilgan o'xshash
+                    # so'zlarni natija sifatida ko'rsatamiz.
+                    suggested = [ai_result.get("main")] + list(ai_result.get("related") or [])
+                    suggested_words = [str((it or {}).get("word") or "") for it in suggested]
+                    rows = _vocab_ai_rows_for_words(conn, suggested_words, selected_subject, vocab_lang)
+                    total = len(rows)
+                    has_more = False
     finally:
         conn.close()
     return {
@@ -45230,7 +45239,7 @@ async def vocabulary(
 # --- Vocabulary AI auto-add guardlari (qidiruvda topilmagan so'z uchun) ---
 _VOCAB_AI_FAIL_CACHE: dict[str, float] = {}
 _VOCAB_AI_USER_HITS: dict[int, list[float]] = {}
-_VOCAB_AI_INFLIGHT: set[str] = set()
+_VOCAB_AI_INFLIGHT: dict[str, asyncio.Task] = {}
 _VOCAB_AI_FAIL_TTL_SEC = 180.0
 _VOCAB_AI_USER_LIMIT_PER_HOUR = 20
 
@@ -45239,43 +45248,101 @@ def _vocab_ai_search_key(subject: str, q: str) -> str:
     return f"{(subject or '').strip().lower()}:{(q or '').strip().lower()}"
 
 
-async def _vocab_ai_try_add_missing_word(subject: str, query: str, user_id: int) -> bool:
-    """So'z bazada yo'q bo'lsa, AI bilan yaratib qo'shadi. Bir xil so'rovni
-    takrorlayvermaslik uchun: in-flight dedup + 3 daq. failure cache +
-    foydalanuvchiga soatiga 20 ta AI qo'shish limiti."""
+def _vocab_ai_generation_task(subject: str, query: str, uid: int) -> asyncio.Task:
+    """Bitta so'z uchun AI generatsiya taski. Client so'rovni bekor qilsa ham
+    (shield) generatsiya davom etadi va natija bazaga tushadi."""
+    from ai_generator import generate_missing_word_entry
+
+    key = _vocab_ai_search_key(subject, query)
+
+    async def _run() -> dict[str, Any] | None:
+        try:
+            result = await asyncio.wait_for(
+                generate_missing_word_entry(subject=subject, word=query, added_by=uid or None),
+                timeout=30.0,
+            )
+            if result:
+                return result
+            _VOCAB_AI_FAIL_CACHE[key] = time.time()
+            return None
+        except Exception as exc:
+            _VOCAB_AI_FAIL_CACHE[key] = time.time()
+            logger.warning("vocabulary AI auto-add failed subject=%s word=%s err=%s", subject, query, exc)
+            return None
+
+    task = asyncio.create_task(_run())
+
+    def _cleanup(_t: asyncio.Task) -> None:
+        _VOCAB_AI_INFLIGHT.pop(key, None)
+
+    task.add_done_callback(_cleanup)
+    _VOCAB_AI_INFLIGHT[key] = task
+    return task
+
+
+async def _vocab_ai_try_add_missing_word(subject: str, query: str, user_id: int) -> dict[str, Any] | None:
+    """So'z bazada yo'q bo'lsa, AI bilan asosiy + o'xshash so'zlarni qo'shadi.
+
+    Bir xil so'rov takrorlansa (masalan user harf bosib yubordi va qayta
+    qidirdi) — davom etayotgan generatsiyani KUTADI va natijasini qaytaradi
+    (shu bilan 'topib bermadi' muammosi hal bo'ladi). Himoyalar: in-flight
+    dedup, 3 daq. failure cache, foydalanuvchiga soatiga 20 generatsiya."""
     now = time.time()
     key = _vocab_ai_search_key(subject, query)
     if now - _VOCAB_AI_FAIL_CACHE.get(key, 0.0) < _VOCAB_AI_FAIL_TTL_SEC:
-        return False
-    if key in _VOCAB_AI_INFLIGHT:
-        return False
+        return None
     uid = int(user_id or 0)
+
+    existing = _VOCAB_AI_INFLIGHT.get(key)
+    if existing is not None and not existing.done():
+        try:
+            return await asyncio.wait_for(asyncio.shield(existing), timeout=30.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return None
+        except Exception:
+            return None
+
     if uid > 0:
         hits = [ts for ts in _VOCAB_AI_USER_HITS.get(uid, []) if now - ts < 3600.0]
         if len(hits) >= _VOCAB_AI_USER_LIMIT_PER_HOUR:
-            return False
-    _VOCAB_AI_INFLIGHT.add(key)
-    try:
-        from ai_generator import generate_missing_word_entry
+            return None
 
-        added = await asyncio.wait_for(
-            generate_missing_word_entry(subject=subject, word=query, added_by=uid or None),
-            timeout=28.0,
+    task = _vocab_ai_generation_task(subject, query, uid)
+    try:
+        result = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Client kutib turolmadi — generatsiya fonida davom etadi
+        return None
+    except Exception:
+        return None
+    if result and uid > 0:
+        hits = [ts for ts in _VOCAB_AI_USER_HITS.get(uid, []) if now - ts < 3600.0]
+        hits.append(time.time())
+        _VOCAB_AI_USER_HITS[uid] = hits
+    return result
+
+
+def _vocab_ai_rows_for_words(conn, words: list[str], subject: str, vocab_lang: str) -> list[dict[str, Any]]:
+    """AI qo'shgan so'zlarning haqiqiy DB qatorlarini (id bilan) oladi."""
+    clean = [str(w or "").strip() for w in words if str(w or "").strip()]
+    if not clean:
+        return []
+    placeholders = ",".join(["?"] * len(clean))
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, word, subject, language, level, translation_uz, translation_ru, definition, example
+            FROM words
+            WHERE LOWER(word) IN ({placeholders}) AND LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)
+            ORDER BY id
+            """,
+            tuple([w.lower() for w in clean] + [subject, vocab_lang]),
         )
-        if added:
-            if uid > 0:
-                hits = [ts for ts in _VOCAB_AI_USER_HITS.get(uid, []) if now - ts < 3600.0]
-                hits.append(now)
-                _VOCAB_AI_USER_HITS[uid] = hits
-            return True
-        _VOCAB_AI_FAIL_CACHE[key] = now
-        return False
-    except Exception as exc:
-        _VOCAB_AI_FAIL_CACHE[key] = now
-        logger.warning("vocabulary AI auto-add failed subject=%s word=%s err=%s", subject, query, exc)
-        return False
-    finally:
-        _VOCAB_AI_INFLIGHT.discard(key)
+        return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        logger.exception("vocabulary AI rows fetch failed")
+        return []
 
 
 @app.get("/learning/tts")

@@ -1876,12 +1876,19 @@ async def generate_missing_word_entry(
     subject: str,
     word: str,
     added_by: Optional[int] = None,
+    related_count: int = 5,
 ) -> Optional[dict[str, Any]]:
-    """Vocabulary qidiruvida topilmagan BIRTA so'zni AI bilan boyitib, words
-    jadvaliga qo'shadi (translation_uz/ru, definition, example, level).
+    """Vocabulary qidiruvida topilmagan so'z uchun: AI asosiy so'zni HAMDA
+    unga o'xshash/qarindosh so'zlarni boyitib, words jadvaliga qo'shadi.
 
-    So'z real lug'aviy birlik bo'lmasa (spam/nonsense) yoki AI yaratolmasa —
-    None qaytaradi. Qo'shilsa — qo'shilgan item dict qaytadi.
+    Qaytaradi: {'main': item|None, 'related': [item...], 'inserted': int}
+    - input REAL so'z    -> main = o'sha so'z, related = qarindosh so'zlar
+    - input xato/nonsense -> main = None, related = eng yaqin REAL so'zlar
+      (masalan typo uchun to'g'rilangan so'z)
+    - hech narsa qo'shilmadi -> None
+
+    Mavjud so'zlar qayta qo'shilmaydi (_insert_vocab_items_into_words
+    existing key'larni o'tkazib yuboradi).
     """
     subject_clean = (subject or "").strip().title()
     if subject_clean not in ("English", "Russian"):
@@ -1893,52 +1900,69 @@ async def generate_missing_word_entry(
     if not key:
         return None
     language = _subject_to_vocab_language(subject_clean)
-    if key in _load_existing_word_keys(subject_clean, language):
-        return None  # poyga paytida boshqa so'rov qo'shib bo'lgan
 
     if subject_clean == "Russian":
         word_kind = "a real Russian dictionary word or a common Russian phrase (Cyrillic)"
     else:
         word_kind = "a real English dictionary word or a common English phrase"
     prompt = (
-        "STRICT VOCABULARY LOOKUP — single word enrichment.\n"
+        "STRICT VOCABULARY LOOKUP AND ENRICHMENT.\n"
         f"subject={subject_clean}\n"
         f"input_word={json.dumps(raw_word, ensure_ascii=False)}\n\n"
-        "STEP 1 — validity gate: if input_word is NOT " + word_kind + ",\n"
-        "including random letters, keyboard mashing, typos of nonexistent words,\n"
-        "names/spam or offensive content — return [] (empty JSON array). Be strict.\n"
-        "STEP 2 — only if valid, return a JSON array with EXACTLY ONE object:\n"
-        '{"word": "<the input word unchanged>", "level": "<BEGINNER|ELEMENTARY|PRE-INTERMEDIATE|INTERMEDIATE|UPPER-INTERMEDIATE|ADVANCED>", '
+        "STEP 1 — validity gate: decide if input_word is exactly " + word_kind + ".\n"
+        "Random letters, keyboard mashing, nonexistent words, names/spam or\n"
+        "offensive content are NOT valid. Typos of real words are NOT valid.\n\n"
+        "STEP 2 — return ONLY a JSON array of vocabulary objects.\n"
+        "Each object schema:\n"
+        '{"word": "...", "level": "<BEGINNER|ELEMENTARY|PRE-INTERMEDIATE|INTERMEDIATE|UPPER-INTERMEDIATE|ADVANCED>", '
         '"translation_uz": "<Uzbek translation>", "translation_ru": "<Russian translation>", '
-        '"definition": "<concise definition in the word\'s language>", "example": "<one natural example sentence>"}\n'
+        '"definition": "<concise definition in the word\'s language>", "example": "<one natural example sentence>"}\n\n'
+        "Case A — input is VALID: the FIRST object MUST be input_word itself (word unchanged),\n"
+        f"followed by {related_count} closely related words (same word family, synonyms, or\n"
+        "topically related vocabulary at a similar level — all real dictionary words).\n"
+        "Case B — input is INVALID (typo/nonsense): do NOT include input_word;\n"
+        f"return up to {related_count} closest REAL words instead (the intended correction\n"
+        "of the typo first, then similar-looking/similar-meaning real words).\n"
         "Return ONLY the JSON array."
     )
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         text = await _gemini_generate(prompt, session=session)
     items = parse_vocabulary_json(text, subject_clean, "MIXED")
-    item = next(
+    if not items:
+        return None
+    main_item = next(
         (p for p in items if _normalize_word_key(p.get("word")) == key),
         None,
     )
-    if not item:
+    related: list[dict[str, Any]] = []
+    for p in items:
+        pk = _normalize_word_key(p.get("word"))
+        if pk and pk != key and all(_normalize_word_key(r.get("word")) != pk for r in related):
+            related.append(p)
+    related = related[: max(0, int(related_count))]
+
+    to_insert = ([main_item] if main_item else []) + related
+    if not to_insert:
         return None
     inserted, _skipped_existing, _skipped_invalid = _insert_vocab_items_into_words(
         subject=subject_clean,
         level="MIXED",
-        items=[item],
+        items=to_insert,
         added_by=added_by,
-        max_insert=1,
     )
-    if inserted <= 0:
+    if inserted <= 0 and not main_item:
         return None
     logger.info(
-        "vocabulary AI auto-add subject=%s word=%s added_by=%s",
+        "vocabulary AI auto-add subject=%s word=%s main=%s related=%s inserted=%s added_by=%s",
         subject_clean,
         raw_word,
+        bool(main_item),
+        len(related),
+        inserted,
         added_by,
     )
-    return item
+    return {"main": main_item, "related": related, "inserted": inserted}
 
 
 def parse_vocabulary_json(raw_text: str, subject: str, level: str) -> list[dict]:
