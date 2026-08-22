@@ -63,7 +63,7 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
       await onApiCall(
         `/teacher/students/${notesStudent.id}/notes/${noteId}`,
         { note_text: editNoteText.trim(), is_visible: editNoteVisible },
-        "PUT",
+        "PATCH",
         "Eslatma tahrirlandi"
       );
       setEditingNoteId(null);
@@ -537,4 +537,3 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
     </div>
   );
 }
-

@@ -129,8 +129,10 @@ function LeaderboardRow({ item, idx }: { item: GenericRow; idx: number }) {
 
 export function TeacherKpiPanel({
   onApiCall,
+  adminMode = false,
 }: {
   onApiCall: (path: string, payload?: GenericRow, method?: string, successText?: string) => Promise<GenericRow | null>;
+  adminMode?: boolean;
 }) {
   const tt = useWebT();
   const [kpiData, setKpiData] = useState<GenericRow | null>(null);
@@ -139,31 +141,46 @@ export function TeacherKpiPanel({
   const [totalTeachers, setTotalTeachers] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<"my" | "leaderboard">("my");
+  const [tab, setTab] = useState<"my" | "leaderboard">(adminMode ? "leaderboard" : "my");
 
   const load = useCallback(async () => {
     setLoading(true);
-    const res = await onApiCall("/api/teacher/kpi/me", undefined, "GET");
+    if (adminMode) {
+      const res = await onApiCall("/admin/teacher-kpi?limit=200", undefined, "GET");
+      const items = (res?.items as GenericRow[]) || [];
+      setLeaderboard(items);
+      setTotalTeachers(Number(res?.total || items.length));
+      setKpiData(null);
+      setRank(null);
+      setLoading(false);
+      return;
+    }
+    const res = await onApiCall("/teacher/kpi/me", undefined, "GET");
     if (res) {
       setKpiData((res.kpi as GenericRow) || null);
       setRank(typeof res.rank === "number" ? res.rank : null);
       setTotalTeachers(Number(res.total_teachers || 0));
     }
-    const lbRes = await onApiCall("/api/teacher/kpi/leaderboard?limit=30", undefined, "GET");
+    const lbRes = await onApiCall("/teacher/kpi/leaderboard?limit=30", undefined, "GET");
     setLeaderboard((lbRes?.items as GenericRow[]) || []);
     setLoading(false);
-  }, [onApiCall]);
+  }, [adminMode, onApiCall]);
 
   useEffect(() => {
     load();
   }, [load]);
 
   const handleRefresh = async () => {
+    if (adminMode) {
+      await load();
+      return;
+    }
     setRefreshing(true);
-    await onApiCall("/api/teacher/kpi/refresh", {}, "POST", "KPI yangilandi ✅");
+    await onApiCall("/teacher/kpi/refresh", {}, "POST", "KPI yangilandi ✅");
     await load();
     setRefreshing(false);
   };
+
 
   const kpi = kpiData || {};
   const score = Number(kpi.kpi_score || 0);
@@ -185,10 +202,10 @@ export function TeacherKpiPanel({
         <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>
           <div>
             <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
-              📊 {tt("teacher.kpi.title", "My KPI")}
+              📊 {adminMode ? "Teacher KPI" : tt("teacher.kpi.title", "My KPI")}
             </h2>
             <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 14 }}>
-              O'qituvchilik unumdorlik ko'rsatkichlari
+              {adminMode ? "Barcha o'qituvchilarning KPI va reytingi" : "O'qituvchilik unumdorlik ko'rsatkichlari"}
             </p>
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -214,12 +231,14 @@ export function TeacherKpiPanel({
 
         {/* Tabs */}
         <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-          <button
-            className={`kpi-tab${tab === "my" ? " active" : ""}`}
-            onClick={() => setTab("my")}
-          >
-            📊 {tt("teacher.kpi.title", "My KPI")}
-          </button>
+          {!adminMode ? (
+            <button
+              className={`kpi-tab${tab === "my" ? " active" : ""}`}
+              onClick={() => setTab("my")}
+            >
+              📊 {tt("teacher.kpi.title", "My KPI")}
+            </button>
+          ) : null}
           <button
             className={`kpi-tab${tab === "leaderboard" ? " active" : ""}`}
             onClick={() => setTab("leaderboard")}

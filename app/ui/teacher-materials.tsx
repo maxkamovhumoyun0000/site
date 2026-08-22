@@ -330,10 +330,11 @@ function UploadModal({
     }
     let ok: GenericRow | null;
     if (editItem) {
-      ok = await onApiCall(`/api/teacher/materials/${editItem.id}`, payload, "PATCH");
+      ok = await onApiCall(`/teacher/materials/${editItem.id}`, payload, "PATCH");
     } else {
-      ok = await onApiCall("/api/teacher/materials", payload, "POST");
+      ok = await onApiCall("/teacher/materials", payload, "POST");
     }
+
     setSaving(false);
     if (ok) { onSaved(); onClose(); }
     else setError("Saqlashda xato");
@@ -554,7 +555,7 @@ export function TeacherMaterialsPanel({
     if (myOnly) params.set("my_only", "true");
     if (subject) params.set("subject", subject);
     params.set("limit", "80");
-    const res = await onApiCall(`/api/teacher/materials?${params}`, undefined, "GET");
+    const res = await onApiCall(`/teacher/materials?${params}`, undefined, "GET");
     setItems((res?.items as GenericRow[]) || []);
     setLoading(false);
   }, [myOnly, subject, onApiCall]);
@@ -573,13 +574,14 @@ export function TeacherMaterialsPanel({
 
   const handleDelete = async (mat: GenericRow) => {
     if (!confirm(tt("teacher.materials.deleteConfirm", "Delete this material?"))) return;
-    await onApiCall(`/api/teacher/materials/${mat.id}`, undefined, "DELETE", "O'chirildi");
+    await onApiCall(`/teacher/materials/${mat.id}`, undefined, "DELETE", "O'chirildi");
     load();
   };
 
   const handleSend = async (mat: GenericRow, groupId: number) => {
-    await onApiCall(`/api/teacher/materials/${mat.id}/send`, { group_id: groupId }, "POST", "Guruhga yuborildi ✅");
+    await onApiCall(`/teacher/materials/${mat.id}/send`, { group_id: groupId }, "POST", "Guruhga yuborildi ✅");
   };
+
 
   return (
     <div className="page-stack">

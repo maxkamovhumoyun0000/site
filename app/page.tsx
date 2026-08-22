@@ -6227,6 +6227,17 @@ function StudentHomework() {
                   )}
                 </div>
               ) : null}
+              {!isVoiceroom && !requiresFile && requiresVoiceMessage ? (
+                <label>
+                  Note
+                  <textarea
+                    value={noteValue}
+                    onChange={(event) => setNoteDraft((prev) => ({ ...prev, [hid]: event.target.value }))}
+                    placeholder={tt("homework.leaveNote", "Izoh qoldiring...")}
+                    disabled={isSubmitting || locked}
+                  />
+                </label>
+              ) : null}
               {!isVoiceroom && !requiresFile && !requiresVoiceMessage ? (
                 <p className="chip">{tt("homework.testOnlyNote", "Bu homework faqat testdan iborat. Test tugashi bilan avtomatik topshiriladi.")}</p>
               ) : null}
@@ -6269,12 +6280,107 @@ function StudentHomework() {
   );
 }
 
+function parseStoredAiResult(value: unknown): GenericRow | null {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as GenericRow;
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as GenericRow : null;
+  } catch {
+    return null;
+  }
+}
+
+function storedHomeworkAiResult(row: GenericRow, kind: "speaking" | "writing" | "note"): GenericRow | null {
+  const parsed = parseStoredAiResult(row.ai_feedback);
+  if (!parsed) return null;
+  const nested = parsed[kind];
+  if (nested && typeof nested === "object" && !Array.isArray(nested) && Number((nested as GenericRow).analysis_version || 0) >= 2) return nested as GenericRow;
+  if (kind === "speaking" && parsed.transcript !== undefined && Number(parsed.analysis_version || 0) >= 2) return parsed;
+  if (kind === "writing" && parsed.transcript === undefined && Number(parsed.analysis_version || 0) >= 2) return parsed;
+  return null;
+}
+
+function aiHomeworkText(locale: Locale, key: string): string {
+  const copy: Record<Locale, Record<string, string>> = {
+    uz: {
+      speaking: "AI ovoz tahlili", writing: "AI yozma ish tahlili", analyzeAudio: "AI audio tahlili", analyzeWriting: "AI rasm/matn tahlili",
+      analyzing: "AI audio tahlil qilmoqda...", checking: "AI yozma ishni tekshirmoqda...", addToNote: "Review notega to'liq qo'shish", addAll: "Barcha AI natijalarini review notega qo'shish",
+      result: "AI tahlil natijasi", score: "Ball", fluency: "Ravonlik", vocabulary: "Lug'at", transcript: "Transkript", pronunciation: "Talaffuz xatolari",
+      grammar: "Grammatika xatolari", spelling: "Imlo xatolari", suggestions: "Tavsiyalar", feedback: "Umumiy xulosa", writingContent: "Aniqlangan matn",
+      strengths: "Kuchli tomonlar", improvements: "Yaxshilash kerak", structure: "Tuzilish", aiDetector: "AI matn detektori", probability: "AI ehtimoli", signals: "Aniqlash belgilari",
+      note: "AI student note tahlili", analyzeNote: "AI note va AI-matn tahlili", analyzed: "AI tahlil qilingan",
+    },
+    ru: {
+      speaking: "AI-анализ аудио", writing: "AI-анализ письменной работы", analyzeAudio: "AI-анализ аудио", analyzeWriting: "AI-анализ изображения/текста",
+      analyzing: "AI анализирует аудио...", checking: "AI проверяет письменную работу...", addToNote: "Добавить в комментарий полностью", addAll: "Добавить все AI-результаты в комментарий",
+      result: "Результат AI-анализа", score: "Балл", fluency: "Беглость речи", vocabulary: "Словарный запас", transcript: "Транскрипт", pronunciation: "Ошибки произношения",
+      grammar: "Грамматические ошибки", spelling: "Орфографические ошибки", suggestions: "Рекомендации", feedback: "Общий вывод", writingContent: "Распознанный текст",
+      strengths: "Сильные стороны", improvements: "Что улучшить", structure: "Структура", aiDetector: "Детектор AI-текста", probability: "Вероятность AI", signals: "Признаки определения",
+      note: "AI-анализ заметки ученика", analyzeNote: "AI-анализ заметки и AI-текста", analyzed: "AI-анализ сохранен",
+    },
+    en: {
+      speaking: "AI speaking analysis", writing: "AI writing analysis", analyzeAudio: "AI audio analysis", analyzeWriting: "AI image/text analysis",
+      analyzing: "AI is analyzing audio...", checking: "AI is checking the written work...", addToNote: "Add full result to review note", addAll: "Add all AI results to review note",
+      result: "AI analysis result", score: "Score", fluency: "Fluency", vocabulary: "Vocabulary", transcript: "Transcript", pronunciation: "Pronunciation errors",
+      grammar: "Grammar errors", spelling: "Spelling errors", suggestions: "Suggestions", feedback: "Overall feedback", writingContent: "Recognized text",
+      strengths: "Strengths", improvements: "Improvements", structure: "Structure", aiDetector: "AI text detector", probability: "AI probability", signals: "Detection signals",
+      note: "AI student note analysis", analyzeNote: "AI note and authorship analysis", analyzed: "AI analysis saved",
+    },
+  };
+  return copy[locale][key] || copy.uz[key] || key;
+}
+
+function aiResultList(value: unknown, format: (item: any) => string = (item) => String(item || "")): string[] {
+  return (Array.isArray(value) ? value : []).map(format).map((item) => item.trim()).filter(Boolean);
+}
+
+function formatAiResultForReview(result: GenericRow, kind: "speaking" | "writing" | "note", locale: Locale): string {
+  const label = (key: string) => aiHomeworkText(locale, key);
+  const lines: string[] = [`[${kind === "speaking" ? label("speaking") : kind === "note" ? label("note") : label("writing")}]`];
+  const field = (name: string, value: unknown) => {
+    const text = String(value || "").trim();
+    if (text) lines.push(`${name}: ${text}`);
+  };
+  const list = (name: string, values: string[]) => {
+    if (values.length) lines.push(`${name}:\n${values.map((value) => `- ${value}`).join("\n")}`);
+  };
+
+  if (kind === "speaking") {
+    if (result.overall_score !== undefined && result.overall_score !== null) field(label("score"), `${result.overall_score}/10`);
+    if (result.fluency_score !== undefined && result.fluency_score !== null) field(label("fluency"), `${result.fluency_score}/10`);
+    if (result.vocabulary_score !== undefined && result.vocabulary_score !== null) field(label("vocabulary"), `${result.vocabulary_score}/10`);
+    field(label("transcript"), result.transcript);
+    list(label("pronunciation"), aiResultList(result.pronunciation_errors, (item) => [item?.word, item?.note].filter(Boolean).join(" - ")));
+    list(label("grammar"), aiResultList(result.grammar_errors, (item) => [item?.original, item?.correction && `-> ${item.correction}`, item?.explanation].filter(Boolean).join(" - ")));
+    list(label("suggestions"), aiResultList(result.suggestions));
+    field(label("feedback"), result.overall_feedback || result.summary);
+  } else {
+    if (result.suggested_score !== undefined && result.suggested_score !== null) field(label("score"), `${result.suggested_score}/100`);
+    field(label("writingContent"), result.writing_content);
+    list(label("grammar"), aiResultList(result.grammar_errors, (item) => [item?.original, item?.correction && `-> ${item.correction}`, item?.explanation].filter(Boolean).join(" - ")));
+    list(label("spelling"), aiResultList(result.spelling_errors, (item) => [item?.original, item?.correction && `-> ${item.correction}`].filter(Boolean).join(" - ")));
+    field(label("vocabulary"), result.vocabulary_feedback);
+    field(label("structure"), result.structure_feedback);
+    list(label("strengths"), aiResultList(result.strengths));
+    list(label("improvements"), aiResultList(result.improvements));
+    if (result.ai_generated_probability !== undefined && result.ai_generated_probability !== null) {
+      field(label("aiDetector"), `${result.ai_detection_label || ""} (${label("probability")}: ${result.ai_generated_probability}%) ${result.ai_detection_explanation || ""}`.trim());
+    }
+    list(label("signals"), aiResultList(result.ai_detection_signals));
+    field(label("feedback"), result.overall_feedback);
+  }
+  return lines.join("\n");
+}
+
 function TeacherHomeworkPanel({
   onApiCall,
 }: {
   onApiCall: (path: string, payload?: GenericRow, method?: "GET" | "POST" | "PATCH" | "DELETE", successText?: string) => Promise<GenericRow | null>;
 }) {
   const tt = useWebT();
+  const locale = useWebLocale();
   const [items, setItems] = useState<GenericRow[]>([]);
   const [students, setStudents] = useState<GenericRow[]>([]);
   const [groups, setGroups] = useState<GenericRow[]>([]);
@@ -6314,6 +6420,21 @@ function TeacherHomeworkPanel({
   const [aiAnalyzeResult, setAiAnalyzeResult] = useState<Record<string, GenericRow>>({});
   const [aiCheckBusy, setAiCheckBusy] = useState<Record<string, boolean>>({});
   const [aiCheckResult, setAiCheckResult] = useState<Record<string, GenericRow>>({});
+  const [aiNoteBusy, setAiNoteBusy] = useState<Record<string, boolean>>({});
+  const [aiNoteResult, setAiNoteResult] = useState<Record<string, GenericRow>>({});
+
+  function addAiResultsToReview(reviewKey: string, kinds: Array<"speaking" | "writing" | "note">) {
+    const sections = kinds.flatMap((kind) => {
+      const transient = kind === "speaking" ? aiAnalyzeResult[reviewKey] : kind === "writing" ? aiCheckResult[reviewKey] : aiNoteResult[reviewKey];
+      const result = transient || storedHomeworkAiResult(reviewModalRow || {}, kind);
+      return result ? [formatAiResultForReview(result, kind, locale)] : [];
+    });
+    if (!sections.length) return;
+    setReviewNote((current) => {
+      const existing = String(current[reviewKey] || "").trim();
+      return { ...current, [reviewKey]: [existing, ...sections].filter(Boolean).join("\n\n") };
+    });
+  }
 
   function datetimeLocalValue(raw: unknown) {
     const value = String(raw || "").trim();
@@ -7071,6 +7192,7 @@ function TeacherHomeworkPanel({
 	          const reviewStudentId = Number(row.submission_student_id || row.student_id || 0);
 	          const reviewKey = `${Number(row.id || 0)}:${reviewStudentId}`;
 	          const proofUrls = proofUrlsForHomework(row);
+	          const imageProofUrls = proofUrls.filter((url) => /\.(avif|gif|jpe?g|png|webp)$/i.test(String(url).split("?")[0]));
 	          const boundedIndex = proofUrls.length ? Math.min(Math.max(0, reviewImageIndex), proofUrls.length - 1) : 0;
 	          const currentProof = proofUrls[boundedIndex] ? resolveAssetUrl(String(proofUrls[boundedIndex])) : "";
 	          const studentName = homeworkReviewStudentName(row);
@@ -7078,6 +7200,10 @@ function TeacherHomeworkPanel({
 	          const reviewBusyNow = Boolean(reviewBusy[reviewKey]);
 	          const isNewSubject = ["matematika", "ona tili", "tarix", "arab tili"].includes(String(row.group_subject || "").trim().toLowerCase());
 	          const submittedVoiceUrl = String(row.submission_voice_message_url || row.voice_message_url || "");
+	          const submittedStudentNote = String(row.submission_note || row.note || "").trim();
+	          const speakingAiResult = aiAnalyzeResult[reviewKey] || storedHomeworkAiResult(row, "speaking");
+	          const writingAiResult = aiCheckResult[reviewKey] || storedHomeworkAiResult(row, "writing");
+	          const noteAiResult = aiNoteResult[reviewKey] || storedHomeworkAiResult(row, "note");
 	          return (
 	            <ModalPortal open={Boolean(reviewModalRow)}>
 	              <div className="overlay-modal-backdrop" onClick={() => { if (!reviewBusyNow) setReviewModalRow(null); }}>
@@ -7144,62 +7270,77 @@ function TeacherHomeworkPanel({
 	                      <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
 	                        <button
 	                          className="btn btn-soft small"
-	                          disabled={aiAnalyzeBusy[reviewKey]}
+	                          disabled={Boolean(aiAnalyzeBusy[reviewKey] || speakingAiResult)}
 	                          onClick={async () => {
 	                            const hwId = Number(row.id || 0);
-	                            if (!hwId || !reviewStudentId) return;
+	                            if (!hwId || !reviewStudentId || speakingAiResult) return;
 	                            setAiAnalyzeBusy((p) => ({ ...p, [reviewKey]: true }));
-	                            const res = await onApiCall(`/api/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-analyze`, undefined, 'POST', '');
-	                            if (res?.result) setAiAnalyzeResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
-	                            setAiAnalyzeBusy((p) => ({ ...p, [reviewKey]: false }));
+	                            try {
+	                              const res = await onApiCall(`/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-analyze`, undefined, 'POST', '');
+	                              if (res?.result) setAiAnalyzeResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
+	                            } finally {
+	                              setAiAnalyzeBusy((p) => ({ ...p, [reviewKey]: false }));
+	                            }
 	                          }}
 	                          type="button"
 	                        >
-	                          {aiAnalyzeBusy[reviewKey] ? tt('hw.aiAnalyzing', 'AI tahlil qilmoqda...') : tt('hw.aiAnalyze', '🎤 AI Tahlil')}
+	                          {aiAnalyzeBusy[reviewKey] ? aiHomeworkText(locale, 'analyzing') : speakingAiResult ? `🎤 ${aiHomeworkText(locale, 'analyzed')}` : `🎤 ${aiHomeworkText(locale, 'analyzeAudio')}`}
 	                        </button>
-	                        {aiAnalyzeResult[reviewKey] && (
+	                        {speakingAiResult && (
 	                          <button
 	                            className="btn btn-soft small"
 	                            type="button"
 	                            onClick={() => {
-	                              const r = aiAnalyzeResult[reviewKey];
-	                              const summary = [r.summary || '', ...(r.suggestions as string[] || [])].filter(Boolean).join(' | ');
-	                              setReviewNote((p) => ({ ...p, [reviewKey]: (p[reviewKey] ? p[reviewKey] + ' | ' : '') + `[AI] ${summary}` }));
+	                              addAiResultsToReview(reviewKey, ['speaking']);
 	                            }}
 	                          >
-	                            {tt('hw.aiAddToNote', 'Review notega qo\'shish')}
+	                            {aiHomeworkText(locale, 'addToNote')}
 	                          </button>
 	                        )}
 	                      </div>
 	                      {/* AI Result Panel */}
-	                      {aiAnalyzeResult[reviewKey] ? (() => {
-	                        const r = aiAnalyzeResult[reviewKey];
+	                      {speakingAiResult ? (() => {
+	                        const r = speakingAiResult;
 	                        return (
 	                          <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#6c63ff11', border: '1px solid #6c63ff33', fontSize: 13 }}>
-	                            <strong>🎤 {tt('hw.aiResult', 'AI tahlil natijasi')}</strong>
+	                            <strong>🎤 {aiHomeworkText(locale, 'result')}</strong>
 	                            <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-	                              {r.overall_score !== undefined && <span>⭐ {tt('hw.aiScore','Ball')}: <strong>{Number(r.overall_score).toFixed(1)}/10</strong></span>}
-	                              {r.fluency_score !== undefined && <span>💬 {tt('hw.aiFluency','Ravonlik')}: <strong>{Number(r.fluency_score).toFixed(1)}/10</strong></span>}
-	                              {r.vocabulary_score !== undefined && <span>📚 {tt('hw.aiVocabulary','Lug\'at')}: <strong>{Number(r.vocabulary_score).toFixed(1)}/10</strong></span>}
+	                              {r.overall_score !== undefined && <span>⭐ {aiHomeworkText(locale, 'score')}: <strong>{Number(r.overall_score).toFixed(1)}/10</strong></span>}
+	                              {r.fluency_score !== undefined && <span>💬 {aiHomeworkText(locale, 'fluency')}: <strong>{Number(r.fluency_score).toFixed(1)}/10</strong></span>}
+	                              {r.vocabulary_score !== undefined && <span>📚 {aiHomeworkText(locale, 'vocabulary')}: <strong>{Number(r.vocabulary_score).toFixed(1)}/10</strong></span>}
 	                            </div>
-	                            {r.transcript && <p style={{ marginTop: 8, opacity: 0.8 }}><strong>{tt('hw.aiTranscript','Transkript')}:</strong> {String(r.transcript).slice(0, 300)}</p>}
+	                            {r.transcript && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'transcript')}:</strong> {String(r.transcript)}</p>}
 	                            {(r.pronunciation_errors as any[] || []).length > 0 && (
-	                              <p style={{ marginTop: 6, color: '#f59e0b' }}><strong>{tt('hw.aiPronunciation','Talaffuz xatolari')}:</strong> {(r.pronunciation_errors as any[]).map((e: any) => e.word).join(', ')}</p>
+	                              <p style={{ marginTop: 6, color: '#f59e0b' }}><strong>{aiHomeworkText(locale, 'pronunciation')}:</strong> {(r.pronunciation_errors as any[]).map((e: any) => [e.word, e.note].filter(Boolean).join(' - ')).join('; ')}</p>
 	                            )}
-	                            {r.summary && <p style={{ marginTop: 6, opacity: 0.75 }}>{String(r.summary).slice(0, 200)}</p>}
+	                            {(r.grammar_errors as any[] || []).length > 0 && <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>}
+	                            {(r.overall_feedback || r.summary) && <p style={{ marginTop: 6, opacity: 0.75, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback || r.summary)}</p>}
 	                          </div>
 	                        );
 	                      })() : null}
 	                    </section>
 	                  ) : null}
 	                  <section className="homework-review-gallery">
-	                    {currentProof ? (
+	                    {currentProof || row.submission_note || row.note ? (
 	                      <>
-	                        {String(currentProof).match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
-	                          <img src={currentProof} alt={`Homework proof ${boundedIndex + 1}`} />
+	                        {currentProof ? (
+	                          String(currentProof).match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
+	                            <img src={currentProof} alt={`Homework proof ${boundedIndex + 1}`} />
+	                          ) : (
+	                            <a href={currentProof} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+	                          )
 	                        ) : (
-	                          <a href={currentProof} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+	                          <div className="p-3 bg-surface-soft dark:bg-white/5 rounded-xl border border-line dark:border-white/10 text-sm">
+	                            <strong className="block mb-1 opacity-70">Student matnli javobi:</strong>
+	                            <p className="whitespace-pre-wrap">{String(row.submission_note || row.note)}</p>
+	                          </div>
 	                        )}
+	                        {currentProof && submittedStudentNote ? (
+	                          <div className="p-3 mt-3 bg-surface-soft dark:bg-white/5 rounded-xl border border-line dark:border-white/10 text-sm">
+	                            <strong className="block mb-1 opacity-70">Student matnli javobi:</strong>
+	                            <p className="whitespace-pre-wrap">{submittedStudentNote}</p>
+	                          </div>
+	                        ) : null}
 	                        {proofUrls.length > 1 ? (
 	                          <div className="row-between mt-3">
 	                            <button className="btn btn-soft small" type="button" onClick={() => setReviewImageIndex((prev) => (prev <= 0 ? proofUrls.length - 1 : prev - 1))}>Oldingi</button>
@@ -7207,74 +7348,120 @@ function TeacherHomeworkPanel({
 	                            <button className="btn btn-soft small" type="button" onClick={() => setReviewImageIndex((prev) => (prev + 1) % proofUrls.length)}>Keyingi</button>
 	                          </div>
 	                        ) : null}
-	                        {/* AI Check Images */}
+	                        {/* AI Check Images / Essay */}
+	                        {imageProofUrls.length ? (
+	                        <>
 	                        <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
 	                          <button
 	                            className="btn btn-soft small"
-	                            disabled={aiCheckBusy[reviewKey]}
+	                            disabled={Boolean(aiCheckBusy[reviewKey] || writingAiResult)}
 	                            onClick={async () => {
 	                              const hwId = Number(row.id || 0);
-	                              if (!hwId || !reviewStudentId) return;
+	                              if (!hwId || !reviewStudentId || writingAiResult) return;
 	                              setAiCheckBusy((p) => ({ ...p, [reviewKey]: true }));
-	                              const res = await onApiCall(`/api/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-check-images`, undefined, 'POST', '');
-	                              if (res?.result) setAiCheckResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
-	                              setAiCheckBusy((p) => ({ ...p, [reviewKey]: false }));
+	                              try {
+	                                const res = await onApiCall(`/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-check-images`, undefined, 'POST', '');
+	                                if (res?.result) setAiCheckResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
+	                              } finally {
+	                                setAiCheckBusy((p) => ({ ...p, [reviewKey]: false }));
+	                              }
 	                            }}
 	                            type="button"
 	                          >
-	                            {aiCheckBusy[reviewKey] ? tt('hw.aiChecking', 'AI tekshirmoqda...') : tt('hw.aiCheckImages', '🖼️ AI Tekshirish')}
+	                            {aiCheckBusy[reviewKey] ? aiHomeworkText(locale, 'checking') : writingAiResult ? `🖼️ ${aiHomeworkText(locale, 'analyzed')}` : `🖼️ ${aiHomeworkText(locale, 'analyzeWriting')}`}
 	                          </button>
-	                          {aiCheckResult[reviewKey] && (
+	                          {writingAiResult && (
 	                            <button
 	                              className="btn btn-soft small"
 	                              type="button"
 	                              onClick={() => {
-	                                const r = aiCheckResult[reviewKey];
-	                                const txt = String(r.overall_feedback || r.writing_content || '').slice(0, 200);
-	                                const score = r.suggested_score !== undefined ? ` [Ball: ${r.suggested_score}]` : '';
-	                                const aiProb = r.ai_generated_probability !== undefined ? ` [AI Probability: ${r.ai_generated_probability}%]` : '';
-	                                setReviewNote((p) => ({ ...p, [reviewKey]: (p[reviewKey] ? p[reviewKey] + ' | ' : '') + `[AI Writing]${score}${aiProb} ${txt}` }));
+	                                addAiResultsToReview(reviewKey, ['writing']);
 	                              }}
 	                            >
-	                              {tt('hw.aiAddToNote', "Review notega qo'shish")}
+	                              {aiHomeworkText(locale, 'addToNote')}
 	                            </button>
 	                          )}
 	                        </div>
-	                        {aiCheckResult[reviewKey] ? (() => {
-	                          const r = aiCheckResult[reviewKey];
+	                        {writingAiResult ? (() => {
+	                          const r = writingAiResult;
 	                          const aiProb = Number(r.ai_generated_probability ?? -1);
 	                          const aiColor = aiProb >= 70 ? "#ef4444" : aiProb >= 40 ? "#f59e0b" : "#10b981";
 	                          const aiLabel = r.ai_detection_label ? String(r.ai_detection_label) : (aiProb >= 70 ? "Likely AI-Generated" : aiProb >= 40 ? "Uncertain" : "Likely Human");
 	                          return (
 	                            <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#a855f711', border: '1px solid #a855f733', fontSize: 13 }}>
 	                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-	                                <strong>🖼️ {tt('hw.aiResult','AI tekshirish natijasi')}</strong>
-	                                {r.suggested_score !== undefined && <span style={{ background: '#a855f722', borderRadius: 8, padding: '2px 10px', fontWeight: 700 }}>Ball: {Number(r.suggested_score)}/100</span>}
+	                              <strong>🖼️ {aiHomeworkText(locale, 'result')}</strong>
+	                              {r.suggested_score !== undefined && <span style={{ background: '#a855f722', borderRadius: 8, padding: '2px 10px', fontWeight: 700 }}>{aiHomeworkText(locale, 'score')}: {Number(r.suggested_score)}/100</span>}
 	                              </div>
 	                              {aiProb >= 0 && (
 	                                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: aiColor + '18', border: `1px solid ${aiColor}44`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-	                                  <span style={{ fontSize: 12, fontWeight: 700, color: aiColor }}>🤖 AI Matn Detektor: {aiLabel}</span>
-	                                  <span style={{ fontSize: 13, fontWeight: 900, color: aiColor }}>{aiProb}% AI ehtimoli</span>
+	                                  <span style={{ fontSize: 12, fontWeight: 700, color: aiColor }}>🤖 {aiHomeworkText(locale, 'aiDetector')}: {aiLabel}</span>
+	                                  <span style={{ fontSize: 13, fontWeight: 900, color: aiColor }}>{aiProb}% {aiHomeworkText(locale, 'probability')}</span>
 	                                </div>
 	                              )}
-	                              {r.overall_feedback && <p style={{ marginTop: 8, opacity: 0.8 }}>{String(r.overall_feedback).slice(0, 300)}</p>}
+	                              {r.writing_content && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'writingContent')}:</strong> {String(r.writing_content)}</p>}
+	                              {r.overall_feedback && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback)}</p>}
 	                              {(r.grammar_errors as any[] || []).length > 0 && (
-	                                <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{tt('hw.aiGrammarErrors','Grammatika xatolari')}:</strong> {(r.grammar_errors as any[]).map((e: any) => e.original).join(', ')}</p>
+	                                <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>
 	                              )}
 	                              {(r.strengths as string[] || []).length > 0 && (
-	                                <p style={{ marginTop: 6, color: '#10b981' }}><strong>{tt('hw.aiStrengths','Kuchli tomonlar')}:</strong> {(r.strengths as string[]).join(', ')}</p>
+	                                <p style={{ marginTop: 6, color: '#10b981' }}><strong>{aiHomeworkText(locale, 'strengths')}:</strong> {(r.strengths as string[]).join(', ')}</p>
 	                              )}
 	                            </div>
 	                          );
 	                        })() : null}
+	                        </>
+	                        ) : null}
+	                        {submittedStudentNote ? (
+	                          <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                            <button
+	                              className="btn btn-soft small"
+	                              disabled={Boolean(aiNoteBusy[reviewKey] || noteAiResult)}
+	                              onClick={async () => {
+	                                const hwId = Number(row.id || 0);
+	                                if (!hwId || !reviewStudentId || noteAiResult) return;
+	                                setAiNoteBusy((p) => ({ ...p, [reviewKey]: true }));
+	                                try {
+	                                  const res = await onApiCall(`/teacher/homework/${hwId}/submissions/${reviewStudentId}/ai-check-note`, undefined, 'POST', '');
+	                                  if (res?.result) setAiNoteResult((p) => ({ ...p, [reviewKey]: res.result as GenericRow }));
+	                                } finally {
+	                                  setAiNoteBusy((p) => ({ ...p, [reviewKey]: false }));
+	                                }
+	                              }}
+	                              type="button"
+	                            >
+	                              {aiNoteBusy[reviewKey] ? aiHomeworkText(locale, 'checking') : noteAiResult ? `📝 ${aiHomeworkText(locale, 'analyzed')}` : `📝 ${aiHomeworkText(locale, 'analyzeNote')}`}
+	                            </button>
+	                            {noteAiResult ? (
+	                              <button className="btn btn-soft small" type="button" onClick={() => addAiResultsToReview(reviewKey, ['note'])}>
+	                                {aiHomeworkText(locale, 'addToNote')}
+	                              </button>
+	                            ) : null}
+	                            {noteAiResult ? (
+	                              <div style={{ width: '100%', marginTop: 4, padding: 14, borderRadius: 12, background: '#0ea5e911', border: '1px solid #0ea5e933', fontSize: 13 }}>
+	                                <strong>📝 {aiHomeworkText(locale, 'note')}</strong>
+	                                <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{formatAiResultForReview(noteAiResult, 'note', locale)}</p>
+	                              </div>
+	                            ) : null}
+	                          </div>
+	                        ) : null}
 	                      </>
-
 	                    ) : (
-	                      <div className="homework-proof-placeholder">Fayl yuklanmagan</div>
+	                      <div className="homework-proof-placeholder">Fayl yoki matn yuklanmagan</div>
 	                    )}
 	                  </section>
 
 	                  <section className="homework-review-actions">
+	                    {(speakingAiResult || writingAiResult || noteAiResult) ? (
+	                      <button
+	                        className="btn btn-soft small"
+	                        type="button"
+	                        disabled={reviewBusyNow}
+	                        onClick={() => addAiResultsToReview(reviewKey, ['speaking', 'writing', 'note'])}
+	                      >
+	                        {aiHomeworkText(locale, 'addAll')}
+	                      </button>
+	                    ) : null}
 	                    <select
 	                      value={reviewStatus[reviewKey] || "done"}
 	                      onChange={(event) => setReviewStatus((prev) => ({ ...prev, [reviewKey]: event.target.value as "done" | "not_done" }))}
@@ -7294,11 +7481,12 @@ function TeacherHomeworkPanel({
 	                        placeholder="D'point"
 	                      />
 	                    ) : null}
-	                    <input
+	                    <textarea
 	                      value={reviewNote[reviewKey] || ""}
 	                      onChange={(event) => setReviewNote((prev) => ({ ...prev, [reviewKey]: event.target.value }))}
-	                      placeholder="Review note"
+	                      placeholder={tt('homework.reviewNote', 'Review note')}
 	                      disabled={reviewBusyNow}
+	                      rows={5}
 	                    />
 	                    <button className="btn btn-primary" disabled={reviewBusyNow} onClick={() => submitReview(row, reviewStudentId, reviewKey)} type="button">
 	                      {reviewBusyNow ? "Saving..." : "Tasdiqlash"}
@@ -15306,7 +15494,7 @@ function AdminSection({
   }
 
   if (section === "kpi") {
-    return <TeacherKpiPanel onApiCall={onAdminCallRaw} />;
+    return <TeacherKpiPanel onApiCall={onAdminCallRaw} adminMode />;
   }
 
 

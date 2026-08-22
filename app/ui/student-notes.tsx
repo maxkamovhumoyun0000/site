@@ -4,12 +4,11 @@ import { useState, useEffect, useCallback } from "react";
 
 type GenericRow = Record<string, unknown>;
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "";
-
 async function apiFetch(path: string, options?: RequestInit): Promise<GenericRow | null> {
   try {
-    const token = typeof window !== "undefined" ? localStorage.getItem("token") || "" : "";
-    const res = await fetch(`${API_BASE}${path}`, {
+    const token = typeof window !== "undefined" ? (localStorage.getItem("diamond_token") || localStorage.getItem("token") || "") : "";
+    const cleanPath = path.startsWith("/") ? path : `/${path}`;
+    const res = await fetch(`/api${cleanPath}`, {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(options?.headers || {}) },
       ...options,
     });
@@ -19,6 +18,7 @@ async function apiFetch(path: string, options?: RequestInit): Promise<GenericRow
     return null;
   }
 }
+
 
 function NoteCard({
   note,
@@ -32,7 +32,7 @@ function NoteCard({
   onEdit?: (note: GenericRow) => void;
 }) {
   const id = Number(note.id || 0);
-  const text = String(note.note || note.content || "");
+  const text = String(note.note_text || note.note || note.content || "");
   const createdAt = String(note.created_at || "").slice(0, 16).replace("T", " ");
   const teacherName = note.teacher_name
     ? String(note.teacher_name)
@@ -197,8 +197,13 @@ export function StudentNotesPanel() {
     setSaving(true);
     if (editingNote) {
       await apiFetch(`/student/notes/${editingNote.id}`, {
-        method: "PUT",
-        body: JSON.stringify({ content: noteText.trim() }),
+        method: "PATCH",
+        body: JSON.stringify({
+          content: noteText.trim(),
+          tag: selectedTag.label,
+          tag_color: selectedTag.color,
+          is_pinned: isPinned,
+        }),
       });
     } else {
       await apiFetch("/student/notes", {
@@ -217,6 +222,8 @@ export function StudentNotesPanel() {
   const handleStartEdit = (n: GenericRow) => {
     setEditingNote(n);
     setNoteText(String(n.content || n.note || ""));
+    setSelectedTag(TAG_OPTIONS.find((option) => option.label === String(n.tag || "")) || TAG_OPTIONS[0]);
+    setIsPinned(Boolean(n.is_pinned));
     setAddOpen(true);
   };
 
@@ -227,7 +234,7 @@ export function StudentNotesPanel() {
 
 
   const teacherFiltered = teacherNotes.filter((n) => {
-    const text = String(n.note || n.content || "").toLowerCase();
+    const text = String(n.note_text || n.note || n.content || "").toLowerCase();
     const tag = String(n.tag || "");
     return (
       (!search || text.includes(search.toLowerCase())) &&
@@ -236,7 +243,7 @@ export function StudentNotesPanel() {
   });
 
   const myFiltered = myNotes.filter((n) => {
-    const text = String(n.note || n.content || "").toLowerCase();
+    const text = String(n.note_text || n.note || n.content || "").toLowerCase();
     const tag = String(n.tag || "");
     return (
       (!search || text.includes(search.toLowerCase())) &&
