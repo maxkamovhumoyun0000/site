@@ -6899,6 +6899,19 @@ def _require_student_learning_access(user: dict) -> None:
     raise HTTPException(status_code=403, detail="Siz hali guruhga biriktirilmagansiz")
 
 
+def _require_placement_access(user: dict) -> None:
+    """Placement (daraja) testi — kirish testi: guruhga biriktirilish TALAB QILINMAYDI.
+
+    Faqat akkaunt bloklangan bo'lsa rad etiladi; access_enabled/muddat/guruh
+    tekshiruvi qo'llanmaydi (yangi o'quvchi placement'ni guruhdan oldin topshiradi).
+    """
+    role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+    if role != "student":
+        return
+    if int(user.get("blocked") or 0) == 1:
+        raise HTTPException(status_code=403, detail="Account is blocked")
+
+
 def _teacher_manageable_groups(teacher_id: int) -> list[dict]:
     own = _safe_call(lambda: get_groups_by_teacher(int(teacher_id)), []) or []
     temp = _safe_call(lambda: get_groups_with_temporary_access_for_teacher(int(teacher_id)), []) or []
@@ -30835,7 +30848,7 @@ async def update_user_language_pref(payload: UserLanguageUpdateRequest, authoriz
 async def student_placement_session(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_placement_access(user)
     user_id = int(user.get("id") or 0)
     required = bool(int(user.get("placement_required") or 0))
     subject = _placement_subject_for_user(user)
@@ -30874,7 +30887,7 @@ async def student_placement_start(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_placement_access(user)
     user = _require_student_face_setup_complete(user)
     user_id = int(user.get("id") or 0)
     if not bool(int(user.get("placement_required") or 0)):
@@ -30936,7 +30949,7 @@ async def student_placement_start(
 async def student_placement_answer(payload: PlacementAnswerRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_placement_access(user)
     user_id = int(user.get("id") or 0)
     _ensure_proctoring_session_access(
         user,
