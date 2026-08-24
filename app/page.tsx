@@ -37,6 +37,7 @@ import {
 import { StudentFaceEnrollmentPanel, StudentTestProctoring, useStudentProctoringStatus } from "./student/proctoring";
 import { AdminVideos } from "./ui/admin-videos";
 import { AdminBooks } from "./ui/admin-books";
+import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import { AdminSms } from "./ui/admin-sms";
@@ -15554,6 +15555,10 @@ function AdminSection({
 
   if (section === "books") {
     return <AdminBooks rolePrefix="admin" apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs })} />;
+  }
+
+  if (section === "grammar") {
+    return <AdminGrammar apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs })} />;
   }
 
   if (section === "generator") {

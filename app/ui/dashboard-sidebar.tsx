@@ -51,7 +51,7 @@ export function orderSections(sections: string[]) {
       ? [
           "home", "users", "groups", "family-groups", "payments", "purchases", "homework",
           "attendance", "holidays", "admin-callbacks",
-          "videos", "books", "courses", "gifts", "reviews", "leaderboard",
+          "videos", "books", "grammar", "courses", "gifts", "reviews", "leaderboard",
           "generator", "results", "competitions-history", "broadcasts", "surveys",
           "domain-email", "dpoint-settings", "sms", "chats", "notifications", "profile",
         ]

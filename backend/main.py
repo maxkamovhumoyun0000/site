@@ -351,11 +351,16 @@ from holiday_otmen_service import (
 from i18n import detect_lang_from_user, t
 from payment import export_payment_history_to_xlsx
 from backend.grammar_catalog import (
+    admin_topic_rows as grammar_admin_topic_rows,
     catalog_meta as grammar_catalog_meta,
+    deactivate_admin_topic as grammar_deactivate_admin_topic,
     get_topic,
+    get_topics_for_subject as grammar_get_topics_for_subject,
     get_topics_by_level,
     normalize_question_payload as grammar_normalize_question_payload,
+    reorder_admin_topics as grammar_reorder_admin_topics,
     resolve_topic_with_fallback as grammar_resolve_topic_with_fallback,
+    save_admin_topic as grammar_save_admin_topic,
     serialize_topic_payload as grammar_serialize_topic_payload,
 )
 from backend.proctoring.schemas import (
@@ -2200,6 +2205,26 @@ class GrammarQuizAnswerRequest(BaseModel):
     session_id: str
     selected_option_index: int | None = None
     proctoring_session_id: int | None = None
+
+
+class AdminGrammarQuestionRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=3000)
+    options: list[str] = Field(min_length=2, max_length=8)
+    correct_index: int = Field(default=0, ge=0, le=7)
+
+
+class AdminGrammarTopicRequest(BaseModel):
+    topic_id: str = Field(min_length=2, max_length=160)
+    subject: Literal["English", "Russian"]
+    level: Literal["A1", "A2", "B1", "B2", "C1"]
+    title: str = Field(min_length=2, max_length=300)
+    rule: str = Field(default="", max_length=16000)
+    questions: list[AdminGrammarQuestionRequest] = Field(default_factory=list, max_length=100)
+
+
+class AdminGrammarTopicReorderRequest(BaseModel):
+    subject: Literal["English", "Russian"]
+    topic_ids: list[str] = Field(min_length=1, max_length=1000)
 
 
 class VocabularyQuizStartRequest(BaseModel):
@@ -21160,6 +21185,61 @@ async def student_overview(
 _GRAMMAR_LEVELS = ("A1", "A2", "B1", "B2", "C1")
 
 
+@app.get("/admin/grammar/topics")
+async def admin_grammar_topics(
+    subject: Literal["English", "Russian"] | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    return {"items": grammar_admin_topic_rows(subject), **grammar_catalog_meta()}
+
+
+@app.post("/admin/grammar/topics")
+@app.put("/admin/grammar/topics/{topic_id}")
+async def admin_save_grammar_topic(
+    payload: AdminGrammarTopicRequest,
+    topic_id: str | None = None,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    if topic_id and str(topic_id).strip() != str(payload.topic_id).strip():
+        raise HTTPException(status_code=400, detail="topic_id cannot be changed")
+    try:
+        saved = grammar_save_admin_topic(payload.model_dump(), int(user.get("id") or 0))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": saved, **grammar_catalog_meta()}
+
+
+@app.post("/admin/grammar/topics/reorder")
+async def admin_reorder_grammar_topics(
+    payload: AdminGrammarTopicReorderRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    try:
+        grammar_reorder_admin_topics(
+            payload.subject,
+            payload.topic_ids,
+            int(user.get("id") or 0),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"items": grammar_admin_topic_rows(), **grammar_catalog_meta()}
+
+
+@app.delete("/admin/grammar/topics/{topic_id}")
+async def admin_delete_grammar_topic(topic_id: str, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    if not grammar_deactivate_admin_topic(topic_id, int(user.get("id") or 0)):
+        raise HTTPException(status_code=404, detail="Grammar topic not found")
+    return {"ok": True, **grammar_catalog_meta()}
+
+
 @lru_cache(maxsize=64)
 def _student_grammar_level_items_cached(subject: str, catalog_version: str) -> tuple[tuple[str, int], ...]:
     rows: list[tuple[str, int]] = []
@@ -21176,9 +21256,7 @@ def _student_grammar_level_items_cached(subject: str, catalog_version: str) -> t
 def _student_grammar_topic_items_cached(subject: str, level: str, catalog_version: str) -> tuple[dict[str, Any], ...]:
     selected_level = str(level or "").strip().upper()
     if selected_level == "ALL":
-        topics = []
-        for code in _GRAMMAR_LEVELS:
-            topics.extend(get_topics_by_level(code, subject=subject) or [])
+        topics = grammar_get_topics_for_subject(subject)
     else:
         topics = get_topics_by_level(selected_level, subject=subject) or []
     return tuple(
@@ -21411,10 +21489,10 @@ async def student_grammar_quiz_start(
     attempts = get_grammar_attempts(user_id, topic_payload["topic_id"])
     if attempts >= GRAMMAR_TOPIC_ATTEMPT_LIMIT:
         raise HTTPException(status_code=409, detail="Grammar topic attempt limit reached")
-    increment_grammar_attempt(user_id, topic_payload["topic_id"])
     questions = list(topic_payload["questions"])
     if not questions:
         raise HTTPException(status_code=400, detail="No grammar questions found for this topic")
+    increment_grammar_attempt(user_id, topic_payload["topic_id"])
     session_id = f"gq_{uuid4().hex}"
     GRAMMAR_QUIZ_SESSIONS[session_id] = {
         "user_id": user_id,

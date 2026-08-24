@@ -11,6 +11,7 @@ export type GenericRow = Record<string, any>;
 type StudentGrammarLevelsPayload = {
   subject: string;
   items: Array<{ level: string; topic_count: number }>;
+  grammar_catalog_version?: string;
 };
 
 type StudentGrammarTopicsPayload = {
@@ -20,6 +21,7 @@ type StudentGrammarTopicsPayload = {
   pages: number;
   total: number;
   items: Array<{ topic_id: string; level: string; title: string; question_count: number }>;
+  grammar_catalog_version?: string;
 };
 
 type DailyTestRuntimeSession = {
@@ -511,6 +513,20 @@ function writeSessionCache(key: string, value: unknown) {
     window.sessionStorage.setItem(key, JSON.stringify(value));
   } catch {
     // Cache failures should never block lesson loading.
+  }
+}
+
+function clearSessionCachePrefix(prefix: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < window.sessionStorage.length; index += 1) {
+      const key = window.sessionStorage.key(index);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    keys.forEach((key) => window.sessionStorage.removeItem(key));
+  } catch {
+    // Cache is only an optimisation, never a requirement for lessons.
   }
 }
 
@@ -1040,6 +1056,8 @@ export function StudentGrammar({ data }: { data: GenericRow }) {
   const levelsAbortRef = useRef<AbortController | null>(null);
   const topicsAbortRef = useRef<AbortController | null>(null);
   const topicsCacheRef = useRef<Map<string, StudentGrammarTopicsPayload>>(new Map());
+  const catalogVersionRef = useRef("");
+  const [catalogVersion, setCatalogVersion] = useState("");
   const isRussianGrammar = selectedSubject === "Russian";
 
   useEffect(() => {
@@ -1109,6 +1127,13 @@ export function StudentGrammar({ data }: { data: GenericRow }) {
           signal: controller.signal,
         });
         if (cancelled) return;
+        const nextCatalogVersion = String(payload.grammar_catalog_version || "").trim();
+        if (nextCatalogVersion && nextCatalogVersion !== catalogVersionRef.current) {
+          catalogVersionRef.current = nextCatalogVersion;
+          topicsCacheRef.current.clear();
+          clearSessionCachePrefix("student:grammar:topics:");
+          setCatalogVersion(nextCatalogVersion);
+        }
         const items = payload.items || [];
         writeSessionCache(cacheKey, payload);
         setLevels(items);
@@ -1150,7 +1175,6 @@ export function StudentGrammar({ data }: { data: GenericRow }) {
           setTopics(cached.items || []);
           setPages(Math.max(1, Number(cached.pages || 1)));
           setLoading(false);
-          return;
         }
         const persistedKey = `student:grammar:topics:${selectedSubject.toLowerCase()}:${level}:${page}`;
         const persisted = readSessionCache<StudentGrammarTopicsPayload>(persistedKey);
@@ -1182,7 +1206,7 @@ export function StudentGrammar({ data }: { data: GenericRow }) {
       cancelled = true;
       controller.abort();
     };
-  }, [selectedSubject, selectedLevel, page, isRussianGrammar]);
+  }, [selectedSubject, selectedLevel, page, isRussianGrammar, catalogVersion]);
 
   useEffect(() => {
     if (page < 1) setPage(1);
