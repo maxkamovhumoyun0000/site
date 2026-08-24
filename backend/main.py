@@ -2216,8 +2216,10 @@ class AdminGrammarQuestionRequest(BaseModel):
 class AdminGrammarTopicRequest(BaseModel):
     topic_id: str = Field(min_length=2, max_length=160)
     subject: Literal["English", "Russian"]
-    level: Literal["A1", "A2", "B1", "B2", "C1"]
     title: str = Field(min_length=2, max_length=300)
+    # Russian grammar is a single ordered catalogue.  It deliberately has
+    # no admin-facing CEFR level, while English still requires one.
+    level: Literal["A1", "A2", "B1", "B2", "C1"] | None = None
     rule: str = Field(default="", max_length=16000)
     questions: list[AdminGrammarQuestionRequest] = Field(default_factory=list, max_length=100)
 
@@ -21242,6 +21244,9 @@ async def admin_delete_grammar_topic(topic_id: str, authorization: str | None = 
 
 @lru_cache(maxsize=64)
 def _student_grammar_level_items_cached(subject: str, catalog_version: str) -> tuple[tuple[str, int], ...]:
+    if _normalize_subject_label(subject) == "Russian":
+        # Russian grammar is deliberately a single ordered list.
+        return tuple()
     rows: list[tuple[str, int]] = []
     for code in _GRAMMAR_LEVELS:
         topics = get_topics_by_level(code, subject=subject) or []

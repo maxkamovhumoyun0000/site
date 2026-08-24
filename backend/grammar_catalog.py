@@ -204,6 +204,10 @@ def admin_topic_rows(subject: str | None = None) -> list[dict[str, Any]]:
         item_subject = _normalize_subject(str(getattr(topic, "subject", "English"))) or "English"
         if selected and item_subject != selected:
             continue
+        # Russian grammar is intentionally not split into CEFR levels.  The
+        # catalogue keeps a technical level internally for backwards
+        # compatible topic lookup, but never exposes one to the admin UI.
+        display_level = str(getattr(topic, "level", "A1") or "A1").upper() if item_subject == "English" else ""
         payload = {
             "topic_id": str(getattr(topic, "topic_id", "") or "").strip(),
             "title": _clean_text(getattr(topic, "title", "")) or "Grammar",
@@ -211,7 +215,7 @@ def admin_topic_rows(subject: str | None = None) -> list[dict[str, Any]]:
             "questions": [item for item in (normalize_question_payload(question) for question in list(getattr(topic, "questions", []) or [])) if item],
             "question_count": len(list(getattr(topic, "questions", []) or [])),
             "subject": item_subject,
-            "level": str(getattr(topic, "level", "A1") or "A1").upper(),
+            "level": display_level,
             "is_active": True,
             "sort_order": index,
         }
@@ -224,9 +228,14 @@ def save_admin_topic(payload: dict[str, Any], updated_by: int | None = None) -> 
     if not topic_id:
         raise ValueError("topic_id is required")
     subject = _normalize_subject(_clean_text(payload.get("subject")))
-    level = _clean_text(payload.get("level")).upper()
+    supplied_level = _clean_text(payload.get("level")).upper()
     title = _clean_text(payload.get("title"))
-    if subject not in {"English", "Russian"} or level not in SUPPORTED_LEVELS or not title:
+    if subject not in {"English", "Russian"} or not title:
+        raise ValueError("Invalid grammar topic")
+    # Keep a stable stored value for Russian so existing quiz/detail lookup
+    # stays backwards-compatible, but do not require or expose a level.
+    level = "A1" if subject == "Russian" else supplied_level
+    if level not in SUPPORTED_LEVELS:
         raise ValueError("Invalid grammar topic")
     questions = []
     for raw in payload.get("questions") or []:
@@ -279,7 +288,16 @@ def save_admin_topic(payload: dict[str, Any], updated_by: int | None = None) -> 
     finally:
         conn.close()
     clear_catalog_cache()
-    return {"topic_id": topic_id, "subject": subject, "level": level, "title": title, "rule": rule, "questions": questions, "question_count": len(questions), "is_active": True}
+    return {
+        "topic_id": topic_id,
+        "subject": subject,
+        "level": level if subject == "English" else "",
+        "title": title,
+        "rule": rule,
+        "questions": questions,
+        "question_count": len(questions),
+        "is_active": True,
+    }
 
 
 def deactivate_admin_topic(topic_id: str, updated_by: int | None = None) -> bool:
