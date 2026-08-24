@@ -163,21 +163,16 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
 
   function deriveBookFlags(book: BookItem) {
     const purchase = book.purchase || null;
-    if (!purchase) {
-      return {
-        purchased: false,
-        expired: false,
-        canTakeTest: false,
-        testSubmitted: false,
-      };
+    const status = String(purchase?.status || "").toLowerCase();
+    const testSubmitted = Boolean(purchase?.test_submitted) || status === "test_passed" || status === "test_failed";
+    // Deadline tizimi olib tashlandi: pullik kitobda xarid, bepul kitobda
+    // esa hech qanday shart yo'q — test darhol ishlashi mumkin.
+    const purchased = Boolean(purchase) || Number(book.price || 0) <= 0;
+    if (!purchased) {
+      return { purchased: false, expired: false, canTakeTest: false, testSubmitted: false };
     }
-    const hasDeadline = Boolean(String(purchase.deadline_at || "").trim());
-    const expired = Boolean(purchase.deadline_expired);
-    const status = String(purchase.status || "").toLowerCase();
-    const testSubmitted = Boolean(purchase.test_submitted) || status === "test_passed" || status === "test_failed";
-    // Deadline olib tashlangan: muddat yo'q bo'lsa test darhol ochiq
-    const canTakeTest = !testSubmitted && (!hasDeadline || expired);
-    return { purchased: true, expired, canTakeTest, testSubmitted };
+    const canTakeTest = typeof purchase?.can_take_test === "boolean" ? purchase.can_take_test : !testSubmitted;
+    return { purchased: true, expired: false, canTakeTest, testSubmitted };
   }
 
   async function buyBook(book: BookItem) {
@@ -393,8 +388,8 @@ export function StudentBooks({ apiFetch, user }: { apiFetch: (path: string, opti
                 <p className="font-bold text-navy-900 dark:text-white">{Number(purchaseCandidate.price || 0)} D&apos;coin</p>
               </div>
               <div className="rounded-xl bg-surface-soft dark:bg-white/5 p-3">
-                <p className="text-xs text-ink-500 dark:text-navy-400">{tt("library.duration", "Muddat")}</p>
-                <p className="font-bold text-navy-900 dark:text-white">{Number(purchaseCandidate.deadline_days || 0) > 0 ? `${Number(purchaseCandidate.deadline_days || 0)} ${tt("library.day", "kun")}` : "—"}</p>
+                <p className="text-xs text-ink-500 dark:text-navy-400">{tt("library.testQuestions", "Test savollari")}</p>
+                <p className="font-bold text-navy-900 dark:text-white">{Number(purchaseCandidate.question_count || 0) > 0 ? Number(purchaseCandidate.question_count) : "—"}</p>
               </div>
             </div>
             {!modalFlags.purchased && Number(purchaseCandidate.price || 0) > wallet ? (

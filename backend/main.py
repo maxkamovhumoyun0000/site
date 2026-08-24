@@ -314,6 +314,7 @@ from db import (
     transfer_dcoins_atomic,
     get_content_test,
     save_content_test,
+    sync_book_questions_to_content_test,
     deactivate_content_test,
     get_content_test_result,
     save_content_test_result,
@@ -12900,8 +12901,9 @@ def _serialize_book_purchase_row(row: dict | None) -> dict | None:
         "effective_status": effective_status,
         "deadline_expired": deadline_expired,
         "seconds_until_deadline": seconds_until_deadline,
-        # Deadline olib tashlangan: muddat yo'q bo'lsa test darhol ochiq
-        "can_take_test": bool((deadline_dt is None or deadline_expired) and not test_submitted),
+        # Deadline tizimi to'liq olib tashlandi: xariddan keyin test istalgan
+        # vaqtda ochiq (faqat bir marta topshiriladi).
+        "can_take_test": not test_submitted,
         "test_submitted": test_submitted,
     }
 
@@ -12929,6 +12931,40 @@ def _serialize_book_question_row(row: dict, include_answers: bool = False) -> di
     if include_answers:
         payload["correct_option"] = _normalize_abcd_option(str(row.get("correct_option") or ""))
     return payload
+
+
+def _get_book_question_count_cached(book_id: int, raw_count: Any = None) -> int:
+    cnt = int(raw_count or 0)
+    if cnt > 0:
+        return cnt
+    if book_id <= 0:
+        return 0
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS c FROM book_questions WHERE book_id=?", (int(book_id),))
+        r = cur.fetchone()
+        bq_cnt = int((dict(r) if r else {}).get("c") or 0)
+        cur.execute("SELECT id, questions_json FROM web_content_tests WHERE content_type='book' AND content_id=? LIMIT 1", (int(book_id),))
+        test_r = cur.fetchone()
+        test_dict = dict(test_r) if test_r else {}
+        wct_cnt = 0
+        if test_dict.get("id"):
+            cur.execute("SELECT COUNT(*) AS c FROM web_content_test_questions WHERE test_id=?", (int(test_dict["id"]),))
+            q_r = cur.fetchone()
+            wct_cnt = int((dict(q_r) if q_r else {}).get("c") or 0)
+            if wct_cnt == 0 and test_dict.get("questions_json"):
+                with suppress(Exception):
+                    parsed = json.loads(str(test_dict["questions_json"]))
+                    if isinstance(parsed, list):
+                        wct_cnt = len(parsed)
+        conn.close()
+        final_cnt = max(bq_cnt, wct_cnt)
+        if bq_cnt > 0 and wct_cnt < bq_cnt:
+            _safe_call(lambda: sync_book_questions_to_content_test(book_id, force=True), None)
+        return final_cnt
+    except Exception:
+        return cnt
 
 
 def _serialize_book_row(
@@ -12959,9 +12995,8 @@ def _serialize_book_row(
         "is_published": int(row.get("is_published") or 0) == 1,
         "created_at": _as_iso_timestamp(row.get("created_at")),
         "updated_at": _as_iso_timestamp(row.get("updated_at")),
+        "question_count": _get_book_question_count_cached(int(row.get("id") or 0), row.get("question_count")),
     }
-    if row.get("question_count") is not None:
-        payload["question_count"] = int(row.get("question_count") or 0)
     if include_purchase:
         payload["purchase"] = _serialize_book_purchase_row(purchase_row)
     return payload
@@ -12995,9 +13030,8 @@ def _serialize_book_list_row(
         "is_published": int(row.get("is_published") or 0) == 1,
         "created_at": _as_iso_timestamp(row.get("created_at")),
         "updated_at": _as_iso_timestamp(row.get("updated_at")),
+        "question_count": _get_book_question_count_cached(int(row.get("id") or 0), row.get("question_count")),
     }
-    if row.get("question_count") is not None:
-        payload["question_count"] = int(row.get("question_count") or 0)
     if include_purchase:
         payload["purchase"] = _serialize_book_purchase_row(purchase_row)
     return payload
@@ -20405,11 +20439,31 @@ async def student_diamondvoy_chat_messages(
     }
 
 
-@app.delete("/student/diamondvoy/chats/{chat_id}")
-async def student_diamondvoy_chat_delete(chat_id: int, authorization: str | None = Header(default=None)):
+@app.post("/student/diamondvoy/chats/{chat_id}/pin")
+async def student_diamondvoy_pin_chat(
+    chat_id: int,
+    payload: DiamondvoyPinRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Student-route mirror of `/chats/diamondvoy/{chat_id}/pin` — same
+    `_diamondvoy_set_chat_pin_final`, just matching this app's URL convention.
+    """
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
-    raise HTTPException(status_code=403, detail="Diamondvoy chatlarni qo'lda o'chirib bo'lmaydi")
+    row = _diamondvoy_set_chat_pin_final(int(chat_id), int(user.get("id") or 0), bool(payload.pinned))
+    return {"chat": _diamondvoy_serialize_chat_final(row)}
+
+
+@app.delete("/student/diamondvoy/chats/{chat_id}")
+async def student_diamondvoy_chat_delete(chat_id: int, authorization: str | None = Header(default=None)):
+    """Student-route mirror of `/chats/diamondvoy/{chat_id}` — soft-deletes
+    the chat (messages included) for its owner, matching the site's chat
+    list delete. Previously this returned a blanket 403.
+    """
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _diamondvoy_soft_delete_chat_final(int(chat_id), int(user.get("id") or 0))
+    return {"ok": True}
 
 
 @app.post("/student/diamondvoy/chats/{chat_id}/stream")
@@ -31897,11 +31951,13 @@ async def media_stream_asset(
                 _chunk = _end - _start + 1
 
                 def _iter_chunk(path: Path, s: int, length: int):
+                    # 1MB li chunklar: 64KB da har chunk uchun threadpool iteratsiyasi
+                    # kerak edi — video to'xtab-to'xtab o'ynashining asosiy sababi.
                     with open(path, "rb") as _f:
                         _f.seek(s)
                         _rem = length
                         while _rem > 0:
-                            _buf = _f.read(min(65536, _rem))
+                            _buf = _f.read(min(1024 * 1024, _rem))
                             if not _buf:
                                 break
                             _rem -= len(_buf)
@@ -31915,7 +31971,7 @@ async def media_stream_asset(
                         "Content-Range": f"bytes {_start}-{_end}/{file_size}",
                         "Accept-Ranges": "bytes",
                         "Content-Length": str(_chunk),
-                        "Cache-Control": "private, max-age=30",
+                        "Cache-Control": "private, max-age=3600",
                         "Content-Disposition": "inline",
                     },
                 )
@@ -31927,7 +31983,7 @@ async def media_stream_asset(
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
-                "Cache-Control": "private, max-age=30",
+                "Cache-Control": "private, max-age=3600",
             },
         )
 
@@ -46579,7 +46635,10 @@ async def admin_get_books(
         SELECT
             b.*,
             COALESCE(bp.purchase_count, 0) AS purchase_count,
-            COALESCE(q.question_count, 0) AS question_count
+            GREATEST(
+                COALESCE(bq.question_count, 0),
+                COALESCE(wct.question_count, 0)
+            ) AS question_count
         FROM books b
         LEFT JOIN (
             SELECT book_id, COUNT(*) AS purchase_count
@@ -46590,7 +46649,14 @@ async def admin_get_books(
             SELECT book_id, COUNT(*) AS question_count
             FROM book_questions
             GROUP BY book_id
-        ) q ON q.book_id = b.id
+        ) bq ON bq.book_id = b.id
+        LEFT JOIN (
+            SELECT content_id, COUNT(*) AS question_count
+            FROM web_content_test_questions wctq
+            JOIN web_content_tests wct2 ON wct2.id = wctq.test_id
+            WHERE wct2.content_type = 'book' AND COALESCE(wct2.is_active, 1) = 1
+            GROUP BY content_id
+        ) wct ON wct.content_id = b.id
         ORDER BY b.created_at DESC, b.id DESC
         LIMIT ? OFFSET ?
         """
@@ -46622,7 +46688,10 @@ async def admin_get_book_detail(book_id: int, authorization: str | None = Header
         SELECT
             b.*,
             COALESCE(bp.purchase_count, 0) AS purchase_count,
-            COALESCE(q.question_count, 0) AS question_count
+            GREATEST(
+                COALESCE(bq.question_count, 0),
+                COALESCE(wct.question_count, 0)
+            ) AS question_count
         FROM books b
         LEFT JOIN (
             SELECT book_id, COUNT(*) AS purchase_count
@@ -46633,7 +46702,14 @@ async def admin_get_book_detail(book_id: int, authorization: str | None = Header
             SELECT book_id, COUNT(*) AS question_count
             FROM book_questions
             GROUP BY book_id
-        ) q ON q.book_id = b.id
+        ) bq ON bq.book_id = b.id
+        LEFT JOIN (
+            SELECT content_id, COUNT(*) AS question_count
+            FROM web_content_test_questions wctq
+            JOIN web_content_tests wct2 ON wct2.id = wctq.test_id
+            WHERE wct2.content_type = 'book' AND COALESCE(wct2.is_active, 1) = 1
+            GROUP BY content_id
+        ) wct ON wct.content_id = b.id
         WHERE b.id=?
         LIMIT 1
         """,
@@ -46914,6 +46990,7 @@ async def admin_update_book_question(
     if not existing:
         conn.close()
         raise HTTPException(status_code=404, detail="Question not found")
+    book_id = int(dict(existing).get("book_id") or 0)
     assignments = ", ".join([f"{key}=?" for key in updates.keys()])
     cur.execute(
         f"UPDATE book_questions SET {assignments} WHERE id = ?",
@@ -46923,7 +47000,11 @@ async def admin_update_book_question(
     cur.execute("SELECT * FROM book_questions WHERE id = ? LIMIT 1", (int(question_id),))
     row = cur.fetchone()
     conn.close()
-    _clear_book_list_caches()
+    # Savol book_questions (admin CRUD manbasi) da yangilandi — kitobning
+    # content-testini sinxronlab qo'yamiz, aks holda studentlar eskisini ko'radi.
+    if book_id > 0:
+        _safe_call(lambda: sync_book_questions_to_content_test(book_id, force=True), None)
+        _clear_book_list_caches()
     return {
         "message": "Question updated",
         "item": _serialize_book_question_row(dict(row), include_answers=True) if row else None,
@@ -46936,14 +47017,18 @@ async def admin_delete_book_question(question_id: int, authorization: str | None
     _require_role(user, {"admin"})
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id FROM book_questions WHERE id = ? LIMIT 1", (int(question_id),))
-    if not cur.fetchone():
+    cur.execute("SELECT book_id FROM book_questions WHERE id = ? LIMIT 1", (int(question_id),))
+    existing = cur.fetchone()
+    if not existing:
         conn.close()
         raise HTTPException(status_code=404, detail="Question not found")
+    book_id = int(dict(existing).get("book_id") or 0)
     cur.execute("DELETE FROM book_questions WHERE id = ?", (int(question_id),))
     conn.commit()
     conn.close()
-    _clear_book_list_caches()
+    if book_id > 0:
+        _safe_call(lambda: sync_book_questions_to_content_test(book_id, force=True), None)
+        _clear_book_list_caches()
     return {"message": "Question deleted", "id": int(question_id)}
 
 @app.get("/student/books")
@@ -46976,8 +47061,24 @@ async def user_get_books(
         SELECT
             b.id, b.title, b.description, b.author, b.category, b.level, b.subject,
             b.cover_url, b.pdf_url, b.pdf_asset_id, b.price, b.deadline_days, b.is_published, b.created_at, b.updated_at,
-            COALESCE(b.purchase_count, 0) AS purchase_count
+            COALESCE(b.purchase_count, 0) AS purchase_count,
+            GREATEST(
+                COALESCE(bq.question_count, 0),
+                COALESCE(wct.question_count, 0)
+            ) AS question_count
         FROM books b
+        LEFT JOIN (
+            SELECT book_id, COUNT(*) AS question_count
+            FROM book_questions
+            GROUP BY book_id
+        ) bq ON bq.book_id = b.id
+        LEFT JOIN (
+            SELECT content_id, COUNT(*) AS question_count
+            FROM web_content_test_questions wctq
+            JOIN web_content_tests wct2 ON wct2.id = wctq.test_id
+            WHERE wct2.content_type = 'book' AND COALESCE(wct2.is_active, 1) = 1
+            GROUP BY content_id
+        ) wct ON wct.content_id = b.id
         WHERE b.is_published = 1
     """
     params = []
@@ -47056,13 +47157,23 @@ async def user_get_book_detail(book_id: int, authorization: str | None = Header(
         """
         SELECT
             b.*,
-            COALESCE(q.question_count, 0) AS question_count
+            GREATEST(
+                COALESCE(bq.question_count, 0),
+                COALESCE(wct.question_count, 0)
+            ) AS question_count
         FROM books b
         LEFT JOIN (
             SELECT book_id, COUNT(*) AS question_count
             FROM book_questions
             GROUP BY book_id
-        ) q ON q.book_id = b.id
+        ) bq ON bq.book_id = b.id
+        LEFT JOIN (
+            SELECT content_id, COUNT(*) AS question_count
+            FROM web_content_test_questions wctq
+            JOIN web_content_tests wct2 ON wct2.id = wctq.test_id
+            WHERE wct2.content_type = 'book' AND COALESCE(wct2.is_active, 1) = 1
+            GROUP BY content_id
+        ) wct ON wct.content_id = b.id
         WHERE b.id=? AND b.is_published=1
         LIMIT 1
         """,
@@ -47133,10 +47244,9 @@ async def student_buy_book(book_id: int, authorization: str | None = Header(defa
         }
 
     price = max(0.0, float(book.get("price") or 0.0))
-    # Deadline olib tashlangan: kitobda deadline_days bo'lmasa — cheksiz muddat
-    raw_days = int(book.get("deadline_days") or 0)
-    deadline_days = max(1, raw_days) if raw_days > 0 else None
-    deadline = (_now_utc() + timedelta(days=deadline_days)).isoformat() if deadline_days else None
+    # Deadline tizimi to'liq olib tashlandi: yangi xaridlar doim cheksiz muddatli
+    deadline = None
+    deadline_days = None
     conn.close()
 
     purchase_result = purchase_book_with_dcoins(
@@ -47368,6 +47478,8 @@ def _sanitize_content_test_for_student(test: dict | None) -> dict | None:
         q.pop("correct_option_index", None)
         q.pop("explanation", None)
         questions.append(q)
+    # Har safar savollar tartibi random — yodlab olish ishlamaydi.
+    random.shuffle(questions)
     out["questions"] = questions
     out["question_count"] = len(questions)
     return out
@@ -47492,11 +47604,9 @@ def _require_student_content_test_access(user: dict, content_type: str, content_
         price = max(0.0, float(book.get("price") or 0.0))
         if not purchase and price > 0:
             raise HTTPException(status_code=403, detail="Kitobni avval xarid qiling")
-        if purchase:
-            purchase_payload = _serialize_book_purchase_row(purchase) or {}
-            deadline_at = str(purchase_payload.get("deadline_at") or "").strip()
-            if deadline_at and not bool(purchase_payload.get("deadline_expired")):
-                raise HTTPException(status_code=403, detail="Deadline tugagandan keyin test ochiladi.")
+        # Kitob sotib olingandan keyin test istalgan vaqtda bir marta ishlaydi.
+        # Deadline tekshiruvi olib tashlandi (deadline_days=0 => cheksiz muddat).
+        # Bir martalik cheklash submit paytida 409 orqali ta'minlanadi.
         return book
     homework = _safe_call(lambda: get_homework(int(content_id)), None)
     if not homework:
@@ -47551,7 +47661,14 @@ async def _student_get_content_test_endpoint(content_type: str, content_id: int,
     if not test:
         raise HTTPException(status_code=404, detail="Test hali qo'shilmagan.")
     result = _safe_call(lambda: get_content_test_result(int(user.get("id") or 0), normalized, int(content_id)), None)
-    return {"test": _sanitize_content_test_for_student(test), "result": result}
+    return {
+        "test": _sanitize_content_test_for_student(test),
+        "result": result,
+        # Mobil ilova `can_take_test`/`test_submitted` flaglariga tayanadi;
+        # bu yerga yetib kelgan foydalanuvchi access tekshiruvdan o'tgan.
+        "can_take_test": result is None,
+        "test_submitted": result is not None,
+    }
 
 
 async def _student_submit_content_test_endpoint(content_type: str, content_id: int, payload: ContentTestSubmitRequest, authorization: str | None):
@@ -50055,225 +50172,3 @@ async def teacher_ai_check_note(
     )
     return {"message": "AI tekshirish muvaffaqiyatli", "result": ai_result}
 
-
-# ============================================================
-# TEACHER KPI & LEADERBOARD ENDPOINTS
-# ============================================================
-
-@app.get("/teacher/kpi/me")
-async def teacher_kpi_me(authorization: str | None = Header(default=None)):
-    """Fetch current teacher's KPI data."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    kpi_data = get_teacher_kpi(tid)
-    return {"kpi": kpi_data, "rank": kpi_data.get("rank"), "total_teachers": kpi_data.get("total_teachers", 1)}
-
-
-@app.get("/teacher/kpi/leaderboard")
-async def teacher_kpi_leaderboard(limit: int = 50, authorization: str | None = Header(default=None)):
-    """Fetch teacher KPI leaderboard rankings."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    items = get_teacher_kpi_leaderboard(limit)
-    for it in items:
-        it['is_self'] = (int(it.get('teacher_id') or 0) == tid)
-    return {"items": items}
-
-
-@app.post("/teacher/kpi/refresh")
-async def teacher_kpi_refresh(authorization: str | None = Header(default=None)):
-    """Recalculate all teacher KPIs."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    items = recalculate_all_teacher_kpis()
-    return {"message": "KPI muvaffaqiyatli yangilandi", "count": len(items)}
-
-
-# ============================================================
-# TEACHER MATERIALS / LIBRARY ENDPOINTS
-# ============================================================
-
-@app.get("/teacher/materials")
-async def teacher_materials_list(
-    subject: str = 'ALL',
-    mode: str = 'public',
-    authorization: str | None = Header(default=None),
-):
-    """Fetch teacher materials library."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    items = get_teacher_materials(subject=subject, mode=mode, teacher_id=tid)
-    return {"items": items}
-
-
-@app.post("/teacher/materials")
-async def teacher_materials_create(
-    req: dict[str, Any],
-    authorization: str | None = Header(default=None),
-):
-    """Create a new teacher material."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    tname = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'qituvchi"
-    title = str(req.get("title") or "").strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="Mavzu nomi kiritilishi shart")
-    item = create_teacher_material(
-        teacher_id=tid,
-        teacher_name=tname,
-        title=title,
-        subject=str(req.get("subject") or "ALL"),
-        description=str(req.get("description") or ""),
-        file_url=str(req.get("file_url") or ""),
-        is_public=bool(req.get("is_public", True)),
-    )
-    return {"message": "Material yaratildi", "item": item}
-
-
-@app.delete("/teacher/materials/{material_id}")
-async def teacher_materials_delete(
-    material_id: int,
-    authorization: str | None = Header(default=None),
-):
-    """Delete a teacher material."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    ok = delete_teacher_material(material_id, tid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Material topilmadi yoki o'chirishga ruxsat yo'q")
-    return {"message": "Material o'chirildi"}
-
-
-# ============================================================
-# TEACHER STUDENT NOTES ENDPOINTS
-# ============================================================
-
-@app.get("/teacher/students/{student_id}/notes")
-async def teacher_student_notes_get(
-    student_id: int,
-    authorization: str | None = Header(default=None),
-):
-    """Fetch notes attached to a student by teachers."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    items = get_teacher_student_notes(student_id, is_teacher=True)
-    return {"items": items}
-
-
-@app.post("/teacher/students/{student_id}/notes")
-async def teacher_student_notes_create(
-    student_id: int,
-    req: dict[str, Any],
-    authorization: str | None = Header(default=None),
-):
-    """Add a teacher note to a student profile."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    note_text = str(req.get("note_text") or "").strip()
-    if not note_text:
-        raise HTTPException(status_code=400, detail="Izoh matni kiritilishi shart")
-    is_visible = bool(req.get("is_visible", True))
-    item = create_teacher_student_note(tid, student_id, note_text, is_visible)
-    return {"message": "Eslatma saqlandi", "item": item}
-
-
-@app.put("/teacher/students/{student_id}/notes/{note_id}")
-async def teacher_student_notes_update(
-    student_id: int,
-    note_id: int,
-    req: dict[str, Any],
-    authorization: str | None = Header(default=None),
-):
-    """Edit a teacher note on a student profile."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    note_text = str(req.get("note_text") or "").strip()
-    if not note_text:
-        raise HTTPException(status_code=400, detail="Izoh matni kiritilishi shart")
-    is_visible = bool(req.get("is_visible", True))
-    item = update_teacher_student_note(note_id, tid, note_text, is_visible)
-    if not item:
-        raise HTTPException(status_code=404, detail="Eslatma topilmadi yoki tahrirlashga ruxsat yo'q")
-    return {"message": "Eslatma tahrirlandi", "item": item}
-
-
-@app.delete("/teacher/students/{student_id}/notes/{note_id}")
-async def teacher_student_notes_delete(
-    student_id: int,
-    note_id: int,
-    authorization: str | None = Header(default=None),
-):
-    """Delete a teacher note from student profile."""
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    tid = int(user.get("id") or 0)
-    ok = delete_teacher_student_note(note_id, tid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Eslatma topilmadi yoki o'chirishga ruxsat yo'q")
-    return {"message": "Eslatma o'chirildi"}
-
-
-# ============================================================
-# STUDENT PERSONAL NOTES ENDPOINTS
-# ============================================================
-
-@app.get("/student/teacher-notes")
-async def student_teacher_notes_get(authorization: str | None = Header(default=None)):
-    """Fetch visible teacher notes for current student."""
-    user = _user_row_from_bearer(authorization)
-    sid = int(user.get("id") or 0)
-    items = get_teacher_student_notes(sid, is_teacher=False)
-    return {"items": items}
-
-
-@app.get("/student/notes/mine")
-async def student_personal_notes_get(authorization: str | None = Header(default=None)):
-    """Fetch personal notes for current student."""
-    user = _user_row_from_bearer(authorization)
-    sid = int(user.get("id") or 0)
-    items = get_student_personal_notes(sid)
-    return {"items": items}
-
-
-@app.post("/student/notes")
-async def student_personal_notes_create(req: dict[str, Any], authorization: str | None = Header(default=None)):
-    """Create a personal note for current student."""
-    user = _user_row_from_bearer(authorization)
-    sid = int(user.get("id") or 0)
-    content = str(req.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Qayd matni bo'sh bo'lishi mumkin emas")
-    item = create_student_personal_note(sid, content)
-    return {"message": "Qayd saqlandi", "item": item}
-
-
-@app.put("/student/notes/{note_id}")
-async def student_personal_notes_update(note_id: int, req: dict[str, Any], authorization: str | None = Header(default=None)):
-    """Edit a personal note for current student."""
-    user = _user_row_from_bearer(authorization)
-    sid = int(user.get("id") or 0)
-    content = str(req.get("content") or "").strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="Qayd matni bo'sh bo'lishi mumkin emas")
-    item = update_student_personal_note(note_id, sid, content)
-    if not item:
-        raise HTTPException(status_code=404, detail="Qayd topilmadi")
-    return {"message": "Qayd tahrirlandi", "item": item}
-
-
-@app.delete("/student/notes/{note_id}")
-async def student_personal_notes_delete(note_id: int, authorization: str | None = Header(default=None)):
-    """Delete a personal note for current student."""
-    user = _user_row_from_bearer(authorization)
-    sid = int(user.get("id") or 0)
-    ok = delete_student_personal_note(note_id, sid)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Qayd topilmadi")
-    return {"message": "Qayd o'chirildi"}

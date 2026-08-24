@@ -86,6 +86,57 @@ ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root
   'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot -p ActiveState -p SubState -p NRestarts --no-pager'
 ```
 
+## Push Notifications (FCM) — Bir Martalik Sozlash
+
+Push lar allaqachon serverda sozlangan va ishlaydi. Bu bo'lim yangi serverga ko'chirishda yoki xato bo'lsa kerak.
+
+Arxitektura: 4 ta alohida Firebase loyihasi (student/teacher x android/ios), har biri o'z service-account kaliti bilan. Kalitlar `/root/diamond-site/secrets/` ichida emas — to'g'ridan-to'g'ri `/root/` da turadi va `.env` PATH orqali ko'rsatiladi.
+
+### Talab qilinadigan narsalar
+
+1. Server venv'da `firebase-admin` o'rnatilgan bo'lsin (`requirements.txt`da bor):
+   ```bash
+   ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key root@31.220.87.193 \
+     '/root/diamond-site/.venv/bin/pip install firebase-admin==7.5.0'
+   ```
+
+2. 4 ta service-account JSON `/root/` da joylashsin (nomlari ahamiyatsiz, `.env`dagi PATH bilan mos bo'lsin bas):
+
+   | Slot | Firebase project |
+   |---|---|
+   | STUDENT_ANDROID | `diamond-5efdb` |
+   | STUDENT_IOS | `diamond-student-ios` |
+   | TEACHER_ANDROID | `diamond-teacher-android` |
+   | TEACHER_IOS | `diamond-teacher-ios` |
+
+3. `.env`da 4 qator bo'lsin (serverdagi yo'llar bilan):
+   ```env
+   FIREBASE_SERVICE_ACCOUNT_PATH_STUDENT_ANDROID=/root/diamond-student-android-...json
+   FIREBASE_SERVICE_ACCOUNT_PATH_STUDENT_IOS=/root/diamond-student-ios-...json
+   FIREBASE_SERVICE_ACCOUNT_PATH_TEACHER_ANDROID=/root/diamond-teacher-android-...json
+   FIREBASE_SERVICE_ACCOUNT_PATH_TEACHER_IOS=/root/diamond-teacher-ios-...json
+   ```
+
+4. Backend restart: `systemctl restart diamond-site-backend` (Relaunch bo'limidagi buyruq).
+
+### Push ishlashini tekshirish
+
+```bash
+# init muvaffaqiyatli bo'lsa har bir slot uchun "initialized" ko'rinadi
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key root@31.220.87.193 \
+  'journalctl -u diamond-site-backend --since -1h --no-pager | grep "push_notifications" | tail -10'
+
+# Faol tokenlar soni (0 bo'lsa hech kim ro'yxatdan o'tmagan — ilovada login kerak)
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key root@31.220.87.193 \
+  "sqlite3 /root/diamond-site/data/diamond.db \"SELECT app, platform, COUNT(*) FROM push_device_tokens GROUP BY app, platform;\""
+```
+
+### Muammolar va yechim
+
+- **`UNREGISTERED` / `NotRegistered` loglari** — normal: foydalanuvchi ilovani o'chirib tashlagan yoki token eskirgan. Backend bunday tokenlarni keyingi yuborishda avtomatik o'chiradi (`push_notifications.py`dagi `_prune_tokens`).
+- **`slot=... not configured, skipped`** — o'sha slotning `.env`dagi PATH yoki fayli yo'q/qator.
+- **Ilovada push kelmaydi** — telefonda ilova ochiq login qilinganini (token ro'yxatdan o'tishi shart) va Telegram/Instagram'dagi kabi OS darajasida bildirishnomalar ruxsat etilganini tekshiring.
+
 ## Qat'iy Taqiqlangan Buyruqlar
 
 Quyidagilarni deploy paytida ishlatmang:

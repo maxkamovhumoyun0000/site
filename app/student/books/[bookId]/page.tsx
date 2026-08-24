@@ -47,8 +47,7 @@ export default function StudentBookPage({ params }: { params: { bookId: string }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [nowTs, setNowTs] = useState(() => Date.now());
-  
+
   // Test states
   const [testData, setTestData] = useState<any>(null);
   const [testResult, setTestResult] = useState<any>(null);
@@ -122,33 +121,13 @@ export default function StudentBookPage({ params }: { params: { bookId: string }
     }
   }, [book?.id, fetchTest]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  function secondsLeft(deadlineAt?: string | null) {
-    const raw = String(deadlineAt || "").trim();
-    if (!raw) return null;
-    const ts = Date.parse(raw);
-    if (!Number.isFinite(ts)) return null;
-    return Math.floor((ts - nowTs) / 1000);
-  }
-
-  function formatCountdown(seconds: number | null) {
-    if (seconds === null) return "No deadline";
-    const sec = Math.max(0, seconds);
-    const days = Math.floor(sec / 86400);
-    const hours = Math.floor((sec % 86400) / 3600);
-    const mins = Math.floor((sec % 3600) / 60);
-    if (days > 0) return `${days} kun ${hours} soat`;
-    if (hours > 0) return `${hours} soat ${mins} daqiqa`;
-    return `${mins} daqiqa`;
-  }
-
   function deriveBookFlags(bookItem: BookItem) {
     const purchase = bookItem.purchase || null;
-    if (!purchase) {
+    const status = String(purchase?.status || "").toLowerCase();
+    const testSubmitted = Boolean(purchase?.test_submitted) || status === "test_passed" || status === "test_failed";
+    // Deadline tizimi olib tashlandi: xariddan keyin test istalgan vaqtda ochiq.
+    const purchased = Boolean(purchase) || Number(bookItem.price || 0) <= 0;
+    if (!purchased) {
       return {
         purchased: false,
         expired: false,
@@ -157,12 +136,8 @@ export default function StudentBookPage({ params }: { params: { bookId: string }
         seconds: null as number | null,
       };
     }
-    const seconds = secondsLeft(purchase.deadline_at);
-    const expired = seconds !== null ? seconds <= 0 : Boolean(purchase.deadline_expired);
-    const status = String(purchase.status || "").toLowerCase();
-    const testSubmitted = Boolean(purchase.test_submitted) || status === "test_passed" || status === "test_failed";
-    const canTakeTest = expired && !testSubmitted;
-    return { purchased: true, expired, canTakeTest, testSubmitted, seconds };
+    const canTakeTest = typeof purchase?.can_take_test === "boolean" ? purchase.can_take_test : !testSubmitted;
+    return { purchased: true, expired: false, canTakeTest, testSubmitted, seconds: null as number | null };
   }
 
   const flags = book ? deriveBookFlags(book) : null;

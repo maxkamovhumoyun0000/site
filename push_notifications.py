@@ -268,7 +268,11 @@ def _send_to_tokens(tokens: list[str], title: str, body: str, data: dict[str, An
                 messaging.send(message, app=app_instance)
             except Exception as exc:
                 code = str(getattr(exc, "code", "") or "").lower()
-                if "unregistered" in code or "not-registered" in code or "invalid-argument" in code:
+                # FCM error codes seen in practice: "UNREGISTERED",
+                # "invalid-argument"; the legacy HTTP API returns
+                # "NotRegistered" (no separator) — normalized to lowercase
+                # above, so match both spellings.
+                if "unregistered" in code or "notregistered" in code or "invalid-argument" in code:
                     dead_tokens.append(token)
                 else:
                     logger.warning("push_notifications: send failed for a token (slot=%s): %s", slot, exc)

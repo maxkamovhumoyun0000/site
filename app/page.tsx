@@ -9757,7 +9757,7 @@ function StudentPlacementScreen({
           
           {proctoringLoading && (
             <div className="placement-loading-card bg-white dark:bg-slate-900 rounded-3xl p-10 shadow-xl border border-slate-200 dark:border-slate-800 text-center relative overflow-hidden mt-8">
-               <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+               <div className="w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
                <p className="text-slate-500 font-medium">Yuklanmoqda...</p>
             </div>
           )}
@@ -9802,7 +9802,7 @@ function StudentPlacementScreen({
 
               {result ? (
                 <div className="placement-result-card test-result-card bg-white dark:bg-slate-900 rounded-3xl p-8 sm:p-12 shadow-xl border border-slate-200 dark:border-slate-800 text-center relative overflow-hidden mt-8 sm:mt-0">
-                  <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-indigo-500/10 to-transparent" />
+                  <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-cyan-500/10 to-transparent" />
                   
                   <div className={`w-24 h-24 mx-auto ${result.proctoring_stopped ? "bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400" : "bg-green-100 dark:bg-green-500/20 text-green-600 dark:text-green-400"} rounded-full flex items-center justify-center mb-6 relative`}>
                     {result.proctoring_stopped ? (
@@ -9823,7 +9823,7 @@ function StudentPlacementScreen({
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-10">
                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-700/50">
                       <p className="text-sm font-medium text-slate-500 mb-1">Level</p>
-                      <p className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{result.level_display || "-"}</p>
+                      <p className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">{result.level_display || "-"}</p>
                     </div>
                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-700/50">
                       <p className="text-sm font-medium text-slate-500 mb-1">Correct Answers</p>
@@ -9831,12 +9831,12 @@ function StudentPlacementScreen({
                     </div>
                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-700/50 sm:col-span-1 col-span-2">
                       <p className="text-sm font-medium text-slate-500 mb-1">Result</p>
-                      <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{result.percentage || 0}%</p>
+                      <p className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">{result.percentage || 0}%</p>
                     </div>
                   </div>
                   
                   <button
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-indigo-500/30 transition-all hover:-translate-y-1 w-full sm:w-auto"
+                    className="bg-cyan-500 hover:bg-cyan-400 text-navy-900 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-cyan-500/30 transition-all hover:-translate-y-1 w-full sm:w-auto"
                     onClick={() => onPlacementDone(result)}
                   >
                     Continue to Dashboard
@@ -9846,7 +9846,7 @@ function StudentPlacementScreen({
                 <div className={`placement-question-card bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-10 shadow-xl border border-slate-200 dark:border-slate-800 relative overflow-hidden ${!proctoringReady ? "select-none" : ""}`}>
                   {!proctoringReady ? (
                     <div className="absolute inset-0 z-20 bg-white/65 dark:bg-slate-950/65 backdrop-blur-[2px] flex items-center justify-center text-center p-5">
-                      <div className="placement-proctoring-wait-card test-proctoring-wait-card px-5 py-4 rounded-2xl bg-white/90 dark:bg-slate-900/90 border border-indigo-200 dark:border-indigo-500/30 shadow-premium">
+                      <div className="placement-proctoring-wait-card test-proctoring-wait-card px-5 py-4 rounded-2xl bg-white/90 dark:bg-slate-900/90 border border-cyan-200 dark:border-cyan-500/30 shadow-premium">
                         <p className="font-black text-slate-900 dark:text-white">FaceID tekshirilmoqda...</p>
                         <p className="text-sm text-slate-600 dark:text-slate-200">Test FaceID tasdiqlangandan keyin boshlanadi.</p>
                       </div>
@@ -9868,7 +9868,7 @@ function StudentPlacementScreen({
 
                   <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full mb-8 overflow-hidden">
                     <div 
-                      className="h-full bg-indigo-500 transition-all duration-500 ease-out"
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 ease-out"
                       style={{ width: `${progressPercent}%` }}
                     />
                   </div>
@@ -9883,8 +9883,8 @@ function StudentPlacementScreen({
                         key={`${session.current_question?.question_id || session.current_question?.question_index || "q"}-${key}`}
                         className={`relative group p-4 sm:p-6 rounded-2xl text-left transition-all duration-200 border-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden ${
                           selectedOption === key 
-                            ? "bg-indigo-50 border-indigo-500 dark:bg-indigo-500/10 dark:border-indigo-500" 
-                            : "bg-slate-50 border-transparent hover:border-indigo-300 hover:bg-slate-100 dark:bg-slate-800/50 dark:hover:bg-slate-800"
+                            ? "border-cyan-400 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/20 dark:text-cyan-100 dark:border-cyan-400" 
+                            : "border-transparent hover:border-cyan-300 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/50 dark:hover:bg-slate-800 dark:hover:border-cyan-400"
                         }`}
                         disabled={busy || timeLeft <= 0 || !proctoringReady}
                         onClick={() => {
@@ -9896,18 +9896,18 @@ function StudentPlacementScreen({
                           submitAnswer(false, key);
                         }}
                       >
-                        {selectedOption !== key && <div className="absolute inset-0 bg-gradient-to-r from-indigo-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />}
+                        {selectedOption !== key && <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />}
                         <div className="relative flex items-center gap-4">
                           <span className={`w-8 h-8 rounded-xl shadow-sm flex items-center justify-center font-bold transition-colors ${
                             selectedOption === key 
-                              ? "bg-indigo-500 text-white" 
-                              : "bg-white dark:bg-slate-700 text-slate-500 group-hover:text-indigo-500"
+                              ? "bg-cyan-500 text-white" 
+                              : "bg-white dark:bg-slate-700 text-slate-500 group-hover:text-cyan-500"
                           }`}>
                             {key}
                           </span>
                           <span className={`font-medium text-lg ${
                             selectedOption === key 
-                              ? "text-indigo-700 dark:text-indigo-300" 
+                              ? "text-cyan-700 dark:text-cyan-300" 
                               : "text-slate-700 dark:text-slate-200"
                           }`}>
                             {value as string}
@@ -9922,9 +9922,9 @@ function StudentPlacementScreen({
                   </p>
                 </div>
               ) : (
-                <div className="placement-start-card bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-10 shadow-xl border-t-8 border-x border-b border-indigo-500 border-x-slate-200 dark:border-x-slate-800 border-b-slate-200 dark:border-b-slate-800 mt-8 sm:mt-0 relative overflow-hidden">
+                <div className="placement-start-card bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-10 shadow-xl border-t-8 border-x border-b border-cyan-500 border-x-slate-200 dark:border-x-slate-800 border-b-slate-200 dark:border-b-slate-800 mt-8 sm:mt-0 relative overflow-hidden">
                   <div className="flex items-center gap-4 mb-6">
-                    <div className="w-14 h-14 rounded-full bg-indigo-100 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
+                    <div className="w-14 h-14 rounded-full bg-cyan-100 dark:bg-cyan-500/20 flex items-center justify-center text-cyan-600 dark:text-cyan-400">
                       <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9.5a2.5 2.5 0 00-2.5-2.5H15" /></svg>
                     </div>
                     <div>
@@ -9933,11 +9933,11 @@ function StudentPlacementScreen({
                     </div>
                   </div>
                   
-                  <div className="bg-indigo-50 dark:bg-indigo-500/10 p-5 rounded-2xl mb-8 border border-indigo-100 dark:border-indigo-500/20">
-                    <p className="text-indigo-800 dark:text-indigo-300 font-medium mb-2">
-                      Placement subject: <strong className="text-indigo-900 dark:text-indigo-200 bg-indigo-100 dark:bg-indigo-500/30 px-2 py-0.5 rounded ml-1">{session?.subject || placementSubject || "English"}</strong>
+                  <div className="bg-cyan-50 dark:bg-cyan-500/10 p-5 rounded-2xl mb-8 border border-cyan-100 dark:border-cyan-500/20">
+                    <p className="text-cyan-800 dark:text-cyan-300 font-medium mb-2">
+                      Placement subject: <strong className="text-cyan-900 dark:text-cyan-200 bg-cyan-100 dark:bg-cyan-500/30 px-2 py-0.5 rounded ml-1">{session?.subject || placementSubject || "English"}</strong>
                     </p>
-                    <p className="text-indigo-700/80 dark:text-indigo-400/80 text-sm">
+                    <p className="text-cyan-700/80 dark:text-cyan-400/80 text-sm">
                       Test 50 ta savoldan iborat va yakunda darajangiz avtomatik aniqlanadi. Har bir savol ketma-ket ko'rsatiladi.
                     </p>
                   </div>
@@ -9951,7 +9951,7 @@ function StudentPlacementScreen({
 
 	                  <div className="flex flex-wrap gap-4 mt-2">
                     <button 
-                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-indigo-500/30 transition-all hover:-translate-y-1 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none justify-center"
+                      className="bg-cyan-500 hover:bg-cyan-400 text-navy-900 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-cyan-500/30 transition-all hover:-translate-y-1 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none justify-center"
                       disabled={busy || proctoringStartBlocked} 
                       onClick={startPlacement}
                     >

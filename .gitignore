@@ -26,3 +26,4 @@ deploy_*.py
 remote_check.py
 run_remote.py
 test_ai.py
+secrets/
