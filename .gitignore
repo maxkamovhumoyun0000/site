@@ -5,6 +5,7 @@
 .next
 node_modules
 .codex
+.zcode/
 .venv/
 venv/
 *.tsbuildinfo

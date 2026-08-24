@@ -1303,6 +1303,7 @@ class LoginRequest(BaseModel):
     login_id: str
     password: str
     device_id: str | None = None
+    device_model: str | None = None
     telegram_id: int | None = None
     init_data: str | None = None
     sync_bot_session: bool = True
@@ -1331,6 +1332,7 @@ class QrGenerateResponse(BaseModel):
 class QrConsumeRequest(BaseModel):
     qr_token: str
     device_id: str | None = None
+    device_model: str | None = None
     telegram_id: int | None = None
     init_data: str | None = None
     sync_bot_session: bool = True
@@ -1349,6 +1351,7 @@ class TelegramMobileLoginStartResponse(BaseModel):
 class TelegramMobileLoginCompleteRequest(BaseModel):
     request_token: str
     device_id: str
+    device_model: str | None = None
 
 
 class UserPasswordUpdateRequest(BaseModel):
@@ -6084,13 +6087,14 @@ def _enforce_web_session_limit(user: dict) -> None:
         conn.close()
 
 
-def _issue_web_session(user: dict, device_id: str | None, source: str = "web", ttl_hours: int | None = None) -> tuple[str, int]:
+def _issue_web_session(user: dict, device_id: str | None, source: str = "web", ttl_hours: int | None = None, device_model: str | None = None) -> tuple[str, int]:
     uid = int(user.get("id") or 0)
     if uid <= 0:
         raise HTTPException(status_code=401, detail="User not found")
     role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
     now = _now_utc()
     device = str(device_id or "").strip()
+    model = str(device_model or "").strip()[:120] or None
     if ttl_hours is None:
         ttl_hours = MOBILE_SESSION_TOKEN_TTL_HOURS if device else WEB_SESSION_TOKEN_TTL_HOURS
     expires_at = (now + timedelta(hours=ttl_hours)).isoformat()
@@ -6105,6 +6109,7 @@ def _issue_web_session(user: dict, device_id: str | None, source: str = "web", t
                 session_id,
                 user_id,
                 device_id,
+                device_model,
                 login_type,
                 role,
                 source,
@@ -6112,12 +6117,13 @@ def _issue_web_session(user: dict, device_id: str | None, source: str = "web", t
                 last_seen_at,
                 expires_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 uid,
                 str(device_id or "").strip() or None,
+                model,
                 int(user.get("login_type") or 1),
                 role,
                 str(source or "web").strip() or "web",
@@ -8721,6 +8727,7 @@ def _ensure_user_web_columns() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_device_id TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url TEXT",
+        "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS device_model TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS face_enrollment_required INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS face_id_required INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS face_id_enrolled INTEGER DEFAULT 0",
@@ -9650,6 +9657,7 @@ def _ensure_web_tables_inner() -> None:
                 session_id TEXT UNIQUE NOT NULL,
                 user_id BIGINT NOT NULL,
                 device_id TEXT,
+                device_model TEXT,
                 login_type INTEGER,
                 role TEXT,
                 source TEXT DEFAULT 'web',
@@ -9666,6 +9674,7 @@ def _ensure_web_tables_inner() -> None:
                 session_id TEXT UNIQUE NOT NULL,
                 user_id INTEGER NOT NULL,
                 device_id TEXT,
+                device_model TEXT,
                 login_type INTEGER,
                 role TEXT,
                 source TEXT DEFAULT 'web',
@@ -9749,6 +9758,7 @@ def _ensure_web_tables_inner() -> None:
         "ALTER TABLE web_student_reviews ADD COLUMN IF NOT EXISTS reward_granted_at TIMESTAMP",
         "ALTER TABLE web_student_reviews ADD COLUMN IF NOT EXISTS author_name TEXT",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'web'",
+        "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS device_model TEXT",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP",
@@ -16975,7 +16985,7 @@ async def login(request: LoginRequest, req: Request):
     user = _apply_web_login_policy(user, device_id)
     if requested_telegram_id > 0 and bool(request.sync_bot_session):
         _sync_bot_login_state(int(user.get("id") or 0), requested_telegram_id)
-    session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="login")
+    session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="login", device_model=request.device_model)
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
 
@@ -17059,6 +17069,7 @@ async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteReq
         user,
         device_id=device_id,
         source="telegram_mobile_bot",
+        device_model=payload.device_model,
     )
     try:
         telegram_id = int(approved_telegram_id)
@@ -17195,7 +17206,7 @@ async def auth_qr_consume(payload: QrConsumeRequest):
 
     device_id = (payload.device_id or "").strip() or None
     user = _apply_web_login_policy(user, device_id)
-    session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="qr")
+    session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="qr", device_model=payload.device_model)
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
 
@@ -17283,7 +17294,7 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
     try:
         cur.execute(
             """
-            SELECT session_id, source, last_seen_at, created_at, expires_at
+            SELECT session_id, source, last_seen_at, created_at, expires_at, device_model
             FROM web_user_sessions
             WHERE user_id=?
               AND revoked_at IS NULL
@@ -17293,20 +17304,21 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
             (uid, _now_utc().isoformat()),
         )
         rows = cur.fetchall()
-        
+
         token = str(authorization or "").replace("Bearer ", "").strip()
         current_session_id = None
         if token:
             cached = _AUTH_USER_ROW_CACHE.get(token)
             if cached:
                 current_session_id = str(cached[0] or "").strip()
-                
+
         sessions = []
         for r in (rows or []):
             sid = str(r["session_id"])
             sessions.append({
                 "session_id": sid,
                 "source": r["source"],
+                "device_model": r.get("device_model"),
                 "last_seen_at": r["last_seen_at"],
                 "created_at": r["created_at"],
                 "expires_at": r["expires_at"],
@@ -17368,6 +17380,33 @@ async def update_user_password(payload: UserPasswordUpdateRequest, authorization
     if user_id <= 0:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # The password update rotates every other session, but the replacement
+    # token belongs to this same physical device. Preserve its identifiers so
+    # the device panel does not suddenly show an anonymous "password_change"
+    # entry after an otherwise normal password update.
+    bearer_payload = _decode_bearer_payload(authorization)
+    current_session_id = str(bearer_payload.get("session_id") or "").strip()
+    current_device_id: str | None = None
+    current_device_model: str | None = None
+    if current_session_id:
+        metadata_conn = get_conn()
+        metadata_cur = metadata_conn.cursor()
+        try:
+            metadata_cur.execute(
+                """
+                SELECT device_id, device_model
+                FROM web_user_sessions
+                WHERE session_id=? AND user_id=?
+                """,
+                (current_session_id, user_id),
+            )
+            metadata = metadata_cur.fetchone()
+            if metadata:
+                current_device_id = str(metadata["device_id"] or "").strip() or None
+                current_device_model = str(metadata["device_model"] or "").strip() or None
+        finally:
+            metadata_conn.close()
+
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -17388,8 +17427,12 @@ async def update_user_password(payload: UserPasswordUpdateRequest, authorization
     refreshed = _safe_call(lambda: get_user_by_id(user_id), None)
     if not refreshed:
         raise HTTPException(status_code=404, detail="User not found")
-    bearer_payload = _decode_bearer_payload(authorization)
-    next_session_id, _ = _issue_web_session(refreshed, device_id=None, source="password_change")
+    next_session_id, _ = _issue_web_session(
+        refreshed,
+        device_id=current_device_id,
+        source="password_change",
+        device_model=current_device_model,
+    )
     token = _create_access_token(
         refreshed,
         telegram_id=bearer_payload.get("telegram_id"),
@@ -20683,23 +20726,50 @@ def _notification_key_for_item(item: dict, idx: int = 0) -> str:
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
+def _broadcast_target_ids(row: dict, target_type: str) -> set[int]:
+    """Read legacy and current target_ids_json shapes consistently.
+
+    The admin composer stores a mapping with group_ids/user_ids, while
+    Telegram's broadcast mirror stores a plain user-id list. Treating both
+    as a list made custom/group broadcasts disappear from app inboxes.
+    """
+    try:
+        raw = json.loads(row.get("target_ids_json") or "[]")
+    except Exception:
+        return set()
+    if isinstance(raw, dict):
+        if target_type == "by_group":
+            raw = raw.get("group_ids") or []
+        elif target_type == "custom_users":
+            raw = raw.get("user_ids") or []
+        else:
+            raw = raw.get("user_ids") or raw.get("group_ids") or []
+    if not isinstance(raw, (list, tuple, set)):
+        return set()
+    ids: set[int] = set()
+    for value in raw:
+        try:
+            item_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0:
+            ids.add(item_id)
+    return ids
+
+
 def _broadcast_notifications_for_user(user: dict, role: str) -> list[dict]:
     _ensure_web_tables()
     uid = int(user.get("id") or 0)
     group_ids = {int(g.get("id") or 0) for g in (_safe_call(lambda: get_user_groups(uid), []) or [])}
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM web_broadcasts WHERE status IN ('queued','sending','done') ORDER BY created_at DESC, id DESC LIMIT 120")
+    cur.execute("SELECT * FROM web_broadcasts WHERE status IN ('pending','queued','sending','done','completed') ORDER BY created_at DESC, id DESC LIMIT 120")
     rows = [dict(r) for r in (cur.fetchall() or [])]
     conn.close()
     out: list[dict] = []
     for row in rows:
         target_type = str(row.get("target_type") or "").strip()
-        ids = []
-        try:
-            ids = [int(x) for x in (json.loads(row.get("target_ids_json") or "[]") or []) if int(x) > 0]
-        except Exception:
-            ids = []
+        ids = _broadcast_target_ids(row, target_type)
         allowed = False
         if target_type == "all_users":
             allowed = True
@@ -20708,9 +20778,9 @@ def _broadcast_notifications_for_user(user: dict, role: str) -> list[dict]:
         elif role in {"teacher", "support", "admin"} and target_type == "all_teachers":
             allowed = True
         elif target_type == "by_group" and group_ids:
-            allowed = bool(group_ids.intersection(set(ids)))
+            allowed = bool(group_ids.intersection(ids))
         elif target_type == "custom_users":
-            allowed = uid in set(ids)
+            allowed = uid in ids
         if not allowed:
             continue
         out.append(
@@ -20994,7 +21064,7 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
             """
             SELECT id, target_type, target_ids_json
             FROM web_broadcasts
-            WHERE status IN ('queued','sending','done')
+            WHERE status IN ('pending','queued','sending','done','completed')
             ORDER BY created_at DESC, id DESC
             LIMIT 120
             """
@@ -21005,10 +21075,7 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
             if bid <= 0 or f"broadcast:{bid}" in read_keys:
                 continue
             target_type = str(row.get("target_type") or "").strip()
-            try:
-                ids = {int(x) for x in (json.loads(row.get("target_ids_json") or "[]") or []) if int(x) > 0}
-            except Exception:
-                ids = set()
+            ids = _broadcast_target_ids(row, target_type)
             allowed = False
             if target_type == "all_users":
                 allowed = True
@@ -48914,6 +48981,7 @@ async def teacher_reset_student_password(student_id: int, authorization: str | N
 # ============================================================
 
 from db import (
+    _is_postgres_enabled,
     ensure_teacher_notes_schema,
     get_teacher_notes,
     get_student_visible_notes,
@@ -49036,11 +49104,59 @@ class StudentPersonalNoteUpdateRequest(BaseModel):
 
 
 def _ensure_student_personal_note_columns(cur: Any) -> None:
-    for column, definition in (("tag", "TEXT"), ("tag_color", "TEXT"), ("is_pinned", "INTEGER DEFAULT 0")):
+    # PostgreSQL aborts an entire transaction after even an expected
+    # "column already exists" error. Use idempotent DDL instead of catching
+    # and rolling back per column, otherwise a successful earlier ALTER can
+    # be lost when a later one already exists.
+    columns = (
+        ("tag", "TEXT"),
+        ("tag_color", "TEXT"),
+        ("is_pinned", "BOOLEAN DEFAULT FALSE" if _is_postgres_enabled() else "INTEGER DEFAULT 0"),
+    )
+    for column, definition in columns:
+        if _is_postgres_enabled():
+            cur.execute(
+                f"ALTER TABLE student_personal_notes ADD COLUMN IF NOT EXISTS {column} {definition}"
+            )
+            continue
         try:
             cur.execute(f"ALTER TABLE student_personal_notes ADD COLUMN {column} {definition}")
         except Exception:
+            # Older SQLite versions lack ADD COLUMN IF NOT EXISTS.
             pass
+
+
+def _ensure_student_personal_notes_table(cur: Any) -> None:
+    """Portable CREATE TABLE (PostgreSQL first, SQLite fallback) — the old
+    inline `AUTOINCREMENT` DDL crashed with a SyntaxError on production
+    Postgres, breaking the whole student notes screen."""
+    _execute_ddl_candidates(
+        cur,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS student_personal_notes (
+                id BIGSERIAL PRIMARY KEY,
+                student_id BIGINT NOT NULL,
+                content TEXT NOT NULL,
+                tag TEXT,
+                tag_color TEXT,
+                is_pinned BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS student_personal_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                tag TEXT,
+                tag_color TEXT,
+                is_pinned INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ],
+    )
 
 
 @app.get("/student/notes/mine")
@@ -49052,19 +49168,10 @@ async def student_get_my_notes(authorization: str | None = Header(default=None))
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS student_personal_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                tag TEXT,
-                tag_color TEXT,
-                is_pinned INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+        _ensure_student_personal_notes_table(cur)
+        # Persist the table (if it was just created) before the ALTERs —
+        # a failed ALTER rolls back the tx and would drop it otherwise.
+        conn.commit()
         _ensure_student_personal_note_columns(cur)
         conn.commit()
         cur.execute(
@@ -49088,26 +49195,28 @@ async def student_create_my_note(payload: StudentPersonalNoteCreateRequest, auth
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS student_personal_notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                student_id INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                tag TEXT,
-                tag_color TEXT,
-                is_pinned INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        _ensure_student_personal_note_columns(cur)
-        cur.execute(
-            "INSERT INTO student_personal_notes (student_id, content, tag, tag_color, is_pinned) VALUES (?, ?, ?, ?, ?)",
-            (student_id, payload.content.strip(), payload.tag, payload.tag_color, int(bool(payload.is_pinned)))
-        )
+        _ensure_student_personal_notes_table(cur)
+        # Persist the table (if it was just created) before the ALTERs —
+        # a failed ALTER rolls back the tx and would drop it otherwise.
         conn.commit()
-        note_id = cur.lastrowid
+        _ensure_student_personal_note_columns(cur)
+        if _is_postgres_enabled():
+            # psycopg3 has no cursor.lastrowid — RETURNING keeps it atomic.
+            cur.execute(
+                """
+                INSERT INTO student_personal_notes (student_id, content, tag, tag_color, is_pinned)
+                VALUES (?, ?, ?, ?, ?) RETURNING id
+                """,
+                (student_id, payload.content.strip(), payload.tag, payload.tag_color, bool(payload.is_pinned)),
+            )
+            note_id = int((cur.fetchone() or {}).get("id") or 0)
+        else:
+            cur.execute(
+                "INSERT INTO student_personal_notes (student_id, content, tag, tag_color, is_pinned) VALUES (?, ?, ?, ?, ?)",
+                (student_id, payload.content.strip(), payload.tag, payload.tag_color, int(bool(payload.is_pinned))),
+            )
+            note_id = int(getattr(cur, "lastrowid", 0) or 0)
+        conn.commit()
         cur.execute("SELECT * FROM student_personal_notes WHERE id=?", (note_id,))
         row = dict(cur.fetchone() or {})
         return {"message": "Not saqlandi", "item": row}
@@ -49130,6 +49239,8 @@ async def student_update_my_note(
     conn = get_conn()
     cur = conn.cursor()
     try:
+        _ensure_student_personal_notes_table(cur)
+        conn.commit()
         _ensure_student_personal_note_columns(cur)
         cur.execute(
             """
@@ -49144,7 +49255,13 @@ async def student_update_my_note(
                 payload.content.strip() if payload.content is not None else None,
                 payload.tag,
                 payload.tag_color,
-                int(payload.is_pinned) if payload.is_pinned is not None else None,
+                (
+                    bool(payload.is_pinned)
+                    if _is_postgres_enabled() and payload.is_pinned is not None
+                    else int(payload.is_pinned)
+                    if payload.is_pinned is not None
+                    else None
+                ),
                 int(note_id),
                 student_id,
             ),
@@ -49167,6 +49284,9 @@ async def student_delete_my_note(note_id: int, authorization: str | None = Heade
     conn = get_conn()
     cur = conn.cursor()
     try:
+        _ensure_student_personal_notes_table(cur)
+        conn.commit()
+        _ensure_student_personal_note_columns(cur)
         cur.execute("DELETE FROM student_personal_notes WHERE id=? AND student_id=?", (note_id, student_id))
         conn.commit()
         if cur.rowcount == 0:
@@ -50171,4 +50291,3 @@ async def teacher_ai_check_note(
         None,
     )
     return {"message": "AI tekshirish muvaffaqiyatli", "result": ai_result}
-

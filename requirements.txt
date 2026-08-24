@@ -7,7 +7,9 @@ fastapi==0.136.0
 uvicorn[standard]==0.44.0
 PyJWT==2.12.1
 passlib==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.26
+redis==5.0.8
 openpyxl==3.1.2
 aiosqlite==0.20.0
 pytz==2025.2

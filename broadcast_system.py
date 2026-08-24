@@ -4,6 +4,7 @@ Broadcast System for Admin Bot - Comprehensive broadcast functionality
 """
 
 import asyncio
+import threading
 from io import BytesIO
 from typing import Dict, List, Any, Optional
 from datetime import datetime
@@ -900,8 +901,94 @@ class BroadcastManager:
         self.broadcast_stats['failed'] = failed_count
         self.broadcast_stats['role_stats'] = role_stats
         self.broadcast_stats['error_buckets'] = error_buckets
-        
+
+        # Mirror the broadcast into the app world: a `web_broadcasts` row
+        # (in-app notification/popup) plus an FCM push for every targeted
+        # user with a registered device — previously the bot broadcast only
+        # reached Telegram chats and app users saw nothing.
+        try:
+            threading.Thread(
+                target=self._send_web_broadcast,
+                args=(test_message, recipients, success_count, failed_count),
+                daemon=True,
+            ).start()
+        except Exception:
+            logger.exception("web broadcast mirror failed to start")
+
         await self._send_final_statistics(admin_chat_id)
+
+    def _send_web_broadcast(self, test_message: Dict[str, Any], recipients: List[Dict[str, Any]], sent: int, failed: int) -> None:
+        """Sync app-side mirror of a Telegram broadcast (runs in a thread)."""
+        import json as _json
+
+        from db import get_conn
+        import push_notifications
+
+        content_type = test_message['type']
+        content = test_message['content']
+        inline_button = test_message.get('inline_button') or {}
+
+        if content_type == 'text':
+            text = str(content or '').strip()
+        else:
+            text = str((content or {}).get('caption') or '').strip() if isinstance(content, dict) else ''
+        if not text:
+            text = "Yangi e'lon"
+        text = text[:2000]
+
+        # Store the exact app-user IDs. Inferring an all-role target from the
+        # final Telegram recipient list can leak a custom broadcast to every
+        # student/teacher merely because its selected recipients share a role.
+        # Telegram group rows use negative IDs and intentionally have no
+        # app-user identity, so they are excluded from app delivery.
+        user_ids = sorted({
+            int(r.get('id') or 0)
+            for r in recipients
+            if int(r.get('id') or 0) > 0
+        })
+        target_type = "custom_users"
+        target_ids_json = _json.dumps(user_ids)
+
+        button_text = str(inline_button.get('text') or '').strip() or None
+        button_url = str(inline_button.get('url') or '').strip() or None
+
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                INSERT INTO web_broadcasts
+                    (creator_user_id, target_type, target_ids_json, message_text,
+                     button_text, button_url, status, total_recipients,
+                     sent_count, failed_count, skipped_count, finished_at)
+                VALUES (NULL, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, 0, CURRENT_TIMESTAMP)
+                """,
+                (target_type, target_ids_json, text, button_text, button_url, len(recipients), int(sent), int(failed)),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.exception("web broadcast insert failed")
+        finally:
+            conn.close()
+
+        try:
+            if user_ids:
+                push_notifications.send_push_to_users(
+                    user_ids,
+                    "Diamond Education",
+                    text,
+                    data={
+                        "target_screen": "notifications",
+                        "notification_type": "broadcast",
+                        "button_url": button_url or "",
+                    },
+                )
+        except Exception:
+            logger.exception("web broadcast push failed")
     
     async def _send_final_statistics(self, admin_chat_id: int):
         """Send final broadcast statistics"""

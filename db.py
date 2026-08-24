@@ -6145,6 +6145,67 @@ def cleanup_expired_daily_tests(days: int = 1) -> int:
         conn.close()
 
 
+_DAILY_BANK_LEVEL_ORDER = [
+    "BEGINNER",
+    "ELEMENTARY",
+    "PRE-INTERMEDIATE",
+    "INTERMEDIATE",
+    "UPPER-INTERMEDIATE",
+    "ADVANCED",
+]
+
+# Older imported daily-test rows use CEFR codes, while current placement and
+# group records use descriptive tiers. They represent the same difficulty and
+# must be considered together — especially BEGINNER/A1, otherwise a student
+# can be told the bank is empty even when there are plenty of A1 questions.
+_DAILY_BANK_LEVEL_ALIASES = {
+    "BEGINNER": ("BEGINNER", "A1"),
+    "ELEMENTARY": ("ELEMENTARY", "A2"),
+    "PRE-INTERMEDIATE": ("PRE-INTERMEDIATE", "B1"),
+    "INTERMEDIATE": ("INTERMEDIATE", "B2"),
+    "UPPER-INTERMEDIATE": ("UPPER-INTERMEDIATE", "B2"),
+    "ADVANCED": ("ADVANCED", "C1"),
+}
+
+_DAILY_BANK_CANONICAL_LEVELS = {
+    "A1": "BEGINNER",
+    "A2": "ELEMENTARY",
+    "B1": "PRE-INTERMEDIATE",
+    "B2": "UPPER-INTERMEDIATE",
+    "C1": "ADVANCED",
+}
+
+
+def _daily_bank_level_candidates(level: str) -> list[str]:
+    """Exact tier/CEFR alias first, then nearest tiers by rank distance.
+
+    Example: BEGINNER checks BEGINNER then A1 before borrowing ELEMENTARY/A2.
+    This protects level quality but prevents a thin bank from hard-blocking a
+    daily test. Ties intentionally prefer the easier tier.
+    """
+    requested = (level or "").strip().upper()
+    lvl = _DAILY_BANK_CANONICAL_LEVELS.get(requested, requested)
+    if lvl not in _DAILY_BANK_LEVEL_ORDER:
+        tier_candidates = [requested] + [t for t in _DAILY_BANK_LEVEL_ORDER if t != requested]
+    else:
+        idx = _DAILY_BANK_LEVEL_ORDER.index(lvl)
+        tier_candidates = [lvl]
+        for dist in range(1, len(_DAILY_BANK_LEVEL_ORDER)):
+            for cand in (
+                idx - dist >= 0 and _DAILY_BANK_LEVEL_ORDER[idx - dist],
+                idx + dist < len(_DAILY_BANK_LEVEL_ORDER) and _DAILY_BANK_LEVEL_ORDER[idx + dist],
+            ):
+                if cand and cand not in tier_candidates:
+                    tier_candidates.append(cand)
+
+    candidates: list[str] = []
+    for tier in tier_candidates:
+        for candidate in _DAILY_BANK_LEVEL_ALIASES.get(tier, (tier,)):
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
 def _pick_unused_daily_test_bank_rows(
     cur,
     subject: str,
@@ -6263,7 +6324,62 @@ def _pick_unused_daily_test_bank_rows(
                 if len(bank_rows) >= total_questions:
                     break
         except Exception:
-            pass
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+
+    # Thin-bank fallback: fill any remainder from the nearest tiers of the
+    # same subject so a sparse level (Russian PRE-INTERMEDIATE: 15 rows)
+    # never blocks the daily test from starting.
+    for fb_lvl in _daily_bank_level_candidates(lvl):
+        if fb_lvl == lvl:
+            continue
+        missing = total_questions - len(bank_rows)
+        if missing <= 0:
+            break
+        try:
+            if bank_ids:
+                placeholders = ",".join(["?"] * len(bank_ids))
+                cur.execute(
+                    f'''
+                    SELECT id, question, option_a, option_b, option_c, option_d, correct_option_index, question_type, payload_json
+                    FROM daily_tests_bank
+                    WHERE active=1 AND first_used_at IS NULL
+                      AND subject=? AND level=?
+                      AND COALESCE(question_type, 'multiple_choice') IN ({",".join(["?"] * len(allowed_bank_types))})
+                      AND id NOT IN ({placeholders})
+                    ORDER BY Random()
+                    LIMIT ?
+                    ''',
+                    tuple([subj, fb_lvl] + sorted(allowed_bank_types) + bank_ids + [missing]),
+                )
+            else:
+                cur.execute(
+                    '''
+                    SELECT id, question, option_a, option_b, option_c, option_d, correct_option_index, question_type, payload_json
+                    FROM daily_tests_bank
+                    WHERE active=1 AND first_used_at IS NULL
+                      AND subject=? AND level=?
+                      AND COALESCE(question_type, 'multiple_choice') IN (?, ?, ?, ?, ?)
+                    ORDER BY Random()
+                    LIMIT ?
+                    ''',
+                    (subj, fb_lvl, *sorted(allowed_bank_types), missing),
+                )
+            for r in cur.fetchall():
+                bid = int(r["id"])
+                if bid in bank_ids:
+                    continue
+                bank_rows.append(r)
+                bank_ids.append(bid)
+                if len(bank_rows) >= total_questions:
+                    break
+        except Exception:
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
 
     return bank_rows
 
@@ -23007,4 +23123,3 @@ def update_homework_submission_ai(
         return bool(getattr(cur, "rowcount", 0) > 0)
     finally:
         conn.close()
-
