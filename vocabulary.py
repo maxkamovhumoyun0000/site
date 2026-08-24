@@ -497,13 +497,18 @@ def generate_quiz(
     qtype: str,
     preferred_translation: str,
     exclude_word_ids: set[int] | None = None,
+    connection: Any | None = None,
 ) -> List[Dict[str, Any]]:
     """
     qtype: 'multiple_choice', 'gap_filling', 'definition'
     preferred_translation: 'uz' or 'ru' — which translation language to use when presenting translations
     Returns list of questions with options and correct answer index/value
     """
-    conn = get_conn()
+    # Mixed quizzes call this once per type/level. Reusing one connection
+    # avoids paying the database connection setup cost 6–18 times while the
+    # student is waiting on the "test is preparing" screen.
+    owns_connection = connection is None
+    conn = connection or get_conn()
     cur = conn.cursor()
     vocab_lang = vocab_language_for_subject(subject)
     excluded_ids = _sanitize_excluded_ids(exclude_word_ids)
@@ -764,7 +769,8 @@ def generate_quiz(
                 }, subject)
             )
 
-    conn.close()
+    if owns_connection:
+        conn.close()
     return questions
 
 
@@ -786,6 +792,7 @@ def generate_balanced_mixed_quiz(
     by_type: dict[str, list[dict[str, Any]]] = {qtype: [] for qtype in VOCAB_QUIZ_TYPES}
     used_word_ids: set[int] = set()
     cooldowns = cooldown_word_ids_by_type or {}
+    shared_connection = get_conn()
 
     def collect_for(qtype: str, *, use_cooldown: bool) -> None:
         need_total = int(budgets.get(qtype) or 0)
@@ -806,6 +813,7 @@ def generate_balanced_mixed_quiz(
                 qtype=qtype,
                 preferred_translation=preferred_translation,
                 exclude_word_ids=excluded_word_ids,
+                connection=shared_connection,
             )
             for question in questions:
                 wid = int(question.get("word_id") or 0)
@@ -819,31 +827,34 @@ def generate_balanced_mixed_quiz(
                 if len(by_type[qtype]) >= need_total:
                     break
 
-    for qtype in VOCAB_QUIZ_TYPES:
-        collect_for(qtype, use_cooldown=True)
-    if sum(len(items) for items in by_type.values()) < target_count:
+    try:
         for qtype in VOCAB_QUIZ_TYPES:
-            collect_for(qtype, use_cooldown=False)
+            collect_for(qtype, use_cooldown=True)
+        if sum(len(items) for items in by_type.values()) < target_count:
+            for qtype in VOCAB_QUIZ_TYPES:
+                collect_for(qtype, use_cooldown=False)
 
-    mixed: list[dict[str, Any]] = []
-    for qtype in plan:
-        if by_type.get(qtype):
-            mixed.append(by_type[qtype].pop(0))
-        else:
-            for fallback_type in VOCAB_QUIZ_TYPES:
-                if by_type.get(fallback_type):
-                    mixed.append(by_type[fallback_type].pop(0))
-                    break
-        if len(mixed) >= target_count:
-            break
+        mixed: list[dict[str, Any]] = []
+        for qtype in plan:
+            if by_type.get(qtype):
+                mixed.append(by_type[qtype].pop(0))
+            else:
+                for fallback_type in VOCAB_QUIZ_TYPES:
+                    if by_type.get(fallback_type):
+                        mixed.append(by_type[fallback_type].pop(0))
+                        break
+            if len(mixed) >= target_count:
+                break
 
-    leftovers = [question for qtype in VOCAB_QUIZ_TYPES for question in by_type.get(qtype, [])]
-    random.shuffle(leftovers)
-    for question in leftovers:
-        if len(mixed) >= target_count:
-            break
-        mixed.append(question)
-    return mixed[:target_count]
+        leftovers = [question for qtype in VOCAB_QUIZ_TYPES for question in by_type.get(qtype, [])]
+        random.shuffle(leftovers)
+        for question in leftovers:
+            if len(mixed) >= target_count:
+                break
+            mixed.append(question)
+        return mixed[:target_count]
+    finally:
+        shared_connection.close()
 
 
 def export_words_to_xlsx(subject: str) -> Tuple[io.BytesIO, str]:
