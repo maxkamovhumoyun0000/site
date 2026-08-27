@@ -28024,6 +28024,21 @@ def _attach_homework_runtime_fields(row: dict) -> dict:
     return row
 
 
+def _strip_notification_html(text: str) -> str:
+    """Telegram uchun yozilgan HTML teglarni (<b>, <i>, <a>...) web/push
+    bildirishnomadan olib tashlaydi va asosiy entity'larni oddiy belgiga aylantiradi."""
+    raw = str(text or "")
+    if "<" in raw:
+        raw = re.sub(r"<[^>]+>", "", raw)
+    return (
+        raw.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    ).strip()
+
+
 def _store_browser_notification_for_user(
     user_id: int,
     *,
@@ -28039,6 +28054,10 @@ def _store_browser_notification_for_user(
     uid = int(user_id or 0)
     if uid <= 0:
         return
+    # Web/push bildirishnomalar HTML render qilmaydi — Telegram uchun yozilgan
+    # <b>...</b> kabi teglarni olib tashlaymiz (aks holda ular ko'rinib qoladi).
+    title = _strip_notification_html(title)
+    message = _strip_notification_html(message)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -37266,6 +37285,10 @@ def _payment_upsert_web_notification(
     payment_refund_id: int | None = None,
     meta: dict[str, Any] | None = None,
 ) -> int:
+    # Barcha web/push bildirishnomalar uchun yagona nuqta — HTML teglarni
+    # (Telegram uchun yozilgan <b>...</b> kabi) shu yerda tozalaymiz.
+    title = _strip_notification_html(title)
+    message = _strip_notification_html(message)
     source = str(source_key or "").strip()
     if source:
         cur.execute(

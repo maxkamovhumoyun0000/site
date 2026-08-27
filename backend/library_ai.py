@@ -710,8 +710,15 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not word:
                     continue
                 question["word"] = word
-                question["translation"] = str(item.get("translation") or "").strip() or None
-                question["meaning"] = str(item.get("meaning") or "").strip() or None
+                # Har bir so'z uchun ikkala tarjima (uz + ru) bir testda saqlanadi.
+                question["translation_uz"] = str(item.get("translation_uz") or "").strip() or None
+                question["translation_ru"] = str(item.get("translation_ru") or "").strip() or None
+                # Backward-compat.
+                question["translation"] = (
+                    str(item.get("translation") or "").strip()
+                    or question["translation_uz"] or question["translation_ru"]
+                )
+                question["meaning"] = str(item.get("meaning") or "").strip() or question["translation_ru"]
         out.append(question)
     return out
 
@@ -723,7 +730,13 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
 
     ru = lang == "Russian"
     word = str(q.get("word") or q.get("prompt") or "").strip()
-    translation = str(q.get("translation") or "").strip()
+    # Guruh tiliga mos tarjima: ruscha guruh -> ruscha, aks holda o'zbekcha.
+    tr_uz = str(q.get("translation_uz") or "").strip()
+    tr_ru = str(q.get("translation_ru") or "").strip()
+    legacy = str(q.get("translation") or "").strip()
+    translation = (tr_ru if ru else tr_uz) or legacy or tr_uz or tr_ru
+    # Ikkala tarjima ham qabul qilinadi (student boshqa tilda yozsa ham).
+    accepted = [t for t in {translation, tr_uz, tr_ru, legacy} if t]
     instruction = q.get("instruction")
     level = q.get("level")
     variants = list(WORD_PRACTICE_VARIANTS)
@@ -752,7 +765,7 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
     else:  # translation
         base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
         base["answer"] = translation
-        base["accepted_answers"] = [translation]
+        base["accepted_answers"] = accepted
     return base
 
 
@@ -843,11 +856,13 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "reading texts and dialogues. Nothing teachable should be left out.\n\n"
         "STRICT RULES:\n"
         "1. Cover ALL the learning content in the material — completely. If there is a vocabulary "
-        "list, turn EVERY SINGLE word into its own \"word_practice\" item (with its translation/"
-        "meaning if shown): a list of 100 words MUST produce ~100 word_practice items. Do NOT sample "
-        "or summarise the word list, and do NOT favour the reading text over the word list — cover BOTH "
-        "fully. If there is a reading text, also add reading_open questions; if there is a grammar rule, "
-        "add gap_fill / scrambled_sentence / write_sentence practice for it.\n"
+        "list, turn EVERY SINGLE word into its own \"word_practice\" item. For each word include BOTH "
+        "\"translation_uz\" (Uzbek) and \"translation_ru\" (Russian) if either is shown in the material "
+        "or can be inferred — a single test serves both Uzbek and Russian groups. A list of 100 words "
+        "MUST produce ~100 word_practice items. Do NOT sample or summarise the word list, and do NOT "
+        "favour the reading text over the word list — cover BOTH fully. If there is a reading text, also "
+        "add reading_open questions; if there is a grammar rule, add gap_fill / scrambled_sentence / "
+        "write_sentence practice for it.\n"
         "2. MIX the question kinds and vary them across the set (do not make them all the same type). "
         "Choose the kinds that best fit each piece of content.\n"
         "2b. EVERY question object MUST contain its own explicit \"kind\" field, chosen individually "
@@ -881,7 +896,7 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         '  "reading_text": "the main text of the page, empty string if none",\n'
         '  "notes": "grammar rule / explanation found on the page, empty if none",\n'
         '  "questions": [\n'
-        '    {"kind":"word_practice","word":"decide","translation":"qaror qilmoq","meaning":"to make a choice"},\n'
+        '    {"kind":"word_practice","word":"decide","translation_uz":"qaror qilmoq","translation_ru":"решать"},\n'
         '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes",'
         '"accepted_answers":["goes"],"instruction":"Bo\'sh joyni to\'ldiring."},\n'
         '    {"kind":"matching","prompt":"So\'zlarni ta\'riflarga moslang.",'
@@ -1037,8 +1052,8 @@ def _extract_vocab_items(text: str, lang: str = "uz") -> list[dict]:
     """Matndan lug'at ro'yxatini to'liq ajratib, word_practice mashqlariga aylantiradi.
 
     Har bir qator: `beat (v) — mag'lub etmoq — побеждать` ko'rinishida bo'ladi.
-    lang='ru' bo'lsa ruscha (kirill) tarjima, aks holda o'zbekcha gloss olinadi.
-    Nasr (reading passage) qatorlari ajratgichga ega bo'lmagani uchun tushib qoladi.
+    Har bir so'z uchun HAM o'zbekcha, HAM ruscha tarjima ajratiladi (bittada) —
+    guruh tiliga qarab alohida test qilinmaydi. Nasr qatorlari (ajratgichsiz) tushadi.
     """
     def _is_cyrillic(s: str) -> bool:
         return bool(re.search(r"[А-Яа-яЁё]", s))
@@ -1069,24 +1084,25 @@ def _extract_vocab_items(text: str, lang: str = "uz") -> list[dict]:
         word = re.sub(r"\s*\([^)]*\)\s*", " ", head).strip(" .:;")
         if not word or word.lower() in seen:
             continue
-        glosses = [g for g in parts[1:] if g]
+        glosses = [g.strip(" .:;") for g in parts[1:] if g.strip()]
         if not glosses:
             continue
-        if lang == "ru":
-            chosen = next((g for g in glosses if _is_cyrillic(g)), glosses[-1])
-            other = next((g for g in glosses if g is not chosen), None)
-        else:
-            chosen = next((g for g in glosses if not _is_cyrillic(g)), glosses[0])
-            other = next((g for g in glosses if g is not chosen), None)
-        # Tarjima juda uzun bo'lsa — bu nasrdir, o'tkazamiz.
-        if len(chosen.split()) > 8:
+        # Ruscha (kirill) va o'zbekcha (lotin) glossalarni ajratamiz.
+        ru_gloss = next((g for g in glosses if _is_cyrillic(g)), None)
+        uz_gloss = next((g for g in glosses if not _is_cyrillic(g)), None)
+        # Ikkalasi ham juda uzun bo'lsa — bu nasr, o'tkazamiz.
+        candidate = uz_gloss or ru_gloss or ""
+        if len(candidate.split()) > 10:
             continue
         seen.add(word.lower())
         items.append({
             "kind": "word_practice",
             "word": word,
-            "translation": chosen.strip(" .:;") or None,
-            "meaning": (other.strip(" .:;") if other else None),
+            "translation_uz": uz_gloss or None,
+            "translation_ru": ru_gloss or None,
+            # Backward-compat: eski maydonlar ham to'ldiriladi.
+            "translation": uz_gloss or ru_gloss or None,
+            "meaning": ru_gloss if uz_gloss else None,
         })
     return items
 
@@ -1377,12 +1393,11 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
     lang = _student_lang(user)
     questions = _expand_polymorphic_questions(questions, lang)
-    blocked = [q for q in questions if q.get("needs_audio_upload")]
-    if blocked:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Bu testda {len(blocked)} ta tinglash mashqiga audio yuklanmagan. O'qituvchiga murojaat qiling.",
-        )
+    # Audio yuklanmagan tinglash mashqlari butun testni bloklamasin — ularni
+    # o'tkazib yuboramiz, qolgan mashqlar ishlayveradi.
+    questions = [q for q in questions if not q.get("needs_audio_upload")]
+    if not questions:
+        raise HTTPException(status_code=422, detail="Bu testda ishlaydigan mashq yo'q. O'qituvchiga murojaat qiling.")
     attempt = _safe(
         lambda: dbm.start_ai_test_attempt(
             int(user.get("id") or 0),

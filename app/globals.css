@@ -23265,17 +23265,27 @@ select.pp-filter-input {
    ========================================================================== */
 .app-shell aside.sidebar,
 aside.sidebar,
+.sidebar,
 .sidebar[data-testid="desktop-sidebar"],
-.dashboard-mobile-drawer {
+.dashboard-mobile-drawer,
+aside[data-testid="mobile-drawer"] {
   background-color: var(--surface) !important;
+  background-image: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  opacity: 1 !important;
 }
 [data-theme="dark"] .app-shell aside.sidebar,
 [data-theme="dark"] aside.sidebar,
+[data-theme="dark"] .sidebar,
 [data-theme="dark"] .sidebar[data-testid="desktop-sidebar"],
-[data-theme="dark"] .dashboard-mobile-drawer {
+[data-theme="dark"] .dashboard-mobile-drawer,
+[data-theme="dark"] aside[data-testid="mobile-drawer"] {
   background-color: #0b1220 !important;
+  background-image: none !important;
 }
-/* Mobil drawer va bottom-nav orqa kontentni ko'rsatmasin */
-.dashboard-mobile-drawer {
-  backdrop-filter: none !important;
+/* Mobil drawer ochilganda orqa fon (overlay) to'liq to'q bo'lsin */
+.dashboard-mobile-drawer-overlay {
+  background-color: rgba(2, 6, 20, 0.72) !important;
+  backdrop-filter: blur(2px) !important;
 }

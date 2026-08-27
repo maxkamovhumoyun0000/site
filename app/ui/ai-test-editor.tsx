@@ -32,6 +32,8 @@ export type AiTestQuestion = {
   instruction?: string | null;
   word?: string | null;
   translation?: string | null;
+  translation_uz?: string | null;
+  translation_ru?: string | null;
   meaning?: string | null;
   passage?: string | null;
   image_url?: string | null;
@@ -151,7 +153,7 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   if (kind === "matching") return { ...base, pairs: [{ left: "", right: "" }, { left: "", right: "" }] };
   if (kind === "listening") return { ...base, options: ["", ""], correct_index: 0 };
   if (kind === "scrambled_sentence") return { ...base, answer: "", tokens: [] };
-  if (kind === "word_practice") return { kind, word: "", translation: "", meaning: "" };
+  if (kind === "word_practice") return { kind, word: "", translation_uz: "", translation_ru: "" };
   if (AI_TEST_KIND_META[kind].check === "auto") return { ...base, answer: "", accepted_answers: [] };
   return { ...base, reference_answer: "" };
 }
@@ -398,21 +400,21 @@ export function AiTestEditor({
                     />
                   </div>
                   <div>
-                    <label className={LABEL_CLS}>Tarjimasi (ixtiyoriy)</label>
+                    <label className={LABEL_CLS}>Tarjima — o'zbekcha</label>
                     <input
-                      value={String(q.translation || "")}
-                      onChange={(e) => patch(index, { translation: e.target.value })}
+                      value={String(q.translation_uz ?? q.translation ?? "")}
+                      onChange={(e) => patch(index, { translation_uz: e.target.value })}
                       className={INPUT_CLS}
                       placeholder="qaror qilmoq"
                     />
                   </div>
-                  <div className="sm:col-span-2">
-                    <label className={LABEL_CLS}>Ma'nosi (ixtiyoriy)</label>
+                  <div>
+                    <label className={LABEL_CLS}>Tarjima — ruscha</label>
                     <input
-                      value={String(q.meaning || "")}
-                      onChange={(e) => patch(index, { meaning: e.target.value })}
+                      value={String(q.translation_ru ?? q.meaning ?? "")}
+                      onChange={(e) => patch(index, { translation_ru: e.target.value })}
                       className={INPUT_CLS}
-                      placeholder="to make a choice"
+                      placeholder="решать"
                     />
                   </div>
                 </>
