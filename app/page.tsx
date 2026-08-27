@@ -51,6 +51,7 @@ import { StudentVoiceRoom } from "./ui/voice-room/student-voice-room";
 import { ModeratorVoiceRoom } from "./ui/voice-room/moderator-voice-room";
 import { ErrorBoundary } from "./ui/error-boundary";
 import { TeacherMaterialsPanel } from "./ui/teacher-materials";
+import { TeacherLibraryPanel } from "./ui/teacher-library";
 import { TeacherKpiPanel } from "./ui/teacher-kpi";
 
 import { ModalPortal } from "./ui/modal-portal";
@@ -5901,6 +5902,24 @@ function StudentHomework() {
   async function startHomeworkTest(row: GenericRow) {
     const hid = Number(row.id || 0);
     if (!hid) return;
+    // Yangi test turlaridan (AI/avtomatik) iborat bo'lsa — taymersiz AI runner'ga.
+    try {
+      const AI_KINDS = new Set([
+        "speak_sentence", "write_sentence", "guided_writing", "translation",
+        "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
+        "picture_description", "listening", "dictation", "spelling",
+        "matching", "scrambled_sentence", "gap_fill",
+      ]);
+      const test = await requestJson<GenericRow>(`/student/homework/${hid}/test`, { method: "GET" });
+      const questions = (test?.questions || (test?.test as GenericRow)?.questions || []) as GenericRow[];
+      const hasAiKind = Array.isArray(questions) && questions.some((q) => AI_KINDS.has(String(q?.kind || "")));
+      if (hasAiKind) {
+        router.push(`/student/ai-tests/homework/${hid}`);
+        return;
+      }
+    } catch {
+      // eski format — content-test runner
+    }
     router.push(`/student/content-tests/homework/${hid}`);
   }
 
@@ -12368,7 +12387,7 @@ if (section === "attendance") {
   }
 
   if (section === "materials") {
-    return <TeacherMaterialsPanel onApiCall={onApiCall} groups={groups} />;
+    return <TeacherLibraryPanel onApiCall={onApiCall} groups={groups} />;
   }
 
   if (section === "kpi") {
@@ -17665,6 +17684,12 @@ function AdminSection({
       family_discount_percent: tt("settings.familyDiscount", "👨‍👩‍👧 Family discount (%)"),
       multi_group_discount_percent: tt("settings.multiGroupDiscount", "👥 Multi-group discount (%)"),
       referral_bonus_dpoints: tt("settings.referralBonus", "🤝 Referral bonus (D'point)"),
+      ai_test_correct_reward: tt("settings.aiTestCorrectReward", "🤖 AI test — to'g'ri javob mukofoti (D'point)"),
+      ai_test_retry_penalty: tt("settings.aiTestRetryPenalty", "🔁 AI test — har qayta urinish jarimasi (D'point)"),
+      ai_test_skip_penalty: tt("settings.aiTestSkipPenalty", "⏭️ AI test — o'tkazib yuborish jarimasi (D'point)"),
+      ai_test_give_up_penalty: tt("settings.aiTestGiveUpPenalty", "🚫 AI test — voz kechish jarimasi (D'point)"),
+      weekly_review_reward: tt("settings.weeklyReviewReward", "🗓️ Haftalik takrorlash mukofoti (D'point)"),
+      weekly_review_missed_penalty: tt("settings.weeklyReviewMissedPenalty", "🗓️ Haftalik takrorlash bajarilmadi (D'point)"),
     };
     return (
       <div className="page-stack">

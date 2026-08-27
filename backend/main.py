@@ -793,6 +793,7 @@ lesson_reminders_task: asyncio.Task[Any] | None = None
 domain_email_cleanup_task: asyncio.Task[Any] | None = None
 daily_test_reminder_task: asyncio.Task[Any] | None = None
 homework_deadline_reminder_task: asyncio.Task[Any] | None = None
+weekly_review_task: asyncio.Task[Any] | None = None
 competition_stale_lobbies_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
 
@@ -11666,6 +11667,14 @@ DPOINT_SETTINGS_DEFAULTS: dict[str, float] = {
     "teacher_manual_daily_dpoint_max": 500.0,
     "homework_deadline_missed_penalty_dpoints": 0.0,
     "voice_room_price": 50.0,
+    # ── AI test turlari (speak/write sentence, guided writing, kitob mashqlari) ──
+    "ai_test_correct_reward": 2.0,
+    "ai_test_retry_penalty": 0.5,
+    "ai_test_skip_penalty": 2.0,
+    "ai_test_give_up_penalty": 3.0,
+    # ── Haftalik majburiy takroriy test ──
+    "weekly_review_reward": 10.0,
+    "weekly_review_missed_penalty": 5.0,
 }
 
 
@@ -15444,6 +15453,57 @@ def _run_homework_deadline_reminder_push() -> None:
     logger.info("homework_deadline_reminder_worker sent=%s", sent)
 
 
+async def _weekly_review_worker() -> None:
+    """Har hafta belgilangan kunda barcha o'quvchilarga majburiy takroriy
+    testni homework qilib tarqatadi. WEEKLY_REVIEW_DISPATCH_DOW (0=Dushanba..
+    6=Yakshanba) va WEEKLY_REVIEW_DISPATCH_HOUR bilan sozlanadi.
+    Standart: yakshanba (6) soat 18:00. Har soatda tekshiradi, kuniga bir marta
+    tarqatadi (idempotent — upsert takror bermaydi)."""
+    await asyncio.sleep(max(1, int(os.getenv("WEEKLY_REVIEW_START_DELAY_SEC", "30") or "30")))
+    dispatch_dow = int(os.getenv("WEEKLY_REVIEW_DISPATCH_DOW", "6") or "6")
+    dispatch_hour = int(os.getenv("WEEKLY_REVIEW_DISPATCH_HOUR", "18") or "18")
+    penalize_dow = int(os.getenv("WEEKLY_REVIEW_PENALIZE_DOW", "3") or "3")  # payshanba
+    from backend.library_ai import _run_weekly_review_job, admin_weekly_review_penalize  # noqa
+    while True:
+        try:
+            now_local = datetime.now(TASHKENT_TZ)
+            if now_local.weekday() == dispatch_dow and now_local.hour == dispatch_hour:
+                result = await asyncio.to_thread(_run_weekly_review_job, False)
+                logger.info("weekly_review dispatch %s", result)
+            if now_local.weekday() == penalize_dow and now_local.hour == dispatch_hour:
+                await asyncio.to_thread(_run_weekly_review_penalty_job)
+        except Exception:
+            logger.exception("weekly_review_worker iteration failed")
+        await asyncio.sleep(3600)
+
+
+def _run_weekly_review_penalty_job() -> None:
+    """O'tgan hafta takrorlashini bajarmaganlarga D'point jarimasi."""
+    import db as _dbm
+
+    last_week = datetime.now() - timedelta(days=7)
+    week_start = (last_week - timedelta(days=last_week.weekday())).strftime("%Y-%m-%d")
+    try:
+        penalty = abs(float(_get_runtime_settings().get("weekly_review_missed_penalty", 5.0)))
+    except Exception:
+        penalty = 5.0
+    _dbm.ensure_weekly_reviews_schema()
+    conn = _dbm.get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT user_id FROM weekly_reviews WHERE week_start=? AND status='assigned'",
+            (week_start,),
+        )
+        user_ids = [int(r["user_id"]) for r in (cur.fetchall() or []) if r and r.get("user_id")]
+    finally:
+        conn.close()
+    if penalty > 0:
+        for uid in user_ids:
+            _safe_call(lambda u=uid: _dbm.add_dpoints(u, -penalty, change_type="weekly_review_missed"))
+    logger.info("weekly_review penalty week=%s users=%s penalty=%s", week_start, len(user_ids), penalty)
+
+
 async def _domain_email_cleanup_worker() -> None:
     await asyncio.sleep(10)
     while True:
@@ -16619,7 +16679,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, competition_stale_lobbies_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, competition_stale_lobbies_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -16712,6 +16772,11 @@ async def startup_event() -> None:
             competition_stale_lobbies_task = asyncio.create_task(
                 _competition_stale_lobbies_worker(),
                 name="competition_stale_lobbies_worker",
+            )
+        if weekly_review_task is None or weekly_review_task.done():
+            weekly_review_task = asyncio.create_task(
+                _weekly_review_worker(),
+                name="weekly_review_worker",
             )
     else:
 
@@ -47627,6 +47692,14 @@ def _sanitize_content_test_for_student(test: dict | None) -> dict | None:
         q.pop("correct", None)
         q.pop("correct_option_index", None)
         q.pop("explanation", None)
+        # AI/yangi test turlarining javoblari studentga yuborilmasin.
+        q.pop("answer", None)
+        q.pop("accepted_answers", None)
+        q.pop("correct_index", None)
+        q.pop("reference_answer", None)
+        q.pop("target_level", None)
+        if q.get("pairs"):
+            q.pop("pairs", None)
         questions.append(q)
     # Har safar savollar tartibi random — yodlab olish ishlamaydi.
     random.shuffle(questions)
@@ -48076,6 +48149,9 @@ async def student_attendance(
 
 from backend.analytics import router as analytics_router
 app.include_router(analytics_router)
+
+from backend.library_ai import router as library_ai_router
+app.include_router(library_ai_router)
 
 # --- Voice Room WebSockets (Distributed via Redis) ---
 import uuid

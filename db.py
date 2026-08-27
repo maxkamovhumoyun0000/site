@@ -20273,10 +20273,24 @@ def save_content_test(
     title: str | None = None,
     created_by_role: str | None = None,
     is_active: bool = True,
+    raw_questions: bool = False,
 ) -> dict | None:
     ensure_content_tests_schema()
     normalized_type = _normalize_content_type(content_type)
-    questions = _normalize_content_test_questions_payload(questions_json)
+    if raw_questions:
+        # AI/yangi test turlari (pairs, answer, kind, audio_url...) buzilmasligi uchun
+        # MCQ normalizatsiyasini o'tkazib yuboramiz.
+        if isinstance(questions_json, str):
+            try:
+                questions = json.loads(questions_json)
+            except Exception:
+                questions = []
+        else:
+            questions = questions_json
+        if not isinstance(questions, list):
+            questions = []
+    else:
+        questions = _normalize_content_test_questions_payload(questions_json)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -23123,3 +23137,932 @@ def update_homework_submission_ai(
         return bool(getattr(cur, "rowcount", 0) > 0)
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TEACHER LIBRARY — cheksiz chuqurlikdagi daraxt (papka -> papka -> fayl/test)
+# va o'qituvchilararo sharing (view / edit / assign)
+# ═══════════════════════════════════════════════════════════════════════════
+
+LIBRARY_KINDS = {"folder", "file", "test"}
+LIBRARY_SHARE_PERMISSIONS = {"view", "edit", "assign"}
+
+
+def ensure_library_schema() -> None:
+    if _schema_ready("library_nodes"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS library_nodes (
+                    id           BIGSERIAL PRIMARY KEY,
+                    parent_id    BIGINT,
+                    owner_id     BIGINT NOT NULL,
+                    kind         TEXT NOT NULL DEFAULT 'folder',
+                    title        TEXT NOT NULL,
+                    description  TEXT,
+                    subject      TEXT,
+                    level        TEXT,
+                    file_url     TEXT,
+                    payload_json TEXT,
+                    is_public    BOOLEAN DEFAULT FALSE,
+                    sort_order   INTEGER DEFAULT 0,
+                    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS library_nodes (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_id    INTEGER,
+                    owner_id     INTEGER NOT NULL,
+                    kind         TEXT NOT NULL DEFAULT 'folder',
+                    title        TEXT NOT NULL,
+                    description  TEXT,
+                    subject      TEXT,
+                    level        TEXT,
+                    file_url     TEXT,
+                    payload_json TEXT,
+                    is_public    INTEGER DEFAULT 0,
+                    sort_order   INTEGER DEFAULT 0,
+                    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        for ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_lnodes_owner ON library_nodes(owner_id)",
+            "CREATE INDEX IF NOT EXISTS idx_lnodes_parent ON library_nodes(parent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_lnodes_public ON library_nodes(is_public)",
+        ):
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS library_shares (
+                    id         BIGSERIAL PRIMARY KEY,
+                    node_id    BIGINT NOT NULL,
+                    teacher_id BIGINT NOT NULL,
+                    permission TEXT NOT NULL DEFAULT 'view',
+                    shared_by  BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(node_id, teacher_id)
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS library_shares (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    node_id    INTEGER NOT NULL,
+                    teacher_id INTEGER NOT NULL,
+                    permission TEXT NOT NULL DEFAULT 'view',
+                    shared_by  INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(node_id, teacher_id)
+                )
+                """,
+            ],
+        )
+        for ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_lshares_node ON library_shares(node_id)",
+            "CREATE INDEX IF NOT EXISTS idx_lshares_teacher ON library_shares(teacher_id)",
+        ):
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
+        conn.commit()
+        _mark_schema_ready("library_nodes")
+    finally:
+        conn.close()
+
+
+def _library_subtree_ids(cur, root_id: int) -> set[int]:
+    """Berilgan tugun va uning barcha avlodlarini BFS bilan yig'adi."""
+    ids: set[int] = set()
+    frontier = [int(root_id)]
+    while frontier:
+        ids.update(frontier)
+        placeholders = ",".join(["?"] * len(frontier))
+        try:
+            cur.execute(
+                f"SELECT id FROM library_nodes WHERE parent_id IN ({placeholders})",
+                tuple(frontier),
+            )
+        except Exception:
+            break
+        frontier = [int(r["id"]) for r in (cur.fetchall() or []) if r and r.get("id") is not None]
+        frontier = [i for i in frontier if i not in ids]
+    return ids
+
+
+def _library_node_ancestor_ids(cur, node_id: int) -> list[int]:
+    """Tugunning ota-onalar zanjirini (yuqoriga) qaytaradi, o'zini ichirmaydi."""
+    chain: list[int] = []
+    current = int(node_id)
+    seen = {current}
+    for _ in range(64):
+        try:
+            cur.execute("SELECT parent_id FROM library_nodes WHERE id=? LIMIT 1", (current,))
+        except Exception:
+            break
+        row = cur.fetchone()
+        parent = (row or {}).get("parent_id") if row else None
+        if parent is None or parent == "":
+            break
+        parent = int(parent)
+        if parent in seen:
+            break
+        chain.append(parent)
+        seen.add(parent)
+        current = parent
+    return chain
+
+
+def library_permission_for(cur_or_conn, teacher_id: int, node: dict) -> str | None:
+    """'owner' | 'edit' | 'assign' | 'view' | None. Share parentdan meros olinadi."""
+    if int(node.get("owner_id") or 0) == int(teacher_id):
+        return "owner"
+    own_cur = None
+    conn = None
+    try:
+        if hasattr(cur_or_conn, "execute") and hasattr(cur_or_conn, "fetchone") and not hasattr(cur_or_conn, "cursor"):
+            cur = cur_or_conn
+        else:
+            conn = (cur_or_conn or get_conn())
+            own_cur = cur = conn.cursor()
+        node_id = int(node.get("id") or 0)
+        try:
+            cur.execute(
+                "SELECT permission FROM library_shares WHERE node_id=? AND teacher_id=? LIMIT 1",
+                (node_id, int(teacher_id)),
+            )
+            row = cur.fetchone()
+            if row and str((row or {}).get("permission") or "").strip().lower() in LIBRARY_SHARE_PERMISSIONS:
+                return str((row or {}).get("permission")).strip().lower()
+        except Exception:
+            pass
+        for ancestor_id in _library_node_ancestor_ids(cur, node_id):
+            try:
+                cur.execute(
+                    "SELECT permission FROM library_shares WHERE node_id=? AND teacher_id=? LIMIT 1",
+                    (ancestor_id, int(teacher_id)),
+                )
+                row = cur.fetchone()
+            except Exception:
+                continue
+            if row and str((row or {}).get("permission") or "").strip().lower() in LIBRARY_SHARE_PERMISSIONS:
+                return str((row or {}).get("permission")).strip().lower()
+        return None
+    finally:
+        if own_cur is not None and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def list_library_nodes(teacher_id: int) -> dict:
+    """O'qituvchi ko'radigan barcha tugunlar: o'ziniki + public + shared (subtree bilan)."""
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM library_nodes ORDER BY sort_order ASC, id ASC")
+        all_nodes = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+        cur.execute(
+            "SELECT node_id, permission FROM library_shares WHERE teacher_id=?",
+            (int(teacher_id),),
+        )
+        direct_shares = {
+            int((r or {}).get("node_id") or 0): str((r or {}).get("permission") or "view").strip().lower()
+            for r in (cur.fetchall() or [])
+        }
+        by_id = {int(n.get("id") or 0): n for n in all_nodes}
+        visible: dict[int, dict] = {}
+        for node in all_nodes:
+            nid = int(node.get("id") or 0)
+            if int(node.get("owner_id") or 0) == int(teacher_id):
+                visible[nid] = {**node, "visibility": "owner", "permission": "owner"}
+        for node in all_nodes:
+            nid = int(node.get("id") or 0)
+            if nid in visible:
+                continue
+            if node.get("is_public"):
+                perm = library_permission_for(cur, teacher_id, node)
+                visible[nid] = {**node, "visibility": "public", "permission": perm or "view"}
+        for share_node_id, perm in direct_shares.items():
+            if share_node_id in visible and visible[share_node_id].get("visibility") != "public":
+                continue
+            for sid in _library_subtree_ids(cur, share_node_id):
+                node = by_id.get(sid)
+                if not node or sid in visible:
+                    continue
+                if int(node.get("owner_id") or 0) == int(teacher_id):
+                    continue
+                visible[sid] = {**node, "visibility": "shared", "permission": perm}
+        cur.execute(
+            """
+            SELECT s.node_id, s.teacher_id, s.permission, s.shared_by,
+                   u.first_name AS teacher_first_name, u.last_name AS teacher_last_name
+            FROM library_shares s
+            LEFT JOIN users u ON u.id = s.teacher_id
+            """
+        )
+        share_rows = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+        owner_share_ids = {int(n.get("id") or 0) for n in visible.values() if n.get("visibility") == "owner"}
+        for row in share_rows:
+            try:
+                row["node_id"] = int(row.get("node_id") or 0)
+                row["teacher_id"] = int(row.get("teacher_id") or 0)
+            except Exception:
+                continue
+        result = sorted(visible.values(), key=lambda n: (int(n.get("sort_order") or 0), int(n.get("id") or 0)))
+        return {"nodes": result, "shares": share_rows, "owner_node_ids": sorted(owner_share_ids)}
+    finally:
+        conn.close()
+
+
+def get_library_node(node_id: int) -> dict | None:
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM library_nodes WHERE id=? LIMIT 1", (int(node_id),))
+        return _row_to_dict(cur.fetchone()) or None
+    finally:
+        conn.close()
+
+
+def create_library_node(
+    owner_id: int,
+    title: str,
+    kind: str = "folder",
+    *,
+    parent_id: int | None = None,
+    description: str | None = None,
+    subject: str | None = None,
+    level: str | None = None,
+    file_url: str | None = None,
+    payload: dict | None = None,
+    is_public: bool = False,
+) -> dict:
+    ensure_library_schema()
+    kind = str(kind or "folder").strip().lower()
+    if kind not in LIBRARY_KINDS:
+        raise ValueError(f"Yaroqsiz tur: {kind}")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        parent = None
+        if parent_id:
+            cur.execute("SELECT * FROM library_nodes WHERE id=? LIMIT 1", (int(parent_id),))
+            parent = _row_to_dict(cur.fetchone())
+            if not parent:
+                raise ValueError("Ota-papka topilmadi")
+        cur.execute(
+            """
+            INSERT INTO library_nodes
+                (parent_id, owner_id, kind, title, description, subject, level, file_url, payload_json, is_public)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+            """,
+            (
+                int(parent_id) if parent_id else None,
+                int(owner_id),
+                kind,
+                str(title or "").strip() or "Nomsiz",
+                description or None,
+                subject or None,
+                level or None,
+                file_url or None,
+                json.dumps(payload, ensure_ascii=False) if payload else None,
+                bool(is_public),
+            ),
+        )
+        row = cur.fetchone()
+        new_id = int((row or {}).get("id") or 0)
+        conn.commit()
+        node = get_library_node(new_id) or {"id": new_id}
+        node["visibility"] = "owner"
+        node["permission"] = "owner"
+        return node
+    finally:
+        conn.close()
+
+
+def update_library_node(node_id: int, *, title: str | None = None, description: str | None = None,
+                        subject: str | None = None, level: str | None = None, file_url: str | None = None,
+                        payload: dict | None = None, is_public: bool | None = None,
+                        parent_id: int | None = None, sort_order: int | None = None) -> dict | None:
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM library_nodes WHERE id=? LIMIT 1", (int(node_id),))
+        existing = _row_to_dict(cur.fetchone())
+        if not existing:
+            return None
+        sets: list[str] = []
+        params: list = []
+        if title is not None:
+            sets.append("title=?")
+            params.append(str(title).strip() or existing.get("title"))
+        if description is not None:
+            sets.append("description=?")
+            params.append(description or None)
+        if subject is not None:
+            sets.append("subject=?")
+            params.append(subject or None)
+        if level is not None:
+            sets.append("level=?")
+            params.append(level or None)
+        if file_url is not None:
+            sets.append("file_url=?")
+            params.append(file_url or None)
+        if payload is not None:
+            sets.append("payload_json=?")
+            params.append(json.dumps(payload, ensure_ascii=False))
+        if is_public is not None:
+            sets.append("is_public=?")
+            params.append(bool(is_public))
+        if sort_order is not None:
+            sets.append("sort_order=?")
+            params.append(int(sort_order))
+        if parent_id is not None:
+            new_parent = int(parent_id) if int(parent_id or 0) > 0 else None
+            if new_parent:
+                if int(new_parent) == int(node_id):
+                    raise ValueError("Tugunni o'zining ichiga ko'chirib bo'lmaydi")
+                if int(node_id) in _library_subtree_ids(cur, new_parent):
+                    raise ValueError("Tsikl hosil bo'ladi")
+            sets.append("parent_id=?")
+            params.append(new_parent)
+        if not sets:
+            return existing
+        sets.append("updated_at=CURRENT_TIMESTAMP")
+        params.append(int(node_id))
+        cur.execute(f"UPDATE library_nodes SET {', '.join(sets)} WHERE id=?", tuple(params))
+        conn.commit()
+        return get_library_node(int(node_id))
+    finally:
+        conn.close()
+
+
+def delete_library_node(node_id: int) -> bool:
+    """Butun subtree bilan o'chiradi (sharelar ham tozalanadi)."""
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        ids = _library_subtree_ids(cur, int(node_id))
+        if not ids:
+            return False
+        placeholders = ",".join(["?"] * len(ids))
+        cur.execute(f"DELETE FROM library_shares WHERE node_id IN ({placeholders})", tuple(ids))
+        cur.execute(f"DELETE FROM library_nodes WHERE id IN ({placeholders})", tuple(ids))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def share_library_node(node_id: int, teacher_id: int, permission: str, shared_by: int | None = None) -> dict:
+    ensure_library_schema()
+    permission = str(permission or "view").strip().lower()
+    if permission not in LIBRARY_SHARE_PERMISSIONS:
+        raise ValueError(f"Yaroqsiz huquq: {permission}")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO library_shares (node_id, teacher_id, permission, shared_by)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (node_id, teacher_id) DO UPDATE SET permission=EXCLUDED.permission, shared_by=EXCLUDED.shared_by
+            """,
+            (int(node_id), int(teacher_id), permission, int(shared_by) if shared_by else None),
+        )
+        conn.commit()
+        return {"node_id": int(node_id), "teacher_id": int(teacher_id), "permission": permission}
+    finally:
+        conn.close()
+
+
+def unshare_library_node(node_id: int, teacher_id: int) -> bool:
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM library_shares WHERE node_id=? AND teacher_id=?",
+            (int(node_id), int(teacher_id)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def list_library_share_targets(node_id: int) -> list[dict]:
+    """Bir tugun uchun mavjud sharelar + share qilinadigan o'qituvchilar ro'yxati."""
+    ensure_library_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT s.teacher_id, s.permission,
+                   u.first_name AS teacher_first_name, u.last_name AS teacher_last_name
+            FROM library_shares s
+            LEFT JOIN users u ON u.id = s.teacher_id
+            WHERE s.node_id=?
+            """,
+            (int(node_id),),
+        )
+        shares = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+        cur.execute(
+            """
+            SELECT id, first_name, last_name, login_id FROM users
+            WHERE login_type IN (3, 4) AND id <> (SELECT owner_id FROM library_nodes WHERE id=?)
+            ORDER BY first_name, last_name LIMIT 300
+            """,
+            (int(node_id),),
+        )
+        teachers = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+        return {"shares": shares, "teachers": teachers}
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AI TESTLAR — speak/write sentence, guided writing va kitob mashqlari uchun
+# urinish sessiyalari. Faqat bitta active attempt: yangi start -> eskisi
+# abandoned (testdan chiqsa boshqatdan boshlash qoidasi).
+# ═══════════════════════════════════════════════════════════════════════════
+
+AI_TEST_QUESTION_KINDS = {
+    # AI tekshiradigan
+    "speak_sentence", "write_sentence", "guided_writing", "translation",
+    "reading_open", "read_aloud", "paraphrase", "dialogue_completion", "picture_description",
+    # Avtomatik tekshiriladigan
+    "listening", "dictation", "spelling", "matching", "scrambled_sentence", "gap_fill",
+}
+
+AI_TEST_AUTO_KINDS = {
+    "dictation", "spelling", "matching", "scrambled_sentence", "gap_fill", "listening",
+}
+
+
+def ensure_ai_tests_schema() -> None:
+    if _schema_ready("ai_test_attempts"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS ai_test_attempts (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    source_type   TEXT NOT NULL DEFAULT 'library_test',
+                    source_id     BIGINT,
+                    title         TEXT,
+                    questions_json TEXT,
+                    status        TEXT NOT NULL DEFAULT 'active',
+                    correct_count INTEGER DEFAULT 0,
+                    wrong_count   INTEGER DEFAULT 0,
+                    skipped_count INTEGER DEFAULT 0,
+                    retry_count   INTEGER DEFAULT 0,
+                    dpoints_delta DOUBLE PRECISION DEFAULT 0,
+                    started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at  TIMESTAMP,
+                    abandoned_at  TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_test_attempts (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id       INTEGER NOT NULL,
+                    source_type   TEXT NOT NULL DEFAULT 'library_test',
+                    source_id     INTEGER,
+                    title         TEXT,
+                    questions_json TEXT,
+                    status        TEXT NOT NULL DEFAULT 'active',
+                    correct_count INTEGER DEFAULT 0,
+                    wrong_count   INTEGER DEFAULT 0,
+                    skipped_count INTEGER DEFAULT 0,
+                    retry_count   INTEGER DEFAULT 0,
+                    dpoints_delta DOUBLE PRECISION DEFAULT 0,
+                    started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at  TIMESTAMP,
+                    abandoned_at  TIMESTAMP
+                )
+                """,
+            ],
+        )
+        for ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_ai_attempt_user ON ai_test_attempts(user_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_attempt_source ON ai_test_attempts(source_type, source_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_attempt_time ON ai_test_attempts(started_at)",
+        ):
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS ai_test_answers (
+                    id              BIGSERIAL PRIMARY KEY,
+                    attempt_id      BIGINT NOT NULL,
+                    question_index  INTEGER NOT NULL,
+                    kind            TEXT,
+                    answer_text     TEXT,
+                    audio_url       TEXT,
+                    verdict         TEXT,
+                    ai_feedback_json TEXT,
+                    try_count       INTEGER DEFAULT 1,
+                    answered_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS ai_test_answers (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    attempt_id      INTEGER NOT NULL,
+                    question_index  INTEGER NOT NULL,
+                    kind            TEXT,
+                    answer_text     TEXT,
+                    audio_url       TEXT,
+                    verdict         TEXT,
+                    ai_feedback_json TEXT,
+                    try_count       INTEGER DEFAULT 1,
+                    answered_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_ai_answers_attempt ON ai_test_answers(attempt_id)")
+        except Exception:
+            pass
+        conn.commit()
+        _mark_schema_ready("ai_test_attempts")
+    finally:
+        conn.close()
+
+
+def abandon_active_ai_test_attempts(user_id: int) -> int:
+    """Foydalanuvchining barcha active attemptlarini tashlab yuboradi (restart qoidasi)."""
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE ai_test_attempts
+            SET status='abandoned', abandoned_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND status='active'
+            """,
+            (int(user_id),),
+        )
+        conn.commit()
+        return int(getattr(cur, "rowcount", 0) or 0)
+    finally:
+        conn.close()
+
+
+def start_ai_test_attempt(user_id: int, source_type: str, source_id: int | None,
+                          questions: list[dict], title: str | None = None) -> dict:
+    ensure_ai_tests_schema()
+    if not questions:
+        raise ValueError("Savollar ro'yxati bo'sh")
+    abandon_active_ai_test_attempts(int(user_id))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO ai_test_attempts (user_id, source_type, source_id, title, questions_json)
+            VALUES (?, ?, ?, ?, ?) RETURNING id
+            """,
+            (
+                int(user_id),
+                str(source_type or "library_test"),
+                int(source_id) if source_id else None,
+                title or None,
+                json.dumps(questions, ensure_ascii=False),
+            ),
+        )
+        row = cur.fetchone()
+        new_id = int((row or {}).get("id") or 0)
+        conn.commit()
+        return get_ai_test_attempt(new_id) or {"id": new_id}
+    finally:
+        conn.close()
+
+
+def get_ai_test_attempt(attempt_id: int, user_id: int | None = None) -> dict | None:
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM ai_test_attempts WHERE id=? LIMIT 1", (int(attempt_id),))
+        row = _row_to_dict(cur.fetchone())
+        if not row:
+            return None
+        if user_id is not None and int(row.get("user_id") or 0) != int(user_id):
+            return None
+        row["questions"] = _safe_json_list(row.get("questions_json"))
+        cur.execute(
+            "SELECT * FROM ai_test_answers WHERE attempt_id=? ORDER BY question_index ASC, id ASC",
+            (int(attempt_id),),
+        )
+        row["answers"] = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+        return row
+    finally:
+        conn.close()
+
+
+def get_active_ai_test_attempt(user_id: int) -> dict | None:
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id FROM ai_test_attempts WHERE user_id=? AND status='active' ORDER BY id DESC LIMIT 1",
+            (int(user_id),),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return get_ai_test_attempt(int((row or {}).get("id") or 0))
+    finally:
+        conn.close()
+
+
+def save_ai_test_answer(
+    attempt_id: int,
+    question_index: int,
+    *,
+    kind: str | None = None,
+    answer_text: str | None = None,
+    audio_url: str | None = None,
+    verdict: str = "wrong",
+    ai_feedback: dict | None = None,
+) -> dict:
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT try_count FROM ai_test_answers
+            WHERE attempt_id=? AND question_index=? AND verdict='correct'
+            LIMIT 1
+            """,
+            (int(attempt_id), int(question_index)),
+        )
+        if cur.fetchone():
+            raise ValueError("Bu savolga allaqachon to'g'ri javob berilgan")
+        cur.execute(
+            """
+            SELECT id, try_count FROM ai_test_answers
+            WHERE attempt_id=? AND question_index=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(attempt_id), int(question_index)),
+        )
+        prev = _row_to_dict(cur.fetchone())
+        try_count = int((prev or {}).get("try_count") or 0) + 1
+        cur.execute(
+            """
+            INSERT INTO ai_test_answers
+                (attempt_id, question_index, kind, answer_text, audio_url, verdict, ai_feedback_json, try_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(attempt_id),
+                int(question_index),
+                kind or None,
+                answer_text or None,
+                audio_url or None,
+                str(verdict or "wrong"),
+                json.dumps(ai_feedback, ensure_ascii=False) if ai_feedback else None,
+                try_count,
+            ),
+        )
+        conn.commit()
+        return {"try_count": try_count, "verdict": verdict}
+    finally:
+        conn.close()
+
+
+def bump_ai_test_counters(attempt_id: int, *, correct: int = 0, wrong: int = 0,
+                          skipped: int = 0, retries: int = 0, dpoints: float = 0.0,
+                          complete: bool = False) -> None:
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE ai_test_attempts
+            SET correct_count = COALESCE(correct_count,0) + ?,
+                wrong_count   = COALESCE(wrong_count,0) + ?,
+                skipped_count = COALESCE(skipped_count,0) + ?,
+                retry_count   = COALESCE(retry_count,0) + ?,
+                dpoints_delta = COALESCE(dpoints_delta,0) + ?,
+                status = CASE WHEN ?=1 THEN 'completed' ELSE status END,
+                completed_at = CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE completed_at END
+            WHERE id=? AND status='active'
+            """,
+            (
+                int(correct), int(wrong), int(skipped), int(retries),
+                float(dpoints), 1 if complete else 0, 1 if complete else 0,
+                int(attempt_id),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_user_week_attempts(user_id: int, date_from: str, date_to: str) -> list[dict]:
+    """Haftalik review uchun: content testlar + AI testlar (hafta oralig'ida)."""
+    ensure_ai_tests_schema()
+    out: list[dict] = []
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        try:
+            cur.execute(
+                """
+                SELECT id, content_type, content_id, correct_count, wrong_count,
+                       skipped_count, total_questions, submitted_at
+                FROM web_content_test_attempts
+                WHERE user_id=? AND submitted_at >= ? AND submitted_at <= ?
+                ORDER BY submitted_at DESC LIMIT 200
+                """,
+                (int(user_id), str(date_from), str(date_to)),
+            )
+            for r in (cur.fetchall() or []):
+                row = _row_to_dict(r)
+                row["origin"] = "content_test"
+                out.append(row)
+        except Exception:
+            logger.exception("list_user_week_attempts content part failed")
+        try:
+            cur.execute(
+                """
+                SELECT id, source_type, source_id, title, correct_count, wrong_count,
+                       skipped_count, started_at
+                FROM ai_test_attempts
+                WHERE user_id=? AND status='completed' AND started_at >= ? AND started_at <= ?
+                ORDER BY started_at DESC LIMIT 200
+                """,
+                (int(user_id), str(date_from), str(date_to)),
+            )
+            for r in (cur.fetchall() or []):
+                row = _row_to_dict(r)
+                row["origin"] = "ai_test"
+                out.append(row)
+        except Exception:
+            logger.exception("list_user_week_attempts ai part failed")
+        return out
+    finally:
+        conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HAFTALIK MAJBURIY TAKRORIY TEST (Weekly Review)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def ensure_weekly_reviews_schema() -> None:
+    if _schema_ready("weekly_reviews"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS weekly_reviews (
+                    id            BIGSERIAL PRIMARY KEY,
+                    user_id       BIGINT NOT NULL,
+                    week_start    TEXT NOT NULL,
+                    week_end      TEXT NOT NULL,
+                    homework_id   BIGINT,
+                    status        TEXT NOT NULL DEFAULT 'assigned',
+                    attempt_count INTEGER DEFAULT 0,
+                    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at  TIMESTAMP,
+                    UNIQUE(user_id, week_start)
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS weekly_reviews (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id       INTEGER NOT NULL,
+                    week_start    TEXT NOT NULL,
+                    week_end      TEXT NOT NULL,
+                    homework_id   INTEGER,
+                    status        TEXT NOT NULL DEFAULT 'assigned',
+                    attempt_count INTEGER DEFAULT 0,
+                    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    completed_at  TIMESTAMP,
+                    UNIQUE(user_id, week_start)
+                )
+                """,
+            ],
+        )
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_wreviews_user ON weekly_reviews(user_id, week_start)")
+        except Exception:
+            pass
+        conn.commit()
+        _mark_schema_ready("weekly_reviews")
+    finally:
+        conn.close()
+
+
+def upsert_weekly_review(user_id: int, week_start: str, week_end: str,
+                         homework_id: int | None, attempt_count: int = 0) -> dict:
+    ensure_weekly_reviews_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO weekly_reviews (user_id, week_start, week_end, homework_id, attempt_count)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (user_id, week_start) DO UPDATE SET
+                homework_id=COALESCE(EXCLUDED.homework_id, weekly_reviews.homework_id),
+                attempt_count=EXCLUDED.attempt_count
+            """,
+            (int(user_id), str(week_start), str(week_end),
+             int(homework_id) if homework_id else None, int(attempt_count)),
+        )
+        conn.commit()
+        cur.execute(
+            "SELECT * FROM weekly_reviews WHERE user_id=? AND week_start=? LIMIT 1",
+            (int(user_id), str(week_start)),
+        )
+        return _row_to_dict(cur.fetchone()) or {}
+    finally:
+        conn.close()
+
+
+def get_weekly_review(user_id: int, week_start: str) -> dict | None:
+    ensure_weekly_reviews_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT * FROM weekly_reviews WHERE user_id=? AND week_start=? LIMIT 1",
+            (int(user_id), str(week_start)),
+        )
+        return _row_to_dict(cur.fetchone()) or None
+    finally:
+        conn.close()
+
+
+def complete_weekly_review(user_id: int, week_start: str) -> bool:
+    ensure_weekly_reviews_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE weekly_reviews
+            SET status='completed', completed_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND week_start=? AND status='assigned'
+            """,
+            (int(user_id), str(week_start)),
+        )
+        conn.commit()
+        return bool(getattr(cur, "rowcount", 0) > 0)
+    finally:
+        conn.close()
+
+
+def _safe_json_list(raw: Any) -> list:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
