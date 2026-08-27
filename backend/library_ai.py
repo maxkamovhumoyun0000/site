@@ -153,11 +153,24 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "check": "auto", "input": "text", "needs_audio_asset": False,
         "retry_until_correct": True,
     },
+    # ── Polimorf: bitta so'z. Studentga tushganda random test turiga aylanadi ──
+    "word_practice": {
+        "label_uz": "So'z mashqi (random tur)",
+        "label_ru": "Практика слова (случайный тип)",
+        "label_en": "Word practice (random type)",
+        "check": "ai", "input": "text", "needs_audio_asset": False,
+        "retry_until_correct": True,
+        "polymorphic": True,
+    },
 }
 
 AI_CHECKED_KINDS = {k for k, v in AI_TEST_TYPES.items() if v["check"] == "ai"}
 AUTO_CHECKED_KINDS = {k for k, v in AI_TEST_TYPES.items() if v["check"] == "auto"}
 AUDIO_ASSET_KINDS = {k for k, v in AI_TEST_TYPES.items() if v["needs_audio_asset"]}
+POLYMORPHIC_KINDS = {k for k, v in AI_TEST_TYPES.items() if v.get("polymorphic")}
+
+#: word_practice studentga tushganda shu turlardan biriga random aylanadi.
+WORD_PRACTICE_VARIANTS = ["speak_sentence", "write_sentence", "spelling", "translation"]
 
 MAX_RETRIES_PER_QUESTION = 6
 
@@ -616,7 +629,55 @@ def _normalize_questions(raw: Any) -> list[dict]:
         else:
             question["reference_answer"] = str(item.get("reference_answer") or item.get("answer") or "").strip() or None
             question["target_level"] = str(item.get("target_level") or item.get("level") or "").strip() or None
+            if kind == "word_practice":
+                # So'z mashqi: studentga tushganda random turga aylanadi.
+                word = question.get("word") or question.get("prompt")
+                if not word:
+                    continue
+                question["word"] = word
+                question["translation"] = str(item.get("translation") or "").strip() or None
+                question["meaning"] = str(item.get("meaning") or "").strip() or None
         out.append(question)
+    return out
+
+
+def _materialize_word_practice(q: dict) -> dict:
+    """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha)."""
+    import random
+
+    word = str(q.get("word") or q.get("prompt") or "").strip()
+    translation = str(q.get("translation") or "").strip()
+    instruction = q.get("instruction")
+    level = q.get("level")
+    variants = list(WORD_PRACTICE_VARIANTS)
+    if not translation and "translation" in variants:
+        variants.remove("translation")
+    kind = random.choice(variants) if variants else "write_sentence"
+    base: dict[str, Any] = {"kind": kind, "word": word, "level": level, "instruction": instruction}
+    if kind == "speak_sentence":
+        base["prompt"] = q.get("prompt") or f"'{word}' so'zi bilan gap tuzib gapiring"
+    elif kind == "write_sentence":
+        base["prompt"] = q.get("prompt") or f"'{word}' so'zidan foydalanib gap yozing"
+        base["reference_answer"] = None
+    elif kind == "spelling":
+        base["prompt"] = q.get("prompt") or "Eshitgan/ko'rgan so'zingizni to'g'ri yozing"
+        base["answer"] = word
+        base["accepted_answers"] = []
+    else:  # translation
+        base["prompt"] = f"Tarjima qiling: {word}"
+        base["answer"] = translation
+        base["accepted_answers"] = [translation]
+    return base
+
+
+def _expand_polymorphic_questions(questions: list[dict]) -> list[dict]:
+    """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi."""
+    out: list[dict] = []
+    for q in questions or []:
+        if str(q.get("kind") or "") in POLYMORPHIC_KINDS:
+            out.append(_materialize_word_practice(q))
+        else:
+            out.append(q)
     return out
 
 
@@ -675,28 +736,40 @@ class ScreenshotImportRequest(BaseModel):
         return seen
 
 
-def _import_system_prompt(subject: str, level: str | None, wanted: list[str]) -> str:
+def _import_system_prompt(subject: str, level: str | None, wanted: list[str], instruction_language: str) -> str:
     kinds_help = "\n".join(
         f'- "{kind}": {meta["label_en"]}'
         + (" (teacher must upload the audio file afterwards)" if meta["needs_audio_asset"] else "")
+        + (" — polymorphic: for a single vocabulary word; the app randomly turns it into a "
+           "speaking/writing/spelling/translation task when the student reaches it" if meta.get("polymorphic") else "")
         for kind, meta in AI_TEST_TYPES.items()
         if kind in wanted
     )
     return (
         "You are an expert curriculum digitizer for a language school.\n"
         "You receive one or more coursebook pages — as page images and/or as extracted "
-        "text from a PDF/DOC/DOCX. Extract the readable teaching text and turn the "
-        "exercises into structured, ready-to-use questions.\n\n"
+        "text from a PDF/DOC/DOCX. Convert EVERYTHING teachable in the material into practice "
+        "questions: not only the printed exercises, but also vocabulary words, grammar rules, "
+        "reading texts and dialogues. Nothing teachable should be left out.\n\n"
         "STRICT RULES:\n"
-        "1. Only use exercise types that actually appear on the page. Do not invent exercise types "
-        "the page does not contain. Pick the closest matching type from the allowed list.\n"
-        "2. Keep the original wording of exercises and texts. Do not translate unless the exercise itself "
-        "is a translation exercise.\n"
-        "3. For every auto-checked type you MUST provide the exact expected answer.\n"
-        "4. If the page has a listening exercise, still produce the question but leave audio_url empty — "
+        "1. Cover ALL the learning content in the material. If there is a vocabulary list, turn "
+        "each word into a \"word_practice\" item (with its translation/meaning if shown). If there "
+        "is a reading text, add reading_open questions. If there is a grammar rule, add gap_fill / "
+        "scrambled_sentence / write_sentence practice for it.\n"
+        "2. MIX the question kinds and vary them across the set (do not make them all the same type). "
+        "Choose the kinds that best fit each piece of content.\n"
+        "3. Keep the target-language content (the English/Russian words and sentences being taught) "
+        "exactly as written. Do not translate the study content unless the exercise itself is a translation task.\n"
+        "4. For every auto-checked type you MUST provide the exact expected answer.\n"
+        "5. If the material has a listening exercise, still produce the question but leave audio_url empty — "
         "the teacher uploads the audio separately.\n"
-        "5. If the page is not educational material, return {\"error\":\"not_educational\"}.\n\n"
-        f"Subject: {subject}. Level: {level or 'infer from the page'}.\n\n"
+        f"6. LANGUAGE OF INSTRUCTIONS: every instruction/prompt wording that the STUDENT reads "
+        f"(the \"instruction\" and the non-content part of \"prompt\") MUST be written in {instruction_language}. "
+        "Auto-detect if unsure: a Russian course → Russian instructions; otherwise Uzbek. Never write "
+        "instructions in English unless the course language itself is English.\n"
+        "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
+        f"Subject: {subject}. Level: {level or 'infer from the material'}. "
+        f"Student instruction language: {instruction_language}.\n\n"
         f"Allowed question kinds:\n{kinds_help}\n\n"
         "Return ONLY valid JSON, no markdown fences, with this shape:\n"
         "{\n"
@@ -705,33 +778,47 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str]) ->
         '  "reading_text": "the main text of the page, empty string if none",\n'
         '  "notes": "grammar rule / explanation found on the page, empty if none",\n'
         '  "questions": [\n'
+        '    {"kind":"word_practice","word":"decide","translation":"qaror qilmoq","meaning":"to make a choice"},\n'
         '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes",'
-        '"accepted_answers":["goes"],"instruction":"Complete the sentence."},\n'
-        '    {"kind":"matching","prompt":"Match the words to the definitions.",'
+        '"accepted_answers":["goes"],"instruction":"Bo\'sh joyni to\'ldiring."},\n'
+        '    {"kind":"matching","prompt":"So\'zlarni ta\'riflarga moslang.",'
         '"pairs":[{"left":"brave","right":"not afraid"}]},\n'
-        '    {"kind":"scrambled_sentence","prompt":"Put the words in order.",'
+        '    {"kind":"scrambled_sentence","prompt":"So\'zlardan gap tuzing.",'
         '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."]},\n'
-        '    {"kind":"listening","prompt":"What does the speaker order?",'
+        '    {"kind":"listening","prompt":"Notiq nima buyurtma qiladi?",'
         '"options":["Tea","Coffee","Juice","Water"],"correct_index":1},\n'
-        '    {"kind":"write_sentence","word":"although","prompt":"Write one sentence using \'although\'.",'
+        '    {"kind":"write_sentence","word":"although","prompt":"\'although\' so\'zi bilan gap yozing.",'
         '"reference_answer":"Although it was raining, we went out."},\n'
-        '    {"kind":"speak_sentence","word":"decide","prompt":"Say one sentence using \'decide\'."},\n'
-        '    {"kind":"reading_open","passage":"...","prompt":"Why did Tom leave early?",'
+        '    {"kind":"reading_open","passage":"...","prompt":"Tom nega erta ketdi?",'
         '"reference_answer":"Because he had a train to catch."}\n'
         "  ]\n"
         "}\n"
-        "Produce between 4 and 25 questions depending on how much the page contains."
+        "Produce as many questions as the material contains (typically 6–40), covering every teachable item."
     )
+
+
+def _instruction_language_name(code: str | None, subject: str) -> str:
+    c = str(code or "").strip().lower()[:2]
+    if c == "ru":
+        return "Russian"
+    if c == "uz":
+        return "Uzbek"
+    # Fan rus tili bo'lsa — rus, aks holda o'zbek (default).
+    subj = str(subject or "").lower()
+    if any(t in subj for t in ("rus", "рус", "russian")):
+        return "Russian"
+    return "Uzbek"
 
 
 @router.post("/teacher/library/ai/import-screenshot")
 async def library_ai_import_screenshot(
     payload: ScreenshotImportRequest,
     authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
 ):
-    """Har qanday fayldan (rasm/PDF/DOC/DOCX/TXT) matn + mashqlarni tayyor test
-    savollari holatiga keltiradi. Rasm va PDF sahifalari vision bilan, DOC/DOCX/TXT
-    matn sifatida o'qiladi."""
+    """Har qanday fayldan (rasm/PDF/DOC/DOCX/TXT) fayldagi BARCHA o'quv materialini
+    har xil, random test turlariga aylantiradi. Ko'rsatmalar o'quv tilida (rus/o'zbek)
+    avtomatik yoziladi."""
     user = _auth(authorization, TEACHER_ROLES)
     if payload.node_id:
         node = _node_or_404(int(payload.node_id))
@@ -742,6 +829,7 @@ async def library_ai_import_screenshot(
         raise HTTPException(status_code=400, detail="Fayl yuborilmadi")
 
     wanted = [k for k in (payload.wanted_kinds or []) if k in AI_TEST_TYPES] or list(AI_TEST_TYPES.keys())
+    instruction_language = _instruction_language_name(x_language, payload.subject)
     vision_urls, text_blocks, unsupported = _prepare_import_sources(urls, owner_id=int(user.get("id") or 0))
     if not vision_urls and not text_blocks:
         detail = "Fayldan matn yoki rasm o'qib bo'lmadi"
@@ -755,7 +843,7 @@ async def library_ai_import_screenshot(
     user_prompt = str(payload.instruction or "").strip() or (
         "Digitize this coursebook material: extract its text and convert every exercise into structured questions."
     )
-    system_prompt = _import_system_prompt(payload.subject, payload.level, wanted)
+    system_prompt = _import_system_prompt(payload.subject, payload.level, wanted, instruction_language)
     extracted = "\n\n".join(text_blocks).strip()
     if extracted:
         # 60k belgidan oshsa kesamiz (juda katta hujjatlarni AI baribir hazm qilmaydi).
@@ -1105,6 +1193,8 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
 
     _require_student_learning_access(user)
     questions, title = _questions_from_source(user, payload.source_type, payload.source_id, payload.homework_id)
+    # Polimorf savollarni (word_practice) shu student uchun random turga ochamiz.
+    questions = _expand_polymorphic_questions(questions)
     blocked = [q for q in questions if q.get("needs_audio_upload")]
     if blocked:
         raise HTTPException(

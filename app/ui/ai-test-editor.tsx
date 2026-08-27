@@ -23,13 +23,16 @@ export type AiTestKind =
   | "spelling"
   | "matching"
   | "scrambled_sentence"
-  | "gap_fill";
+  | "gap_fill"
+  | "word_practice";
 
 export type AiTestQuestion = {
   kind: AiTestKind;
   prompt?: string | null;
   instruction?: string | null;
   word?: string | null;
+  translation?: string | null;
+  meaning?: string | null;
   passage?: string | null;
   image_url?: string | null;
   audio_url?: string | null;
@@ -129,6 +132,11 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Gapdagi ___ ni to'ldirish. Avtomatik tekshiriladi.",
     check: "auto", input: "text", needsAudio: false, icon: "␣",
   },
+  word_practice: {
+    label: "So'z mashqi (random tur)",
+    hint: "Bitta so'z. Studentga tushganda avtomatik random turga (gapirish/yozish/imlo/tarjima) aylanadi.",
+    check: "ai", input: "text", needsAudio: false, icon: "🎲",
+  },
 };
 
 export const AI_TEST_KINDS = Object.keys(AI_TEST_KIND_META) as AiTestKind[];
@@ -142,6 +150,7 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   if (kind === "matching") return { ...base, pairs: [{ left: "", right: "" }, { left: "", right: "" }] };
   if (kind === "listening") return { ...base, options: ["", ""], correct_index: 0 };
   if (kind === "scrambled_sentence") return { ...base, answer: "", tokens: [] };
+  if (kind === "word_practice") return { kind, word: "", translation: "", meaning: "" };
   if (AI_TEST_KIND_META[kind].check === "auto") return { ...base, answer: "", accepted_answers: [] };
   return { ...base, reference_answer: "" };
 }
@@ -153,6 +162,10 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
     const meta = AI_TEST_KIND_META[q.kind];
     if (!meta) return `${i + 1}-mashq turi noto'g'ri.`;
     const n = i + 1;
+    if (q.kind === "word_practice") {
+      if (!String(q.word || "").trim()) return `${n}-mashq uchun so'z kiritilishi kerak.`;
+      continue;
+    }
     if (!String(q.prompt || "").trim() && !String(q.word || "").trim()) {
       return `${n}-mashqda topshiriq matni yoki so'z bo'lishi kerak.`;
     }
@@ -355,19 +368,51 @@ export function AiTestEditor({
             <p className="mb-3 text-xs font-semibold text-ink-500 dark:text-navy-300">{meta.hint}</p>
 
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="sm:col-span-2">
-                <label className={LABEL_CLS}>Topshiriq matni *</label>
-                <textarea
-                  value={String(q.prompt || "")}
-                  onChange={(e) => patch(index, { prompt: e.target.value })}
-                  className={`${INPUT_CLS} min-h-[70px]`}
-                  placeholder={
-                    q.kind === "gap_fill"
-                      ? "She ___ to school every day."
-                      : "Studentga ko'rinadigan topshiriq"
-                  }
-                />
-              </div>
+              {q.kind === "word_practice" ? (
+                <>
+                  <div>
+                    <label className={LABEL_CLS}>So'z *</label>
+                    <input
+                      value={String(q.word || "")}
+                      onChange={(e) => patch(index, { word: e.target.value })}
+                      className={INPUT_CLS}
+                      placeholder="decide"
+                    />
+                  </div>
+                  <div>
+                    <label className={LABEL_CLS}>Tarjimasi (ixtiyoriy)</label>
+                    <input
+                      value={String(q.translation || "")}
+                      onChange={(e) => patch(index, { translation: e.target.value })}
+                      className={INPUT_CLS}
+                      placeholder="qaror qilmoq"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={LABEL_CLS}>Ma'nosi (ixtiyoriy)</label>
+                    <input
+                      value={String(q.meaning || "")}
+                      onChange={(e) => patch(index, { meaning: e.target.value })}
+                      className={INPUT_CLS}
+                      placeholder="to make a choice"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="sm:col-span-2">
+                  <label className={LABEL_CLS}>Topshiriq matni *</label>
+                  <textarea
+                    value={String(q.prompt || "")}
+                    onChange={(e) => patch(index, { prompt: e.target.value })}
+                    className={`${INPUT_CLS} min-h-[70px]`}
+                    placeholder={
+                      q.kind === "gap_fill"
+                        ? "She ___ to school every day."
+                        : "Studentga ko'rinadigan topshiriq"
+                    }
+                  />
+                </div>
+              )}
 
               {(q.kind === "speak_sentence" || q.kind === "write_sentence" || q.kind === "spelling") && (
                 <div>
@@ -583,7 +628,7 @@ export function AiTestEditor({
                 </>
               )}
 
-              {meta.check === "ai" && (
+              {meta.check === "ai" && q.kind !== "word_practice" && (
                 <div className="sm:col-span-2">
                   <label className={LABEL_CLS}>Namuna javob (AI uchun yo'riqnoma, ixtiyoriy)</label>
                   <textarea

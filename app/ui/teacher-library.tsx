@@ -75,6 +75,7 @@ export function TeacherLibraryPanel({
   const [assignNode, setAssignNode] = useState<LibNode | null>(null);
   const [importParent, setImportParent] = useState<number | null | undefined>(undefined);
   const [viewerNode, setViewerNode] = useState<LibNode | null>(null);
+  const [convertNode, setConvertNode] = useState<LibNode | null>(null);
   const [banner, setBanner] = useState("");
 
   const load = useCallback(async () => {
@@ -183,6 +184,9 @@ export function TeacherLibraryPanel({
             )}
             {node.kind === "file" && node.file_url && (
               <IconBtn title="Saytda ochish" onClick={() => setViewerNode(node)}>👁</IconBtn>
+            )}
+            {node.kind === "file" && node.file_url && canEdit(node) && (
+              <IconBtn title="AI orqali testga aylantirish" onClick={() => setConvertNode(node)}>🤖</IconBtn>
             )}
             {node.kind !== "folder" && canEdit(node) && (
               <IconBtn title="Tahrirlash" onClick={() => setEditorNode(node)}>⚙️</IconBtn>
@@ -300,6 +304,20 @@ export function TeacherLibraryPanel({
 
       {viewerNode && (
         <FileViewerModal node={viewerNode} onClose={() => setViewerNode(null)} />
+      )}
+
+      {convertNode && (
+        <ImportModal
+          parentId={convertNode.parent_id ?? null}
+          presetFile={{ url: String(convertNode.file_url || ""), name: convertNode.title }}
+          onApiCall={onApiCall}
+          onClose={() => setConvertNode(null)}
+          onImported={(node) => {
+            setConvertNode(null);
+            setEditorNode(node);
+            load();
+          }}
+        />
       )}
     </section>
   );
@@ -606,14 +624,17 @@ function AssignModal({
 }
 
 function ImportModal({
-  parentId, onApiCall, onClose, onImported,
+  parentId, onApiCall, onClose, onImported, presetFile,
 }: {
   parentId: number | null;
   onApiCall: ApiCall;
   onClose: () => void;
   onImported: (node: LibNode) => void;
+  presetFile?: { url: string; name: string };
 }) {
-  const [files, setFiles] = useState<{ url: string; name: string }[]>([]);
+  const [files, setFiles] = useState<{ url: string; name: string }[]>(
+    presetFile && presetFile.url ? [presetFile] : []
+  );
   const [subject, setSubject] = useState("English");
   const [level, setLevel] = useState("");
   const [uploading, setUploading] = useState(false);
