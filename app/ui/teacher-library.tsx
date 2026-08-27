@@ -7,7 +7,7 @@
  * o'quvchilarga homework qilib berish shu paneldan boshqariladi.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AiTestEditor,
   AiTestQuestion,
@@ -77,14 +77,18 @@ export function TeacherLibraryPanel({
   const [viewerNode, setViewerNode] = useState<LibNode | null>(null);
   const [convertNode, setConvertNode] = useState<LibNode | null>(null);
   const [banner, setBanner] = useState("");
+  const loadedOnce = useRef(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    // Sahifa miltillamasin: faqat birinchi yuklashda to'liq spinner ko'rsatamiz,
+    // keyingi yangilanishlar fonda bo'ladi va daraxt joyida qoladi.
+    if (!silent && !loadedOnce.current) setLoading(true);
     const data = await onApiCall("/teacher/library", undefined, "GET");
     if (data) {
       setNodes(((data.nodes as LibNode[]) || []).map((n) => ({ ...n, id: Number(n.id) })));
       setMyId(Number(data.my_id || 0));
     }
+    loadedOnce.current = true;
     setLoading(false);
   }, [onApiCall]);
 
@@ -117,7 +121,7 @@ export function TeacherLibraryPanel({
     const ok = await onApiCall(`/teacher/library/${node.id}`, undefined, "DELETE");
     if (ok) {
       setBanner("O'chirildi");
-      load();
+      load(true);
     }
   };
 
@@ -264,7 +268,7 @@ export function TeacherLibraryPanel({
             setCreating(null);
             if (created?.kind === "test") setEditorNode(created);
             if (creating.parentId) setExpanded((p) => new Set(p).add(creating.parentId!));
-            load();
+            load(true);
           }}
         />
       )}
@@ -276,7 +280,7 @@ export function TeacherLibraryPanel({
           onClose={() => setEditorNode(null)}
           onSaved={() => {
             setEditorNode(null);
-            load();
+            load(true);
           }}
         />
       )}
@@ -297,7 +301,7 @@ export function TeacherLibraryPanel({
           onImported={(node) => {
             setImportParent(undefined);
             setEditorNode(node);
-            load();
+            load(true);
           }}
         />
       )}
@@ -315,7 +319,7 @@ export function TeacherLibraryPanel({
           onImported={(node) => {
             setConvertNode(null);
             setEditorNode(node);
-            load();
+            load(true);
           }}
         />
       )}

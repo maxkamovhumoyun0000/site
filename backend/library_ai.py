@@ -172,6 +172,48 @@ POLYMORPHIC_KINDS = {k for k, v in AI_TEST_TYPES.items() if v.get("polymorphic")
 #: word_practice studentga tushganda shu turlardan biriga random aylanadi.
 WORD_PRACTICE_VARIANTS = ["speak_sentence", "write_sentence", "spelling", "translation"]
 
+#: AI turli nom bilan qaytarishi mumkin — ularni bizning kanonik turlarga moslaymiz.
+_KIND_SYNONYMS: dict[str, str] = {
+    "multiple_choice": "listening",
+    "mcq": "listening",
+    "choice": "listening",
+    "true_false": "listening",
+    "fill_in_the_blank": "gap_fill",
+    "fill_blank": "gap_fill",
+    "fill_gap": "gap_fill",
+    "cloze": "gap_fill",
+    "gapfill": "gap_fill",
+    "gap": "gap_fill",
+    "match": "matching",
+    "match_pairs": "matching",
+    "matching_pairs": "matching",
+    "reorder": "scrambled_sentence",
+    "order_words": "scrambled_sentence",
+    "unscramble": "scrambled_sentence",
+    "word_order": "scrambled_sentence",
+    "sentence_building": "scrambled_sentence",
+    "vocabulary": "word_practice",
+    "vocab": "word_practice",
+    "word": "word_practice",
+    "spelling_word": "spelling",
+    "dictation_audio": "dictation",
+    "listening_comprehension": "listening",
+    "reading": "reading_open",
+    "reading_comprehension": "reading_open",
+    "comprehension": "reading_open",
+    "open_question": "reading_open",
+    "short_answer": "reading_open",
+    "speaking": "speak_sentence",
+    "speak": "speak_sentence",
+    "writing": "guided_writing",
+    "essay": "guided_writing",
+    "translate": "translation",
+    "picture": "picture_description",
+    "describe_picture": "picture_description",
+    "dialogue": "dialogue_completion",
+    "conversation": "dialogue_completion",
+}
+
 MAX_RETRIES_PER_QUESTION = 6
 
 
@@ -559,13 +601,27 @@ def _normalize_questions(raw: Any) -> list[dict]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("kind") or item.get("question_type") or "").strip().lower()
+        kind = str(item.get("kind") or item.get("question_type") or item.get("type") or "").strip().lower()
+        kind = _KIND_SYNONYMS.get(kind, kind)
         if kind not in AI_TEST_TYPES:
-            # Eski MCQ savollari ham kutubxonada yashashi mumkin
-            if item.get("options"):
-                kind = "listening" if item.get("audio_url") else "gap_fill"
+            # Turi noaniq bo'lsa — mazmuniga qarab eng mos turini tanlaymiz
+            # (hech qachon jimgina tashlab yubormaymiz).
+            if item.get("pairs"):
+                kind = "matching"
+            elif item.get("options"):
+                kind = "listening"
+            elif item.get("tokens"):
+                kind = "scrambled_sentence"
+            elif item.get("word") and not item.get("answer"):
+                kind = "word_practice"
+            elif str(item.get("prompt") or item.get("question") or "").find("___") >= 0:
+                kind = "gap_fill"
+            elif item.get("passage"):
+                kind = "reading_open"
+            elif item.get("answer"):
+                kind = "gap_fill"
             else:
-                continue
+                kind = "write_sentence"
         meta = AI_TEST_TYPES[kind]
         question: dict[str, Any] = {
             "kind": kind,
@@ -641,10 +697,12 @@ def _normalize_questions(raw: Any) -> list[dict]:
     return out
 
 
-def _materialize_word_practice(q: dict) -> dict:
-    """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha)."""
+def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
+    """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha).
+    Ko'rsatma matni fan tilida (Uzbek/Russian) yoziladi."""
     import random
 
+    ru = lang == "Russian"
     word = str(q.get("word") or q.get("prompt") or "").strip()
     translation = str(q.get("translation") or "").strip()
     instruction = q.get("instruction")
@@ -655,27 +713,36 @@ def _materialize_word_practice(q: dict) -> dict:
     kind = random.choice(variants) if variants else "write_sentence"
     base: dict[str, Any] = {"kind": kind, "word": word, "level": level, "instruction": instruction}
     if kind == "speak_sentence":
-        base["prompt"] = q.get("prompt") or f"'{word}' so'zi bilan gap tuzib gapiring"
+        base["prompt"] = q.get("prompt") or (
+            f"Составьте и произнесите предложение со словом «{word}»" if ru
+            else f"'{word}' so'zi bilan gap tuzib gapiring"
+        )
     elif kind == "write_sentence":
-        base["prompt"] = q.get("prompt") or f"'{word}' so'zidan foydalanib gap yozing"
+        base["prompt"] = q.get("prompt") or (
+            f"Напишите предложение со словом «{word}»" if ru
+            else f"'{word}' so'zidan foydalanib gap yozing"
+        )
         base["reference_answer"] = None
     elif kind == "spelling":
-        base["prompt"] = q.get("prompt") or "Eshitgan/ko'rgan so'zingizni to'g'ri yozing"
+        base["prompt"] = q.get("prompt") or (
+            "Правильно напишите услышанное/увиденное слово" if ru
+            else "Eshitgan/ko'rgan so'zingizni to'g'ri yozing"
+        )
         base["answer"] = word
         base["accepted_answers"] = []
     else:  # translation
-        base["prompt"] = f"Tarjima qiling: {word}"
+        base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
         base["answer"] = translation
         base["accepted_answers"] = [translation]
     return base
 
 
-def _expand_polymorphic_questions(questions: list[dict]) -> list[dict]:
+def _expand_polymorphic_questions(questions: list[dict], lang: str = "Uzbek") -> list[dict]:
     """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi."""
     out: list[dict] = []
     for q in questions or []:
         if str(q.get("kind") or "") in POLYMORPHIC_KINDS:
-            out.append(_materialize_word_practice(q))
+            out.append(_materialize_word_practice(q, lang))
         else:
             out.append(q)
     return out
@@ -752,12 +819,19 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "questions: not only the printed exercises, but also vocabulary words, grammar rules, "
         "reading texts and dialogues. Nothing teachable should be left out.\n\n"
         "STRICT RULES:\n"
-        "1. Cover ALL the learning content in the material. If there is a vocabulary list, turn "
-        "each word into a \"word_practice\" item (with its translation/meaning if shown). If there "
-        "is a reading text, add reading_open questions. If there is a grammar rule, add gap_fill / "
-        "scrambled_sentence / write_sentence practice for it.\n"
+        "1. Cover ALL the learning content in the material — completely. If there is a vocabulary "
+        "list, turn EVERY SINGLE word into its own \"word_practice\" item (with its translation/"
+        "meaning if shown): a list of 100 words MUST produce ~100 word_practice items. Do NOT sample "
+        "or summarise the word list, and do NOT favour the reading text over the word list — cover BOTH "
+        "fully. If there is a reading text, also add reading_open questions; if there is a grammar rule, "
+        "add gap_fill / scrambled_sentence / write_sentence practice for it.\n"
         "2. MIX the question kinds and vary them across the set (do not make them all the same type). "
         "Choose the kinds that best fit each piece of content.\n"
+        "2b. EVERY question object MUST contain its own explicit \"kind\" field, chosen individually "
+        "for that specific item from the allowed list below. Never omit \"kind\", never leave it blank, "
+        "and never apply one blanket type to the whole set. The \"kind\" values MUST be exactly the "
+        "snake_case identifiers from the allowed list (e.g. \"word_practice\", \"gap_fill\", "
+        "\"scrambled_sentence\"), not free-text names.\n"
         "3. Keep the target-language content (the English/Russian words and sentences being taught) "
         "exactly as written. Do not translate the study content unless the exercise itself is a translation task.\n"
         "4. For every auto-checked type you MUST provide the exact expected answer.\n"
@@ -1193,8 +1267,10 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
 
     _require_student_learning_access(user)
     questions, title = _questions_from_source(user, payload.source_type, payload.source_id, payload.homework_id)
-    # Polimorf savollarni (word_practice) shu student uchun random turga ochamiz.
-    questions = _expand_polymorphic_questions(questions)
+    # Polimorf savollarni (word_practice) shu student uchun random turga, fan tilidagi
+    # ko'rsatma bilan ochamiz.
+    lang = _instruction_language_name(None, _student_subject(user))
+    questions = _expand_polymorphic_questions(questions, lang)
     blocked = [q for q in questions if q.get("needs_audio_upload")]
     if blocked:
         raise HTTPException(
