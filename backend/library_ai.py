@@ -154,6 +154,14 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "check": "auto", "input": "text", "needs_audio_asset": False,
         "retry_until_correct": True,
     },
+    # ── Yaxlit matn + bir nechta bo'sh joy + so'zlar banki (Duolingo/kitob uslubi) ──
+    "passage_cloze": {
+        "label_uz": "Matnni to'ldirish (so'zlar banki bilan)",
+        "label_ru": "Заполнить текст (с банком слов)",
+        "label_en": "Passage cloze (with word bank)",
+        "check": "auto", "input": "cloze", "needs_audio_asset": False,
+        "retry_until_correct": True,
+    },
     # ── Polimorf: bitta so'z. Studentga tushganda random test turiga aylanadi ──
     "word_practice": {
         "label_uz": "So'z mashqi (random tur)",
@@ -193,6 +201,14 @@ _KIND_SYNONYMS: dict[str, str] = {
     "unscramble": "scrambled_sentence",
     "word_order": "scrambled_sentence",
     "sentence_building": "scrambled_sentence",
+    "cloze": "passage_cloze",
+    "cloze_passage": "passage_cloze",
+    "passage_gap_fill": "passage_cloze",
+    "text_completion": "passage_cloze",
+    "complete_the_text": "passage_cloze",
+    "complete_the_passage": "passage_cloze",
+    "fill_passage": "passage_cloze",
+    "gapped_text": "passage_cloze",
     "vocabulary": "word_practice",
     "vocab": "word_practice",
     "word": "word_practice",
@@ -647,13 +663,18 @@ def _normalize_questions(raw: Any) -> list[dict]:
             "level": str(item.get("level") or "").strip() or None,
             "topic": str(item.get("topic") or "").strip() or None,
         }
-        if not question["prompt"] and not question["word"]:
+        if not question["prompt"] and not question["word"] and kind != "passage_cloze":
             continue
         if meta["needs_audio_asset"] and not question["audio_url"]:
             # Audio yuklanmagan listening/diktant savoli studentga ko'rsatilmaydi
             question["needs_audio_upload"] = True
         if meta["check"] == "auto":
-            if kind == "matching":
+            if kind == "passage_cloze":
+                normalized_cloze = _normalize_passage_cloze(item)
+                if not normalized_cloze:
+                    continue
+                question.update(normalized_cloze)
+            elif kind == "matching":
                 pairs = item.get("pairs")
                 clean_pairs = []
                 if isinstance(pairs, list):
@@ -721,6 +742,86 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 question["meaning"] = str(item.get("meaning") or "").strip() or question["translation_ru"]
         out.append(question)
     return out
+
+
+# Matn ichidagi bo'sh joy belgilari: ___ (3+ tag chiziq), [[1]], {{1}}, (1) ______
+_CLOZE_GAP_RE = re.compile(r"\{\{\s*\d+\s*\}\}|\[\[\s*\d+\s*\]\]|_{2,}|\.{4,}")
+
+
+def _normalize_passage_cloze(item: dict) -> dict | None:
+    """Yaxlit matn + bir nechta bo'sh joy + so'zlar bankini normallashtiradi.
+
+    Bir necha kirish formatini qabul qiladi:
+      • passage matnida ___ / {{1}} / [[1]] belgilari + `answers`/`blanks` ro'yxati
+      • `sentences`: har biri bitta gap+javob (ular yagona matnga birlashtiriladi)
+    """
+    passage = str(item.get("passage") or item.get("text") or item.get("prompt") or "").strip()
+    # Javoblar: answers / blanks / gaps
+    raw_answers = item.get("answers") or item.get("blanks") or item.get("gaps") or []
+    answers: list[dict] = []
+    if isinstance(raw_answers, list):
+        for a in raw_answers:
+            if isinstance(a, dict):
+                ans = str(a.get("answer") or a.get("value") or "").strip()
+                acc = a.get("accepted_answers") or a.get("accepted") or []
+                accepted = [str(x).strip() for x in acc if str(x).strip()] if isinstance(acc, list) else []
+            else:
+                ans = str(a or "").strip()
+                accepted = []
+            if ans:
+                answers.append({"answer": ans, "accepted_answers": accepted})
+
+    # `sentences` formatidan yagona matn quramiz.
+    if not passage and isinstance(item.get("sentences"), list):
+        lines = []
+        for s in item["sentences"]:
+            if not isinstance(s, dict):
+                continue
+            text = str(s.get("text") or s.get("sentence") or "").strip()
+            ans = str(s.get("answer") or "").strip()
+            if not text or not ans:
+                continue
+            if not _CLOZE_GAP_RE.search(text):
+                text = f"{text} ___"
+            lines.append(text)
+            answers.append({"answer": ans, "accepted_answers": []})
+        passage = "\n".join(lines)
+
+    if not passage or not answers:
+        return None
+
+    # Matndagi bo'sh joylarni yagona `___` belgisiga keltiramiz.
+    normalized_passage = _CLOZE_GAP_RE.sub("___", passage)
+    gap_count = normalized_passage.count("___")
+    if gap_count == 0:
+        # Belgilar topilmadi — javoblar soniga qarab oxiriga qo'shib qo'yamiz.
+        normalized_passage = normalized_passage.rstrip() + " " + " ".join(["___"] * len(answers))
+        gap_count = len(answers)
+    # Bo'sh joy soni bilan javob soni mos kelishi kerak.
+    if gap_count != len(answers):
+        answers = answers[:gap_count] if len(answers) > gap_count else answers + [
+            {"answer": "", "accepted_answers": []} for _ in range(gap_count - len(answers))
+        ]
+    answers = [a for a in answers if a.get("answer")]
+    if not answers:
+        return None
+
+    # So'zlar banki: to'g'ri javoblar + AI bergan chalg'ituvchilar (aralash).
+    bank_raw = item.get("word_bank") or item.get("bank") or item.get("options") or []
+    bank = [str(w).strip() for w in bank_raw if str(w).strip()] if isinstance(bank_raw, list) else []
+    for a in answers:
+        if a["answer"] not in bank:
+            bank.append(a["answer"])
+    seen: set[str] = set()
+    bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
+    import random as _r
+    _r.shuffle(bank)
+
+    return {
+        "passage_template": normalized_passage,
+        "blanks": answers,
+        "word_bank": bank,
+    }
 
 
 def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
@@ -808,6 +909,11 @@ def _question_for_student(question: dict) -> dict:
         tokens = list(question.get("tokens") or []) + list(question.get("distractors") or [])
         random.shuffle(tokens)
         out["tokens"] = tokens
+    elif kind == "passage_cloze":
+        # Yaxlit: matn (___ bilan), bo'sh joylar soni va so'zlar banki.
+        out["passage_template"] = question.get("passage_template") or question.get("passage") or ""
+        out["blank_count"] = len(question.get("blanks") or [])
+        out["word_bank"] = list(question.get("word_bank") or [])
     return out
 
 
@@ -885,6 +991,20 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "6b. \"reading_text\" MUST contain the COMPLETE, VERBATIM text of ALL reading passages / dialogues "
         "found in the material (concatenate multiple texts with blank lines). Do NOT summarise, shorten or "
         "paraphrase it — copy it in full.\n"
+        "6c. WORKBOOK EXERCISE FORMATS — reproduce them exactly, do not skip any item:\n"
+        "   • \"Complete the sentences\" / cloze with a WORD BANK (a box of words/verbs) OR a reading "
+        "passage with numbered gaps (\"Put the verbs in the correct form\"): produce ONE single "
+        "\"passage_cloze\" item that keeps the WHOLE text together as one card. Put the full text in "
+        "\"passage\" with every gap marked as ___ (three underscores) in order; put the ordered correct "
+        "answers in \"answers\" (array, one per gap, each {\"answer\":\"...\"}); and put the given "
+        "word/verb box in \"word_bank\" (array). This shows the student the whole passage with the word "
+        "bank on one screen, Duolingo-style — DO NOT split it into separate gap_fill items.\n"
+        "   • A short single-sentence gap with no shared text: use \"gap_fill\".\n"
+        "   • Verb/word transformation lists (\"Write the past simple of these verbs\"): one \"gap_fill\" "
+        "per item — \"prompt\" like \"'get' — past simple\", \"answer\" \"got\".\n"
+        "   • \"Write sentences about ...\": use \"write_sentence\" (or \"guided_writing\"), give the cue "
+        "in \"prompt\" and a model answer in \"reference_answer\".\n"
+        "   • For ANY long/whole text, ALWAYS also add \"reading_open\" comprehension questions.\n"
         "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
         f"Student instruction language: {instruction_language}.\n\n"
@@ -908,8 +1028,16 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         '"options":["Tea","Coffee","Juice","Water"],"correct_index":1},\n'
         '    {"kind":"write_sentence","word":"although","prompt":"\'although\' so\'zi bilan gap yozing.",'
         '"reference_answer":"Although it was raining, we went out."},\n'
-        '    {"kind":"reading_open","passage":"...","prompt":"Tom nega erta ketdi?",'
-        '"reference_answer":"Because he had a train to catch."}\n'
+        '    {"kind":"gap_fill","prompt":"I ___ my teeth three times yesterday.","answer":"cleaned",'
+        '"accepted_answers":["cleaned"],"instruction":"Qutidagi fe\'llardan foydalaning: clean, die, enjoy, finish, happen, open, rain, start, stay, want."},\n'
+        '    {"kind":"reading_open","passage":"Last Tuesday Lisa flew from London to Madrid...","prompt":"Lisa qayerdan uchib ketdi?",'
+        '"reference_answer":"London."},\n'
+        '    {"kind":"passage_cloze","instruction":"Fe\'llarni to\'g\'ri shaklda qo\'ying.",'
+        '"passage":"Last Tuesday Lisa ___ from London to Madrid. She ___ up at 6 o\'clock and ___ a cup of coffee.",'
+        '"answers":[{"answer":"flew"},{"answer":"got"},{"answer":"had"}],'
+        '"word_bank":["fly","get","have","leave","drive","arrive","take"]},\n'
+        '    {"kind":"write_sentence","prompt":"O\'tган zamon haqida gap yozing: Rachel often loses her keys. (last week)",'
+        '"reference_answer":"Rachel lost her keys last week."}\n'
         "  ]\n"
         "}\n"
         "Produce as many questions as the material contains (typically 6–40), covering every teachable item."
@@ -1298,6 +1426,8 @@ class AiTestAnswerRequest(BaseModel):
     pairs: dict[str, str] | None = None
     order: list[str] | None = None
     choice_index: int | None = None
+    #: passage_cloze uchun bo'sh joylar javoblari (tartib bo'yicha)
+    blanks: list[str] | None = None
 
 
 def _attempt_state(attempt: dict) -> dict:
@@ -1659,6 +1789,23 @@ def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict
         given = _norm_text(" ".join(payload.order or []) or payload.answer_text)
         return ("correct" if given == expected else "wrong"), {
             "hint": "So'zlar tartibini qayta ko'ring" if given != expected else None,
+        }
+    if kind == "passage_cloze":
+        blanks = question.get("blanks") or []
+        given_list = payload.blanks or []
+        wrong_positions = []
+        for i, b in enumerate(blanks):
+            expected_set = {_norm_text(b.get("answer")), *[_norm_text(x) for x in (b.get("accepted_answers") or [])]}
+            expected_set = {e for e in expected_set if e}
+            given = _norm_text(given_list[i]) if i < len(given_list) else ""
+            if given not in expected_set:
+                wrong_positions.append(i + 1)
+        if not wrong_positions:
+            return "correct", {}
+        return "wrong", {
+            "wrong_positions": wrong_positions,
+            "wrong_count": len(wrong_positions),
+            "hint": f"{len(wrong_positions)} ta bo'sh joy noto'g'ri",
         }
     expected = [question.get("answer"), *(question.get("accepted_answers") or [])]
     normalized = {_norm_text(e) for e in expected if e}

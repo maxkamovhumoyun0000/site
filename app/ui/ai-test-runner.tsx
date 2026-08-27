@@ -16,12 +16,12 @@ type Kind =
   | "speak_sentence" | "write_sentence" | "guided_writing" | "translation"
   | "reading_open" | "read_aloud" | "paraphrase" | "dialogue_completion"
   | "picture_description" | "listening" | "dictation" | "spelling"
-  | "matching" | "scrambled_sentence" | "gap_fill";
+  | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze";
 
 type Question = {
   kind: Kind;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze";
   retry_until_correct: boolean;
   prompt?: string;
   instruction?: string;
@@ -34,6 +34,9 @@ type Question = {
   left_items?: string[];
   right_items?: string[];
   tokens?: string[];
+  passage_template?: string;
+  blank_count?: number;
+  word_bank?: string[];
 };
 
 type Attempt = {
@@ -240,6 +243,7 @@ const KIND_TITLE: Record<Kind, string> = {
   matching: "Juftlarni moslang",
   scrambled_sentence: "So'zlardan gap tuzing",
   gap_fill: "Bo'sh joyni to'ldiring",
+  passage_cloze: "Matnni to'ldiring",
 };
 
 function QuestionCard({
@@ -267,9 +271,9 @@ function QuestionCard({
           {question.word}
         </div>
       )}
-      {question.prompt && <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>}
+      {question.prompt && question.kind !== "passage_cloze" && <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>}
       {question.instruction && <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>}
-      {question.passage && (
+      {question.passage && question.kind !== "passage_cloze" && (
         <div className="mb-4 max-h-56 overflow-y-auto rounded-2xl bg-surface-soft p-4 text-sm leading-relaxed text-navy-900 dark:bg-white/5 dark:text-white">
           {question.passage}
         </div>
@@ -324,8 +328,69 @@ function AnswerInput({
   const [pairs, setPairs] = useState<Record<string, string>>({});
   const [order, setOrder] = useState<string[]>([]);
   const [audioUrl, setAudioUrl] = useState("");
+  const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
 
   const disabled = checking;
+
+  // ── Yaxlit matn to'ldirish (passage_cloze): matn + inline bo'sh joylar + so'zlar banki ──
+  if (question.input === "cloze") {
+    const template = question.passage_template || question.passage || "";
+    const parts = template.split("___");
+    const blankCount = Math.max(0, parts.length - 1);
+    const setBlank = (i: number, v: string) => {
+      setClozeBlanks((prev) => {
+        const next = [...prev];
+        while (next.length < blankCount) next.push("");
+        next[i] = v;
+        return next;
+      });
+    };
+    const filled = Array.from({ length: blankCount }, (_, i) => clozeBlanks[i] || "");
+    return (
+      <div className="space-y-4">
+        <div className="rounded-2xl bg-surface-soft p-4 text-base leading-loose text-navy-900 dark:bg-white/5 dark:text-white">
+          {parts.map((seg, i) => (
+            <span key={i}>
+              {seg}
+              {i < blankCount && (
+                <input
+                  value={filled[i]}
+                  onChange={(e) => setBlank(i, e.target.value)}
+                  className="mx-1 inline-block w-28 rounded-lg border-b-2 border-cyan-400 bg-white px-2 py-0.5 text-center text-sm font-bold text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
+                  placeholder={`${i + 1}`}
+                />
+              )}
+            </span>
+          ))}
+        </div>
+        {(question.word_bank || []).length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {(question.word_bank || []).map((w, i) => (
+              <button
+                key={`${w}-${i}`}
+                type="button"
+                onClick={() => {
+                  // Birinchi bo'sh joyga qo'shadi.
+                  const idx = filled.findIndex((x) => !x.trim());
+                  if (idx >= 0) setBlank(idx, w);
+                }}
+                className="rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-bold text-navy-900 hover:bg-cyan-50 dark:border-white/10 dark:bg-white/10 dark:text-white dark:hover:bg-cyan-500/15"
+              >
+                {w}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          onClick={() => onSubmit({ blanks: filled })}
+          disabled={disabled || filled.some((x) => !x.trim())}
+          className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
+        >
+          {retrying ? tt("aitest.resend", "Qayta yuborish") : tt("aitest.submit", "Tekshirish")}
+        </button>
+      </div>
+    );
+  }
 
   // ── Ovozli javob (mikrofon) ──
   if (question.input === "audio" || (question.input === "audio_or_text" && audioUrl)) {

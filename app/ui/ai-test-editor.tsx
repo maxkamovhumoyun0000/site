@@ -24,6 +24,7 @@ export type AiTestKind =
   | "matching"
   | "scrambled_sentence"
   | "gap_fill"
+  | "passage_cloze"
   | "word_practice";
 
 export type AiTestQuestion = {
@@ -47,6 +48,8 @@ export type AiTestQuestion = {
   pairs?: { left: string; right: string }[];
   tokens?: string[];
   distractors?: string[];
+  answers?: { answer: string; accepted_answers?: string[] }[];
+  word_bank?: string[];
   needs_audio_upload?: boolean;
 };
 
@@ -54,7 +57,7 @@ type KindMeta = {
   label: string;
   hint: string;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze";
   needsAudio: boolean;
   icon: string;
 };
@@ -135,6 +138,11 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Gapdagi ___ ni to'ldirish. Avtomatik tekshiriladi.",
     check: "auto", input: "text", needsAudio: false, icon: "␣",
   },
+  passage_cloze: {
+    label: "Matnni to'ldirish (so'zlar banki)",
+    hint: "Yaxlit matn + bir nechta bo'sh joy (___) + so'zlar banki. Bitta kartada. Avtomatik tekshiriladi.",
+    check: "auto", input: "cloze", needsAudio: false, icon: "📃",
+  },
   word_practice: {
     label: "So'z mashqi (random tur)",
     hint: "Bitta so'z. Studentga tushganda avtomatik random turga (gapirish/yozish/imlo/tarjima) aylanadi.",
@@ -153,6 +161,7 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   if (kind === "matching") return { ...base, pairs: [{ left: "", right: "" }, { left: "", right: "" }] };
   if (kind === "listening") return { ...base, options: ["", ""], correct_index: 0 };
   if (kind === "scrambled_sentence") return { ...base, answer: "", tokens: [] };
+  if (kind === "passage_cloze") return { kind, passage: "", answers: [{ answer: "" }], word_bank: [] };
   if (kind === "word_practice") return { kind, word: "", translation_uz: "", translation_ru: "" };
   if (AI_TEST_KIND_META[kind].check === "auto") return { ...base, answer: "", accepted_answers: [] };
   return { ...base, reference_answer: "" };
@@ -167,6 +176,15 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
     const n = i + 1;
     if (q.kind === "word_practice") {
       if (!String(q.word || "").trim()) return `${n}-mashq uchun so'z kiritilishi kerak.`;
+      continue;
+    }
+    if (q.kind === "passage_cloze") {
+      const passage = String(q.passage || "");
+      const gaps = (passage.match(/___/g) || []).length;
+      const answers = (q.answers || []).filter((a) => String(a?.answer || "").trim());
+      if (!passage.trim()) return `${n}-mashq uchun matn kiritilishi kerak.`;
+      if (gaps === 0) return `${n}-mashq matnida kamida bitta ___ bo'sh joy bo'lishi kerak.`;
+      if (answers.length !== gaps) return `${n}-mashqda bo'sh joylar soni (${gaps}) va javoblar soni (${answers.length}) mos kelmadi.`;
       continue;
     }
     if (!String(q.prompt || "").trim() && !String(q.word || "").trim()) {
@@ -418,6 +436,69 @@ export function AiTestEditor({
                     />
                   </div>
                 </>
+              ) : q.kind === "passage_cloze" ? (
+                <>
+                  <div className="sm:col-span-2">
+                    <label className={LABEL_CLS}>Ko'rsatma (ixtiyoriy)</label>
+                    <input
+                      value={String(q.instruction || "")}
+                      onChange={(e) => patch(index, { instruction: e.target.value })}
+                      className={INPUT_CLS}
+                      placeholder="Fe'llarni to'g'ri shaklda qo'ying."
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className={LABEL_CLS}>Matn * (har bo'sh joyni ___ bilan belgilang)</label>
+                    <textarea
+                      value={String(q.passage || "")}
+                      onChange={(e) => {
+                        const passage = e.target.value;
+                        const gaps = (passage.match(/___/g) || []).length;
+                        const cur = q.answers || [];
+                        const next = Array.from({ length: gaps }, (_, i) => cur[i] || { answer: "" });
+                        patch(index, { passage, answers: next });
+                      }}
+                      className={`${INPUT_CLS} min-h-[110px]`}
+                      placeholder={"Last Tuesday Lisa ___ from London to Madrid. She ___ up at 6 o'clock."}
+                    />
+                    <p className="mt-1 text-[11px] font-semibold text-ink-400 dark:text-navy-400">
+                      Bo'sh joylar: {(String(q.passage || "").match(/___/g) || []).length} ta
+                    </p>
+                  </div>
+                  {(q.answers || []).length > 0 && (
+                    <div className="sm:col-span-2 space-y-2">
+                      <label className={LABEL_CLS}>Bo'sh joylar javoblari (tartib bo'yicha) *</label>
+                      {(q.answers || []).map((a, ai) => (
+                        <div key={ai} className="flex items-center gap-2">
+                          <span className="w-6 text-sm font-black text-ink-500">{ai + 1}.</span>
+                          <input
+                            value={String(a?.answer || "")}
+                            onChange={(e) => {
+                              const next = [...(q.answers || [])];
+                              next[ai] = { ...next[ai], answer: e.target.value };
+                              patch(index, { answers: next });
+                            }}
+                            className={INPUT_CLS}
+                            placeholder="to'g'ri so'z"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="sm:col-span-2">
+                    <label className={LABEL_CLS}>So'zlar banki (vergul bilan; javoblar avtomatik qo'shiladi)</label>
+                    <input
+                      value={(q.word_bank || []).join(", ")}
+                      onChange={(e) =>
+                        patch(index, {
+                          word_bank: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                        })
+                      }
+                      className={INPUT_CLS}
+                      placeholder="fly, get, have, leave, drive"
+                    />
+                  </div>
+                </>
               ) : (
                 <div className="sm:col-span-2">
                   <label className={LABEL_CLS}>Topshiriq matni *</label>
@@ -636,7 +717,7 @@ export function AiTestEditor({
                 </div>
               )}
 
-              {meta.check === "auto" && !["listening", "matching", "scrambled_sentence"].includes(q.kind) && (
+              {meta.check === "auto" && !["listening", "matching", "scrambled_sentence", "passage_cloze"].includes(q.kind) && (
                 <>
                   <div>
                     <label className={LABEL_CLS}>To'g'ri javob *</label>
