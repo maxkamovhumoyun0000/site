@@ -74,6 +74,7 @@ export function TeacherLibraryPanel({
   const [shareNode, setShareNode] = useState<LibNode | null>(null);
   const [assignNode, setAssignNode] = useState<LibNode | null>(null);
   const [importParent, setImportParent] = useState<number | null | undefined>(undefined);
+  const [viewerNode, setViewerNode] = useState<LibNode | null>(null);
   const [banner, setBanner] = useState("");
 
   const load = useCallback(async () => {
@@ -140,7 +141,18 @@ export function TeacherLibraryPanel({
             <span className="w-5" />
           )}
           <span className="text-lg">{KIND_ICON[node.kind]}</span>
-          <span className="font-bold text-navy-900 dark:text-white">{node.title}</span>
+          {node.kind === "file" && node.file_url ? (
+            <button
+              type="button"
+              onClick={() => setViewerNode(node)}
+              className="font-bold text-navy-900 underline-offset-2 hover:underline dark:text-white"
+              title="Saytda ochish"
+            >
+              {node.title}
+            </button>
+          ) : (
+            <span className="font-bold text-navy-900 dark:text-white">{node.title}</span>
+          )}
           {node.visibility === "shared" && (
             <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-black text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-100">
               Ulashilgan · {PERM_LABEL[node.permission || "view"]}
@@ -163,22 +175,14 @@ export function TeacherLibraryPanel({
                 <IconBtn title="Papka qo'shish" onClick={() => setCreating({ parentId: node.id, kind: "folder" })}>📁+</IconBtn>
                 <IconBtn title="Fayl qo'shish" onClick={() => setCreating({ parentId: node.id, kind: "file" })}>📎+</IconBtn>
                 <IconBtn title="Test qo'shish" onClick={() => setCreating({ parentId: node.id, kind: "test" })}>🧪+</IconBtn>
-                <IconBtn title="Skrinshotdan AI import" onClick={() => setImportParent(node.id)}>🤖</IconBtn>
+                <IconBtn title="Fayldan AI import" onClick={() => setImportParent(node.id)}>🤖</IconBtn>
               </>
             )}
             {node.kind === "test" && (
               <IconBtn title="Testni ochish" onClick={() => setEditorNode(node)}>✏️</IconBtn>
             )}
             {node.kind === "file" && node.file_url && (
-              <a
-                href={`/api${node.file_url}`}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-lg px-2 py-1 text-sm hover:bg-line dark:hover:bg-white/10"
-                title="Ochish"
-              >
-                ↗
-              </a>
+              <IconBtn title="Saytda ochish" onClick={() => setViewerNode(node)}>👁</IconBtn>
             )}
             {node.kind !== "folder" && canEdit(node) && (
               <IconBtn title="Tahrirlash" onClick={() => setEditorNode(node)}>⚙️</IconBtn>
@@ -207,7 +211,7 @@ export function TeacherLibraryPanel({
         <div>
           <h2 className="text-2xl font-black text-navy-900 dark:text-white">Materiallar kutubxonasi</h2>
           <p className="text-sm font-semibold text-ink-500 dark:text-navy-300">
-            Papkalar ichida testlar tuzing, AI bilan skrinshotdan import qiling, ulashing va o'quvchilarga bering.
+            Papkalar ichida testlar tuzing, AI bilan fayldan import qiling, ulashing va o'quvchilarga bering.
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -216,7 +220,7 @@ export function TeacherLibraryPanel({
             onClick={() => setImportParent(null)}
             className="rounded-xl bg-violet-500 px-4 py-2 text-sm font-black text-white shadow-sm transition hover:bg-violet-600"
           >
-            🤖 Skrinshotdan import
+            🤖 Fayldan import
           </button>
           <button
             type="button"
@@ -239,7 +243,7 @@ export function TeacherLibraryPanel({
           <p className="p-6 text-center font-bold text-ink-400">Yuklanmoqda…</p>
         ) : roots.length === 0 ? (
           <p className="p-8 text-center font-bold text-ink-400 dark:text-navy-300">
-            Kutubxona bo'sh. Birinchi papkani yarating yoki skrinshotdan import qiling.
+            Kutubxona bo'sh. Birinchi papkani yarating yoki fayldan import qiling.
           </p>
         ) : (
           roots.map((node) => renderNode(node, 0))
@@ -292,6 +296,10 @@ export function TeacherLibraryPanel({
             load();
           }}
         />
+      )}
+
+      {viewerNode && (
+        <FileViewerModal node={viewerNode} onClose={() => setViewerNode(null)} />
       )}
     </section>
   );
@@ -605,7 +613,7 @@ function ImportModal({
   onClose: () => void;
   onImported: (node: LibNode) => void;
 }) {
-  const [imageUrls, setImageUrls] = useState<string[]>([]);
+  const [files, setFiles] = useState<{ url: string; name: string }[]>([]);
   const [subject, setSubject] = useState("English");
   const [level, setLevel] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -619,12 +627,14 @@ function ImportModal({
   const [questions, setQuestions] = useState<AiTestQuestion[]>([]);
   const [saving, setSaving] = useState(false);
 
+  const isImage = (name: string) => /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(name);
+
   const runImport = async () => {
-    if (imageUrls.length === 0) { setError("Kamida bitta skrinshot yuklang"); return; }
+    if (files.length === 0) { setError("Kamida bitta fayl yuklang"); return; }
     setProcessing(true);
     setError("");
     const res = await onApiCall("/teacher/library/ai/import-screenshot", {
-      image_urls: imageUrls, subject, level: level || null, node_id: parentId,
+      file_urls: files.map((f) => f.url), subject, level: level || null, node_id: parentId,
     }, "POST");
     setProcessing(false);
     if (res && res.questions) {
@@ -632,7 +642,7 @@ function ImportModal({
       setTitle(String(res.title || "Yangi mavzu"));
       setQuestions((res.questions as AiTestQuestion[]) || []);
     } else {
-      setError("AI mashqlarni topa olmadi. Aniqroq skrinshot yuboring.");
+      setError("AI mashqlarni topa olmadi. Aniqroq material yuboring.");
     }
   };
 
@@ -655,12 +665,12 @@ function ImportModal({
   };
 
   return (
-    <ModalShell title="Skrinshotdan AI import" onClose={onClose} wide>
+    <ModalShell title="Fayldan AI import" onClose={onClose} wide>
       {!result ? (
         <div className="space-y-3">
           <p className="text-sm font-semibold text-ink-500 dark:text-navy-300">
-            Kitob mavzusining 1–3 ta skrinshotini yuklang. AI matn va mashqlarni tayyor test holatiga keltiradi.
-            Listening mashqlari topilsa, audio faylni keyin o'zingiz yuklaysiz.
+            Rasm (PNG, JPG…), PDF, DOC/DOCX yoki TXT fayl yuklang — AI matn va mashqlarni
+            tayyor test holatiga keltiradi. Listening mashqlari topilsa, audio faylni keyin o'zingiz yuklaysiz.
           </p>
           <div className="flex flex-wrap gap-3">
             <select className={FIELD + " w-40"} value={subject} onChange={(e) => setSubject(e.target.value)}>
@@ -670,24 +680,31 @@ function ImportModal({
             <input className={FIELD + " w-32"} placeholder="Daraja (A2…)" value={level} onChange={(e) => setLevel(e.target.value)} />
           </div>
           <div className="flex flex-wrap gap-2">
-            {imageUrls.map((url, i) => (
+            {files.map((f, i) => (
               <div key={i} className="relative">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={`/api${url}`} alt="" className="h-24 w-24 rounded-lg object-cover" />
+                {isImage(f.name) ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={`/api${f.url}`} alt="" className="h-24 w-24 rounded-lg object-cover" />
+                ) : (
+                  <div className="flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-lg border border-line bg-surface-soft px-1 text-center dark:border-white/10 dark:bg-white/5">
+                    <span className="text-2xl">📄</span>
+                    <span className="line-clamp-2 text-[10px] font-bold text-ink-600 dark:text-navy-200">{f.name}</span>
+                  </div>
+                )}
                 <button
-                  onClick={() => setImageUrls((p) => p.filter((_, idx) => idx !== i))}
+                  onClick={() => setFiles((p) => p.filter((_, idx) => idx !== i))}
                   className="absolute -right-2 -top-2 rounded-full bg-red-500 px-2 text-xs font-black text-white"
                 >
                   ✕
                 </button>
               </div>
             ))}
-            {imageUrls.length < 3 && (
+            {files.length < 5 && (
               <label className="flex h-24 w-24 cursor-pointer items-center justify-center rounded-lg border border-dashed border-line bg-surface-soft text-3xl font-black text-ink-400 dark:border-white/10 dark:bg-white/5">
                 {uploading ? "…" : "+"}
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.pdf,.doc,.docx,.txt,.rtf,.md"
                   className="hidden"
                   disabled={uploading}
                   onChange={async (e) => {
@@ -695,7 +712,7 @@ function ImportModal({
                     if (!file) return;
                     setUploading(true);
                     const url = await uploadLibraryAsset(file);
-                    if (url) setImageUrls((p) => [...p, url]);
+                    if (url) setFiles((p) => [...p, { url, name: file.name }]);
                     setUploading(false);
                     e.target.value = "";
                   }}
@@ -708,7 +725,7 @@ function ImportModal({
             <button onClick={onClose} className="rounded-xl border border-line px-4 py-2 font-bold dark:border-white/10 dark:text-white">Bekor</button>
             <button
               onClick={runImport}
-              disabled={processing || imageUrls.length === 0}
+              disabled={processing || files.length === 0}
               className="rounded-xl bg-violet-600 px-4 py-2 font-black text-white disabled:opacity-60"
             >
               {processing ? "AI tahlil qilmoqda…" : "🤖 Import qilish"}
@@ -740,5 +757,100 @@ function ImportModal({
         </div>
       )}
     </ModalShell>
+  );
+}
+
+/**
+ * Faylni saytning o'zida ochadigan qalqib chiquvchi viewer:
+ *  - rasm (png/jpg/webp…) → <img>
+ *  - PDF → brauzer ichki PDF ko'rgichi (<iframe>)
+ *  - DOC/DOCX/PPT/XLS → Microsoft Office Online ko'rgichi (embed)
+ *  - TXT/MD → matn ko'rinishida
+ * Fayllar `https://diamond-education.uz/api/homework/files/...` da ochiq
+ * xizmat qilinadi, shu bois Office viewer ham ularni o'qiy oladi.
+ */
+function FileViewerModal({ node, onClose }: { node: LibNode; onClose: () => void }) {
+  const rel = String(node.file_url || "");
+  const proxied = rel.startsWith("/") ? `/api${rel}` : rel;
+  const absolute =
+    rel.startsWith("http")
+      ? rel
+      : `https://diamond-education.uz/api${rel.startsWith("/") ? rel : `/${rel}`}`;
+  const ext = (rel.split(".").pop() || "").toLowerCase();
+  const [text, setText] = useState<string>("");
+  const [textLoading, setTextLoading] = useState(false);
+
+  const isImage = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"].includes(ext);
+  const isPdf = ext === "pdf";
+  const isOffice = ["doc", "docx", "ppt", "pptx", "xls", "xlsx"].includes(ext);
+  const isText = ["txt", "md", "csv", "log", "rtf"].includes(ext);
+
+  useEffect(() => {
+    if (!isText) return;
+    setTextLoading(true);
+    fetch(proxied, { headers: { Authorization: `Bearer ${localStorage.getItem("diamond_token") || ""}` } })
+      .then((r) => r.text())
+      .then((t) => setText(t))
+      .catch(() => setText("Faylni o'qib bo'lmadi."))
+      .finally(() => setTextLoading(false));
+  }, [proxied, isText]);
+
+  return (
+    <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/70 p-3" onClick={onClose}>
+      <div
+        className="flex h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-navy-900"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-5 py-3 dark:border-white/10">
+          <h3 className="truncate text-base font-black text-navy-900 dark:text-white">{node.title}</h3>
+          <div className="flex items-center gap-2">
+            <a
+              href={proxied}
+              download
+              className="rounded-lg border border-line px-3 py-1.5 text-xs font-black text-navy-900 hover:bg-surface-soft dark:border-white/10 dark:text-white"
+            >
+              Yuklab olish
+            </a>
+            <button onClick={onClose} className="text-xl font-black text-ink-400 hover:text-ink-600">✕</button>
+          </div>
+        </div>
+        <div className="flex-1 overflow-auto bg-surface-soft dark:bg-navy-950">
+          {isImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={proxied} alt={node.title} className="mx-auto max-h-full w-auto object-contain" />
+          )}
+          {isPdf && (
+            <iframe src={proxied} title={node.title} className="h-full w-full" />
+          )}
+          {isOffice && (
+            <iframe
+              src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(absolute)}`}
+              title={node.title}
+              className="h-full w-full"
+            />
+          )}
+          {isText && (
+            <pre className="whitespace-pre-wrap p-5 text-sm text-navy-900 dark:text-white">
+              {textLoading ? "Yuklanmoqda…" : text}
+            </pre>
+          )}
+          {!isImage && !isPdf && !isOffice && !isText && (
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+              <span className="text-5xl">📎</span>
+              <p className="font-bold text-ink-500 dark:text-navy-300">
+                Bu fayl turini brauzerda ko'rsatib bo'lmadi. Yuklab olib oching.
+              </p>
+              <a
+                href={proxied}
+                download
+                className="rounded-xl bg-cyan-600 px-5 py-2.5 font-black text-white"
+              >
+                Yuklab olish
+              </a>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

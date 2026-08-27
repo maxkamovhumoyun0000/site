@@ -654,13 +654,25 @@ def _question_for_student(question: dict) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ScreenshotImportRequest(BaseModel):
-    image_urls: list[str] = Field(min_length=1, max_length=3)
+    # Har qanday fayl turi: rasm (png/jpg/webp…), PDF, DOC/DOCX, TXT/RTF.
+    # `image_urls` — eski mijozlar bilan moslik uchun; `file_urls` — yangi nom.
+    image_urls: list[str] = Field(default_factory=list, max_length=10)
+    file_urls: list[str] = Field(default_factory=list, max_length=10)
     subject: str = "English"
     level: str | None = None
     node_id: int | None = None
     instruction: str | None = None
     #: bo'sh bo'lsa AI rasmda ko'rgan mashq turlarining o'zini tanlaydi
     wanted_kinds: list[str] | None = None
+
+    @property
+    def all_urls(self) -> list[str]:
+        seen: list[str] = []
+        for url in [*(self.file_urls or []), *(self.image_urls or [])]:
+            clean = str(url or "").strip()
+            if clean and clean not in seen:
+                seen.append(clean)
+        return seen
 
 
 def _import_system_prompt(subject: str, level: str | None, wanted: list[str]) -> str:
@@ -672,8 +684,9 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str]) ->
     )
     return (
         "You are an expert curriculum digitizer for a language school.\n"
-        "You receive screenshots of a coursebook page. Extract the readable teaching text and turn the "
-        "exercises on the page into structured, ready-to-use questions.\n\n"
+        "You receive one or more coursebook pages — as page images and/or as extracted "
+        "text from a PDF/DOC/DOCX. Extract the readable teaching text and turn the "
+        "exercises into structured, ready-to-use questions.\n\n"
         "STRICT RULES:\n"
         "1. Only use exercise types that actually appear on the page. Do not invent exercise types "
         "the page does not contain. Pick the closest matching type from the allowed list.\n"
@@ -716,45 +729,74 @@ async def library_ai_import_screenshot(
     payload: ScreenshotImportRequest,
     authorization: str | None = Header(default=None),
 ):
-    """Skrinshotdan matn + mashqlarni tayyor test savollari holatiga keltiradi."""
+    """Har qanday fayldan (rasm/PDF/DOC/DOCX/TXT) matn + mashqlarni tayyor test
+    savollari holatiga keltiradi. Rasm va PDF sahifalari vision bilan, DOC/DOCX/TXT
+    matn sifatida o'qiladi."""
     user = _auth(authorization, TEACHER_ROLES)
     if payload.node_id:
         node = _node_or_404(int(payload.node_id))
         _require_node_permission(user, node, "edit")
 
-    wanted = [k for k in (payload.wanted_kinds or []) if k in AI_TEST_TYPES] or list(AI_TEST_TYPES.keys())
-    image_urls = _absolute_urls(payload.image_urls)
+    urls = payload.all_urls
+    if not urls:
+        raise HTTPException(status_code=400, detail="Fayl yuborilmadi")
 
-    from ai_generator import _xai_generate_text_stream_with_images
+    wanted = [k for k in (payload.wanted_kinds or []) if k in AI_TEST_TYPES] or list(AI_TEST_TYPES.keys())
+    vision_urls, text_blocks, unsupported = _prepare_import_sources(urls, owner_id=int(user.get("id") or 0))
+    if not vision_urls and not text_blocks:
+        detail = "Fayldan matn yoki rasm o'qib bo'lmadi"
+        if unsupported:
+            detail += f" ({', '.join(unsupported)} qo'llab-quvvatlanmaydi)"
+        raise HTTPException(status_code=422, detail=detail)
+
+    from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
     import aiohttp
 
     user_prompt = str(payload.instruction or "").strip() or (
-        "Digitize this coursebook page: extract its text and convert every exercise into structured questions."
+        "Digitize this coursebook material: extract its text and convert every exercise into structured questions."
     )
-    chunks: list[str] = []
+    system_prompt = _import_system_prompt(payload.subject, payload.level, wanted)
+    extracted = "\n\n".join(text_blocks).strip()
+    if extracted:
+        # 60k belgidan oshsa kesamiz (juda katta hujjatlarni AI baribir hazm qilmaydi).
+        extracted = extracted[:60000]
+
+    raw = ""
     try:
         async with aiohttp.ClientSession() as session:
-            stream = _xai_generate_text_stream_with_images(
-                _import_system_prompt(payload.subject, payload.level, wanted) + "\n\nTASK: " + user_prompt,
-                image_urls,
-                session=session,
-            )
-            async for chunk in stream:
-                chunks.append(str(chunk or ""))
+            if vision_urls:
+                task = system_prompt + "\n\nTASK: " + user_prompt
+                if extracted:
+                    task += "\n\nAdditional extracted text from the same material:\n" + extracted
+                chunks: list[str] = []
+                async for chunk in _xai_generate_text_stream_with_images(task, vision_urls, session=session):
+                    chunks.append(str(chunk or ""))
+                raw = "".join(chunks).strip()
+            else:
+                # Faqat matn (DOCX/DOC/TXT) — vision shart emas.
+                task = (
+                    system_prompt
+                    + "\n\nTASK: " + user_prompt
+                    + "\n\nMATERIAL TEXT:\n" + extracted
+                )
+                raw = await _xai_generate_text(
+                    task,
+                    session=session,
+                    system_content="You are an educational content digitizer. Output only valid JSON.",
+                )
     except Exception as exc:
         logger.exception("library ai import failed teacher=%s: %s", user.get("id"), exc)
         raise HTTPException(status_code=503, detail="AI hozir javob bermadi, qayta urinib ko'ring")
 
-    raw = "".join(chunks).strip()
-    data = _extract_json_object(raw)
+    data = _extract_json_object(str(raw or "").strip())
     if not data:
         raise HTTPException(status_code=502, detail="AI natijasini o'qib bo'lmadi, qayta urinib ko'ring")
     if str(data.get("error") or "") == "not_educational":
-        raise HTTPException(status_code=422, detail="Rasm o'quv materiali emas")
+        raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
 
     questions = _normalize_questions(data.get("questions"))
     if not questions:
-        raise HTTPException(status_code=422, detail="Rasmdan mashq topilmadi. Aniqroq skrinshot yuboring.")
+        raise HTTPException(status_code=422, detail="Fayldan mashq topilmadi. Aniqroq material yuboring.")
     needs_audio = [
         {"index": i, "kind": q["kind"], "prompt": q.get("prompt")}
         for i, q in enumerate(questions)
@@ -769,20 +811,164 @@ async def library_ai_import_screenshot(
         "questions": questions,
         "needs_audio_upload": needs_audio,
         "kinds_used": sorted({q["kind"] for q in questions}),
+        "unsupported": unsupported,
     }
 
 
-def _absolute_urls(urls: list[str]) -> list[str]:
-    base = str(os.getenv("BACKEND_BASE_URL") or "https://diamond-education.uz/api").rstrip("/")
-    out: list[str] = []
-    for url in urls[:3]:
-        clean = str(url or "").strip()
-        if not clean:
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
+_PDF_EXTS = {".pdf"}
+_DOC_EXTS = {".docx", ".doc"}
+_TEXT_EXTS = {".txt", ".rtf", ".md"}
+_MAX_VISION_IMAGES = 3
+_MAX_PDF_PAGES = 3
+
+
+def _resolve_local_path(url: str):
+    """Yuklangan fayl serverdagi haqiqiy yo'lini topadi (bir nechta upload papka)."""
+    from backend.main import HOMEWORK_UPLOAD_DIR
+
+    name = Path(urlparse(str(url or "")).path).name
+    if not name:
+        return None
+    candidates = [
+        HOMEWORK_UPLOAD_DIR / name,
+        HOMEWORK_UPLOAD_DIR.parent / "homework_uploads" / name,
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_file():
+                return cand
+        except Exception:
             continue
-        out.append(base + clean if clean.startswith("/") else clean)
-    if not out:
-        raise HTTPException(status_code=400, detail="Rasm manzili yuborilmadi")
-    return out
+    return None
+
+
+def _abs_url(url: str) -> str:
+    base = str(os.getenv("BACKEND_BASE_URL") or "https://diamond-education.uz/api").rstrip("/")
+    clean = str(url or "").strip()
+    return base + clean if clean.startswith("/") else clean
+
+
+def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], list[str], list[str]]:
+    """Har xil fayllarni AI uchun tayyorlaydi.
+
+    Qaytaradi: (vision uchun rasm URL lari, ajratilgan matn bloklari, qo'llab-
+    quvvatlanmaydigan kengaytmalar ro'yxati). PDF sahifalari PNG ga render
+    qilinib vision ro'yxatiga qo'shiladi; DOC/DOCX/TXT matn sifatida o'qiladi.
+    """
+    vision_urls: list[str] = []
+    text_blocks: list[str] = []
+    unsupported: list[str] = []
+
+    for url in urls:
+        ext = Path(urlparse(str(url or "")).path).suffix.lower()
+        if ext in _IMAGE_EXTS:
+            if len(vision_urls) < _MAX_VISION_IMAGES:
+                vision_urls.append(_abs_url(url))
+            continue
+        local = _resolve_local_path(url)
+        if ext in _PDF_EXTS:
+            rendered = _render_pdf_to_images(local, owner_id) if local else []
+            if rendered:
+                for served in rendered:
+                    if len(vision_urls) < _MAX_VISION_IMAGES:
+                        vision_urls.append(_abs_url(served))
+            else:
+                text = _extract_pdf_text(local) if local else ""
+                if text.strip():
+                    text_blocks.append(text)
+                else:
+                    unsupported.append(ext)
+            continue
+        if ext in _DOC_EXTS:
+            text = _extract_docx_text(local) if local else ""
+            if text.strip():
+                text_blocks.append(text)
+            else:
+                unsupported.append(ext)
+            continue
+        if ext in _TEXT_EXTS:
+            text = _read_text_file(local) if local else ""
+            if text.strip():
+                text_blocks.append(text)
+            else:
+                unsupported.append(ext)
+            continue
+        unsupported.append(ext or "noma'lum")
+    return vision_urls, text_blocks, unsupported
+
+
+def _render_pdf_to_images(path, owner_id: int) -> list[str]:
+    """PDF sahifalarini PNG ga aylantiradi va servisdan yuklanadigan URL qaytaradi."""
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        logger.info("PyMuPDF yo'q — PDF matn sifatida o'qiladi")
+        return []
+    from backend.main import HOMEWORK_UPLOAD_DIR
+
+    served: list[str] = []
+    try:
+        doc = fitz.open(str(path))
+        try:
+            page_count = min(_MAX_PDF_PAGES, doc.page_count)
+            for i in range(page_count):
+                page = doc.load_page(i)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # ~144 DPI
+                filename = f"library_pdf_{owner_id}_{int(__import__('time').time()*1000)}_{i}.png"
+                out_path = HOMEWORK_UPLOAD_DIR / filename
+                pix.save(str(out_path))
+                served.append(f"/homework/files/{filename}")
+        finally:
+            doc.close()
+    except Exception:
+        logger.exception("PDF render failed path=%s", path)
+        return []
+    return served
+
+
+def _extract_pdf_text(path) -> str:
+    try:
+        import fitz
+
+        doc = fitz.open(str(path))
+        try:
+            parts = [doc.load_page(i).get_text() for i in range(min(20, doc.page_count))]
+            return "\n".join(p for p in parts if p)
+        finally:
+            doc.close()
+    except Exception:
+        return ""
+
+
+def _extract_docx_text(path) -> str:
+    try:
+        import docx  # python-docx
+
+        document = docx.Document(str(path))
+        lines = [p.text for p in document.paragraphs if p.text and p.text.strip()]
+        for table in document.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+                if cells:
+                    lines.append(" | ".join(cells))
+        return "\n".join(lines)
+    except Exception:
+        logger.exception("docx extract failed path=%s", path)
+        return ""
+
+
+def _read_text_file(path) -> str:
+    try:
+        raw = Path(path).read_bytes()
+        for enc in ("utf-8", "cp1251", "latin-1"):
+            try:
+                return raw.decode(enc)
+            except Exception:
+                continue
+        return raw.decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
 
 
 def _extract_json_object(raw: str) -> dict:
