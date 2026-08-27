@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { useWebT } from "./web-i18n";
 
 type Kind =
   | "speak_sentence" | "write_sentence" | "guided_writing" | "translation"
@@ -75,6 +76,7 @@ export function AiTestRunner({
   homeworkId?: number;
   onExit: () => void;
 }) {
+  const tt = useWebT();
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -139,16 +141,16 @@ export function AiTestRunner({
     [attempt]
   );
 
-  if (loading) return <Centered>Test tayyorlanmoqda…</Centered>;
+  if (loading) return <Centered>{tt("aitest.preparing", "Test tayyorlanmoqda…")}</Centered>;
   if (error && !attempt) {
     return (
       <Centered>
         <p className="mb-4 font-bold text-red-500">{error}</p>
-        <button onClick={onExit} className="rounded-xl bg-cyan-600 px-5 py-2.5 font-black text-white">Ortga</button>
+        <button onClick={onExit} className="rounded-xl bg-cyan-600 px-5 py-2.5 font-black text-white">{tt("aitest.back", "Ortga")}</button>
       </Centered>
     );
   }
-  if (!attempt) return <Centered>Yuklanmoqda…</Centered>;
+  if (!attempt) return <Centered>{tt("aitest.loading", "Yuklanmoqda…")}</Centered>;
 
   if (attempt.is_finished || attempt.current_index === null) {
     return <FinishedView attempt={attempt} onExit={onExit} />;
@@ -162,7 +164,7 @@ export function AiTestRunner({
     <div className="mx-auto max-w-2xl px-4 py-6">
       <header className="mb-5">
         <div className="mb-2 flex items-center justify-between">
-          <button onClick={onExit} className="text-sm font-black text-ink-500 dark:text-navy-300">← Chiqish</button>
+          <button onClick={onExit} className="text-sm font-black text-ink-500 dark:text-navy-300">← {tt("aitest.exit", "Chiqish")}</button>
           <span className="text-sm font-black text-navy-900 dark:text-white">
             {attempt.solved_count} / {attempt.total_questions}
           </span>
@@ -172,8 +174,8 @@ export function AiTestRunner({
         </div>
         {q.retry_until_correct && (
           <p className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-300">
-            To'g'ri javob bermaguningizcha keyingi savolga o'tolmaysiz.
-            {currentTries > 0 ? ` (${currentTries}-urinish)` : ""}
+            {tt("aitest.mustCorrect", "To'g'ri javob bermaguningizcha keyingi savolga o'tolmaysiz.")}
+            {currentTries > 0 ? ` (${currentTries})` : ""}
           </p>
         )}
       </header>
@@ -202,16 +204,17 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 function FinishedView({ attempt, onExit }: { attempt: Attempt; onExit: () => void }) {
+  const tt = useWebT();
   return (
     <div className="mx-auto max-w-md px-4 py-16 text-center">
       <div className="mb-4 text-6xl">🎉</div>
-      <h2 className="mb-2 text-2xl font-black text-navy-900 dark:text-white">Test yakunlandi!</h2>
+      <h2 className="mb-2 text-2xl font-black text-navy-900 dark:text-white">{tt("aitest.finishedTitle", "Test yakunlandi!")}</h2>
       <p className="mb-6 font-semibold text-ink-500 dark:text-navy-300">
-        {attempt.total_questions} ta mashqni tugatdingiz.
+        {tt("aitest.finishedSubtitle", "{count} ta mashqni tugatdingiz.", { count: attempt.total_questions })}
       </p>
       <div className="mb-6 flex justify-center gap-4">
-        <Stat label="To'g'ri" value={attempt.correct_count} tone="green" />
-        <Stat label="D'point" value={`${attempt.dpoints_delta > 0 ? "+" : ""}${attempt.dpoints_delta.toFixed(1)}`} tone={attempt.dpoints_delta >= 0 ? "green" : "red"} />
+        <Stat label={tt("aitest.correct", "To'g'ri")} value={attempt.correct_count} tone="green" />
+        <Stat label={tt("aitest.dpoint", "D'point")} value={`${attempt.dpoints_delta > 0 ? "+" : ""}${attempt.dpoints_delta.toFixed(1)}`} tone={attempt.dpoints_delta >= 0 ? "green" : "red"} />
       </div>
       <button onClick={onExit} className="rounded-xl bg-cyan-600 px-6 py-3 font-black text-white">Tugatish</button>
     </div>
@@ -255,6 +258,7 @@ function QuestionCard({
   onSubmit: (payload: Record<string, unknown>) => void;
   onNext: () => void;
 }) {
+  const tt = useWebT();
   const wasCorrect = feedback?.verdict === "correct";
   const showFeedback = !!feedback;
   const canRetry = feedback && feedback.verdict === "wrong" && !feedback.moved_on;
@@ -291,7 +295,7 @@ function QuestionCard({
       {checking && (
         <div className="mt-4 flex items-center gap-3 rounded-2xl bg-violet-50 px-4 py-3 dark:bg-violet-500/10">
           <span className="h-5 w-5 animate-spin rounded-full border-2 border-violet-400 border-t-transparent" />
-          <span className="font-black text-violet-700 dark:text-violet-200">Tekshirilmoqda…</span>
+          <span className="font-black text-violet-700 dark:text-violet-200">{tt("aitest.checking", "Tekshirilmoqda…")}</span>
         </div>
       )}
 
@@ -304,7 +308,7 @@ function QuestionCard({
       )}
       {wasCorrect && (
         <p className="mt-2 text-center text-sm font-black text-emerald-600 dark:text-emerald-300">
-          {feedback!.finished ? "Ajoyib! Test yakunlandi." : "To'g'ri! Keyingi savolga o'tildi."}
+          {feedback!.finished ? tt("aitest.finishedTitle", "Test yakunlandi!") : tt("aitest.correctVerdict", "✅ To'g'ri!")}
         </p>
       )}
     </article>
@@ -320,6 +324,7 @@ function AnswerInput({
   onSubmit: (payload: Record<string, unknown>) => void;
   retrying: boolean;
 }) {
+  const tt = useWebT();
   const [text, setText] = useState("");
   const [choice, setChoice] = useState<number | null>(null);
   const [pairs, setPairs] = useState<Record<string, string>>({});
@@ -339,7 +344,7 @@ function AnswerInput({
             disabled={disabled}
             className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
           >
-            {retrying ? "Qayta yuborish" : "Javobni yuborish"}
+            {retrying ? tt("aitest.resend","Qayta yuborish") : tt("aitest.submitAnswer","Javobni yuborish")}
           </button>
         )}
       </div>
@@ -367,7 +372,7 @@ function AnswerInput({
           disabled={disabled || choice === null}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >
-          Tekshirish
+          {tt("aitest.submit","Tekshirish")}
         </button>
       </div>
     );
@@ -395,7 +400,7 @@ function AnswerInput({
                 {tok}
               </button>
             ))}
-            {chosen.length === 0 && <span className="p-2 text-sm font-bold text-ink-400">So'zlarni bosib tartiblang</span>}
+            {chosen.length === 0 && <span className="p-2 text-sm font-bold text-ink-400">{tt("aitest.orderHint","So'zlarni bosib tartiblang")}</span>}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -425,7 +430,7 @@ function AnswerInput({
           disabled={disabled || chosen.length === 0}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >
-          Tekshirish
+          {tt("aitest.submit","Tekshirish")}
         </button>
       </div>
     );
@@ -443,7 +448,7 @@ function AnswerInput({
               onChange={(e) => setPairs({ ...pairs, [left]: e.target.value })}
               className="flex-1 rounded-xl border border-line bg-surface-soft px-3 py-2 font-semibold text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white"
             >
-              <option value="">Tanlang…</option>
+              <option value="">{tt("aitest.chooseHint","Tanlang…")}</option>
               {(question.right_items || []).map((r, ri) => (
                 <option key={ri} value={r}>{r}</option>
               ))}
@@ -455,7 +460,7 @@ function AnswerInput({
           disabled={disabled || Object.keys(pairs).length < (question.left_items || []).length}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >
-          Tekshirish
+          {tt("aitest.submit","Tekshirish")}
         </button>
       </div>
     );
@@ -468,20 +473,21 @@ function AnswerInput({
         value={text}
         onChange={(e) => setText(e.target.value)}
         className="min-h-[100px] w-full rounded-2xl border border-line bg-surface-soft px-4 py-3 font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
-        placeholder="Javobingizni yozing…"
+        placeholder={tt("aitest.answerPlaceholder","Javobingizni yozing…")}
       />
       <button
         onClick={() => text.trim() && onSubmit({ answer_text: text })}
         disabled={disabled || !text.trim()}
         className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
       >
-        {retrying ? "Qayta yuborish" : "Tekshirish"}
+        {retrying ? tt("aitest.resend","Qayta yuborish") : tt("aitest.submit","Tekshirish")}
       </button>
     </div>
   );
 }
 
 function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUploaded: (url: string) => void; disabled: boolean }) {
+  const tt = useWebT();
   const [recording, setRecording] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [ready, setReady] = useState(false);
@@ -515,7 +521,7 @@ function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUp
       setRecording(true);
       setReady(false);
     } catch {
-      setErr("Mikrofonga ruxsat berilmadi");
+      setErr(tt("aitest.micDenied", "Mikrofonga ruxsat berilmadi"));
     }
   };
 
@@ -536,7 +542,7 @@ function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUp
         {recording ? "⏹" : "🎙️"}
       </button>
       <span className="text-sm font-bold text-ink-500 dark:text-navy-300">
-        {uploading ? "Yuklanmoqda…" : recording ? "Yozilmoqda… tugatish uchun bosing" : ready ? "Yozildi ✓ — qaytadan yozish mumkin" : "Gapirish uchun bosing"}
+        {uploading ? tt("aitest.uploading", "Yuklanmoqda…") : recording ? tt("aitest.recording", "Yozilmoqda… tugatish uchun bosing") : ready ? tt("aitest.recorded", "Yozildi ✓ — qaytadan yozish mumkin") : tt("aitest.speakToStart", "Gapirish uchun bosing")}
       </span>
       {err && <span className="text-sm font-bold text-red-500">{err}</span>}
     </div>
@@ -544,6 +550,7 @@ function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUp
 }
 
 function FeedbackBox({ result, onNext, canRetry }: { result: AnswerResult; onNext: () => void; canRetry: boolean }) {
+  const tt = useWebT();
   const fb = (result.feedback || {}) as Record<string, unknown>;
   const grammarErrors = (fb.grammar_errors as { original?: string; correction?: string; explanation?: string }[]) || [];
   const pronErrors = (fb.pronunciation_errors as { word?: string; note?: string }[]) || [];
@@ -552,16 +559,16 @@ function FeedbackBox({ result, onNext, canRetry }: { result: AnswerResult; onNex
   return (
     <div className={`mt-4 rounded-2xl p-4 ${wrong ? "bg-red-50 dark:bg-red-500/10" : "bg-emerald-50 dark:bg-emerald-500/10"}`}>
       <p className={`font-black ${wrong ? "text-red-600 dark:text-red-300" : "text-emerald-700 dark:text-emerald-200"}`}>
-        {wrong ? "❌ Hali to'g'ri emas" : "✅ To'g'ri!"}
+        {wrong ? tt("aitest.wrongVerdict", "❌ Hali to'g'ri emas") : tt("aitest.correctVerdict", "✅ To'g'ri!")}
       </p>
       {typeof fb.feedback === "string" && <p className="mt-1 text-sm font-semibold text-navy-900 dark:text-white">{fb.feedback}</p>}
       {typeof fb.transcript === "string" && fb.transcript && (
         <p className="mt-2 rounded-lg bg-white/60 px-3 py-1.5 text-sm font-semibold text-ink-700 dark:bg-white/5 dark:text-navy-100">
-          Siz aytdingiz: “{fb.transcript}”
+          {tt("aitest.youSaid", "Siz aytdingiz")}: “{fb.transcript}”
         </p>
       )}
       {typeof fb.corrected === "string" && fb.corrected && wrong && (
-        <p className="mt-1 text-sm font-bold text-navy-900 dark:text-white">To'g'risi: {fb.corrected}</p>
+        <p className="mt-1 text-sm font-bold text-navy-900 dark:text-white">{tt("aitest.correctIs", "To'g'risi")}: {fb.corrected}</p>
       )}
       {grammarErrors.length > 0 && (
         <ul className="mt-2 space-y-1 text-sm">
@@ -575,18 +582,18 @@ function FeedbackBox({ result, onNext, canRetry }: { result: AnswerResult; onNex
       )}
       {pronErrors.length > 0 && (
         <p className="mt-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
-          Talaffuz: {pronErrors.slice(0, 4).map((p) => p.word).join(", ")}
+          {tt("aitest.pron", "Talaffuz")}: {pronErrors.slice(0, 4).map((p) => p.word).join(", ")}
         </p>
       )}
       {typeof fb.hint === "string" && fb.hint && <p className="mt-1 text-sm font-semibold text-amber-700 dark:text-amber-300">💡 {fb.hint}</p>}
       {canRetry && (
         <p className="mt-2 text-xs font-black text-red-500">
-          {result.tries_left > 0 ? `Yana urinib ko'ring (${result.tries_left} urinish qoldi)` : "Oxirgi urinish"}
+          {result.tries_left > 0 ? tt("aitest.triesLeft", "Yana urinib ko'ring ({n} urinish qoldi)", { n: result.tries_left }) : tt("aitest.lastTry", "Oxirgi urinish")}
         </p>
       )}
       {!canRetry && !result.finished && (
         <button onClick={onNext} className="mt-3 w-full rounded-xl bg-cyan-600 py-2.5 font-black text-white">
-          Keyingi savol →
+          {tt("aitest.nextQuestion", "Keyingi savol →")}
         </button>
       )}
     </div>

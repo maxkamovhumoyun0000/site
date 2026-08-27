@@ -7,6 +7,15 @@ import { StudentBookTest } from "@/app/ui/student-book-test";
 
 type ContentRouteType = "book" | "video" | "homework";
 
+// Yangi (AI/avtomatik) test turlari — bular topilsa taymersiz AI runner'ga
+// yo'naltiramiz (eski MCQ runner ularni bo'sh/blank ko'rsatardi).
+const AI_TEST_KINDS = new Set([
+  "speak_sentence", "write_sentence", "guided_writing", "translation",
+  "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
+  "picture_description", "listening", "dictation", "spelling",
+  "matching", "scrambled_sentence", "gap_fill", "word_practice",
+]);
+
 function normalizeContentType(value?: string): ContentRouteType | "" {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "book" || raw === "books") return "book";
@@ -47,14 +56,21 @@ export default function StudentContentTestPage() {
         timeoutMs: 12000,
         retries: 0,
       });
-      setTest(payload?.test || null);
+      const loadedTest = payload?.test || null;
+      // Homework testi yangi turlardan iborat bo'lsa — taymersiz AI runner'ga.
+      const qs = (loadedTest?.questions || []) as Array<{ kind?: string }>;
+      if (contentType === "homework" && qs.some((q) => AI_TEST_KINDS.has(String(q?.kind || "")))) {
+        router.replace(`/student/ai-tests/homework/${contentId}`);
+        return;
+      }
+      setTest(loadedTest);
       setResult(payload?.result || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Testni ochib bo'lmadi.");
     } finally {
       setLoading(false);
     }
-  }, [contentType, contentId]);
+  }, [contentType, contentId, router]);
 
   useEffect(() => {
     load().catch(() => null);

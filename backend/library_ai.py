@@ -574,6 +574,18 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
         created.append(homework)
     if not created:
         raise HTTPException(status_code=500, detail="Vazifa yaratilmadi")
+
+    # O'quvchilarga bildirishnoma (web + push) — oddiy homework kabi.
+    try:
+        from backend.main import _notify_homework_created, _homework_audience_student_ids
+
+        for hw in created:
+            audience = _homework_audience_student_ids(hw)
+            if audience:
+                await _notify_homework_created(hw, user, audience)
+    except Exception:
+        logger.exception("library assign notification failed node_id=%s", node_id)
+
     return {"message": f"{len(created)} ta vazifa berildi", "items": created}
 
 
