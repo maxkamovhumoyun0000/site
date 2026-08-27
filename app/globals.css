@@ -23255,3 +23255,27 @@ select.pp-filter-input {
 [data-theme="dark"] .admin-groups-table-wrap .admin-groups-table thead th {
   background: #0e1929;
 }
+
+/* ==========================================================================
+   Sidebar hech qachon shaffof bo'lmasligi kafolati.
+   Ayrim sahifalarda role sidebar (desktop) va mobil drawer fon rangini
+   yo'qotib, orqa kontent ko'rinib qolar edi. Bu yerda barcha rollar uchun
+   qat'iy, tag-ostidan to'liq to'q (opaque) fon beramiz — mavjud gradient
+   dizayni ustidan ko'rinmaydi, faqat shaffoflikning oldini oladi.
+   ========================================================================== */
+.app-shell aside.sidebar,
+aside.sidebar,
+.sidebar[data-testid="desktop-sidebar"],
+.dashboard-mobile-drawer {
+  background-color: var(--surface) !important;
+}
+[data-theme="dark"] .app-shell aside.sidebar,
+[data-theme="dark"] aside.sidebar,
+[data-theme="dark"] .sidebar[data-testid="desktop-sidebar"],
+[data-theme="dark"] .dashboard-mobile-drawer {
+  background-color: #0b1220 !important;
+}
+/* Mobil drawer va bottom-nav orqa kontentni ko'rsatmasin */
+.dashboard-mobile-drawer {
+  backdrop-filter: none !important;
+}
