@@ -672,7 +672,6 @@ function ImportModal({
   );
   const [subject, setSubject] = useState("English");
   const [level, setLevel] = useState("");
-  const [lang, setLang] = useState<"uz" | "ru">("uz");
   const [uploading, setUploading] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState("");
@@ -691,7 +690,7 @@ function ImportModal({
     setProcessing(true);
     setError("");
     const res = await onApiCall("/teacher/library/ai/import-screenshot", {
-      file_urls: files.map((f) => f.url), subject, level: level || null, lang, node_id: parentId,
+      file_urls: files.map((f) => f.url), subject, level: level || null, node_id: parentId,
     }, "POST");
     setProcessing(false);
     if (res && res.questions) {
@@ -735,15 +734,6 @@ function ImportModal({
               <option>Russian</option>
             </select>
             <input className={FIELD + " w-32"} placeholder="Daraja (A2…)" value={level} onChange={(e) => setLevel(e.target.value)} />
-            <select
-              className={FIELD + " w-48"}
-              value={lang}
-              onChange={(e) => setLang(e.target.value as "uz" | "ru")}
-              title="Guruh tili — tarjima va topshiriqlar shu tilda yoziladi"
-            >
-              <option value="uz">O'zbek guruh (o'zbekcha)</option>
-              <option value="ru">Yevro/Rus guruh (ruscha)</option>
-            </select>
           </div>
           <div className="flex flex-wrap gap-2">
             {files.map((f, i) => (

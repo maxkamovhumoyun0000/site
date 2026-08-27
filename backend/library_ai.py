@@ -808,18 +808,22 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     if not answers:
         return None
 
-    # So'zlar banki: to'g'ri javoblar + AI bergan chalg'ituvchilar (aralash).
+    # So'zlar banki: AI bergan qutini (box) aynan olamiz — chalg'ituvchi so'z
+    # QO'SHMAYMIZ. Faqat qutida hech narsa bo'lmasa, javoblarning o'zini beramiz.
     bank_raw = item.get("word_bank") or item.get("bank") or item.get("options") or []
     bank = [str(w).strip() for w in bank_raw if str(w).strip()] if isinstance(bank_raw, list) else []
-    for a in answers:
-        if a["answer"] not in bank:
-            bank.append(a["answer"])
+    if not bank:
+        bank = [a["answer"] for a in answers]
     seen: set[str] = set()
     bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
     import random as _r
     _r.shuffle(bank)
 
     return {
+        # Muharrir uchun: passage (___ bilan) + answers massivi.
+        "passage": normalized_passage,
+        "answers": answers,
+        # Student runner uchun.
         "passage_template": normalized_passage,
         "blanks": answers,
         "word_bank": bank,
@@ -854,6 +858,8 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
     return {
         "kind": "passage_cloze",
         "instruction": instruction,
+        "passage": passage,
+        "answers": answers,
         "passage_template": passage,
         "blanks": answers,
         "word_bank": bank,
