@@ -20317,6 +20317,7 @@ function AdminGroupCreatePanel({
   const [lessonEnd, setLessonEnd] = useState("19:00");
   const [telegramGroupUrl, setTelegramGroupUrl] = useState("");
   const [pricingType, setPricingType] = useState("group");
+  const [groupLang, setGroupLang] = useState<"uz" | "ru">("uz");
   const [createdGroupId, setCreatedGroupId] = useState<number | null>(null);
   const [groupFormError, setGroupFormError] = useState("");
   const [groupCreating, setGroupCreating] = useState(false);
@@ -20416,6 +20417,7 @@ function AdminGroupCreatePanel({
         lesson_end: lessonEnd,
         telegram_group_url: telegramGroupUrl || null,
         pricing_type: pricingType,
+        lang: groupLang,
       });
       if (result?.group_id) setCreatedGroupId(Number(result.group_id));
       setName("");
@@ -20512,6 +20514,24 @@ function AdminGroupCreatePanel({
           </label>
         </div>
         <p className="chip">{tt("admin.groups.monthlyFee", "Oylik to'lov")}: <strong>{pricingType === "individual" ? (selectedCourse?.individual_price_text || tt("admin.groups.notSet", "Belgilanmagan")) : (selectedCourse?.price_text || tt("admin.groups.notSet", "Belgilanmagan"))}</strong></p>
+      </div>
+
+      <div className="admin-modal-section">
+        <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">🌐 Guruh tili</p>
+        <div className="admin-form-grid-2">
+          <label className="admin-form-label" style={{gridColumn:"1/-1"}}>
+            {tt("admin.groups.langLabel", "O'quv tili (test tarjimalari shu tilda)")}
+            <select value={groupLang} onChange={(e) => setGroupLang(e.target.value as "uz" | "ru")}>
+              <option value="uz">{tt("admin.groups.langUz", "O'zbek guruh")}</option>
+              <option value="ru">{tt("admin.groups.langRu", "Yevro / Rus guruh (ruscha)")}</option>
+            </select>
+          </label>
+        </div>
+        <p className="chip">
+          {groupLang === "ru"
+            ? tt("admin.groups.langRuHint", "Testlar va so'z tarjimalari ruscha bo'ladi (rus o'quvchilar uchun).")
+            : tt("admin.groups.langUzHint", "Testlar va so'z tarjimalari o'zbekcha bo'ladi.")}
+        </p>
       </div>
 
       {groupFormError ? <div className="error-box">{groupFormError}</div> : null}

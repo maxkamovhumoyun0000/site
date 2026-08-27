@@ -799,6 +799,8 @@ class ScreenshotImportRequest(BaseModel):
     level: str | None = None
     node_id: int | None = None
     instruction: str | None = None
+    #: 'uz' yoki 'ru' — yevro/rus guruh uchun 'ru' (tarjima+ko'rsatma ruscha)
+    lang: str | None = None
     #: bo'sh bo'lsa AI rasmda ko'rgan mashq turlarining o'zini tanlaydi
     wanted_kinds: list[str] | None = None
 
@@ -919,7 +921,9 @@ async def library_ai_import_screenshot(
         raise HTTPException(status_code=400, detail="Fayl yuborilmadi")
 
     wanted = [k for k in (payload.wanted_kinds or []) if k in AI_TEST_TYPES] or list(AI_TEST_TYPES.keys())
-    instruction_language = _instruction_language_name(x_language, payload.subject)
+    # Til: aniq tanlangan (yevro guruh -> 'ru') > X-Language > fandan avtomatik.
+    instruction_language = _instruction_language_name(payload.lang or x_language, payload.subject)
+    vocab_lang = "ru" if instruction_language == "Russian" else "uz"
     vision_urls, text_blocks, unsupported = _prepare_import_sources(urls, owner_id=int(user.get("id") or 0))
     if not vision_urls and not text_blocks:
         detail = "Fayldan matn yoki rasm o'qib bo'lmadi"
@@ -980,7 +984,7 @@ async def library_ai_import_screenshot(
             str(q.get("word") or "").strip().lower()
             for q in questions if q.get("kind") == "word_practice"
         }
-        for item in _extract_vocab_items("\n".join(text_blocks)):
+        for item in _extract_vocab_items("\n".join(text_blocks), vocab_lang):
             key = item["word"].strip().lower()
             if key and key not in existing_words:
                 questions.append(item)
@@ -1017,12 +1021,16 @@ _MAX_PDF_PAGES = 3
 _VOCAB_SEPARATORS = ["—", "–", " - ", " – ", " — "]
 
 
-def _extract_vocab_items(text: str) -> list[dict]:
+def _extract_vocab_items(text: str, lang: str = "uz") -> list[dict]:
     """Matndan lug'at ro'yxatini to'liq ajratib, word_practice mashqlariga aylantiradi.
 
     Har bir qator: `beat (v) — mag'lub etmoq — побеждать` ko'rinishida bo'ladi.
+    lang='ru' bo'lsa ruscha (kirill) tarjima, aks holda o'zbekcha gloss olinadi.
     Nasr (reading passage) qatorlari ajratgichga ega bo'lmagani uchun tushib qoladi.
     """
+    def _is_cyrillic(s: str) -> bool:
+        return bool(re.search(r"[А-Яа-яЁё]", s))
+
     items: list[dict] = []
     seen: set[str] = set()
     for raw_line in str(text or "").splitlines():
@@ -1045,20 +1053,28 @@ def _extract_vocab_items(text: str) -> list[dict]:
             continue
         if not re.search(r"[A-Za-zА-Яа-яЁё]", head):
             continue
-        # So'z (pos belgisisiz) + birinchi tarjima (odatda o'zbekcha).
+        # So'z (pos belgisisiz).
         word = re.sub(r"\s*\([^)]*\)\s*", " ", head).strip(" .:;")
         if not word or word.lower() in seen:
             continue
-        translation = parts[1].strip(" .:;")
-        # Tarjima ham juda uzun bo'lsa — bu nasrdir, o'tkazamiz.
-        if len(translation.split()) > 8:
+        glosses = [g for g in parts[1:] if g]
+        if not glosses:
+            continue
+        if lang == "ru":
+            chosen = next((g for g in glosses if _is_cyrillic(g)), glosses[-1])
+            other = next((g for g in glosses if g is not chosen), None)
+        else:
+            chosen = next((g for g in glosses if not _is_cyrillic(g)), glosses[0])
+            other = next((g for g in glosses if g is not chosen), None)
+        # Tarjima juda uzun bo'lsa — bu nasrdir, o'tkazamiz.
+        if len(chosen.split()) > 8:
             continue
         seen.add(word.lower())
         items.append({
             "kind": "word_practice",
             "word": word,
-            "translation": translation or None,
-            "meaning": parts[2].strip(" .:;") if len(parts) > 2 else None,
+            "translation": chosen.strip(" .:;") or None,
+            "meaning": (other.strip(" .:;") if other else None),
         })
     return items
 
@@ -1345,9 +1361,9 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
 
     _require_student_learning_access(user)
     questions, title = _questions_from_source(user, payload.source_type, payload.source_id, payload.homework_id)
-    # Polimorf savollarni (word_practice) shu student uchun random turga, fan tilidagi
-    # ko'rsatma bilan ochamiz.
-    lang = _instruction_language_name(None, _student_subject(user))
+    # Polimorf savollarni (word_practice) shu student uchun random turga, guruh
+    # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
+    lang = _student_lang(user)
     questions = _expand_polymorphic_questions(questions, lang)
     blocked = [q for q in questions if q.get("needs_audio_upload")]
     if blocked:
@@ -1505,6 +1521,16 @@ def _student_subject(user: dict) -> str:
 
     subjects = _safe(lambda: _user_subjects_from_row(user), []) or []
     return str(subjects[0]) if subjects else "English"
+
+
+def _student_lang(user: dict) -> str:
+    """Studentning o'quv tili: guruhi yevro/rus (lang='ru') bo'lsa 'Russian',
+    aks holda fandan avtomatik ('Russian'/'Uzbek')."""
+    groups = _safe(lambda: dbm.get_user_groups(int(user.get("id") or 0)), []) or []
+    for g in groups:
+        if str((g or {}).get("lang") or "").strip().lower() == "ru":
+            return "Russian"
+    return _instruction_language_name(None, _student_subject(user))
 
 
 def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:

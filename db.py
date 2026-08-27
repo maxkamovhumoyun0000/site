@@ -7219,6 +7219,8 @@ def ensure_video_teachers_schema() -> None:
         ("lesson_start", "ALTER TABLE groups ADD COLUMN lesson_start TEXT"),
         ("lesson_end", "ALTER TABLE groups ADD COLUMN lesson_end TEXT"),
         ("tz", "ALTER TABLE groups ADD COLUMN tz TEXT DEFAULT 'Asia/Tashkent'"),
+        # Guruh o'quv tili: 'uz' (default) yoki 'ru' (yevro/rus guruh — ruscha tarjima)
+        ("lang", "ALTER TABLE groups ADD COLUMN lang TEXT DEFAULT 'uz'"),
     ):
         try:
             cur.execute(ddl)
@@ -11191,6 +11193,7 @@ def create_group(
     monthly_fee_text: str | None = None,
     telegram_group_url: str | None = None,
     pricing_type: str | None = None,
+    lang: str | None = None,
 ):
     """Yangi guruhi yaratish"""
     logger.info(
@@ -11267,6 +11270,16 @@ def create_group(
                 group_id = int(row.get("id") or 0)
 
         if group_id > 0:
+            normalized_lang = str(lang or "uz").strip().lower()
+            if normalized_lang not in {"uz", "ru"}:
+                normalized_lang = "uz"
+            try:
+                cur.execute("UPDATE groups SET lang=? WHERE id=?", (normalized_lang, int(group_id)))
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             cleaned: list[str] = []
             seen: set[str] = set()
             for item in (extra_subjects or []):

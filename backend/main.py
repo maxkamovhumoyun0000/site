@@ -1433,6 +1433,8 @@ class GroupCreateRequest(BaseModel):
     lesson_end: str | None = None
     telegram_group_url: str | None = None
     pricing_type: str | None = "group"
+    #: 'uz' (default) yoki 'ru' (yevro/rus guruh — testlar ruscha tarjima bilan)
+    lang: str | None = "uz"
 
 
 class GroupMemberAddRequest(BaseModel):
@@ -33597,6 +33599,7 @@ async def create_admin_group(payload: GroupCreateRequest, authorization: str | N
             ) if linked_course else None,
             telegram_group_url=payload.telegram_group_url,
             pricing_type=payload.pricing_type,
+            lang=payload.lang,
         )
     except Exception as exc:
         logger.exception("admin.groups.create failed admin_ref=%s teacher_id=%s name=%s", admin_ref, payload.teacher_id, payload.name)
@@ -45161,6 +45164,7 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
             ) if linked_course else None,
             telegram_group_url=payload.telegram_group_url,
             pricing_type=payload.pricing_type,
+            lang=payload.lang,
         )
     except Exception as exc:
         logger.exception("groups.create failed admin_ref=%s teacher_id=%s name=%s", admin_ref, payload.teacher_id, payload.name)
