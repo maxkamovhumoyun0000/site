@@ -22,6 +22,7 @@ import json
 import logging
 import mimetypes
 import os
+import random
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -664,6 +665,12 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     if isinstance(tokens, list) and tokens
                     else answer.replace(".", "").split()
                 )
+                # AI qo'shimcha (chalg'ituvchi) so'zlarni ham beradi — ular pulga aralashtiriladi.
+                distractors = item.get("distractors") or item.get("extra_words")
+                question["distractors"] = (
+                    [str(d).strip() for d in distractors if str(d).strip()]
+                    if isinstance(distractors, list) else []
+                )
             elif kind == "listening":
                 options = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
                 if len(options) < 2:
@@ -772,8 +779,10 @@ def _question_for_student(question: dict) -> dict:
         out["left_items"] = [p.get("left") for p in pairs]
         out["right_items"] = sorted([p.get("right") for p in pairs])
     elif kind == "scrambled_sentence":
-        tokens = list(question.get("tokens") or [])
-        out["tokens"] = sorted(tokens, key=lambda t: (len(t), t.lower()))
+        # To'g'ri so'zlar + AI chalg'ituvchi so'zlari aralashtiriladi.
+        tokens = list(question.get("tokens") or []) + list(question.get("distractors") or [])
+        random.shuffle(tokens)
+        out["tokens"] = tokens
     return out
 
 
@@ -835,12 +844,18 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "3. Keep the target-language content (the English/Russian words and sentences being taught) "
         "exactly as written. Do not translate the study content unless the exercise itself is a translation task.\n"
         "4. For every auto-checked type you MUST provide the exact expected answer.\n"
+        "4b. For \"scrambled_sentence\" also add a \"distractors\" array: 2–4 extra plausible words "
+        "that do NOT belong in the correct sentence, so the student must choose carefully. Keep the "
+        "correct words in \"tokens\" and the full correct sentence in \"answer\".\n"
         "5. If the material has a listening exercise, still produce the question but leave audio_url empty — "
         "the teacher uploads the audio separately.\n"
         f"6. LANGUAGE OF INSTRUCTIONS: every instruction/prompt wording that the STUDENT reads "
         f"(the \"instruction\" and the non-content part of \"prompt\") MUST be written in {instruction_language}. "
         "Auto-detect if unsure: a Russian course → Russian instructions; otherwise Uzbek. Never write "
         "instructions in English unless the course language itself is English.\n"
+        "6b. \"reading_text\" MUST contain the COMPLETE, VERBATIM text of ALL reading passages / dialogues "
+        "found in the material (concatenate multiple texts with blank lines). Do NOT summarise, shorten or "
+        "paraphrase it — copy it in full.\n"
         "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
         f"Student instruction language: {instruction_language}.\n\n"
@@ -858,7 +873,8 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         '    {"kind":"matching","prompt":"So\'zlarni ta\'riflarga moslang.",'
         '"pairs":[{"left":"brave","right":"not afraid"}]},\n'
         '    {"kind":"scrambled_sentence","prompt":"So\'zlardan gap tuzing.",'
-        '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."]},\n'
+        '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."],'
+        '"distractors":["was","going","the"]},\n'
         '    {"kind":"listening","prompt":"Notiq nima buyurtma qiladi?",'
         '"options":["Tea","Coffee","Juice","Water"],"correct_index":1},\n'
         '    {"kind":"write_sentence","word":"although","prompt":"\'although\' so\'zi bilan gap yozing.",'

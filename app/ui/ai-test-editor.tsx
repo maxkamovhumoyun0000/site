@@ -44,6 +44,7 @@ export type AiTestQuestion = {
   correct_index?: number;
   pairs?: { left: string; right: string }[];
   tokens?: string[];
+  distractors?: string[];
   needs_audio_upload?: boolean;
 };
 
@@ -340,9 +341,26 @@ export function AiTestEditor({
           >
             <header className="mb-3 flex flex-wrap items-center gap-2">
               <span className="text-lg">{meta.icon}</span>
-              <strong className="font-black text-navy-900 dark:text-white">
-                {index + 1}. {meta.label}
-              </strong>
+              <strong className="font-black text-navy-900 dark:text-white">{index + 1}.</strong>
+              <select
+                value={q.kind}
+                onChange={(e) => {
+                  const nextKind = e.target.value as AiTestKind;
+                  onChange(
+                    questions.map((qq, i) =>
+                      i === index ? { ...emptyAiQuestion(nextKind), prompt: qq.prompt, word: qq.word, level: qq.level } : qq
+                    )
+                  );
+                }}
+                className="rounded-lg border border-line bg-surface-soft px-2 py-1 text-sm font-bold text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                title="Bu savol turini o'zgartirish"
+              >
+                {AI_TEST_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {AI_TEST_KIND_META[k].icon} {AI_TEST_KIND_META[k].label}
+                  </option>
+                ))}
+              </select>
               <span
                 className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
                   meta.check === "ai"
@@ -599,6 +617,20 @@ export function AiTestEditor({
                       ))}
                     </p>
                   )}
+                  <label className={`${LABEL_CLS} mt-3`}>Chalg'ituvchi so'zlar (vergul bilan)</label>
+                  <input
+                    value={(q.distractors || []).join(", ")}
+                    onChange={(e) =>
+                      patch(index, {
+                        distractors: e.target.value.split(",").map((s) => s.trim()).filter(Boolean),
+                      })
+                    }
+                    className={INPUT_CLS}
+                    placeholder="was, going, the"
+                  />
+                  <p className="mt-1 text-[11px] font-semibold text-ink-400 dark:text-navy-400">
+                    Bu so'zlar gapга kirmaydi — student ularni aralashган holda ko'radi.
+                  </p>
                 </div>
               )}
 

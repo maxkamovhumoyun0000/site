@@ -509,8 +509,14 @@ function ShareModal({ node, onApiCall, onClose }: { node: LibNode; onApiCall: Ap
   const [teachers, setTeachers] = useState<Row[]>([]);
   const [shares, setShares] = useState<Row[]>([]);
   const [selected, setSelected] = useState(0);
-  const [permission, setPermission] = useState("view");
+  // Har bir huquqni alohida galochka bilan yoqamiz. Tahrir → berish + ko'rishni,
+  // berish → ko'rishni o'z ichiga oladi (huquqlar bosqichma-bosqich).
+  const [canView, setCanView] = useState(true);
+  const [canAssignPerm, setCanAssignPerm] = useState(false);
+  const [canEditPerm, setCanEditPerm] = useState(false);
   const [busy, setBusy] = useState(false);
+
+  const effectivePermission = canEditPerm ? "edit" : canAssignPerm ? "assign" : "view";
 
   const load = useCallback(async () => {
     const data = await onApiCall(`/teacher/library/${node.id}/shares`, undefined, "GET");
@@ -522,9 +528,11 @@ function ShareModal({ node, onApiCall, onClose }: { node: LibNode; onApiCall: Ap
   const add = async () => {
     if (!selected) return;
     setBusy(true);
-    await onApiCall(`/teacher/library/${node.id}/share`, { teacher_id: selected, permission }, "POST");
+    await onApiCall(`/teacher/library/${node.id}/share`, { teacher_id: selected, permission: effectivePermission }, "POST");
     setBusy(false);
     setSelected(0);
+    setCanAssignPerm(false);
+    setCanEditPerm(false);
     load();
   };
 
@@ -548,14 +556,37 @@ function ShareModal({ node, onApiCall, onClose }: { node: LibNode; onApiCall: Ap
               </option>
             ))}
           </select>
-          <select className={FIELD + " w-32"} value={permission} onChange={(e) => setPermission(e.target.value)}>
-            <option value="view">Ko'rish</option>
-            <option value="assign">Berish</option>
-            <option value="edit">Tahrir</option>
-          </select>
           <button onClick={add} disabled={busy || !selected} className="rounded-xl bg-cyan-600 px-4 py-2.5 font-black text-white disabled:opacity-60">
             Ulashish
           </button>
+        </div>
+        <div className="flex flex-wrap gap-4 rounded-xl bg-surface-soft px-3 py-2.5 dark:bg-white/5">
+          <label className="flex items-center gap-2 text-sm font-bold text-navy-900 dark:text-white">
+            <input type="checkbox" checked disabled className="h-4 w-4 accent-cyan-500 opacity-60" />
+            Ko'rish
+          </label>
+          <label className="flex items-center gap-2 text-sm font-bold text-navy-900 dark:text-white">
+            <input
+              type="checkbox"
+              checked={canAssignPerm || canEditPerm}
+              disabled={canEditPerm}
+              onChange={(e) => setCanAssignPerm(e.target.checked)}
+              className="h-4 w-4 accent-cyan-500"
+            />
+            Berish (o'quvchilarga)
+          </label>
+          <label className="flex items-center gap-2 text-sm font-bold text-navy-900 dark:text-white">
+            <input
+              type="checkbox"
+              checked={canEditPerm}
+              onChange={(e) => {
+                setCanEditPerm(e.target.checked);
+                if (e.target.checked) setCanAssignPerm(true);
+              }}
+              className="h-4 w-4 accent-cyan-500"
+            />
+            Tahrirlash
+          </label>
         </div>
         <div className="space-y-2">
           {shares.length === 0 && <p className="text-sm font-semibold text-ink-400">Hali hech kimga ulashilmagan.</p>}
