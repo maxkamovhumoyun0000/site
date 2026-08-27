@@ -911,12 +911,15 @@ def _group_consecutive_gap_fill(questions: list[dict]) -> list[dict]:
     return out
 
 
-def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
+def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "English") -> dict:
     """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha).
-    Ko'rsatma matni fan tilida (Uzbek/Russian) yoziladi."""
+
+    Ko'rsatma (prompt) o'rganilayotgan til (study_lang: English/Russian) da yoziladi.
+    Tarjima esa student guruh tiliga (lang: Uzbek/Russian) qarab so'raladi."""
     import random
 
     ru = lang == "Russian"
+    study_ru = study_lang == "Russian"
     word = str(q.get("word") or q.get("prompt") or "").strip()
     # Guruh tiliga mos tarjima: ruscha guruh -> ruscha, aks holda o'zbekcha.
     tr_uz = str(q.get("translation_uz") or "").strip()
@@ -934,35 +937,35 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
     base: dict[str, Any] = {"kind": kind, "word": word, "level": level, "instruction": instruction}
     if kind == "speak_sentence":
         base["prompt"] = q.get("prompt") or (
-            f"Составьте и произнесите предложение со словом «{word}»" if ru
-            else f"'{word}' so'zi bilan gap tuzib gapiring"
+            f"Составьте и произнесите предложение со словом «{word}»" if study_ru
+            else f"Make and say a sentence using '{word}'"
         )
     elif kind == "write_sentence":
         base["prompt"] = q.get("prompt") or (
-            f"Напишите предложение со словом «{word}»" if ru
-            else f"'{word}' so'zidan foydalanib gap yozing"
+            f"Напишите предложение со словом «{word}»" if study_ru
+            else f"Write a sentence using '{word}'"
         )
         base["reference_answer"] = None
     elif kind == "spelling":
         base["prompt"] = q.get("prompt") or (
-            "Правильно напишите услышанное/увиденное слово" if ru
-            else "Eshitgan/ko'rgan so'zingizni to'g'ri yozing"
+            "Правильно напишите слово" if study_ru
+            else "Spell the word correctly"
         )
         base["answer"] = word
         base["accepted_answers"] = []
-    else:  # translation
+    else:  # translation — tarjima student tiliga (uz/ru)
         base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
         base["answer"] = translation
         base["accepted_answers"] = accepted
     return base
 
 
-def _expand_polymorphic_questions(questions: list[dict], lang: str = "Uzbek") -> list[dict]:
+def _expand_polymorphic_questions(questions: list[dict], lang: str = "Uzbek", study_lang: str = "English") -> list[dict]:
     """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi."""
     out: list[dict] = []
     for q in questions or []:
         if str(q.get("kind") or "") in POLYMORPHIC_KINDS:
-            out.append(_materialize_word_practice(q, lang))
+            out.append(_materialize_word_practice(q, lang, study_lang))
         else:
             out.append(q)
     return out
@@ -1077,10 +1080,11 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "correct words in \"tokens\" and the full correct sentence in \"answer\".\n"
         "5. If the material has a listening exercise, still produce the question but leave audio_url empty — "
         "the teacher uploads the audio separately.\n"
-        f"6. LANGUAGE OF INSTRUCTIONS: every instruction/prompt wording that the STUDENT reads "
-        f"(the \"instruction\" and the non-content part of \"prompt\") MUST be written in {instruction_language}. "
-        "Auto-detect if unsure: a Russian course → Russian instructions; otherwise Uzbek. Never write "
-        "instructions in English unless the course language itself is English.\n"
+        "6. LANGUAGE OF INSTRUCTIONS: keep every exercise instruction and prompt in the SAME language as "
+        "the source material — copy the book's own wording verbatim (an English coursebook keeps English "
+        "instructions like \"Complete the sentences\", \"Put the verbs in the correct form\"). Do NOT "
+        "translate the instructions into Uzbek or Russian. The ONLY translated fields are word_practice's "
+        "\"translation_uz\"/\"translation_ru\".\n"
         "6b. \"reading_text\" MUST contain the COMPLETE, VERBATIM text of ALL reading passages / dialogues "
         "found in the material (concatenate multiple texts with blank lines). Do NOT summarise, shorten or "
         "paraphrase it — copy it in full.\n"
@@ -1100,7 +1104,7 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "   • For ANY long/whole text, ALWAYS also add \"reading_open\" comprehension questions.\n"
         "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
-        f"Student instruction language: {instruction_language}.\n\n"
+        f"Translations language for word_practice: Uzbek + Russian (provide both).\n\n"
         f"Allowed question kinds:\n{kinds_help}\n\n"
         "Return ONLY valid JSON, no markdown fences, with this shape:\n"
         "{\n"
@@ -1111,25 +1115,25 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         '  "questions": [\n'
         '    {"kind":"word_practice","word":"decide","translation_uz":"qaror qilmoq","translation_ru":"решать"},\n'
         '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes",'
-        '"accepted_answers":["goes"],"instruction":"Bo\'sh joyni to\'ldiring."},\n'
-        '    {"kind":"matching","prompt":"So\'zlarni ta\'riflarga moslang.",'
+        '"accepted_answers":["goes"],"instruction":"Complete the sentence."},\n'
+        '    {"kind":"matching","prompt":"Match the words to the definitions.",'
         '"pairs":[{"left":"brave","right":"not afraid"}]},\n'
-        '    {"kind":"scrambled_sentence","prompt":"So\'zlardan gap tuzing.",'
+        '    {"kind":"scrambled_sentence","prompt":"Put the words in order.",'
         '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."],'
         '"distractors":["was","going","the"]},\n'
-        '    {"kind":"listening","prompt":"Notiq nima buyurtma qiladi?",'
+        '    {"kind":"listening","prompt":"What does the speaker order?",'
         '"options":["Tea","Coffee","Juice","Water"],"correct_index":1},\n'
-        '    {"kind":"write_sentence","word":"although","prompt":"\'although\' so\'zi bilan gap yozing.",'
+        '    {"kind":"write_sentence","word":"although","prompt":"Write a sentence using \'although\'.",'
         '"reference_answer":"Although it was raining, we went out."},\n'
         '    {"kind":"gap_fill","prompt":"I ___ my teeth three times yesterday.","answer":"cleaned",'
-        '"accepted_answers":["cleaned"],"instruction":"Qutidagi fe\'llardan foydalaning: clean, die, enjoy, finish, happen, open, rain, start, stay, want."},\n'
-        '    {"kind":"reading_open","passage":"Last Tuesday Lisa flew from London to Madrid...","prompt":"Lisa qayerdan uchib ketdi?",'
+        '"accepted_answers":["cleaned"],"instruction":"Use a verb from the box: clean, die, enjoy, finish, happen, open, rain, start, stay, want."},\n'
+        '    {"kind":"reading_open","passage":"Last Tuesday Lisa flew from London to Madrid...","prompt":"Where did Lisa fly from?",'
         '"reference_answer":"London."},\n'
-        '    {"kind":"passage_cloze","instruction":"Fe\'llarni to\'g\'ri shaklda qo\'ying.",'
+        '    {"kind":"passage_cloze","instruction":"Put the verbs in the correct form.",'
         '"passage":"Last Tuesday Lisa ___ from London to Madrid. She ___ up at 6 o\'clock and ___ a cup of coffee.",'
         '"answers":[{"answer":"flew"},{"answer":"got"},{"answer":"had"}],'
         '"word_bank":["fly","get","have","leave","drive","arrive","take"]},\n'
-        '    {"kind":"write_sentence","prompt":"O\'tган zamon haqida gap yozing: Rachel often loses her keys. (last week)",'
+        '    {"kind":"write_sentence","prompt":"Write about the past: Rachel often loses her keys. (last week)",'
         '"reference_answer":"Rachel lost her keys last week."}\n'
         "  ]\n"
         "}\n"
@@ -1148,6 +1152,15 @@ def _instruction_language_name(code: str | None, subject: str) -> str:
     if any(t in subj for t in ("rus", "рус", "russian")):
         return "Russian"
     return "Uzbek"
+
+
+def _study_language_name(subject: str) -> str:
+    """O'rganilayotgan til — mashq ko'rsatmalari shu tilda bo'ladi.
+    English kursi -> English, Russian kursi -> Russian, aks holda English."""
+    subj = str(subject or "").lower()
+    if any(t in subj for t in ("rus", "рус", "russian")):
+        return "Russian"
+    return "English"
 
 
 @router.post("/teacher/library/ai/import-screenshot")
@@ -1192,39 +1205,55 @@ async def library_ai_import_screenshot(
         extracted = extracted[:60000]
 
     raw = ""
+
+    async def _run_ai(session) -> str:
+        if vision_urls:
+            task = system_prompt + "\n\nTASK: " + user_prompt
+            if extracted:
+                task += "\n\nAdditional extracted text from the same material:\n" + extracted
+            chunks: list[str] = []
+            async for chunk in _xai_generate_text_stream_with_images(task, vision_urls, session=session):
+                chunks.append(str(chunk or ""))
+            return "".join(chunks).strip()
+        task = (
+            system_prompt
+            + "\n\nTASK: " + user_prompt
+            + "\n\nMATERIAL TEXT:\n" + extracted
+        )
+        return await _xai_generate_text(
+            task,
+            session=session,
+            system_content="You are an educational content digitizer. Output only valid JSON.",
+        )
+
+    # Birinchi urinishda AI ba'zan bo'sh/qisqa javob qaytaradi — 2 marta urinamiz.
+    data: dict = {}
+    questions: list[dict] = []
+    last_error: Exception | None = None
     try:
         async with aiohttp.ClientSession() as session:
-            if vision_urls:
-                task = system_prompt + "\n\nTASK: " + user_prompt
-                if extracted:
-                    task += "\n\nAdditional extracted text from the same material:\n" + extracted
-                chunks: list[str] = []
-                async for chunk in _xai_generate_text_stream_with_images(task, vision_urls, session=session):
-                    chunks.append(str(chunk or ""))
-                raw = "".join(chunks).strip()
-            else:
-                # Faqat matn (DOCX/DOC/TXT) — vision shart emas.
-                task = (
-                    system_prompt
-                    + "\n\nTASK: " + user_prompt
-                    + "\n\nMATERIAL TEXT:\n" + extracted
-                )
-                raw = await _xai_generate_text(
-                    task,
-                    session=session,
-                    system_content="You are an educational content digitizer. Output only valid JSON.",
-                )
+            for attempt_no in range(2):
+                try:
+                    raw = await _run_ai(session)
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("library ai import attempt %s failed: %s", attempt_no + 1, exc)
+                    continue
+                data = _extract_json_object(str(raw or "").strip())
+                if str(data.get("error") or "") == "not_educational":
+                    raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
+                questions = _normalize_questions(data.get("questions"))
+                if questions:
+                    break  # muvaffaqiyat
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("library ai import failed teacher=%s: %s", user.get("id"), exc)
         raise HTTPException(status_code=503, detail="AI hozir javob bermadi, qayta urinib ko'ring")
 
-    data = _extract_json_object(str(raw or "").strip())
-    if not data:
-        raise HTTPException(status_code=502, detail="AI natijasini o'qib bo'lmadi, qayta urinib ko'ring")
-    if str(data.get("error") or "") == "not_educational":
-        raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
+    if not data and last_error is not None:
+        raise HTTPException(status_code=503, detail="AI hozir javob bermadi, qayta urinib ko'ring")
 
-    questions = _normalize_questions(data.get("questions"))
     # Lug'at (vocabulary) ro'yxatini deterministik ravishda to'liq ajratamiz —
     # AI ba'zan ro'yxatni to'liq keltirmaydi. Har bir so'z word_practice bo'ladi.
     if text_blocks:
@@ -1637,7 +1666,8 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     # Polimorf savollarni (word_practice) shu student uchun random turga, guruh
     # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
     lang = _student_lang(user)
-    questions = _expand_polymorphic_questions(questions, lang)
+    study_lang = _study_language_name(_student_subject(user))
+    questions = _expand_polymorphic_questions(questions, lang, study_lang)
     # Audio yuklanmagan tinglash mashqlari butun testni bloklamasin — ularni
     # o'tkazib yuboramiz, qolgan mashqlar ishlayveradi.
     questions = [q for q in questions if not q.get("needs_audio_upload")]
