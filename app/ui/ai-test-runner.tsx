@@ -59,7 +59,7 @@ type AnswerResult = {
   verdict: "correct" | "wrong";
   moved_on: boolean;
   try_count: number;
-  tries_left: number;
+  tries_left?: number;
   feedback?: Record<string, unknown>;
   dpoints_delta: number;
   attempt: Attempt;
@@ -335,33 +335,49 @@ function AnswerInput({
   // ── Yaxlit matn to'ldirish (passage_cloze): matn + inline bo'sh joylar + so'zlar banki ──
   if (question.input === "cloze") {
     const template = question.passage_template || question.passage || "";
-    const parts = template.split("___");
-    const blankCount = Math.max(0, parts.length - 1);
+    // Umumiy bo'sh joy indekslari qatorlar bo'yicha ketma-ket.
+    const totalBlanks = (template.match(/___/g) || []).length;
     const setBlank = (i: number, v: string) => {
       setClozeBlanks((prev) => {
         const next = [...prev];
-        while (next.length < blankCount) next.push("");
+        while (next.length < totalBlanks) next.push("");
         next[i] = v;
         return next;
       });
     };
-    const filled = Array.from({ length: blankCount }, (_, i) => clozeBlanks[i] || "");
+    const filled = Array.from({ length: totalBlanks }, (_, i) => clozeBlanks[i] || "");
+    // Matnni qatorlarga bo'lamiz — raqamli ro'yxatlar tartibli chiqadi.
+    const lines = template.split("\n");
+    let blankCursor = 0;
     return (
       <div className="space-y-4">
-        <div className="rounded-2xl bg-surface-soft p-4 text-base leading-loose text-navy-900 dark:bg-white/5 dark:text-white">
-          {parts.map((seg, i) => (
-            <span key={i}>
-              {seg}
-              {i < blankCount && (
-                <input
-                  value={filled[i]}
-                  onChange={(e) => setBlank(i, e.target.value)}
-                  className="mx-1 inline-block w-28 rounded-lg border-b-2 border-cyan-400 bg-white px-2 py-0.5 text-center text-sm font-bold text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
-                  placeholder={`${i + 1}`}
-                />
-              )}
-            </span>
-          ))}
+        <div className="space-y-2 rounded-2xl bg-surface-soft p-4 text-base leading-loose text-navy-900 dark:bg-white/5 dark:text-white">
+          {lines.map((line, li) => {
+            const segs = line.split("___");
+            const rowGaps = segs.length - 1;
+            const startIdx = blankCursor;
+            blankCursor += rowGaps;
+            return (
+              <div key={li} className="leading-loose">
+                {segs.map((seg, si) => {
+                  const gi = startIdx + si;
+                  return (
+                    <span key={si}>
+                      {seg}
+                      {si < rowGaps && (
+                        <input
+                          value={filled[gi]}
+                          onChange={(e) => setBlank(gi, e.target.value)}
+                          className="mx-1 inline-block w-28 rounded-lg border-b-2 border-cyan-400 bg-white px-2 py-0.5 text-center text-sm font-bold text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
+                          placeholder={`${gi + 1}`}
+                        />
+                      )}
+                    </span>
+                  );
+                })}
+              </div>
+            );
+          })}
         </div>
         {(question.word_bank || []).length > 0 && (
           <div className="flex flex-wrap gap-2">
@@ -370,7 +386,6 @@ function AnswerInput({
                 key={`${w}-${i}`}
                 type="button"
                 onClick={() => {
-                  // Birinchi bo'sh joyga qo'shadi.
                   const idx = filled.findIndex((x) => !x.trim());
                   if (idx >= 0) setBlank(idx, w);
                 }}
@@ -646,8 +661,8 @@ function FeedbackBox({ result, onNext, canRetry }: { result: AnswerResult; onNex
       )}
       {typeof fb.hint === "string" && fb.hint && <p className="mt-1 text-sm font-semibold text-amber-700 dark:text-amber-300">💡 {fb.hint}</p>}
       {canRetry && (
-        <p className="mt-2 text-xs font-black text-red-500">
-          {result.tries_left > 0 ? tt("aitest.triesLeft", "Yana urinib ko'ring ({n} urinish qoldi)", { n: result.tries_left }) : tt("aitest.lastTry", "Oxirgi urinish")}
+        <p className="mt-2 text-xs font-black text-amber-600 dark:text-amber-300">
+          {tt("aitest.tryAgain", "Yana urinib ko'ring")}
         </p>
       )}
       {!canRetry && !result.finished && (

@@ -838,6 +838,7 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
     answers: list[dict] = []
     bank: list[str] = []
     instruction = None
+    idx = 0
     for q in run:
         prompt = str(q.get("prompt") or "").strip()
         ans = str(q.get("answer") or "").strip()
@@ -845,7 +846,9 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
             continue
         if "___" not in prompt:
             prompt = (prompt + " ___").strip() if prompt else "___"
-        lines.append(prompt)
+        idx += 1
+        # Har mashqni alohida raqamli qatorda ko'rsatamiz (chalkash bo'lmasin).
+        lines.append(f"{idx}. {prompt}")
         acc = q.get("accepted_answers") or []
         answers.append({"answer": ans, "accepted_answers": [str(a).strip() for a in acc if str(a).strip()]})
         if not instruction and q.get("instruction"):
@@ -1057,16 +1060,20 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "\"passage_cloze\" item, NEVER as separate questions. Group by the shared instruction / word box / "
         "passage. Give every question a \"group\" string = the exercise number (e.g. \"11.1\") so items of "
         "the same exercise stay together. Only use a standalone \"gap_fill\" for a truly independent single gap.\n"
-        "1. Cover ALL the learning content in the material — completely. If there is a vocabulary "
-        "list, turn EVERY SINGLE word into its own \"word_practice\" item. For each word include BOTH "
-        "\"translation_uz\" (Uzbek) and \"translation_ru\" (Russian) if either is shown in the material "
-        "or can be inferred — a single test serves both Uzbek and Russian groups. A list of 100 words "
-        "MUST produce ~100 word_practice items. Do NOT sample or summarise the word list, and do NOT "
-        "favour the reading text over the word list — cover BOTH fully. If there is a reading text, also "
-        "add reading_open questions; if there is a grammar rule, add gap_fill / scrambled_sentence / "
-        "write_sentence practice for it.\n"
-        "2. MIX the question kinds and vary them across the set (do not make them all the same type). "
-        "Choose the kinds that best fit each piece of content.\n"
+        "1. ONLY convert what is LITERALLY printed in the material. Do NOT invent, add, infer or "
+        "generate any exercise, question, comprehension question or content that is not physically on "
+        "the page. If the material is ONLY a vocabulary list, output ONLY word_practice items (one per "
+        "word) — nothing else. If it is only reading text with no printed exercise, output nothing extra. "
+        "Cover every printed item completely: a vocabulary list of 100 words MUST produce ~100 "
+        "word_practice items (do NOT sample). For word_practice include BOTH \"translation_uz\" (Uzbek) "
+        "and \"translation_ru\" (Russian) if shown or obvious — a single test serves both groups.\n"
+        "1b. NUMBERED / ORDERED exercises: if the printed exercise numbers its items (1, 2, 3 …), KEEP "
+        "that order and numbering. For a numbered list of gaps that shares one instruction/word box "
+        "(e.g. \"Write the past simple: 1 get 2 see 3 play …\"), output ONE \"passage_cloze\" whose "
+        "\"passage\" lists each item on its OWN line prefixed by its number "
+        "(\"1. get — ___\\n2. see — ___\\n3. play — ___\"), and put the answers in order. Do NOT jumble "
+        "them into a run-on paragraph. A continuous reading passage stays as flowing text (no per-line numbers).\n"
+        "2. Use the question kind that matches each printed exercise. Do NOT add kinds the page does not contain.\n"
         "2b. EVERY question object MUST contain its own explicit \"kind\" field, chosen individually "
         "for that specific item from the allowed list below. Never omit \"kind\", never leave it blank, "
         "and never apply one blanket type to the whole set. The \"kind\" values MUST be exactly the "
@@ -1097,11 +1104,10 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "word/verb box in \"word_bank\" (array). This shows the student the whole passage with the word "
         "bank on one screen, Duolingo-style — DO NOT split it into separate gap_fill items.\n"
         "   • A short single-sentence gap with no shared text: use \"gap_fill\".\n"
-        "   • Verb/word transformation lists (\"Write the past simple of these verbs\"): one \"gap_fill\" "
-        "per item — \"prompt\" like \"'get' — past simple\", \"answer\" \"got\".\n"
-        "   • \"Write sentences about ...\": use \"write_sentence\" (or \"guided_writing\"), give the cue "
-        "in \"prompt\" and a model answer in \"reference_answer\".\n"
-        "   • For ANY long/whole text, ALWAYS also add \"reading_open\" comprehension questions.\n"
+        "   • Verb/word transformation lists (\"Write the past simple of these verbs: 1 get 2 see …\"): "
+        "output ONE \"passage_cloze\" — each numbered item on its own line (\"1. get — ___\"), answers in order.\n"
+        "   • \"Write sentences about ...\": use \"write_sentence\", give the printed cue in \"prompt\".\n"
+        "   • Only add \"reading_open\" if the page ACTUALLY prints comprehension questions for the text.\n"
         "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
         f"Translations language for word_practice: Uzbek + Russian (provide both).\n\n"
@@ -1786,7 +1792,6 @@ async def ai_test_answer(
 
     try_count = int(saved.get("try_count") or 1)
     retry_until_correct = bool(meta.get("retry_until_correct", True))
-    forced_pass = verdict != "correct" and try_count >= MAX_RETRIES_PER_QUESTION
 
     dpoints = 0.0
     if verdict == "correct":
@@ -1794,10 +1799,11 @@ async def ai_test_answer(
         if try_count > 1:
             dpoints -= _setting("ai_test_retry_penalty", 0.5) * (try_count - 1)
         dbm.bump_ai_test_counters(int(attempt_id), correct=1, retries=max(0, try_count - 1), dpoints=dpoints)
-    elif not retry_until_correct or forced_pass:
+    elif not retry_until_correct:
         dpoints = -abs(_setting("ai_test_skip_penalty", 2.0))
         dbm.bump_ai_test_counters(int(attempt_id), wrong=1, retries=max(0, try_count - 1), dpoints=dpoints)
     else:
+        # retry_until_correct: cheksiz urinish, jarima yo'q — faqat to'g'risini kutamiz.
         dbm.bump_ai_test_counters(int(attempt_id), retries=1)
 
     if abs(dpoints) > 0:
@@ -1807,15 +1813,7 @@ async def ai_test_answer(
             )
         )
 
-    moved_on = verdict == "correct" or not retry_until_correct or forced_pass
-    if moved_on and verdict != "correct":
-        # Savol "yopiladi" — bir marta to'g'ri deb belgilanadi, lekin ball manfiy
-        _safe(
-            lambda: dbm.save_ai_test_answer(
-                int(attempt_id), index, kind=kind, verdict="correct",
-                answer_text="[limit]", ai_feedback={"forced_pass": True},
-            )
-        )
+    moved_on = verdict == "correct" or not retry_until_correct
 
     fresh = _safe(lambda: dbm.get_ai_test_attempt(int(attempt_id), user_id)) or attempt
     new_state = _attempt_state(fresh)
@@ -1829,7 +1827,6 @@ async def ai_test_answer(
         "verdict": verdict,
         "moved_on": moved_on,
         "try_count": try_count,
-        "tries_left": max(0, MAX_RETRIES_PER_QUESTION - try_count) if retry_until_correct else 0,
         "feedback": feedback,
         "dpoints_delta": round(dpoints, 2),
         "attempt": new_state,
