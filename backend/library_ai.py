@@ -662,6 +662,8 @@ def _normalize_questions(raw: Any) -> list[dict]:
             "audio_url": str(item.get("audio_url") or "").strip() or None,
             "level": str(item.get("level") or "").strip() or None,
             "topic": str(item.get("topic") or "").strip() or None,
+            # Bir mashq blokiga tegishli savollarni birlashtirish uchun (AI beradi).
+            "group": str(item.get("group") or item.get("exercise_id") or item.get("group_id") or "").strip() or None,
         }
         if not question["prompt"] and not question["word"] and kind != "passage_cloze":
             continue
@@ -824,6 +826,85 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     }
 
 
+def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
+    """Bir nechta gap_fill savolni bitta yaxlit passage_cloze ga birlashtiradi."""
+    import random as _r
+
+    lines: list[str] = []
+    answers: list[dict] = []
+    bank: list[str] = []
+    instruction = None
+    for q in run:
+        prompt = str(q.get("prompt") or "").strip()
+        ans = str(q.get("answer") or "").strip()
+        if not ans:
+            continue
+        if "___" not in prompt:
+            prompt = (prompt + " ___").strip() if prompt else "___"
+        lines.append(prompt)
+        acc = q.get("accepted_answers") or []
+        answers.append({"answer": ans, "accepted_answers": [str(a).strip() for a in acc if str(a).strip()]})
+        if not instruction and q.get("instruction"):
+            instruction = q.get("instruction")
+        bank.append(ans)
+    passage = "\n".join(lines)
+    seen: set[str] = set()
+    bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
+    _r.shuffle(bank)
+    return {
+        "kind": "passage_cloze",
+        "instruction": instruction,
+        "passage_template": passage,
+        "blanks": answers,
+        "word_bank": bank,
+    }
+
+
+def _group_consecutive_gap_fill(questions: list[dict]) -> list[dict]:
+    """Kitobdagi 'Complete the sentences' kabi mashqlarni yaxlit qiladi.
+
+    - AI `group` id bergan gap_fill savollar bitta passage_cloze ga birlashadi.
+    - Aks holda ketma-ket 3+ ta gap_fill ham bitta passage_cloze ga birlashadi.
+    Boshqa turlar (matching, listening, word_practice...) allaqachon yaxlit — tegilmaydi.
+    """
+    if not questions:
+        return questions
+    grouped_ids: dict[str, list[dict]] = {}
+    for q in questions:
+        gid = q.get("group") if q.get("kind") == "gap_fill" else None
+        if gid:
+            grouped_ids.setdefault(str(gid), []).append(q)
+    merge_ids = {gid for gid, r in grouped_ids.items() if len(r) >= 2}
+
+    out: list[dict] = []
+    consumed_ids: set[str] = set()
+    run: list[dict] = []
+
+    def _flush():
+        nonlocal run
+        if len(run) >= 3:
+            out.append(_cloze_from_gap_fill_run(run))
+        else:
+            out.extend(run)
+        run = []
+
+    for q in questions:
+        gid = q.get("group") if q.get("kind") == "gap_fill" else None
+        if gid and str(gid) in merge_ids:
+            _flush()
+            if str(gid) not in consumed_ids:
+                consumed_ids.add(str(gid))
+                out.append(_cloze_from_gap_fill_run(grouped_ids[str(gid)]))
+            continue
+        if q.get("kind") == "gap_fill" and str(q.get("answer") or "").strip():
+            run.append(q)
+        else:
+            _flush()
+            out.append(q)
+    _flush()
+    return out
+
+
 def _materialize_word_practice(q: dict, lang: str = "Uzbek") -> dict:
     """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha).
     Ko'rsatma matni fan tilida (Uzbek/Russian) yoziladi."""
@@ -961,6 +1042,12 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "questions: not only the printed exercises, but also vocabulary words, grammar rules, "
         "reading texts and dialogues. Nothing teachable should be left out.\n\n"
         "STRICT RULES:\n"
+        "0. FIRST analyze the page structure. A single printed exercise (one instruction line + its "
+        "items, e.g. \"Complete the sentences. Use a verb from the box\" with a word box and 8 numbered "
+        "sentences, OR a reading text with numbered gaps) is ONE cohesive task — output it as ONE "
+        "\"passage_cloze\" item, NEVER as separate questions. Group by the shared instruction / word box / "
+        "passage. Give every question a \"group\" string = the exercise number (e.g. \"11.1\") so items of "
+        "the same exercise stay together. Only use a standalone \"gap_fill\" for a truly independent single gap.\n"
         "1. Cover ALL the learning content in the material — completely. If there is a vocabulary "
         "list, turn EVERY SINGLE word into its own \"word_practice\" item. For each word include BOTH "
         "\"translation_uz\" (Uzbek) and \"translation_ru\" (Russian) if either is shown in the material "
@@ -1144,6 +1231,9 @@ async def library_ai_import_screenshot(
             if key and key not in existing_words:
                 questions.append(item)
                 existing_words.add(key)
+    # Ketma-ket mayda gap_fill savollarni yaxlit passage_cloze mashqiga birlashtiramiz
+    # (AI alohida chiqarsa ham — kitobdagidek bitta yaxlit karta bo'ladi).
+    questions = _group_consecutive_gap_fill(questions)
     if not questions:
         raise HTTPException(status_code=422, detail="Fayldan mashq topilmadi. Aniqroq material yuboring.")
     needs_audio = [
