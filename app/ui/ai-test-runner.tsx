@@ -122,6 +122,11 @@ export function AiTestRunner({
         });
         setFeedback(res);
         setAttempt(res.attempt);
+        // To'g'ri javobda avtomatik keyingi savolga o'tamiz (tugma kerak emas).
+        // Xato javobda esa shu savolda qolamiz (retry).
+        if (res.verdict === "correct" && !res.finished) {
+          setTimeout(() => setFeedback(null), 950);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Tekshirishda xato");
       }
