@@ -106,19 +106,8 @@ export function AiTestRunner({
     start();
   }, [start]);
 
-  // Sahifadan chiqib ketishda attemptni bekor qilish (restart qoidasi).
-  useEffect(() => {
-    const abandon = () => {
-      if (attempt?.attempt_id && !attempt.is_finished) {
-        navigator.sendBeacon?.(
-          `/api/student/ai-tests/${attempt.attempt_id}/abandon`,
-          new Blob([JSON.stringify({})], { type: "application/json" })
-        );
-      }
-    };
-    window.addEventListener("beforeunload", abandon);
-    return () => window.removeEventListener("beforeunload", abandon);
-  }, [attempt]);
+  // Chiqib ketilsa attempt SAQLANADI — 5 soat ichida qaytganda o'sha joyidan
+  // davom etadi (abandon qilinmaydi).
 
   const submit = useCallback(
     async (payload: Record<string, unknown>) => {

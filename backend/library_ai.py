@@ -1383,11 +1383,30 @@ async def ai_test_active(authorization: str | None = Header(default=None)):
 
 @router.post("/student/ai-tests/start")
 async def ai_test_start(payload: AiTestStartRequest, authorization: str | None = Header(default=None)):
-    """Yangi attempt. Eski active attempt avtomatik bekor bo'ladi (boshqatdan boshlash)."""
+    """Testni boshlaydi yoki davom ettiradi.
+
+    Agar shu manba (homework/test) uchun 5 soat ichida boshlangan tugallanmagan
+    urinish bo'lsa — o'sha joyidan davom ettiriladi (student chiqib ketib qaytsa
+    ma'lumotlari saqlanadi). 5 soatdan oshgan yoki boshqa manba bo'lsa — yangidan."""
     user = _auth(authorization, STUDENT_ROLES)
     from backend.main import _require_student_learning_access
 
     _require_student_learning_access(user)
+    user_id = int(user.get("id") or 0)
+    source_id = int(payload.source_id or payload.homework_id or 0) or None
+
+    # 5 soatlik davom ettirish: shu manba uchun active attempt bo'lsa qaytaramiz.
+    existing = _safe(lambda: dbm.get_active_ai_test_attempt(user_id))
+    if existing and not existing.get("is_finished"):
+        same_source = (
+            str(existing.get("source_type") or "") == str(payload.source_type)
+            and int(existing.get("source_id") or 0) == int(source_id or 0)
+        )
+        if same_source and _attempt_within_hours(existing.get("started_at"), 5):
+            state = _attempt_state(existing)
+            if not state["is_finished"]:
+                return {"message": "Davom ettirildi", "attempt": state, "resumed": True}
+
     questions, title = _questions_from_source(user, payload.source_type, payload.source_id, payload.homework_id)
     # Polimorf savollarni (word_practice) shu student uchun random turga, guruh
     # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
@@ -1400,9 +1419,9 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
         raise HTTPException(status_code=422, detail="Bu testda ishlaydigan mashq yo'q. O'qituvchiga murojaat qiling.")
     attempt = _safe(
         lambda: dbm.start_ai_test_attempt(
-            int(user.get("id") or 0),
+            user_id,
             payload.source_type,
-            int(payload.source_id or payload.homework_id or 0) or None,
+            source_id,
             questions,
             title=title,
         )
@@ -1410,6 +1429,25 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     if not attempt:
         raise HTTPException(status_code=500, detail="Test boshlanmadi")
     return {"message": "Test boshlandi", "attempt": _attempt_state(attempt)}
+
+
+def _attempt_within_hours(started_at: Any, hours: int) -> bool:
+    """started_at (timestamp) hozirdan `hours` soat ichida bo'lsa True."""
+    if not started_at:
+        return False
+    from datetime import datetime, timezone
+
+    raw = str(started_at)
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(raw[:26] if "." in raw else raw[:19], fmt)
+            delta_sec = (datetime.utcnow() - dt).total_seconds()
+            # Faqat yuqori chegara: tz farqi delta'ni manfiy qilishi mumkin (baribir
+            # yaqinda boshlangan), 5 soatdan oshgan bo'lsa muddati o'tgan.
+            return delta_sec <= hours * 3600
+        except Exception:
+            continue
+    return True  # sanani o'qiy olmasak, ehtiyot chorasi sifatida davom ettiramiz
 
 
 @router.post("/student/ai-tests/{attempt_id}/abandon")

@@ -20127,6 +20127,42 @@ def ensure_content_tests_schema() -> None:
         conn.close()
 
 
+#: Yangi AI/avtomatik test turlari — bular MCQ jadvaliga emas, questions_json
+#: dan xom holicha o'qiladi (kind/word/translation/pairs... saqlanishi uchun).
+AI_CONTENT_TEST_KINDS = {
+    "speak_sentence", "write_sentence", "guided_writing", "translation",
+    "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
+    "picture_description", "listening", "dictation", "spelling",
+    "matching", "scrambled_sentence", "gap_fill", "word_practice",
+}
+
+
+def _questions_have_ai_kinds(questions: Any) -> bool:
+    if isinstance(questions, str):
+        try:
+            questions = json.loads(questions)
+        except Exception:
+            return False
+    if not isinstance(questions, list):
+        return False
+    for q in questions:
+        if isinstance(q, dict) and str(q.get("kind") or "").strip().lower() in AI_CONTENT_TEST_KINDS:
+            return True
+    return False
+
+
+def _parse_questions_json(raw: Any) -> list[dict]:
+    if isinstance(raw, list):
+        return [q for q in raw if isinstance(q, dict)]
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+        return [q for q in parsed if isinstance(q, dict)] if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
 def _insert_content_test_questions_tx(cur, test_id: int, questions: list[dict]) -> None:
     cur.execute("DELETE FROM web_content_test_questions WHERE test_id=?", (int(test_id),))
     for index, question in enumerate(questions):
@@ -20268,6 +20304,12 @@ def get_content_test(content_type: str, content_id: int, *, include_inactive: bo
         row = _row_to_dict(cur.fetchone())
         if not row:
             return None
+        # AI/yangi test turlari MCQ jadvaliga sig'maydi — ularni questions_json
+        # dan xom holicha qaytaramiz (kind/word/translation/pairs saqlanadi).
+        if _questions_have_ai_kinds(row.get("questions_json")):
+            row["questions"] = _parse_questions_json(row.get("questions_json"))
+            row["question_count"] = len(row["questions"])
+            return row
         _migrate_content_test_questions_if_needed_tx(cur, row)
         conn.commit()
         row["questions"] = _fetch_content_test_questions_tx(cur, int(row.get("id") or 0), include_answers=include_answers)
@@ -20366,7 +20408,15 @@ def save_content_test(
         if test_id <= 0:
             conn.rollback()
             return None
-        _insert_content_test_questions_tx(cur, test_id, questions)
+        # AI/yangi test turlari uchun MCQ jadvalini to'ldirmaymiz (u ularni buzadi);
+        # o'qishda questions_json dan xom holicha olinadi. Eski MCQ qatorlarini tozalaymiz.
+        if raw_questions and _questions_have_ai_kinds(questions):
+            try:
+                cur.execute("DELETE FROM web_content_test_questions WHERE test_id=?", (int(test_id),))
+            except Exception:
+                pass
+        else:
+            _insert_content_test_questions_tx(cur, test_id, questions)
         conn.commit()
     finally:
         conn.close()
