@@ -973,6 +973,18 @@ async def library_ai_import_screenshot(
         raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
 
     questions = _normalize_questions(data.get("questions"))
+    # Lug'at (vocabulary) ro'yxatini deterministik ravishda to'liq ajratamiz —
+    # AI ba'zan ro'yxatni to'liq keltirmaydi. Har bir so'z word_practice bo'ladi.
+    if text_blocks:
+        existing_words = {
+            str(q.get("word") or "").strip().lower()
+            for q in questions if q.get("kind") == "word_practice"
+        }
+        for item in _extract_vocab_items("\n".join(text_blocks)):
+            key = item["word"].strip().lower()
+            if key and key not in existing_words:
+                questions.append(item)
+                existing_words.add(key)
     if not questions:
         raise HTTPException(status_code=422, detail="Fayldan mashq topilmadi. Aniqroq material yuboring.")
     needs_audio = [
@@ -999,6 +1011,56 @@ _DOC_EXTS = {".docx", ".doc"}
 _TEXT_EXTS = {".txt", ".rtf", ".md"}
 _MAX_VISION_IMAGES = 3
 _MAX_PDF_PAGES = 3
+
+# Lug'at qatori: "headword (pos) — tarjima — перевод" ko'rinishidagi qatorlarni
+# ushlaydigan ajratgichlar (em/en dash yoki oddiy tire).
+_VOCAB_SEPARATORS = ["—", "–", " - ", " – ", " — "]
+
+
+def _extract_vocab_items(text: str) -> list[dict]:
+    """Matndan lug'at ro'yxatini to'liq ajratib, word_practice mashqlariga aylantiradi.
+
+    Har bir qator: `beat (v) — mag'lub etmoq — побеждать` ko'rinishida bo'ladi.
+    Nasr (reading passage) qatorlari ajratgichga ega bo'lmagani uchun tushib qoladi.
+    """
+    items: list[dict] = []
+    seen: set[str] = set()
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line or len(line) > 200:
+            continue
+        sep = next((s for s in _VOCAB_SEPARATORS if s in line), None)
+        if not sep:
+            continue
+        parts = [p.strip() for p in line.split(sep) if p.strip()]
+        if len(parts) < 2:
+            continue
+        head = parts[0]
+        # Sarlavha (masalan "Elementary: Unit 3") lug'at so'zi emas — o'tkazamiz.
+        if ":" in head:
+            continue
+        # Sarlavha/nasr emas: chap tomon qisqa (so'z yoki ibora) bo'lishi kerak.
+        head_wordcount = len(re.sub(r"\([^)]*\)", "", head).split())
+        if head_wordcount == 0 or head_wordcount > 5:
+            continue
+        if not re.search(r"[A-Za-zА-Яа-яЁё]", head):
+            continue
+        # So'z (pos belgisisiz) + birinchi tarjima (odatda o'zbekcha).
+        word = re.sub(r"\s*\([^)]*\)\s*", " ", head).strip(" .:;")
+        if not word or word.lower() in seen:
+            continue
+        translation = parts[1].strip(" .:;")
+        # Tarjima ham juda uzun bo'lsa — bu nasrdir, o'tkazamiz.
+        if len(translation.split()) > 8:
+            continue
+        seen.add(word.lower())
+        items.append({
+            "kind": "word_practice",
+            "word": word,
+            "translation": translation or None,
+            "meaning": parts[2].strip(" .:;") if len(parts) > 2 else None,
+        })
+    return items
 
 
 def _resolve_local_path(url: str):
