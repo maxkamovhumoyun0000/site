@@ -90,7 +90,7 @@ export function AiTestRunner({
     try {
       const res = await apiFetch("/student/ai-tests/start", {
         method: "POST",
-        body: JSON.stringify({ source_type: sourceType, source_id: sourceId, homework_id: homeworkId }),
+        body: { source_type: sourceType, source_id: sourceId, homework_id: homeworkId },
       });
       setAttempt(res.attempt);
     } catch (e) {
@@ -118,7 +118,7 @@ export function AiTestRunner({
       try {
         const res: AnswerResult = await apiFetch(`/student/ai-tests/${attempt.attempt_id}/answer`, {
           method: "POST",
-          body: JSON.stringify({ question_index: attempt.current_index, ...payload }),
+          body: { question_index: attempt.current_index, ...payload },
         });
         setFeedback(res);
         setAttempt(res.attempt);
