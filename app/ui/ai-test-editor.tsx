@@ -25,6 +25,7 @@ export type AiTestKind =
   | "scrambled_sentence"
   | "gap_fill"
   | "passage_cloze"
+  | "reading_set"
   | "word_practice";
 
 export type AiTestQuestion = {
@@ -50,6 +51,7 @@ export type AiTestQuestion = {
   distractors?: string[];
   answers?: { answer: string; accepted_answers?: string[] }[];
   word_bank?: string[];
+  questions?: { type?: string; prompt?: string; options?: string[]; answer?: string }[];
   needs_audio_upload?: boolean;
 };
 
@@ -57,7 +59,7 @@ type KindMeta = {
   label: string;
   hint: string;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set";
   needsAudio: boolean;
   icon: string;
 };
@@ -143,6 +145,11 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Yaxlit matn + bir nechta bo'sh joy (___) + so'zlar banki. Bitta kartada. Avtomatik tekshiriladi.",
     check: "auto", input: "cloze", needsAudio: false, icon: "📃",
   },
+  reading_set: {
+    label: "Matn va savollar",
+    hint: "O'qish matni + bir nechta turli savol (True/False/NG, tanlov, sinonim, bo'sh joy, kim aytdi). Bitta kartada.",
+    check: "auto", input: "reading_set", needsAudio: false, icon: "📚",
+  },
   word_practice: {
     label: "So'z mashqi (random tur)",
     hint: "Bitta so'z. Studentga tushganda avtomatik random turga (gapirish/yozish/imlo/tarjima) aylanadi.",
@@ -162,6 +169,7 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   if (kind === "listening") return { ...base, options: ["", ""], correct_index: 0 };
   if (kind === "scrambled_sentence") return { ...base, answer: "", tokens: [] };
   if (kind === "passage_cloze") return { kind, passage: "", answers: [{ answer: "" }], word_bank: [] };
+  if (kind === "reading_set") return { kind, passage: "", questions: [{ type: "true_false_ng", prompt: "", options: ["True", "False", "Not given"], answer: "" }] };
   if (kind === "word_practice") return { kind, word: "", translation_uz: "", translation_ru: "" };
   if (AI_TEST_KIND_META[kind].check === "auto") return { ...base, answer: "", accepted_answers: [] };
   return { ...base, reference_answer: "" };
@@ -176,6 +184,12 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
     const n = i + 1;
     if (q.kind === "word_practice") {
       if (!String(q.word || "").trim()) return `${n}-mashq uchun so'z kiritilishi kerak.`;
+      continue;
+    }
+    if (q.kind === "reading_set") {
+      if (!String(q.passage || "").trim()) return `${n}-mashq uchun matn kiritilishi kerak.`;
+      const rq = (q.questions || []).filter((x) => String(x?.prompt || "").trim() && String(x?.answer || "").trim());
+      if (rq.length === 0) return `${n}-mashqda kamida bitta savol (matn + javob) bo'lishi kerak.`;
       continue;
     }
     if (q.kind === "passage_cloze") {
@@ -434,6 +448,102 @@ export function AiTestEditor({
                       className={INPUT_CLS}
                       placeholder="решать"
                     />
+                  </div>
+                </>
+              ) : q.kind === "reading_set" ? (
+                <>
+                  <div className="sm:col-span-2">
+                    <label className={LABEL_CLS}>O'qish matni *</label>
+                    <textarea
+                      value={String(q.passage || "")}
+                      onChange={(e) => patch(index, { passage: e.target.value })}
+                      className={`${INPUT_CLS} min-h-[140px]`}
+                      placeholder="Matnni to'liq joylashtiring…"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 space-y-3">
+                    <label className={LABEL_CLS}>Savollar * (True/False/NG, tanlov, sinonim, bo'sh joy, kim aytdi)</label>
+                    {(q.questions || []).map((rq, ri) => (
+                      <div key={ri} className="rounded-xl border border-line p-3 dark:border-white/10">
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-xs font-black text-ink-500">{ri + 1}.</span>
+                          <select
+                            value={String(rq.type || "short")}
+                            onChange={(e) => {
+                              const next = [...(q.questions || [])];
+                              const t = e.target.value;
+                              next[ri] = {
+                                ...next[ri],
+                                type: t,
+                                options: t === "true_false_ng" ? ["True", "False", "Not given"] : (next[ri].options || []),
+                              };
+                              patch(index, { questions: next });
+                            }}
+                            className="rounded-lg border border-line bg-surface-soft px-2 py-1 text-xs font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                          >
+                            <option value="true_false_ng">True / False / Not given</option>
+                            <option value="choice">Tanlov (multiple choice)</option>
+                            <option value="synonym">Sinonim</option>
+                            <option value="gap">Bo'sh joy</option>
+                            <option value="who_said">Kim aytdi / qildi</option>
+                            <option value="short">Qisqa javob</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => patch(index, { questions: (q.questions || []).filter((_, i2) => i2 !== ri) })}
+                            className="ml-auto text-sm font-black text-red-500"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <input
+                          value={String(rq.prompt || "")}
+                          onChange={(e) => {
+                            const next = [...(q.questions || [])];
+                            next[ri] = { ...next[ri], prompt: e.target.value };
+                            patch(index, { questions: next });
+                          }}
+                          className={`${INPUT_CLS} mb-2`}
+                          placeholder="Savol matni"
+                        />
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <input
+                            value={String(rq.answer || "")}
+                            onChange={(e) => {
+                              const next = [...(q.questions || [])];
+                              next[ri] = { ...next[ri], answer: e.target.value };
+                              patch(index, { questions: next });
+                            }}
+                            className={INPUT_CLS}
+                            placeholder="To'g'ri javob"
+                          />
+                          <input
+                            value={(rq.options || []).join(", ")}
+                            onChange={(e) => {
+                              const next = [...(q.questions || [])];
+                              next[ri] = {
+                                ...next[ri],
+                                options: e.target.value.split(",").map((x) => x.trim()).filter(Boolean),
+                              };
+                              patch(index, { questions: next });
+                            }}
+                            className={INPUT_CLS}
+                            placeholder="Variantlar (vergul bilan, ixtiyoriy)"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patch(index, {
+                          questions: [...(q.questions || []), { type: "short", prompt: "", answer: "", options: [] }],
+                        })
+                      }
+                      className="rounded-xl border border-line bg-surface-soft px-3 py-1.5 text-xs font-black dark:border-white/10 dark:bg-white/5 dark:text-white"
+                    >
+                      + Savol
+                    </button>
                   </div>
                 </>
               ) : q.kind === "passage_cloze" ? (

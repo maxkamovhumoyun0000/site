@@ -16,12 +16,14 @@ type Kind =
   | "speak_sentence" | "write_sentence" | "guided_writing" | "translation"
   | "reading_open" | "read_aloud" | "paraphrase" | "dialogue_completion"
   | "picture_description" | "listening" | "dictation" | "spelling"
-  | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze";
+  | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze" | "reading_set";
+
+type SubQuestion = { type: string; prompt: string; options?: string[] };
 
 type Question = {
   kind: Kind;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set";
   retry_until_correct: boolean;
   prompt?: string;
   instruction?: string;
@@ -37,6 +39,7 @@ type Question = {
   passage_template?: string;
   blank_count?: number;
   word_bank?: string[];
+  sub_questions?: SubQuestion[];
 };
 
 type Attempt = {
@@ -244,6 +247,7 @@ const KIND_TITLE: Record<Kind, string> = {
   scrambled_sentence: "So'zlardan gap tuzing",
   gap_fill: "Bo'sh joyni to'ldiring",
   passage_cloze: "Matnni to'ldiring",
+  reading_set: "Matnni o'qing va savollarga javob bering",
 };
 
 function QuestionCard({
@@ -273,7 +277,7 @@ function QuestionCard({
       )}
       {question.prompt && question.kind !== "passage_cloze" && <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>}
       {question.instruction && <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>}
-      {question.passage && question.kind !== "passage_cloze" && (
+      {question.passage && question.kind !== "passage_cloze" && question.kind !== "reading_set" && (
         <div className="mb-4 max-h-56 overflow-y-auto rounded-2xl bg-surface-soft p-4 text-sm leading-relaxed text-navy-900 dark:bg-white/5 dark:text-white">
           {question.passage}
         </div>
@@ -400,6 +404,72 @@ function AnswerInput({
         <button
           onClick={() => onSubmit({ blanks: filled })}
           disabled={disabled || filled.some((x) => !x.trim())}
+          className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
+        >
+          {retrying ? tt("aitest.resend", "Qayta yuborish") : tt("aitest.submit", "Tekshirish")}
+        </button>
+      </div>
+    );
+  }
+
+  // ── Matn + savollar (reading_set): matn yuqorida (scroll), savollar pastda ──
+  if (question.input === "reading_set") {
+    const subs = question.sub_questions || [];
+    const answers = Array.from({ length: subs.length }, (_, i) => clozeBlanks[i] || "");
+    const setSub = (i: number, v: string) => {
+      setClozeBlanks((prev) => {
+        const next = [...prev];
+        while (next.length < subs.length) next.push("");
+        next[i] = v;
+        return next;
+      });
+    };
+    return (
+      <div className="space-y-4">
+        {question.passage && (
+          <div className="max-h-72 overflow-y-auto rounded-2xl bg-surface-soft p-4 text-base leading-relaxed text-navy-900 dark:bg-white/5 dark:text-white">
+            {question.passage.split("\n").map((line, i) => (
+              <p key={i} className="mb-2">{line}</p>
+            ))}
+          </div>
+        )}
+        <div className="space-y-4">
+          {subs.map((s, i) => (
+            <div key={i} className="rounded-2xl border border-line p-3 dark:border-white/10">
+              <p className="mb-2 text-sm font-bold text-navy-900 dark:text-white">
+                {i + 1}. {s.prompt}
+              </p>
+              {(s.options || []).length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {(s.options || []).map((opt, oi) => (
+                    <button
+                      key={oi}
+                      type="button"
+                      onClick={() => setSub(i, opt)}
+                      className={`rounded-xl border-2 px-3 py-1.5 text-sm font-bold transition ${
+                        answers[i] === opt
+                          ? "border-cyan-500 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/15 dark:text-cyan-100"
+                          : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                      }`}
+                    >
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <input
+                  value={answers[i]}
+                  onChange={(e) => setSub(i, e.target.value)}
+                  className="w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                  placeholder={tt("aitest.answerPlaceholder", "Javobingizni yozing…")}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={() => onSubmit({ blanks: answers })}
+          disabled={disabled || answers.some((x) => !x.trim())}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >
           {retrying ? tt("aitest.resend", "Qayta yuborish") : tt("aitest.submit", "Tekshirish")}

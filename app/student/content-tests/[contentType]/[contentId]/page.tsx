@@ -13,7 +13,7 @@ const AI_TEST_KINDS = new Set([
   "speak_sentence", "write_sentence", "guided_writing", "translation",
   "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
   "picture_description", "listening", "dictation", "spelling",
-  "matching", "scrambled_sentence", "gap_fill", "word_practice", "passage_cloze",
+  "matching", "scrambled_sentence", "gap_fill", "word_practice", "passage_cloze", "reading_set",
 ]);
 
 function normalizeContentType(value?: string): ContentRouteType | "" {

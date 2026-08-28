@@ -5908,7 +5908,7 @@ function StudentHomework() {
         "speak_sentence", "write_sentence", "guided_writing", "translation",
         "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
         "picture_description", "listening", "dictation", "spelling",
-        "matching", "scrambled_sentence", "gap_fill", "passage_cloze",
+        "matching", "scrambled_sentence", "gap_fill", "passage_cloze", "reading_set",
       ]);
       const test = await requestJson<GenericRow>(`/student/homework/${hid}/test`, { method: "GET" });
       const questions = (test?.questions || (test?.test as GenericRow)?.questions || []) as GenericRow[];
