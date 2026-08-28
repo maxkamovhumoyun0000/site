@@ -40,6 +40,10 @@ type Question = {
   blank_count?: number;
   word_bank?: string[];
   sub_questions?: SubQuestion[];
+  hint?: string;          // spelling: ta'rif; dictation: mavzu; gap_fill: qavs so'z
+  word_count?: number;    // guided_writing: minimal so'zlar soni
+  example_sentence?: string; // word_practice
+  direction?: string;    // translation yo'nalishi
 };
 
 type Attempt = {
@@ -269,19 +273,63 @@ function QuestionCard({
     <article className="rounded-3xl border border-line bg-white p-6 shadow-sm dark:border-white/10 dark:bg-navy-900/70">
       <p className="mb-1 text-xs font-black uppercase tracking-wide text-cyan-600 dark:text-cyan-300">
         {KIND_TITLE[question.kind]}
+        {question.direction && <span className="ml-2 font-semibold normal-case text-ink-400">({question.direction})</span>}
       </p>
+
+      {/* So'z — speak/write/spelling/word_practice */}
       {question.word && (
         <div className="mb-3 inline-block rounded-xl bg-cyan-50 px-4 py-2 text-xl font-black text-cyan-800 dark:bg-cyan-500/15 dark:text-cyan-100">
           {question.word}
         </div>
       )}
-      {question.prompt && question.kind !== "passage_cloze" && <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>}
-      {question.instruction && <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>}
-      {question.passage && question.kind !== "passage_cloze" && question.kind !== "reading_set" && (
-        <div className="mb-4 max-h-56 overflow-y-auto rounded-2xl bg-surface-soft p-4 text-sm leading-relaxed text-navy-900 dark:bg-white/5 dark:text-white">
-          {question.passage}
+
+      {/* Spelling: ta'rif/hint */}
+      {question.kind === "spelling" && question.hint && (
+        <div className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800 dark:bg-amber-500/10 dark:text-amber-100">
+          💡 {question.hint}
         </div>
       )}
+
+      {/* Dictation: mavzu hint */}
+      {question.kind === "dictation" && question.hint && (
+        <div className="mb-3 rounded-xl bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 dark:bg-blue-500/10 dark:text-blue-100">
+          🎙️ {question.hint}
+        </div>
+      )}
+
+      {/* Gap fill: qavs hint */}
+      {question.kind === "gap_fill" && question.hint && (
+        <span className="mb-2 inline-block rounded-lg bg-surface-soft px-2.5 py-1 text-sm font-bold text-ink-600 dark:bg-white/10 dark:text-navy-200">
+          ({question.hint})
+        </span>
+      )}
+
+      {/* Savol matni */}
+      {question.prompt && question.kind !== "passage_cloze" && (
+        <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>
+      )}
+      {question.instruction && (
+        <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>
+      )}
+
+      {/* Guided writing: minimal so'z ko'rsatgichi */}
+      {question.kind === "guided_writing" && question.word_count && (
+        <p className="mb-2 text-xs font-black text-violet-600 dark:text-violet-300">
+          📝 Minimal {question.word_count} ta so'z yozing
+        </p>
+      )}
+
+      {/* Passage (matn) — passage_cloze va reading_set bundan foydalanadi boshqacha */}
+      {question.passage && question.kind !== "passage_cloze" && question.kind !== "reading_set" && (
+        <div className="mb-4 max-h-56 overflow-y-auto rounded-2xl bg-surface-soft p-4 text-sm leading-relaxed text-navy-900 dark:bg-white/5 dark:text-white">
+          {question.kind === "dialogue_completion"
+            ? question.passage.split("\n").map((line, i) => (
+                <p key={i} className={`mb-1 ${line.startsWith("A:") || line.startsWith("B:") ? "font-bold" : ""}`}>{line}</p>
+              ))
+            : question.passage}
+        </div>
+      )}
+
       {question.image_url && (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={ASSET(question.image_url)} alt="" className="mb-4 w-full rounded-2xl" />
@@ -336,6 +384,9 @@ function AnswerInput({
   const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
 
   const disabled = checking;
+  // Guided writing: live word count
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const minWords = question.word_count || 0;
 
   // ── Yaxlit matn to'ldirish (passage_cloze): matn + inline bo'sh joylar + so'zlar banki ──
   if (question.input === "cloze") {
@@ -424,6 +475,7 @@ function AnswerInput({
         return next;
       });
     };
+    const TF_OPTS = ["True", "False", "Not given"];
     return (
       <div className="space-y-4">
         {question.passage && (
@@ -434,38 +486,62 @@ function AnswerInput({
           </div>
         )}
         <div className="space-y-4">
-          {subs.map((s, i) => (
-            <div key={i} className="rounded-2xl border border-line p-3 dark:border-white/10">
-              <p className="mb-2 text-sm font-bold text-navy-900 dark:text-white">
-                {i + 1}. {s.prompt}
-              </p>
-              {(s.options || []).length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {(s.options || []).map((opt, oi) => (
-                    <button
-                      key={oi}
-                      type="button"
-                      onClick={() => setSub(i, opt)}
-                      className={`rounded-xl border-2 px-3 py-1.5 text-sm font-bold transition ${
-                        answers[i] === opt
-                          ? "border-cyan-500 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/15 dark:text-cyan-100"
-                          : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
-                      }`}
-                    >
-                      {opt}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <input
-                  value={answers[i]}
-                  onChange={(e) => setSub(i, e.target.value)}
-                  className="w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
-                  placeholder={tt("aitest.answerPlaceholder", "Javobingizni yozing…")}
-                />
-              )}
-            </div>
-          ))}
+          {subs.map((s, i) => {
+            const isTfng = (s.options || []).join(",") === TF_OPTS.join(",") || s.type === "true_false_ng";
+            return (
+              <div key={i} className="rounded-2xl border border-line p-3 dark:border-white/10">
+                <p className="mb-2 text-sm font-bold text-navy-900 dark:text-white">
+                  {i + 1}. {s.prompt}
+                </p>
+                {isTfng ? (
+                  <div className="flex flex-wrap gap-2">
+                    {TF_OPTS.map((opt) => (
+                      <button
+                        key={opt}
+                        type="button"
+                        onClick={() => setSub(i, opt)}
+                        className={`rounded-xl border-2 px-4 py-2 text-sm font-black transition ${
+                          answers[i] === opt
+                            ? opt === "True"
+                              ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-100"
+                              : opt === "False"
+                              ? "border-red-400 bg-red-50 text-red-800 dark:bg-red-500/15 dark:text-red-100"
+                              : "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-500/15 dark:text-amber-100"
+                            : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                        }`}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                ) : (s.options || []).length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {(s.options || []).map((opt, oi) => (
+                      <button
+                        key={oi}
+                        type="button"
+                        onClick={() => setSub(i, opt)}
+                        className={`rounded-xl border-2 px-3 py-1.5 text-sm font-bold transition ${
+                          answers[i] === opt
+                            ? "border-cyan-500 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/15 dark:text-cyan-100"
+                            : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                        }`}
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <input
+                    value={answers[i]}
+                    onChange={(e) => setSub(i, e.target.value)}
+                    className="w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                    placeholder={tt("aitest.answerPlaceholder", "Javobingizni yozing…")}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
         <button
           onClick={() => onSubmit({ blanks: answers })}
@@ -631,6 +707,14 @@ function AnswerInput({
         className="min-h-[100px] w-full rounded-2xl border border-line bg-surface-soft px-4 py-3 font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
         placeholder={tt("aitest.answerPlaceholder","Javobingizni yozing…")}
       />
+      {/* Guided writing: live so'z soni */}
+      {question.kind === "guided_writing" && minWords > 0 && (
+        <p className={`text-right text-xs font-black ${
+          wordCount >= minWords ? "text-emerald-600 dark:text-emerald-300" : "text-ink-400 dark:text-navy-400"
+        }`}>
+          {wordCount} / {minWords} so'z {wordCount >= minWords ? "✓" : ""}
+        </p>
+      )}
       <button
         onClick={() => text.trim() && onSubmit({ answer_text: text })}
         disabled={disabled || !text.trim()}

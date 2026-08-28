@@ -677,7 +677,21 @@ def _normalize_questions(raw: Any) -> list[dict]:
             "topic": str(item.get("topic") or "").strip() or None,
             # Bir mashq blokiga tegishli savollarni birlashtirish uchun (AI beradi).
             "group": str(item.get("group") or item.get("exercise_id") or item.get("group_id") or "").strip() or None,
+            # ── Kengaytirilgan maydonlar ─────────────────────────────────────
+            # hint: spelling ta'rifi, dictation mavzusi, gap_fill qavs so'zi
+            "hint": str(item.get("hint") or item.get("clue") or item.get("definition") or "").strip() or None,
+            # direction: translation yo'nalishi (EN→UZ, UZ→EN va h.k.)
+            "direction": str(item.get("direction") or "").strip() or None,
+            # word_count: guided_writing uchun minimal so'zlar soni
+            "word_count": None,
         }
+        _wc = item.get("word_count") or item.get("min_words") or item.get("min_word_count")
+        if _wc:
+            try:
+                question["word_count"] = max(1, int(_wc))
+            except Exception:
+                pass
+
         if not question["prompt"] and not question["word"] and kind != "passage_cloze":
             continue
         if meta["needs_audio_asset"] and not question["audio_url"]:
@@ -733,7 +747,20 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     question["correct_index"] = max(0, min(len(question["options"]) - 1, int(item.get("correct_index") or item.get("correct_option_index") or 0)))
                 except Exception:
                     question["correct_index"] = 0
-            else:  # dictation, spelling, gap_fill
+            elif kind == "spelling":
+                word = question.get("word") or question.get("prompt") or ""
+                if not word:
+                    continue
+                question["word"] = word
+                question["answer"] = str(item.get("answer") or word).strip()
+                accepted = item.get("accepted_answers")
+                question["accepted_answers"] = (
+                    [str(a).strip() for a in accepted if str(a).strip()] if isinstance(accepted, list) else []
+                )
+                # Ta'rif hint: agar yo'q bo'lsa, prompt dan olamiz
+                if not question["hint"] and question["prompt"] and question["prompt"] != word:
+                    question["hint"] = question["prompt"]
+            else:  # dictation, gap_fill
                 answer = str(item.get("answer") or "").strip()
                 if not answer:
                     continue
@@ -760,8 +787,19 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     or question["translation_uz"] or question["translation_ru"]
                 )
                 question["meaning"] = str(item.get("meaning") or "").strip() or question["translation_ru"]
+                # Misol gap (guided_writing kontekstida foydali)
+                question["example_sentence"] = str(item.get("example_sentence") or item.get("example") or "").strip() or None
+            elif kind == "translation":
+                # Tarjima yo'nalishi
+                if not question["direction"]:
+                    question["direction"] = "EN→UZ"
+            elif kind == "guided_writing":
+                # Minimal so'zlar soni (default 30)
+                if not question["word_count"]:
+                    question["word_count"] = 30
         out.append(question)
     return out
+
 
 
 # Matn ichidagi bo'sh joy belgilari: ___ (3+ tag chiziq), [[1]], {{1}}, (1) ______
@@ -1179,19 +1217,25 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "• Extract EVERY word that is LITERALLY listed. A 50-word list → exactly 50 word_practice items.\n"
         "• Do NOT add, invent, infer, or generate ANY word that is not physically written in the list.\n"
         "• Do NOT add synonyms, related words, or words from example sentences.\n"
-        "• Each word_practice item must include translation_uz (Uzbek) and translation_ru (Russian) from the list.\n\n"
+        "• Each word_practice item must include translation_uz (Uzbek) and translation_ru (Russian) from the list.\n"
+        "• If you can find or infer an example_sentence for a word from the text, add it.\n\n"
         "=== READING TEXT RULES ===\n"
         "• Whenever the material contains a reading passage, story, dialogue or article:\n"
         "  1. Put the COMPLETE verbatim text in reading_text field.\n"
         "  2. Output ONE reading_set question: put full text in 'passage', generate EXACTLY 5 comprehension\n"
         "     questions in 'questions'. Use a MIX of these types:\n"
-        "     - true_false_ng (True/False/Not Given — 3 options)\n"
+        "     - true_false_ng (True/False/Not Given — options MUST be [\"True\",\"False\",\"Not given\"])\n"
         "     - choice (multiple choice with 4 options, answer verifiable from text)\n"
         "     - synonym (find a word in the text meaning X)\n"
         "     - gap (a sentence from the text with one blank ___)\n"
         "     - who_said (who said/did something in the text)\n"
         "  3. ALL answers MUST be verifiable directly from the text — no inference.\n"
         "  4. Do this even if the original material has NO printed questions for the text.\n\n"
+        "=== LISTENING RULES ===\n"
+        "• For each listening exercise in the material, generate 3–5 separate 'listening' question objects.\n"
+        "• Each question: distinct prompt, 4 options, correct_index. Leave audio_url empty (teacher uploads).\n"
+        "• Each listening question is SEPARATE (saved individually). Do NOT group them into one object.\n"
+        "• Example: a listening about a job interview → 3 questions: what job, where, what time.\n\n"
         "=== PRINTED EXERCISE RULES ===\n"
         "0. Analyze page structure first. A single printed exercise (one instruction + its items,\n"
         "   e.g. 'Complete the sentences. Use a verb from the box' + 8 sentences, OR a reading\n"
@@ -1207,43 +1251,52 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "3. Keep target-language content exactly as written. Don't translate unless the exercise is a translation task.\n"
         "4. For every auto-checked type provide the exact expected answer.\n"
         "4b. For 'scrambled_sentence' add 'distractors': 2–4 extra plausible words not in the correct sentence.\n"
-        "5. Listening exercises: produce the question, leave audio_url empty (teacher uploads audio later).\n"
-        "6. LANGUAGE OF INSTRUCTIONS: copy the book's own wording verbatim. English coursebook → English\n"
-        "   instructions. Only translated fields are word_practice's translation_uz/translation_ru.\n"
-        "6b. reading_text MUST be COMPLETE, VERBATIM text of ALL reading passages/dialogues.\n"
-        "6c. WORKBOOK EXERCISE FORMATS:\n"
+        "4c. For 'spelling' always add 'hint': a short definition/clue for the word. Set 'answer' = the word itself.\n"
+        "4d. For 'gap_fill' add 'hint' if the printed exercise has a word in brackets, e.g. (go) → hint='go'.\n"
+        "4e. For 'translation' add 'direction': 'EN→UZ', 'EN→RU', 'UZ→EN', 'RU→EN', 'RU→UZ', or 'UZ→RU'.\n"
+        "4f. For 'guided_writing' add 'word_count': minimum number of words (integer, e.g. 30).\n"
+        "4g. For 'dictation' add 'hint': a brief topic hint shown to the student (e.g. 'Weather forecast').\n"
+        "5. Listening exercises: produce separate question objects, leave audio_url empty.\n"
+        "6. For 'read_aloud': passage field MUST contain the full text to read aloud. Required.\n"
+        "7. For 'dialogue_completion': passage field MUST contain the full dialogue. Required.\n"
+        "8. LANGUAGE OF INSTRUCTIONS: copy the book's own wording verbatim. English coursebook → English.\n"
+        "8b. reading_text MUST be COMPLETE, VERBATIM text of ALL reading passages/dialogues.\n"
+        "8c. WORKBOOK EXERCISE FORMATS:\n"
         "   • 'Complete the sentences' with WORD BANK → ONE 'passage_cloze', each sentence on its OWN line.\n"
         "   • Continuous passage with numbered gaps → ONE 'passage_cloze', flowing prose.\n"
         "   • Single-sentence gap with no shared text → 'gap_fill'.\n"
         "   • Verb/word transformation lists → ONE 'passage_cloze', each item on its own line (e.g. '1. get — ___').\n"
-        "   • 'Write sentences about...' or sentence completion where part of the sentence is already printed (e.g. Unit 11.4: '2 Rachel often loses her keys. She ___ last week.') → ONE 'passage_cloze' (or 'gap_fill' items) with '___' where the blank line is printed. ALWAYS include the printed setup/prefix (e.g. 'She') and suffix (e.g. 'last week.') in the passage/prompt, and put ONLY the missing target phrase (e.g. 'lost her keys') in the 'answer' field!\n"
-        "   • ONLY use 'write_sentence' if the student must compose a completely free-form essay without any printed sentence structure/starters.\n"
-        "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
+        "   • 'Write sentences about...' with printed starters → 'passage_cloze' with ___ at blank position.\n"
+        "   • ONLY use 'write_sentence' if the student must compose a completely free-form essay.\n"
+        "9. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
         f"Translations language for word_practice: Uzbek + Russian (provide both).\n\n"
         f"Allowed question kinds:\n{kinds_help}\n\n"
-        "Return ONLY valid JSON, no markdown fences, with this shape:\n"
+        "Return ONLY valid JSON (no markdown fences) with this shape:\n"
         "{\n"
         '  "title": "short title of the page/unit",\n'
         '  "level": "A1|A2|B1|B2|C1|C2 or empty",\n'
         '  "reading_text": "the main text of the page (full verbatim), empty string if none",\n'
         '  "notes": "grammar rule/explanation found on the page, empty if none",\n'
         '  "questions": [\n'
-        '    {"kind":"word_practice","word":"decide","translation_uz":"qaror qilmoq","translation_ru":"решать"},\n'
-        '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes",'
+        '    {"kind":"word_practice","word":"decide","translation_uz":"qaror qilmoq","translation_ru":"решать","example_sentence":"I decided to leave."},\n'
+        '    {"kind":"spelling","word":"necessary","answer":"necessary","hint":"Something you need; not optional."},\n'
+        '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes","hint":"go",'
         '"accepted_answers":["goes"],"instruction":"Complete the sentence."},\n'
+        '    {"kind":"translation","prompt":"She has been living here for years.","answer":"U bu yerda yillar davomida yashayapti.","direction":"EN→UZ"},\n'
+        '    {"kind":"guided_writing","prompt":"Write about your favourite holiday.","word_count":40},\n'
+        '    {"kind":"listening","prompt":"What is the woman\'s job?","options":["Teacher","Doctor","Engineer","Chef"],"correct_index":0},\n'
+        '    {"kind":"listening","prompt":"Where does she work?","options":["School","Hospital","Office","Shop"],"correct_index":0},\n'
+        '    {"kind":"dictation","prompt":"Write exactly what you hear.","hint":"Weather forecast","answer":"It was cold and rainy yesterday."},\n'
+        '    {"kind":"read_aloud","passage":"The quick brown fox jumps over the lazy dog."},\n'
+        '    {"kind":"dialogue_completion","passage":"A: Hello! How are you?\\nB: ___ [student fills here]\\nA: Great!","prompt":"Complete B\'s response."},\n'
         '    {"kind":"matching","prompt":"Match the words to the definitions.",'
         '"pairs":[{"left":"brave","right":"not afraid"}]},\n'
         '    {"kind":"scrambled_sentence","prompt":"Put the words in order.",'
         '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."],'
         '"distractors":["was","going","the"]},\n'
-        '    {"kind":"reading_set","passage":"Alex was crazy about sport and music...",'
-        '"questions":[{"type":"true_false_ng","prompt":"Alex was a member of a local club.","answer":"True",'
-        '"options":["True","False","Not given"]},'
-        '{"type":"choice","prompt":"What was Alex interested in?","options":["Sport and music","Only chess","Art","Dancing"],"answer":"Sport and music"},'
-        '{"type":"synonym","prompt":"Find a word meaning \'very enthusiastic about\'.","answer":"crazy about"},'
-        '{"type":"gap","prompt":"He was a member of a local ___.","answer":"club"},'
-        '{"type":"who_said","prompt":"Who trained in the gym with his team?","answer":"Alex"}]}\n'
+        '    {"kind":"reading_set","passage":"Alex was crazy about sport...",'
+        '"questions":[{"type":"true_false_ng","prompt":"Alex liked chess.","answer":"False","options":["True","False","Not given"]}]}\n'
         '    {"kind":"passage_cloze","instruction":"Put the verbs in the correct form.",'
         '"passage":"Last Tuesday Lisa ___ from London to Madrid.",'
         '"answers":[{"answer":"flew"}],"word_bank":["fly","get","have"]}\n'
@@ -1253,6 +1306,7 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "For vocabulary lists: one word_practice per listed word, no extras. "
         "For reading texts: always include a reading_set with 5 comprehension questions."
     )
+
 
 
 def _instruction_language_name(code: str | None, subject: str) -> str:
