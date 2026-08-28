@@ -1445,10 +1445,13 @@ async def library_ai_import_screenshot(
     }
 
 
-_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif"}
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".ico", ".tiff", ".tif"}
 _PDF_EXTS = {".pdf"}
-_DOC_EXTS = {".docx", ".doc"}
-_TEXT_EXTS = {".txt", ".rtf", ".md"}
+_DOC_EXTS = {".docx", ".doc", ".odt", ".ott"}
+_SHEET_EXTS = {".xlsx", ".xls", ".ods", ".csv"}
+_SLIDE_EXTS = {".pptx", ".ppt", ".odp", ".otp"}
+_TEXT_EXTS = {".txt", ".rtf", ".md", ".tex", ".log", ".xml", ".html", ".htm"}
+_ALL_KNOWN_EXTS = _IMAGE_EXTS | _PDF_EXTS | _DOC_EXTS | _SHEET_EXTS | _SLIDE_EXTS | _TEXT_EXTS
 _MAX_VISION_IMAGES = 3
 _MAX_PDF_PAGES = 3
 
@@ -1543,11 +1546,12 @@ def _abs_url(url: str) -> str:
 
 
 def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], list[str], list[str]]:
-    """Har xil fayllarni AI uchun tayyorlaydi.
+    """Har xil fayllarni AI uchun tayyorlaydi (universal — har qanday fayl qabul qilinadi).
 
     Qaytaradi: (vision uchun rasm URL lari, ajratilgan matn bloklari, qo'llab-
     quvvatlanmaydigan kengaytmalar ro'yxati). PDF sahifalari PNG ga render
-    qilinib vision ro'yxatiga qo'shiladi; DOC/DOCX/TXT matn sifatida o'qiladi.
+    qilinib vision ro'yxatiga qo'shiladi; hujjatlar matn sifatida o'qiladi;
+    noma'lum kengaytmalar uchun universal fallback ishlatiladi.
     """
     vision_urls: list[str] = []
     text_blocks: list[str] = []
@@ -1555,39 +1559,95 @@ def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], 
 
     for url in urls:
         ext = Path(urlparse(str(url or "")).path).suffix.lower()
+        logger.debug("import_sources: url=%s ext=%s", url, ext)
+
+        # 1. Rasm — to'g'ridan vision API ga
         if ext in _IMAGE_EXTS:
             if len(vision_urls) < _MAX_VISION_IMAGES:
                 vision_urls.append(_abs_url(url))
             continue
+
+        # Barcha boshqa turlar uchun lokal faylni topamiz
         local = _resolve_local_path(url)
+        if local is None:
+            logger.warning("import_sources: local file not found for url=%s", url)
+            unsupported.append(ext or "unknown")
+            continue
+
+        # 2. PDF — avval render, bo'lmasa matn
         if ext in _PDF_EXTS:
-            rendered = _render_pdf_to_images(local, owner_id) if local else []
+            rendered = _render_pdf_to_images(local, owner_id)
             if rendered:
                 for served in rendered:
                     if len(vision_urls) < _MAX_VISION_IMAGES:
                         vision_urls.append(_abs_url(served))
             else:
-                text = _extract_pdf_text(local) if local else ""
+                text = _extract_pdf_text(local)
                 if text.strip():
                     text_blocks.append(text)
+                    logger.info("import_sources: pdf->text chars=%d url=%s", len(text), url)
                 else:
                     unsupported.append(ext)
             continue
+
+        # 3. Word/DOC/DOCX
         if ext in _DOC_EXTS:
-            text = _extract_docx_text(local) if local else ""
+            text = _extract_docx_text(local)
             if text.strip():
                 text_blocks.append(text)
+                logger.info("import_sources: docx->text chars=%d url=%s", len(text), url)
             else:
                 unsupported.append(ext)
             continue
+
+        # 4. Excel/Spreadsheet
+        if ext in _SHEET_EXTS:
+            text = _extract_xlsx_text(local)
+            if text.strip():
+                text_blocks.append(text)
+                logger.info("import_sources: sheet->text chars=%d url=%s", len(text), url)
+            else:
+                unsupported.append(ext)
+            continue
+
+        # 5. PowerPoint/Presentation
+        if ext in _SLIDE_EXTS:
+            text = _extract_pptx_text(local)
+            if text.strip():
+                text_blocks.append(text)
+                logger.info("import_sources: pptx->text chars=%d url=%s", len(text), url)
+            else:
+                unsupported.append(ext)
+            continue
+
+        # 6. Matn/HTML/XML formatlar
         if ext in _TEXT_EXTS:
-            text = _read_text_file(local) if local else ""
+            if ext in (".html", ".htm", ".xml"):
+                text = _extract_html_text(local)
+            else:
+                text = _read_text_file(local)
             if text.strip():
                 text_blocks.append(text)
+                logger.info("import_sources: text->text chars=%d url=%s", len(text), url)
             else:
                 unsupported.append(ext)
             continue
-        unsupported.append(ext or "noma'lum")
+
+        # 7. Noma'lum kengaytma — universal fallback
+        logger.info("import_sources: unknown ext=%s, trying universal extract url=%s", ext, url)
+        text = _extract_any_text(local)
+        if text.strip():
+            text_blocks.append(text)
+            logger.info("import_sources: universal->text chars=%d url=%s", len(text), url)
+        else:
+            # Oxirgi urinish: vision API ga rasm sifatida yuboramiz (agar kichik bo'lsa)
+            fsize = local.stat().st_size if local.exists() else 0
+            if fsize < 10 * 1024 * 1024 and len(vision_urls) < _MAX_VISION_IMAGES:
+                vision_urls.append(_abs_url(url))
+                logger.info("import_sources: unknown->vision url=%s", url)
+            else:
+                unsupported.append(ext or "unknown")
+
     return vision_urls, text_blocks, unsupported
 
 
@@ -1650,6 +1710,183 @@ def _extract_docx_text(path) -> str:
         logger.exception("docx extract failed path=%s", path)
         return ""
 
+
+def _extract_xlsx_text(path) -> str:
+    """Excel (.xlsx/.xls/.ods) fayldan barcha sahifa matnini ajratadi."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+        lines: list[str] = []
+        for ws in wb.worksheets:
+            ws_lines: list[str] = []
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                if cells:
+                    ws_lines.append(" | ".join(cells))
+            if ws_lines:
+                lines.append(f"=== {ws.title} ===\n" + "\n".join(ws_lines))
+        wb.close()
+        return "\n\n".join(lines)
+    except Exception:
+        pass
+    # CSV fallback
+    try:
+        import csv as _csv
+        raw = Path(path).read_bytes()
+        for enc in ("utf-8", "cp1251", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                rows = list(_csv.reader(text.splitlines()))
+                return "\n".join(" | ".join(r) for r in rows if any(c.strip() for c in r))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    logger.warning("xlsx/xls extract failed path=%s", path)
+    return ""
+
+
+def _extract_pptx_text(path) -> str:
+    """PowerPoint (.pptx/.odp) fayldan barcha slayd matnini ajratadi."""
+    # python-pptx urinishi
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        lines: list[str] = []
+        for i, slide in enumerate(prs.slides, 1):
+            slide_lines: list[str] = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_lines.append(shape.text.strip())
+            if slide_lines:
+                lines.append(f"--- Slide {i} ---\n" + "\n".join(slide_lines))
+        return "\n\n".join(lines)
+    except Exception:
+        pass
+    # zipfile + XML fallback (python-pptx yo'q bo'lsa)
+    try:
+        import zipfile, re as _re
+        lines: list[str] = []
+        with zipfile.ZipFile(str(path)) as z:
+            slide_names = sorted(n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml"))
+            for sname in slide_names:
+                xml = z.read(sname).decode("utf-8", errors="ignore")
+                texts = _re.findall(r"<a:t>([^<]+)</a:t>", xml)
+                if texts:
+                    lines.append(" ".join(t.strip() for t in texts if t.strip()))
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("pptx extract failed path=%s", path)
+        return ""
+
+
+def _extract_odt_text(path) -> str:
+    """ODF (ODT/ODS/ODP) fayldan matn ajratadi (zipfile + XML)."""
+    try:
+        import zipfile, re as _re
+        with zipfile.ZipFile(str(path)) as z:
+            if "content.xml" not in z.namelist():
+                return ""
+            xml = z.read("content.xml").decode("utf-8", errors="ignore")
+        # <text:p> va <text:h> teglaridan matnni ajratamiz
+        texts = _re.findall(r"<text:[ph][^>]*>([^<]*(?:<[^/][^>]*>[^<]*</[^>]*>)*[^<]*)</text:[ph]>", xml)
+        if not texts:
+            texts = _re.findall(r">([^<]{2,})<", xml)
+        lines = [t.strip() for t in texts if t.strip() and len(t.strip()) > 1]
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("odt extract failed path=%s", path)
+        return ""
+
+
+def _extract_html_text(path) -> str:
+    """HTML/XML fayldan oddiy matnni ajratadi."""
+    try:
+        import re as _re
+        raw = Path(path).read_bytes()
+        for enc in ("utf-8", "cp1251", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except Exception:
+                continue
+        else:
+            text = raw.decode("utf-8", errors="ignore")
+        # Script va style teglarini olib tashlaymiz
+        text = _re.sub(r"<(script|style)[^>]*>.*?</(script|style)>", " ", text, flags=_re.DOTALL | _re.IGNORECASE)
+        # Barcha teglarni olib tashlaymiz
+        text = _re.sub(r"<[^>]+>", " ", text)
+        # Encoding entities
+        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ")
+        # Bo'sh qatorlarni tozalaymiz
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        return "\n".join(lines)
+    except Exception:
+        logger.warning("html extract failed path=%s", path)
+        return ""
+
+
+def _extract_any_text(path) -> str:
+    """Har qanday fayldan matn ajratishga urinadi (universal fallback)."""
+    if path is None:
+        return ""
+    p = Path(str(path))
+    ext = p.suffix.lower()
+
+    # Tartiblangan urinishlar
+    if ext in _DOC_EXTS:
+        return _extract_docx_text(p)
+    if ext in _SHEET_EXTS:
+        return _extract_xlsx_text(p)
+    if ext in _SLIDE_EXTS:
+        return _extract_pptx_text(p)
+    if ext in {".odt", ".ott", ".ods", ".odp"}:
+        return _extract_odt_text(p)
+    if ext in _TEXT_EXTS:
+        return _read_text_file(p)
+
+    # Noma'lum kengaytma — bosqichma-bosqich sinab ko'ramiz
+    # 1. ZIP asosli (docx/xlsx/pptx/odt hammasi ZIP)
+    try:
+        import zipfile
+        if zipfile.is_zipfile(str(p)):
+            # DOCX urinishi
+            t = _extract_docx_text(p)
+            if t.strip():
+                return t
+            # XLSX urinishi
+            t = _extract_xlsx_text(p)
+            if t.strip():
+                return t
+            # PPTX urinishi
+            t = _extract_pptx_text(p)
+            if t.strip():
+                return t
+            # ODT urinishi
+            t = _extract_odt_text(p)
+            if t.strip():
+                return t
+    except Exception:
+        pass
+
+    # 2. PDF urinishi
+    try:
+        t = _extract_pdf_text(p)
+        if t.strip():
+            return t
+    except Exception:
+        pass
+
+    # 3. Oddiy matn sifatida o'qish (UTF-8 / CP1251 / latin)
+    try:
+        t = _read_text_file(p)
+        if t.strip():
+            return t
+    except Exception:
+        pass
+
+    logger.warning("universal extract failed path=%s ext=%s", path, ext)
+    return ""
 
 def _read_text_file(path) -> str:
     try:
