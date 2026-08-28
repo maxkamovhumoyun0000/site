@@ -22536,7 +22536,9 @@ export default function DiamondEducationApp() {
   ): Promise<GenericRow | null> {
     const token = localStorage.getItem("diamond_token");
     if (!token) return null;
-    const timeoutMs = path === "/admin/users" && method === "POST" ? 45000 : API_REQUEST_TIMEOUT_MS;
+    const timeoutMs = path === "/admin/users" && method === "POST" ? 45000
+      : path.includes("/ai/import-screenshot") ? 90000
+      : API_REQUEST_TIMEOUT_MS;
     const retries = method === "GET" ? 1 : 0;
     try {
       const result = await requestJson<GenericRow>(path, { method, body, token, timeoutMs, retries });

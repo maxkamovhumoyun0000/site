@@ -23,6 +23,11 @@ const nextConfig: NextConfig = {
     minimumCacheTTL: 604800,
   },
 
+  // AI import 33-35s ketadi — proxy timeout 90s ga oshirildi
+  httpAgentOptions: {
+    keepAlive: true,
+  },
+
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL || "http://localhost:3001";
     return [

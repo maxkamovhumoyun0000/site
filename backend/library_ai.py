@@ -1376,9 +1376,11 @@ async def library_ai_import_screenshot(
         logger.exception("library ai import failed teacher=%s: %s", user.get("id"), exc)
         last_error = exc
 
-    # Lug'at (vocabulary) ro'yxatini deterministik ravishda to'liq ajratamiz —
-    # AI ishlamasa ham (timeout/xato) matnli fayldan barcha so'zlar chiqadi.
-    if text_blocks:
+    # Lug'at (vocabulary) ro'yxatini deterministik ravishda ajratamiz —
+    # FAQAT AI nol savol qaytargan bo'lsa (timeout/xato/bo'sh javob) fallback sifatida.
+    ai_word_count = sum(1 for q in questions if q.get("kind") == "word_practice")
+    if text_blocks and ai_word_count == 0:
+        # AI so'zlarni ajrata olmadi — deterministik parser bilan to'ldiramiz.
         existing_words = {
             str(q.get("word") or "").strip().lower()
             for q in questions if q.get("kind") == "word_practice"
@@ -1388,6 +1390,11 @@ async def library_ai_import_screenshot(
             if key and key not in existing_words:
                 questions.append(item)
                 existing_words.add(key)
+        logger.info(
+            "library ai import vocab fallback used: added=%d total_questions=%d",
+            sum(1 for q in questions if q.get("kind") == "word_practice"),
+            len(questions)
+        )
 
     if not questions and last_error is not None:
         raise HTTPException(
