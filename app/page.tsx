@@ -5686,6 +5686,21 @@ function StudentHomework() {
   const [voiceDraft, setVoiceDraft] = useState<Record<number, string>>({});
   const isMountedRef = useRef(false);
 
+  // ── Haftalik takrorlash ──
+  const [weeklyReview, setWeeklyReview] = useState<{
+    status: string; homework_id: number | null; question_count: number;
+    week_start: string; week_end: string; is_required: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    requestJson<{ status: string; homework_id: number | null; question_count: number; week_start: string; week_end: string; is_required: boolean }>(
+      "/student/weekly-review",
+      { token, timeoutMs: 10000, retries: 0 },
+    ).then((data) => setWeeklyReview(data)).catch(() => null);
+  }, []);
+
   useEffect(() => {
     if (!isMountedRef.current) {
       try {
@@ -5997,6 +6012,63 @@ function StudentHomework() {
 
   return (
     <div className="page-stack">
+      {/* ── Haftalik takrorlash kartasi ── */}
+      {weeklyReview && weeklyReview.status !== "none" && (
+        <section
+          style={{
+            background: weeklyReview.status === "completed"
+              ? "linear-gradient(135deg, #10b981 0%, #059669 100%)"
+              : "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
+            borderRadius: "20px",
+            padding: "20px",
+            marginBottom: "20px",
+            color: "#fff",
+            display: "flex",
+            alignItems: "center",
+            gap: "16px",
+            boxShadow: weeklyReview.status === "completed"
+              ? "0 8px 32px rgba(16,185,129,0.3)"
+              : "0 8px 32px rgba(99,102,241,0.35)",
+            cursor: weeklyReview.status !== "completed" ? "pointer" : "default",
+            transition: "opacity 0.2s",
+          }}
+          onClick={() => {
+            if (weeklyReview.status === "completed") return;
+            if (weeklyReview.homework_id) {
+              router.push(`/student/ai-tests/weekly_review/${weeklyReview.homework_id}`);
+            } else {
+              router.push("/student/ai-tests/weekly_review/0");
+            }
+          }}
+          role={weeklyReview.status !== "completed" ? "button" : undefined}
+        >
+          <div style={{ fontSize: "40px", flexShrink: 0 }}>
+            {weeklyReview.status === "completed" ? "✅" : "🗓️"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: "16px", marginBottom: "4px" }}>
+              {tt("homework.weeklyReviewTitle", "Haftalik Takrorlash")}
+            </div>
+            <div style={{ fontSize: "13px", opacity: 0.88, marginBottom: "6px" }}>
+              {weeklyReview.week_start} – {weeklyReview.week_end}
+            </div>
+            {weeklyReview.status === "completed" ? (
+              <span style={{ background: "rgba(255,255,255,0.25)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 }}>
+                {tt("homework.weeklyReviewDone", "✓ Bajarildi")}
+              </span>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span style={{ background: "rgba(255,255,255,0.2)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 }}>
+                  {weeklyReview.question_count} {tt("homework.weeklyReviewQuestions", "ta savol")}
+                </span>
+                <span style={{ fontSize: "13px", opacity: 0.9 }}>
+                  {tt("homework.weeklyReviewCta", "Boshlash →")}
+                </span>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
       <section className="homework-stats-row">
         <div><span>{tt("homework.total", "Jami")}</span><strong>{homeworkStats.total}</strong></div>
         <div><span>{tt("homework.missing", "Topshirilmagan")}</span><strong>{homeworkStats.pending}</strong></div>

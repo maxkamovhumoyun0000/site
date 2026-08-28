@@ -16,7 +16,7 @@ export default function AiTestPage() {
       <AiTestRunner
         sourceType={sourceType as "library_test" | "homework" | "weekly_review"}
         sourceId={sourceType === "library_test" ? id : undefined}
-        homeworkId={sourceType === "homework" ? id : undefined}
+        homeworkId={sourceType === "homework" || sourceType === "weekly_review" ? (id || undefined) : undefined}
         onExit={() => router.back()}
       />
     </div>
