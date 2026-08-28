@@ -328,6 +328,7 @@ function AnswerInput({
   const [pairs, setPairs] = useState<Record<string, string>>({});
   const [order, setOrder] = useState<string[]>([]);
   const [audioUrl, setAudioUrl] = useState("");
+  const [voiceMode, setVoiceMode] = useState(false);
   const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
 
   const disabled = checking;
@@ -408,7 +409,9 @@ function AnswerInput({
   }
 
   // ── Ovozli javob (mikrofon) ──
-  if (question.input === "audio" || (question.input === "audio_or_text" && audioUrl)) {
+  // `audio_or_text` uchun: student ovozli yoki yozma javob berishi mumkin,
+  // shu bois rejim tanlash tugmasi ko'rsatiladi.
+  if (question.input === "audio" || (question.input === "audio_or_text" && voiceMode)) {
     return (
       <div className="space-y-3">
         <Recorder attemptId={attemptId} onUploaded={setAudioUrl} disabled={disabled} />
@@ -419,6 +422,15 @@ function AnswerInput({
             className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
           >
             {retrying ? tt("aitest.resend","Qayta yuborish") : tt("aitest.submitAnswer","Javobni yuborish")}
+          </button>
+        )}
+        {question.input === "audio_or_text" && (
+          <button
+            type="button"
+            onClick={() => setVoiceMode(false)}
+            className="w-full rounded-2xl border border-line py-2.5 text-sm font-black text-ink-600 dark:border-white/10 dark:text-navy-200"
+          >
+            ✍️ {tt("aitest.answerInWriting", "Yozma javob berish")}
           </button>
         )}
       </div>
@@ -556,6 +568,15 @@ function AnswerInput({
       >
         {retrying ? tt("aitest.resend","Qayta yuborish") : tt("aitest.submit","Tekshirish")}
       </button>
+      {question.input === "audio_or_text" && (
+        <button
+          type="button"
+          onClick={() => setVoiceMode(true)}
+          className="w-full rounded-2xl border border-line py-2.5 text-sm font-black text-ink-600 dark:border-white/10 dark:text-navy-200"
+        >
+          🎙️ {tt("aitest.answerByVoice", "Ovozli javob berish")}
+        </button>
+      )}
     </div>
   );
 }
