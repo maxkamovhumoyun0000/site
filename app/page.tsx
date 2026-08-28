@@ -5994,19 +5994,24 @@ function StudentHomework() {
     const teacherName = `${row.teacher_first_name || ""} ${row.teacher_last_name || ""}`.trim() || "Teacher";
     const persistedStatusRaw = String(row.submission_status || "").trim().toLowerCase();
     const reviewed = Boolean(row.reviewed_at);
-    const hasSubmission = Boolean(persistedStatusRaw);
-    const teacherMarkedNotDone = persistedStatusRaw === "not_done";
-    // Deadline o'tib topshirilmagan — backend avtomatik "qilinmadi" deb belgilaydi
-    const deadlineMissed = Boolean(row.deadline_missed) && !hasSubmission && !reviewed;
+    const isNotDone = persistedStatusRaw === "not_done" || Boolean(row.deadline_missed);
+    const hasSubmission = Boolean(persistedStatusRaw) && persistedStatusRaw !== "not_done";
     const statusLabel = reviewed
-      ? teacherMarkedNotDone ? tt("homework.statusNotDone", "✕ Bajarilmadi") : tt("homework.statusDone", "✓ Bajarildi")
-      : hasSubmission ? tt("homework.statusPending", "… Kutilmoqda")
-      : deadlineMissed ? tt("homework.statusAutoMissed", "✕ Qilinmadi (muddati o'tdi)") : tt("homework.statusMissing", "— Topshirilmagan");
+      ? (persistedStatusRaw === "not_done" ? tt("homework.statusNotDone", "✕ Bajarilmadi") : tt("homework.statusDone", "✓ Bajarildi"))
+      : isNotDone
+      ? tt("homework.statusAutoMissed", "✕ Qilinmadi (muddati o'tdi)")
+      : hasSubmission
+      ? tt("homework.statusPending", "… Kutilmoqda")
+      : tt("homework.statusMissing", "— Topshirilmagan");
     const statusClass = reviewed
-      ? teacherMarkedNotDone ? "not-done" : "done"
-      : hasSubmission ? "pending" : deadlineMissed ? "not-done" : "missing";
-    const statusShort = reviewed ? (teacherMarkedNotDone ? "✕" : "✓") : hasSubmission ? "…" : deadlineMissed ? "✕" : "—";
-    const isOverdue = deadlineMissed || (!hasSubmission && row.due_at && new Date(row.due_at).getTime() < Date.now());
+      ? (persistedStatusRaw === "not_done" ? "not-done" : "done")
+      : isNotDone
+      ? "not-done"
+      : hasSubmission
+      ? "pending"
+      : "missing";
+    const statusShort = reviewed ? (persistedStatusRaw === "not_done" ? "✕" : "✓") : isNotDone ? "✕" : hasSubmission ? "…" : "—";
+    const isOverdue = isNotDone || (!hasSubmission && row.due_at && new Date(row.due_at).getTime() < Date.now());
     return { hid, teacherName, reviewed, hasSubmission, statusLabel, statusClass, statusShort, isOverdue };
   }
 
