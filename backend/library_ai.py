@@ -1173,79 +1173,50 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
     )
     return (
         "You are an expert curriculum digitizer for a language school.\n"
-        "You receive one or more coursebook pages — as page images and/or as extracted "
-        "text from a PDF/DOC/DOCX. Convert EVERYTHING teachable in the material into practice "
-        "questions: not only the printed exercises, but also vocabulary words, grammar rules, "
-        "reading texts and dialogues. Nothing teachable should be left out.\n\n"
-        "STRICT RULES:\n"
-        "0. FIRST analyze the page structure. A single printed exercise (one instruction line + its "
-        "items, e.g. \"Complete the sentences. Use a verb from the box\" with a word box and 8 numbered "
-        "sentences, OR a reading text with numbered gaps) is ONE cohesive task — output it as ONE "
-        "\"passage_cloze\" item, NEVER as separate questions. Group by the shared instruction / word box / "
-        "passage. Give every question a \"group\" string = the exercise number (e.g. \"11.1\") so items of "
-        "the same exercise stay together. Only use a standalone \"gap_fill\" for a truly independent single gap.\n"
-        "1. ONLY convert what is LITERALLY printed in the material. Do NOT invent, add, infer or "
-        "generate any exercise, question, comprehension question or content that is not physically on "
-        "the page. If the material is ONLY a vocabulary list, output ONLY word_practice items (one per "
-        "word) — nothing else. If it is only reading text with no printed exercise, output nothing extra. "
-        "Cover every printed item completely: a vocabulary list of 100 words MUST produce ~100 "
-        "word_practice items (do NOT sample). For word_practice include BOTH \"translation_uz\" (Uzbek) "
-        "and \"translation_ru\" (Russian) if shown or obvious — a single test serves both groups.\n"
-        "1b. NUMBERED / ORDERED exercises: if the printed exercise numbers its items (1, 2, 3 …), KEEP "
-        "that order and numbering. For a numbered list of gaps that shares one instruction/word box "
-        "(e.g. \"Write the past simple: 1 get 2 see 3 play …\"), output ONE \"passage_cloze\" whose "
-        "\"passage\" lists each item on its OWN line prefixed by its number "
-        "(\"1. get — ___\\n2. see — ___\\n3. play — ___\"), and put the answers in order. Do NOT jumble "
-        "them into a run-on paragraph. A continuous reading passage stays as flowing text (no per-line numbers).\n"
-        "2. Use the question kind that matches each printed exercise. Do NOT add kinds the page does not contain.\n"
-        "2b. EVERY question object MUST contain its own explicit \"kind\" field, chosen individually "
-        "for that specific item from the allowed list below. Never omit \"kind\", never leave it blank, "
-        "and never apply one blanket type to the whole set. The \"kind\" values MUST be exactly the "
-        "snake_case identifiers from the allowed list (e.g. \"word_practice\", \"gap_fill\", "
-        "\"scrambled_sentence\"), not free-text names.\n"
-        "3. Keep the target-language content (the English/Russian words and sentences being taught) "
-        "exactly as written. Do not translate the study content unless the exercise itself is a translation task.\n"
-        "4. For every auto-checked type you MUST provide the exact expected answer.\n"
-        "4b. For \"scrambled_sentence\" also add a \"distractors\" array: 2–4 extra plausible words "
-        "that do NOT belong in the correct sentence, so the student must choose carefully. Keep the "
-        "correct words in \"tokens\" and the full correct sentence in \"answer\".\n"
-        "5. If the material has a listening exercise, still produce the question but leave audio_url empty — "
-        "the teacher uploads the audio separately.\n"
-        "6. LANGUAGE OF INSTRUCTIONS: keep every exercise instruction and prompt in the SAME language as "
-        "the source material — copy the book's own wording verbatim (an English coursebook keeps English "
-        "instructions like \"Complete the sentences\", \"Put the verbs in the correct form\"). Do NOT "
-        "translate the instructions into Uzbek or Russian. The ONLY translated fields are word_practice's "
-        "\"translation_uz\"/\"translation_ru\".\n"
-        "6b. \"reading_text\" MUST contain the COMPLETE, VERBATIM text of ALL reading passages / dialogues "
-        "found in the material (concatenate multiple texts with blank lines). Do NOT summarise, shorten or "
-        "paraphrase it — copy it in full.\n"
-        "6c. WORKBOOK EXERCISE FORMATS — reproduce them exactly, do not skip any item:\n"
-        "   • \"Complete the sentences\" with a WORD BANK — a list of SEPARATE numbered sentences "
-        "(they are NOT a story): produce ONE \"passage_cloze\" whose \"passage\" puts EACH sentence on "
-        "its OWN line, prefixed with its printed number (\"1. I ___ my teeth three times yesterday.\\n"
-        "2. It was hot, so I ___ the window.\"). Never merge separate sentences into one paragraph. "
-        "Answers in order in \"answers\", the word box in \"word_bank\".\n"
-        "   • A CONTINUOUS reading passage with numbered gaps (a real story, e.g. \"Read about Lisa's "
-        "journey… Put the verbs in the correct form\"): also ONE \"passage_cloze\", but keep the text as "
-        "FLOWING prose (no per-sentence numbering) — copy it as printed.\n"
-        "   • A short single-sentence gap with no shared text: use \"gap_fill\".\n"
-        "   • Verb/word transformation lists (\"Write the past simple of these verbs: 1 get 2 see …\"): "
-        "output ONE \"passage_cloze\" — each numbered item on its own line (\"1. get — ___\"), answers in order.\n"
-        "   • \"Write sentences about ...\" (each item needs a free written sentence): output ONE "
-        "\"write_sentence\" PER numbered item (separate questions, NOT merged). Repeat the exercise's "
-        "instruction in every item's \"instruction\" field and put the printed cue in \"prompt\" "
-        "(prefix it with its number, e.g. \"1. James always goes to work by car. Yesterday …\").\n"
-        "   • Only add \"reading_open\" if the page ACTUALLY prints comprehension questions for the text.\n"
-        "6d. VOCABULARY LIST: if the material is a vocabulary list, output ONE \"word_practice\" item for "
-        "EVERY SINGLE word — a 200-word list MUST produce 200 items. Never sample, never stop early, "
-        "never summarise. Include \"translation_uz\" and \"translation_ru\" when shown.\n"
-        "6e. READING TEXT: whenever the material contains a reading passage/story (even if the page "
-        "prints no questions for it), output ONE \"reading_set\" item: put the FULL verbatim text in "
-        "\"passage\" and add exactly 5 VARIED questions in \"questions\", each "
-        "{\"type\":..., \"prompt\":..., \"answer\":..., \"options\":[...] (when applicable)}. Use a MIX of "
-        "these types: \"true_false_ng\" (True/False/Not given), \"choice\" (multiple choice), \"synonym\" "
-        "(find a word in the text meaning X), \"gap\" (a sentence from the text with ___), \"who_said\" "
-        "(who said/did something). Answers must be verifiable from the text.\n"
+        "You receive coursebook material — as page images and/or extracted text from PDF/DOC/DOCX.\n\n"
+        "=== VOCABULARY LIST RULES (highest priority) ===\n"
+        "• A vocabulary list is lines of the form: word — translation or word (pos) — translation.\n"
+        "• Extract EVERY word that is LITERALLY listed. A 50-word list → exactly 50 word_practice items.\n"
+        "• Do NOT add, invent, infer, or generate ANY word that is not physically written in the list.\n"
+        "• Do NOT add synonyms, related words, or words from example sentences.\n"
+        "• Each word_practice item must include translation_uz (Uzbek) and translation_ru (Russian) from the list.\n\n"
+        "=== READING TEXT RULES ===\n"
+        "• Whenever the material contains a reading passage, story, dialogue or article:\n"
+        "  1. Put the COMPLETE verbatim text in reading_text field.\n"
+        "  2. Output ONE reading_set question: put full text in 'passage', generate EXACTLY 5 comprehension\n"
+        "     questions in 'questions'. Use a MIX of these types:\n"
+        "     - true_false_ng (True/False/Not Given — 3 options)\n"
+        "     - choice (multiple choice with 4 options, answer verifiable from text)\n"
+        "     - synonym (find a word in the text meaning X)\n"
+        "     - gap (a sentence from the text with one blank ___)\n"
+        "     - who_said (who said/did something in the text)\n"
+        "  3. ALL answers MUST be verifiable directly from the text — no inference.\n"
+        "  4. Do this even if the original material has NO printed questions for the text.\n\n"
+        "=== PRINTED EXERCISE RULES ===\n"
+        "0. Analyze page structure first. A single printed exercise (one instruction + its items,\n"
+        "   e.g. 'Complete the sentences. Use a verb from the box' + 8 sentences, OR a reading\n"
+        "   text with numbered gaps) = ONE cohesive task → output as ONE 'passage_cloze'.\n"
+        "   Give every question a 'group' string = the exercise number (e.g. '11.1').\n"
+        "   Only use standalone 'gap_fill' for a truly independent single gap.\n"
+        "1. Convert ONLY what is LITERALLY printed. Do NOT invent exercises not on the page.\n"
+        "1b. NUMBERED exercises: keep order and numbering. For a numbered gap list sharing one\n"
+        "   instruction/word box → ONE 'passage_cloze' with each item on its OWN line prefixed\n"
+        "   by its number ('1. get — ___\\n2. see — ___'). Continuous prose stays as flowing text.\n"
+        "2. Use the question kind that matches each printed exercise exactly.\n"
+        "2b. Every question MUST have its own 'kind' field (exact snake_case from allowed list).\n"
+        "3. Keep target-language content exactly as written. Don't translate unless the exercise is a translation task.\n"
+        "4. For every auto-checked type provide the exact expected answer.\n"
+        "4b. For 'scrambled_sentence' add 'distractors': 2–4 extra plausible words not in the correct sentence.\n"
+        "5. Listening exercises: produce the question, leave audio_url empty (teacher uploads audio later).\n"
+        "6. LANGUAGE OF INSTRUCTIONS: copy the book's own wording verbatim. English coursebook → English\n"
+        "   instructions. Only translated fields are word_practice's translation_uz/translation_ru.\n"
+        "6b. reading_text MUST be COMPLETE, VERBATIM text of ALL reading passages/dialogues.\n"
+        "6c. WORKBOOK EXERCISE FORMATS:\n"
+        "   • 'Complete the sentences' with WORD BANK → ONE 'passage_cloze', each sentence on its OWN line.\n"
+        "   • Continuous passage with numbered gaps → ONE 'passage_cloze', flowing prose.\n"
+        "   • Single-sentence gap with no shared text → 'gap_fill'.\n"
+        "   • Verb/word transformation lists → ONE 'passage_cloze', each item on its own line.\n"
+        "   • 'Write sentences about...' → ONE 'write_sentence' PER numbered item.\n"
         "7. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
         f"Subject: {subject}. Level: {level or 'infer from the material'}. "
         f"Translations language for word_practice: Uzbek + Russian (provide both).\n\n"
@@ -1254,8 +1225,8 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "{\n"
         '  "title": "short title of the page/unit",\n'
         '  "level": "A1|A2|B1|B2|C1|C2 or empty",\n'
-        '  "reading_text": "the main text of the page, empty string if none",\n'
-        '  "notes": "grammar rule / explanation found on the page, empty if none",\n'
+        '  "reading_text": "the main text of the page (full verbatim), empty string if none",\n'
+        '  "notes": "grammar rule/explanation found on the page, empty if none",\n'
         '  "questions": [\n'
         '    {"kind":"word_practice","word":"decide","translation_uz":"qaror qilmoq","translation_ru":"решать"},\n'
         '    {"kind":"gap_fill","prompt":"She ___ to school every day.","answer":"goes",'
@@ -1265,30 +1236,21 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         '    {"kind":"scrambled_sentence","prompt":"Put the words in order.",'
         '"answer":"I have never been to Paris.","tokens":["I","have","never","been","to","Paris."],'
         '"distractors":["was","going","the"]},\n'
-        '    {"kind":"listening","prompt":"What does the speaker order?",'
-        '"options":["Tea","Coffee","Juice","Water"],"correct_index":1},\n'
-        '    {"kind":"write_sentence","word":"although","prompt":"Write a sentence using \'although\'.",'
-        '"reference_answer":"Although it was raining, we went out."},\n'
-        '    {"kind":"gap_fill","prompt":"I ___ my teeth three times yesterday.","answer":"cleaned",'
-        '"accepted_answers":["cleaned"],"instruction":"Use a verb from the box: clean, die, enjoy, finish, happen, open, rain, start, stay, want."},\n'
-        '    {"kind":"reading_open","passage":"Last Tuesday Lisa flew from London to Madrid...","prompt":"Where did Lisa fly from?",'
-        '"reference_answer":"London."},\n'
-        '    {"kind":"passage_cloze","instruction":"Put the verbs in the correct form.",'
-        '"passage":"Last Tuesday Lisa ___ from London to Madrid. She ___ up at 6 o\'clock and ___ a cup of coffee.",'
-        '"answers":[{"answer":"flew"},{"answer":"got"},{"answer":"had"}],'
-        '"word_bank":["fly","get","have","leave","drive","arrive","take"]},\n'
-        '    {"kind":"write_sentence","prompt":"Write about the past: Rachel often loses her keys. (last week)",'
-        '"reference_answer":"Rachel lost her keys last week."},\n'
-        '    {"kind":"reading_set","passage":"Alex was crazy about sport and music. He was a member of a local club...",'
+        '    {"kind":"reading_set","passage":"Alex was crazy about sport and music...",'
         '"questions":[{"type":"true_false_ng","prompt":"Alex was a member of a local club.","answer":"True",'
         '"options":["True","False","Not given"]},'
-        '{"type":"choice","prompt":"What was Alex interested in?","options":["Sport and music","Only chess"],"answer":"Sport and music"},'
-        '{"type":"synonym","prompt":"Find a word in the text that means \'very enthusiastic about\'.","answer":"crazy about"},'
+        '{"type":"choice","prompt":"What was Alex interested in?","options":["Sport and music","Only chess","Art","Dancing"],"answer":"Sport and music"},'
+        '{"type":"synonym","prompt":"Find a word meaning \'very enthusiastic about\'.","answer":"crazy about"},'
         '{"type":"gap","prompt":"He was a member of a local ___.","answer":"club"},'
         '{"type":"who_said","prompt":"Who trained in the gym with his team?","answer":"Alex"}]}\n'
+        '    {"kind":"passage_cloze","instruction":"Put the verbs in the correct form.",'
+        '"passage":"Last Tuesday Lisa ___ from London to Madrid.",'
+        '"answers":[{"answer":"flew"}],"word_bank":["fly","get","have"]}\n'
         "  ]\n"
         "}\n"
-        "Produce as many questions as the material contains (typically 6–40), covering every teachable item."
+        "Produce as many questions as the material contains. "
+        "For vocabulary lists: one word_practice per listed word, no extras. "
+        "For reading texts: always include a reading_set with 5 comprehension questions."
     )
 
 
@@ -1390,10 +1352,22 @@ async def library_ai_import_screenshot(
                     last_error = exc
                     logger.warning("library ai import attempt %s failed: %s", attempt_no + 1, exc)
                     continue
+                logger.debug(
+                    "library ai import raw attempt=%s chars=%d preview=%s",
+                    attempt_no + 1, len(raw or ""), (raw or "")[:300].replace("\n", " ")
+                )
                 data = _extract_json_object(str(raw or "").strip())
+                logger.debug(
+                    "library ai import parsed attempt=%s data_keys=%s questions_raw_len=%s",
+                    attempt_no + 1, list(data.keys()), len(data.get("questions") or [])
+                )
                 if str(data.get("error") or "") == "not_educational":
                     raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
                 questions = _normalize_questions(data.get("questions"))
+                logger.info(
+                    "library ai import normalized attempt=%s questions=%d",
+                    attempt_no + 1, len(questions)
+                )
                 if questions:
                     break  # muvaffaqiyat
     except HTTPException:
