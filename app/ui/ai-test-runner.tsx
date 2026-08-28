@@ -369,7 +369,7 @@ function AnswerInput({
                         <input
                           value={filled[gi]}
                           onChange={(e) => setBlank(gi, e.target.value)}
-                          className="mx-1 inline-block w-28 rounded-lg border-b-2 border-cyan-400 bg-white px-2 py-0.5 text-center text-sm font-bold text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
+                          className="mx-1 inline-block w-24 rounded-md border-b-2 border-cyan-400 bg-white px-1.5 py-0 text-center align-baseline text-base font-bold leading-tight text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
                           placeholder={`${gi + 1}`}
                         />
                       )}

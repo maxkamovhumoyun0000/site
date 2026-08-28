@@ -808,6 +808,20 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     if not answers:
         return None
 
+    # Alohida gapli mashqlar (har qatorda bir gap) raqamlanadi: "1. ... 2. ...".
+    # Uzluksiz nasr (bitta uzun qator) raqamlanmaydi.
+    raw_lines = [ln.strip() for ln in normalized_passage.split("\n")]
+    content_lines = [ln for ln in raw_lines if ln]
+    if len(content_lines) > 1 and not any(re.match(r"^\s*\d+\s*[.)]", ln) for ln in content_lines):
+        numbered: list[str] = []
+        n = 0
+        for ln in raw_lines:
+            if not ln:
+                continue
+            n += 1
+            numbered.append(f"{n}. {ln}")
+        normalized_passage = "\n".join(numbered)
+
     # So'zlar banki: AI bergan qutini (box) aynan olamiz — chalg'ituvchi so'z
     # QO'SHMAYMIZ. Faqat qutida hech narsa bo'lmasa, javoblarning o'zini beramiz.
     bank_raw = item.get("word_bank") or item.get("bank") or item.get("options") or []
