@@ -2285,36 +2285,82 @@ def _week_bounds(now: datetime | None = None) -> tuple[str, str]:
     return monday.strftime("%Y-%m-%d"), sunday.strftime("%Y-%m-%d")
 
 
-def _weekly_review_questions(user_id: int, limit: int = 15) -> list[dict]:
-    """Hafta ichida ishlangan testlardan takroriy savollar to'plami."""
+def _weekly_review_questions(user_id: int, limit: int = 0) -> list[dict]:
+    """Hafta davomida o'quvchiga berilgan BARCHA mashqlarni yaxlit yig'adi.
+
+    Manbalar: hafta ichida ishlangan content/AI testlar + shu hafta berilgan
+    homeworklarga biriktirilgan testlar (kutubxonadan berilganlar ham).
+    `limit=0` — cheklov yo'q (hammasi bir homeworkda beriladi).
+    """
     week_start, week_end = _week_bounds()
-    rows = _safe(
-        lambda: dbm.list_user_week_attempts(user_id, f"{week_start} 00:00:00", f"{week_end} 23:59:59"), []
-    ) or []
     collected: list[dict] = []
     seen: set[str] = set()
-    for row in rows:
-        if str(row.get("origin") or "") == "ai_test":
-            attempt = _safe(lambda aid=int(row.get("id") or 0): dbm.get_ai_test_attempt(aid, user_id))
-            source = (attempt or {}).get("questions") or []
-        else:
-            test = _safe(
-                lambda: dbm.get_content_test(
-                    str(row.get("content_type") or "book"), int(row.get("content_id") or 0)
-                )
-            )
-            source = _normalize_questions((test or {}).get("questions"))
-        for question in source:
-            key = f"{question.get('kind')}|{_norm_text(question.get('prompt') or question.get('word'))}"
+
+    def _add_all(source: list[dict]) -> None:
+        for question in source or []:
+            key = f"{question.get('kind')}|{_norm_text(question.get('prompt') or question.get('word') or question.get('passage'))}"
             if not key.strip("|") or key in seen:
                 continue
             if question.get("needs_audio_upload"):
                 continue
             seen.add(key)
             collected.append(question)
-        if len(collected) >= limit:
-            break
-    return collected[:limit]
+
+    # 1) Hafta ichida ishlangan urinishlar (content_test + ai_test).
+    rows = _safe(
+        lambda: dbm.list_user_week_attempts(user_id, f"{week_start} 00:00:00", f"{week_end} 23:59:59"), []
+    ) or []
+    for row in rows:
+        if str(row.get("origin") or "") == "ai_test":
+            attempt = _safe(lambda aid=int(row.get("id") or 0): dbm.get_ai_test_attempt(aid, user_id))
+            _add_all((attempt or {}).get("questions") or [])
+        else:
+            test = _safe(
+                lambda: dbm.get_content_test(
+                    str(row.get("content_type") or "book"), int(row.get("content_id") or 0)
+                )
+            )
+            _add_all(_normalize_questions((test or {}).get("questions")))
+
+    # 2) Shu hafta berilgan homeworklardagi testlar (ishlanmagan bo'lsa ham).
+    for hw in _student_week_homeworks(user_id, week_start, week_end):
+        hid = int(hw.get("id") or 0)
+        if hid <= 0:
+            continue
+        test = _safe(lambda h=hid: dbm.get_content_test("homework", h))
+        _add_all(_normalize_questions((test or {}).get("questions")))
+
+    return collected if limit <= 0 else collected[:limit]
+
+
+def _student_week_homeworks(user_id: int, week_start: str, week_end: str) -> list[dict]:
+    """Shu hafta o'quvchiga berilgan homeworklar (shaxsiy + guruh)."""
+    conn = dbm.get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT h.id
+            FROM web_homeworks h
+            WHERE COALESCE(h.status,'active') <> 'deleted'
+              AND h.created_at >= ? AND h.created_at <= ?
+              AND (
+                h.student_id = ?
+                OR (h.group_id IS NOT NULL AND h.group_id IN (
+                     SELECT group_id FROM user_groups WHERE user_id = ?
+                   ))
+              )
+            ORDER BY h.id DESC
+            LIMIT 200
+            """,
+            (f"{week_start} 00:00:00", f"{week_end} 23:59:59", int(user_id), int(user_id)),
+        )
+        return [dbm._row_to_dict(r) for r in (cur.fetchall() or [])]
+    except Exception:
+        logger.exception("weekly review: homework list failed user_id=%s", user_id)
+        return []
+    finally:
+        conn.close()
 
 
 @router.get("/student/weekly-review")
@@ -2382,16 +2428,19 @@ def _run_weekly_review_job(dry_run: bool = False) -> dict:
             assigned += 1
             continue
         teacher_id = _weekly_review_teacher_id(student_id)
+        # Deadline: berilgan paytdan 24 soat.
+        due_at = (datetime.now() + timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:00")
         homework = _safe(
             lambda sid=student_id, tid=teacher_id: dbm.create_homework(
                 tid,
                 sid,
                 f"Haftalik takrorlash ({week_start} — {week_end})",
                 description=(
-                    "Bu hafta ishlagan testlaringiz takrorlanadi. Bajarish majburiy — "
-                    "analitika foizingizga ta'sir qiladi."
+                    "Bu hafta berilgan barcha mashqlar bitta vazifada takrorlanadi. "
+                    "Bajarish majburiy — analitika foizingizga ta'sir qiladi. "
+                    "Muddat: 24 soat."
                 ),
-                due_at=f"{(datetime.strptime(week_end, '%Y-%m-%d') + timedelta(days=3)).strftime('%Y-%m-%d')} 23:59:00",
+                due_at=due_at,
                 homework_kind="test",
             )
         )
@@ -2408,6 +2457,26 @@ def _run_weekly_review_job(dry_run: bool = False) -> dict:
                 sid, week_start, week_end, hid or None, attempt_count=len(questions)
             )
         )
+        # O'quvchiga bildirishnoma (web + push).
+        if homework_id > 0:
+            try:
+                from backend.main import (
+                    _notify_homework_created,
+                    _homework_audience_student_ids,
+                    _attach_homework_runtime_fields,
+                )
+
+                hw = _safe(lambda h=homework_id: dbm.get_homework(h))
+                if hw:
+                    _safe(lambda: _attach_homework_runtime_fields(hw))
+                    teacher = _safe(lambda t=teacher_id: dbm.get_user_by_id(int(t))) or {}
+                    import asyncio as _asyncio
+
+                    _asyncio.run(
+                        _notify_homework_created(hw, teacher, _homework_audience_student_ids(hw))
+                    )
+            except Exception:
+                logger.exception("weekly review notify failed homework_id=%s", homework_id)
         assigned += 1
     logger.info("weekly review job week=%s assigned=%s skipped=%s dry_run=%s", week_start, assigned, skipped, dry_run)
     return {
@@ -2445,10 +2514,10 @@ def _weekly_review_teacher_id(student_id: int) -> int:
 
 @router.post("/admin/weekly-review/penalize")
 async def admin_weekly_review_penalize(authorization: str | None = Header(default=None)):
-    """O'tgan hafta takrorlashini bajarmaganlarga jarima (D'point)."""
+    """Muddati (24 soat) o'tgan takrorlashni bajarmaganlarga jarima (D'point)."""
     _auth(authorization, {"admin", "superadmin"})
-    last_week_start = (datetime.now() - timedelta(days=7))
-    week_start = (last_week_start - timedelta(days=last_week_start.weekday())).strftime("%Y-%m-%d")
+    now = datetime.now()
+    week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
     penalty = abs(_setting("weekly_review_missed_penalty", 5.0))
     dbm.ensure_weekly_reviews_schema()
     conn = dbm.get_conn()

@@ -15464,8 +15464,10 @@ async def _weekly_review_worker() -> None:
     await asyncio.sleep(max(1, int(os.getenv("WEEKLY_REVIEW_START_DELAY_SEC", "30") or "30")))
     dispatch_dow = int(os.getenv("WEEKLY_REVIEW_DISPATCH_DOW", "6") or "6")
     dispatch_hour = int(os.getenv("WEEKLY_REVIEW_DISPATCH_HOUR", "18") or "18")
-    penalize_dow = int(os.getenv("WEEKLY_REVIEW_PENALIZE_DOW", "3") or "3")  # payshanba
-    from backend.library_ai import _run_weekly_review_job, admin_weekly_review_penalize  # noqa
+    # Jarima: takrorlash berilgandan 24 soat o'tib (ya'ni keyingi kun shu soatda)
+    # bajarilmaganlarga qo'llanadi.
+    penalize_dow = int(os.getenv("WEEKLY_REVIEW_PENALIZE_DOW", str((dispatch_dow + 1) % 7)) or "0")
+    from backend.library_ai import _run_weekly_review_job  # noqa
     while True:
         try:
             now_local = datetime.now(TASHKENT_TZ)
@@ -15480,11 +15482,11 @@ async def _weekly_review_worker() -> None:
 
 
 def _run_weekly_review_penalty_job() -> None:
-    """O'tgan hafta takrorlashini bajarmaganlarga D'point jarimasi."""
+    """Takrorlash muddati (24 soat) o'tib bajarilmaganlarga D'point jarimasi."""
     import db as _dbm
 
-    last_week = datetime.now() - timedelta(days=7)
-    week_start = (last_week - timedelta(days=last_week.weekday())).strftime("%Y-%m-%d")
+    now = datetime.now()
+    week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
     try:
         penalty = abs(float(_get_runtime_settings().get("weekly_review_missed_penalty", 5.0)))
     except Exception:

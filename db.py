@@ -20345,7 +20345,21 @@ def save_content_test(
         if not isinstance(questions, list):
             questions = []
     else:
-        questions = _normalize_content_test_questions_payload(questions_json)
+        # AI/yangi test turlari har qanday mijozdan kelsa ham buzilmasin:
+        # `kind` maydoni bo'lsa xom holicha saqlaymiz (auto-detect).
+        if _questions_have_ai_kinds(questions_json):
+            if isinstance(questions_json, str):
+                try:
+                    questions = json.loads(questions_json)
+                except Exception:
+                    questions = []
+            else:
+                questions = questions_json
+            if not isinstance(questions, list):
+                questions = []
+            raw_questions = True
+        else:
+            questions = _normalize_content_test_questions_payload(questions_json)
     conn = get_conn()
     cur = conn.cursor()
     try:
