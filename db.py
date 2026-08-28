@@ -23422,6 +23422,15 @@ def list_library_nodes(teacher_id: int) -> dict:
             if node.get("is_public"):
                 perm = library_permission_for(cur, teacher_id, node)
                 visible[nid] = {**node, "visibility": "public", "permission": perm or "view"}
+                # Public papka bo'lsa — ichidagi hamma narsa ham ko'rinadi (subtree).
+                if str(node.get("kind") or "") == "folder":
+                    for sid in _library_subtree_ids(cur, nid):
+                        child = by_id.get(sid)
+                        if not child or sid in visible:
+                            continue
+                        if int(child.get("owner_id") or 0) == int(teacher_id):
+                            continue
+                        visible[sid] = {**child, "visibility": "public", "permission": "view"}
         for share_node_id, perm in direct_shares.items():
             if share_node_id in visible and visible[share_node_id].get("visibility") != "public":
                 continue

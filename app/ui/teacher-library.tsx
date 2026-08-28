@@ -97,9 +97,14 @@ export function TeacherLibraryPanel({
   }, [load]);
 
   const childrenOf = useMemo(() => {
+    // Ko'rinadigan tugunlar to'plami: ota-onasi ko'rinmaydigan (masalan boshqa
+    // o'qituvchining shaxsiy papkasidagi public test) tugun ildizga chiqariladi,
+    // aks holda daraxtda umuman ko'rinmay qolardi.
+    const visibleIds = new Set(nodes.map((n) => Number(n.id)));
     const map = new Map<number, LibNode[]>();
     for (const node of nodes) {
-      const key = Number(node.parent_id || 0);
+      const rawParent = Number(node.parent_id || 0);
+      const key = rawParent && visibleIds.has(rawParent) ? rawParent : 0;
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(node);
     }
