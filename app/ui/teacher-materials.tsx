@@ -95,18 +95,6 @@ function MaterialCard({
             ) : null}
           </div>
         </div>
-        <span
-          style={{
-            fontSize: 11,
-            padding: "2px 8px",
-            borderRadius: 20,
-            background: isPublic ? "#10b98122" : "#6b728022",
-            color: isPublic ? "#10b981" : "#9ca3af",
-            border: `1px solid ${isPublic ? "#10b98144" : "#6b728044"}`,
-          }}
-        >
-          {isPublic ? tt("teacher.materials.public", "Public") : tt("teacher.materials.private", "Private")}
-        </span>
       </div>
 
       {/* Meta */}
@@ -284,7 +272,6 @@ function UploadModal({
   const [title, setTitle] = useState(String(editItem?.title || ""));
   const [description, setDescription] = useState(String(editItem?.description || ""));
   const [subject, setSubject] = useState(String(editItem?.subject || ""));
-  const [isPublic, setIsPublic] = useState(Boolean(editItem?.is_public));
   const [fileUrl, setFileUrl] = useState(String(editItem?.file_url || ""));
   const [fileType, setFileType] = useState(String(editItem?.file_type || "other"));
   const [fileSize, setFileSize] = useState(Number(editItem?.file_size || 0));
@@ -324,7 +311,7 @@ function UploadModal({
     if (!fileUrl.trim() && !editItem) { setError("Fayl yuklanmagan"); return; }
     setSaving(true);
     setError("");
-    const payload: GenericRow = { title, description, subject, is_public: isPublic };
+    const payload: GenericRow = { title, description, subject, is_public: true };
     if (fileUrl && !editItem) {
       Object.assign(payload, { file_url: fileUrl, file_type: fileType, file_size: fileSize });
     }
@@ -475,17 +462,6 @@ function UploadModal({
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
-            </div>
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 8, paddingBottom: 2 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
-                <input
-                  type="checkbox"
-                  checked={isPublic}
-                  onChange={(e) => setIsPublic(e.target.checked)}
-                  style={{ accentColor: "#a855f7", width: 16, height: 16 }}
-                />
-                {tt("teacher.materials.publicToggle", "Share")}
-              </label>
             </div>
           </div>
         </div>

@@ -126,6 +126,48 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "check": "auto", "input": "text", "needs_audio_asset": True,
         "retry_until_correct": True,
     },
+    "listening_tf": {
+        "label_uz": "True/False/NG (audio tinglash)",
+        "label_ru": "Верно/Неверно/Не сказано (аудирование)",
+        "label_en": "True/False/Not Given (listening)",
+        "check": "auto", "input": "choice", "needs_audio_asset": True,
+        "retry_until_correct": False,
+    },
+    "listening_dictation": {
+        "label_uz": "Diktant — audiodni yozib ol",
+        "label_ru": "Диктант — запиши услышанное",
+        "label_en": "Listening dictation",
+        "check": "auto", "input": "text", "needs_audio_asset": True,
+        "retry_until_correct": True,
+    },
+    "listening_open": {
+        "label_uz": "Ochiq savol (audio asosida)",
+        "label_ru": "Открытый вопрос (по аудио)",
+        "label_en": "Listening open question",
+        "check": "ai", "input": "text", "needs_audio_asset": True,
+        "retry_until_correct": True,
+    },
+    "listening_gap": {
+        "label_uz": "Bo'sh joy to'ldirish (audio)",
+        "label_ru": "Заполни пробел (по аудио)",
+        "label_en": "Listening gap fill",
+        "check": "auto", "input": "text", "needs_audio_asset": True,
+        "retry_until_correct": True,
+    },
+    "listening_order": {
+        "label_uz": "So'zlarni tartibga sol (audio)",
+        "label_ru": "Упорядочи слова (по аудио)",
+        "label_en": "Listening word order",
+        "check": "auto", "input": "order", "needs_audio_asset": True,
+        "retry_until_correct": True,
+    },
+    "listening_set": {
+        "label_uz": "Listening Set (1 audio + ko'p savol)",
+        "label_ru": "Listening Set (1 аудио + несколько вопросов)",
+        "label_en": "Listening Set (shared audio + multi-question)",
+        "check": "auto", "input": "listening_set", "needs_audio_asset": True,
+        "retry_until_correct": False,
+    },
     "spelling": {
         "label_uz": "So'zni to'g'ri yozish",
         "label_ru": "Правописание",
@@ -227,6 +269,19 @@ _KIND_SYNONYMS: dict[str, str] = {
     "word": "word_practice",
     "spelling_word": "spelling",
     "dictation_audio": "dictation",
+    "listening_true_false": "listening_tf",
+    "true_false_ng": "listening_tf",
+    "listening_dictation": "listening_dictation",
+    "audio_dictation": "listening_dictation",
+    "listening_gap_fill": "listening_gap",
+    "listening_gap": "listening_gap",
+    "listening_word_order": "listening_order",
+    "listening_order": "listening_order",
+    "listening_open": "listening_open",
+    "audio_open": "listening_open",
+    "listening_set": "listening_set",
+    "audio_set": "listening_set",
+    "audio_questions": "listening_set",
     "listening_comprehension": "listening",
     "reading": "reading_open",
     "reading_comprehension": "reading_open",
@@ -323,7 +378,7 @@ class LibraryNodeCreate(BaseModel):
     level: str | None = None
     file_url: str | None = None
     payload: dict | None = None
-    is_public: bool = False
+    is_public: bool = True
 
 
 class LibraryNodeUpdate(BaseModel):
@@ -747,6 +802,92 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     question["correct_index"] = max(0, min(len(question["options"]) - 1, int(item.get("correct_index") or item.get("correct_option_index") or 0)))
                 except Exception:
                     question["correct_index"] = 0
+            elif kind == "listening_tf":
+                # True/False/NG — always 3 fixed options
+                question["options"] = ["True", "False", "Not Given"]
+                # correct field: 'True'|'False'|'Not Given' or 0|1|2
+                raw_correct = item.get("correct") or item.get("correct_index") or "True"
+                if isinstance(raw_correct, int):
+                    question["correct_index"] = max(0, min(2, raw_correct))
+                else:
+                    mapping = {"true": 0, "false": 1, "not given": 2, "ng": 2, "not_given": 2}
+                    question["correct_index"] = mapping.get(str(raw_correct).strip().lower(), 0)
+            elif kind in ("listening_dictation", "listening_gap"):
+                answer = str(item.get("answer") or "").strip()
+                if not answer:
+                    continue
+                question["answer"] = answer
+                accepted = item.get("accepted_answers")
+                question["accepted_answers"] = (
+                    [str(a).strip() for a in accepted if str(a).strip()] if isinstance(accepted, list) else []
+                )
+            elif kind == "listening_order":
+                answer = str(item.get("answer") or "").strip()
+                if not answer:
+                    continue
+                question["answer"] = answer
+                tokens = item.get("tokens")
+                question["tokens"] = (
+                    [str(t).strip() for t in tokens if str(t).strip()]
+                    if isinstance(tokens, list) and tokens
+                    else answer.replace(".", "").split()
+                )
+                distractors = item.get("distractors") or item.get("extra_words")
+                question["distractors"] = (
+                    [str(d).strip() for d in distractors if str(d).strip()]
+                    if isinstance(distractors, list) else []
+                )
+            elif kind == "listening_set":
+                # Normalize sub_questions
+                raw_subs = item.get("sub_questions") or item.get("questions") or []
+                norm_subs = []
+                for s in raw_subs:
+                    if not isinstance(s, dict):
+                        continue
+                    sub_type = str(s.get("type") or "mcq").strip().lower()
+                    sub: dict[str, Any] = {
+                        "type": sub_type,
+                        "prompt": str(s.get("prompt") or s.get("question") or "").strip(),
+                    }
+                    if not sub["prompt"]:
+                        continue
+                    if sub_type in ("mcq",):
+                        opts = [str(o).strip() for o in (s.get("options") or []) if str(o).strip()]
+                        if len(opts) < 2:
+                            continue
+                        sub["options"] = opts[:4]
+                        try:
+                            sub["correct_index"] = max(0, min(len(opts)-1, int(s.get("correct_index") or 0)))
+                        except Exception:
+                            sub["correct_index"] = 0
+                    elif sub_type == "tf":
+                        sub["options"] = ["True", "False", "Not Given"]
+                        raw_c = s.get("correct") or s.get("correct_index") or "True"
+                        if isinstance(raw_c, int):
+                            sub["correct_index"] = max(0, min(2, raw_c))
+                        else:
+                            mp = {"true": 0, "false": 1, "not given": 2, "ng": 2, "not_given": 2}
+                            sub["correct_index"] = mp.get(str(raw_c).strip().lower(), 0)
+                    elif sub_type in ("gap", "dictation", "short"):
+                        ans = str(s.get("answer") or "").strip()
+                        if not ans:
+                            continue
+                        sub["answer"] = ans
+                        acc = s.get("accepted_answers")
+                        sub["accepted_answers"] = [str(a).strip() for a in acc if str(a).strip()] if isinstance(acc, list) else []
+                    elif sub_type == "order":
+                        ans = str(s.get("answer") or "").strip()
+                        if not ans:
+                            continue
+                        sub["answer"] = ans
+                        toks = s.get("tokens")
+                        sub["tokens"] = [str(t).strip() for t in toks if str(t).strip()] if isinstance(toks, list) and toks else ans.replace(".","").split()
+                    elif sub_type == "open":
+                        sub["reference_answer"] = str(s.get("reference_answer") or s.get("answer") or "").strip() or None
+                    norm_subs.append(sub)
+                if not norm_subs:
+                    continue
+                question["sub_questions"] = norm_subs
             elif kind == "spelling":
                 word = question.get("word") or question.get("prompt") or ""
                 if not word:
@@ -1088,7 +1229,16 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     if not translation and "translation" in variants:
         variants.remove("translation")
     kind = random.choice(variants) if variants else "write_sentence"
-    base: dict[str, Any] = {"kind": kind, "word": word, "level": level, "instruction": instruction}
+    example_sentence = str(q.get("example_sentence") or "").strip() or None
+    # meaning / definition — spelling uchun hint sifatida ishlatiladi
+    meaning = str(q.get("meaning") or q.get("definition") or "").strip() or None
+    base: dict[str, Any] = {
+        "kind": kind,
+        "word": word,
+        "level": level,
+        "instruction": instruction,
+        "example_sentence": example_sentence,
+    }
     if kind == "speak_sentence":
         base["prompt"] = q.get("prompt") or (
             f"Составьте и произнесите предложение со словом «{word}»" if study_ru
@@ -1105,10 +1255,12 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
             "Правильно напишите слово" if study_ru
             else "Spell the word correctly"
         )
+        base["hint"] = meaning or example_sentence  # ta'rif yoki misol gap
         base["answer"] = word
         base["accepted_answers"] = []
     else:  # translation — tarjima student tiliga (uz/ru)
         base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
+        base["direction"] = "RU→UZ" if ru else "EN→UZ"
         base["answer"] = translation
         base["accepted_answers"] = accepted
     return base
@@ -1144,6 +1296,24 @@ def _question_for_student(question: dict) -> dict:
     }
     if kind == "listening":
         out["options"] = question.get("options") or []
+    elif kind == "listening_tf":
+        out["options"] = question.get("options") or ["True", "False", "Not Given"]
+    elif kind in ("listening_dictation", "listening_gap"):
+        # hint ko'rsatiladi, lekin javob yashiriladi
+        out["hint"] = question.get("hint") or question.get("prompt")
+    elif kind == "listening_order":
+        tokens = list(question.get("tokens") or [])
+        random.shuffle(tokens)
+        out["tokens"] = tokens
+    elif kind == "listening_set":
+        out["sub_questions"] = [
+            {
+                "type": s.get("type"),
+                "prompt": s.get("prompt"),
+                "options": list(s.get("options") or []),
+            }
+            for s in (question.get("sub_questions") or [])
+        ]
     elif kind == "matching":
         pairs = question.get("pairs") or []
         out["left_items"] = [p.get("left") for p in pairs]
@@ -1169,6 +1339,25 @@ def _question_for_student(question: dict) -> dict:
             }
             for s in (question.get("sub_questions") or [])
         ]
+    elif kind == "spelling":
+        # Spelling: ta'rif/hint ko'rsatiladi (javob = word yashiriladi)
+        out["hint"] = question.get("hint") or question.get("definition")
+        out["example_sentence"] = question.get("example_sentence")
+    elif kind == "translation":
+        # Translation: yo'nalish badge va namuna (yashiriladi)
+        out["direction"] = question.get("direction")
+        out["example_sentence"] = question.get("example_sentence")
+    elif kind in ("speak_sentence", "write_sentence"):
+        # word_practice dan materialized: word + misol gap ko'rsatiladi
+        out["hint"] = question.get("hint")
+        out["example_sentence"] = question.get("example_sentence")
+        out["reference_answer"] = None  # javob yashiriladi, AI tekshiradi
+    elif kind == "gap_fill":
+        out["hint"] = question.get("hint")  # qavs so'z
+    elif kind == "dictation":
+        out["hint"] = question.get("hint")  # mavzu
+    elif kind == "guided_writing":
+        out["word_count"] = question.get("word_count") or question.get("wordCount")
     return out
 
 
@@ -1982,6 +2171,8 @@ class AiTestAnswerRequest(BaseModel):
     choice_index: int | None = None
     #: passage_cloze uchun bo'sh joylar javoblari (tartib bo'yicha)
     blanks: list[str] | None = None
+    #: listening_set uchun {question_index: {choice_index/answer/order/blanks}} mapping
+    sub_answers: list[dict] | None = None
 
 
 def _attempt_state(attempt: dict) -> dict:
@@ -2321,6 +2512,67 @@ def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict
         ok = int(chosen) == correct
         return ("correct" if ok else "wrong"), {
             "correct_answer": options[correct] if 0 <= correct < len(options) else None,
+        }
+    if kind == "listening_tf":
+        # True/False/NG: options=['True','False','Not Given'], correct_index=int
+        correct = int(question.get("correct_index") or 0)
+        chosen = payload.choice_index
+        if chosen is None:
+            return "wrong", {"reason": "Javob tanlanmadi"}
+        ok = int(chosen) == correct
+        opts = question.get("options") or ["True", "False", "Not Given"]
+        return ("correct" if ok else "wrong"), {
+            "correct_answer": opts[correct] if 0 <= correct < len(opts) else None,
+        }
+    if kind in ("listening_dictation", "listening_gap"):
+        # Matn solishtirish — dictation/gap_fill bilan bir xil
+        expected = [question.get("answer"), *(question.get("accepted_answers") or [])]
+        normalized = {_norm_text(e) for e in expected if e}
+        given = _norm_text(payload.answer_text)
+        if not given:
+            return "wrong", {"reason": "Javob bo'sh"}
+        if given in normalized:
+            return "correct", {}
+        close = any(_levenshtein(given, e) <= 1 for e in normalized)
+        return "wrong", {"almost": close, "hint": "Imloni tekshiring" if close else None}
+    if kind == "listening_order":
+        # So'zlar tartibini tekshirish — scrambled_sentence bilan bir xil
+        expected = _norm_text(question.get("answer"))
+        given = _norm_text(" ".join(payload.order or []) or payload.answer_text)
+        return ("correct" if given == expected else "wrong"), {
+            "hint": "So'zlar tartibini qayta ko'ring" if given != expected else None,
+        }
+    if kind == "listening_set":
+        # Har bir sub_question alohida tekshiriladi
+        subs = question.get("sub_questions") or []
+        sub_ans = payload.sub_answers or []
+        wrong_positions = []
+        for i, s in enumerate(subs):
+            sub_type = str(s.get("type") or "mcq")
+            given_item = sub_ans[i] if i < len(sub_ans) else {}
+            if sub_type in ("mcq", "tf"):
+                correct_idx = int(s.get("correct_index") or 0)
+                chosen_idx = given_item.get("choice_index")
+                if chosen_idx is None or int(chosen_idx) != correct_idx:
+                    wrong_positions.append(i + 1)
+            elif sub_type in ("gap", "dictation", "short"):
+                expected_set = {_norm_text(s.get("answer")), *[_norm_text(x) for x in (s.get("accepted_answers") or [])]}
+                expected_set = {e for e in expected_set if e}
+                given_text = _norm_text(given_item.get("answer_text") or "")
+                if given_text not in expected_set:
+                    wrong_positions.append(i + 1)
+            elif sub_type == "order":
+                expected_ans = _norm_text(s.get("answer") or "")
+                order_given = " ".join(given_item.get("order") or [])
+                if _norm_text(order_given) != expected_ans:
+                    wrong_positions.append(i + 1)
+            # open type: skip auto check (will be AI checked separately)
+        if not wrong_positions:
+            return "correct", {}
+        return "wrong", {
+            "wrong_positions": wrong_positions,
+            "wrong_count": len(wrong_positions),
+            "hint": f"{len(wrong_positions)} ta savol noto'g'ri",
         }
     if kind == "matching":
         pairs = {str(p.get("left")): str(p.get("right")) for p in (question.get("pairs") or [])}

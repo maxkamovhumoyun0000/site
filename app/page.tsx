@@ -6278,12 +6278,13 @@ function StudentHomework() {
                 ) : null}
               </div>
               <label>
-                Note
+                <strong style={{fontSize:'13px'}}>{tt("homework.noteLabel", "Esse / Yozma javob")}</strong>
                 <textarea
                   value={noteValue}
                   onChange={(event) => setNoteDraft((prev) => ({ ...prev, [hid]: event.target.value }))}
-                  placeholder={tt("homework.leaveNote", "Izoh qoldiring...")}
+                  placeholder={tt("homework.leaveNote", "Esse yoki yozma javobingizni kiriting...")}
                   disabled={isSubmitting || locked}
+                  rows={5}
                 />
               </label>
               </>
@@ -6329,12 +6330,13 @@ function StudentHomework() {
               ) : null}
               {!isVoiceroom && !requiresFile && requiresVoiceMessage ? (
                 <label>
-                  Note
+                  <strong style={{fontSize:'13px'}}>{tt("homework.noteLabel", "Esse / Yozma javob")}</strong>
                   <textarea
                     value={noteValue}
                     onChange={(event) => setNoteDraft((prev) => ({ ...prev, [hid]: event.target.value }))}
-                    placeholder={tt("homework.leaveNote", "Izoh qoldiring...")}
+                    placeholder={tt("homework.leaveNote", "Esse yoki yozma javobingizni kiriting...")}
                     disabled={isSubmitting || locked}
+                    rows={5}
                   />
                 </label>
               ) : null}
@@ -13976,6 +13978,7 @@ function AdminSection({
   const [userSearch, setUserSearch] = useState("");
   const debouncedUserSearch = useDebouncedValue(userSearch, 380);
   const [userPage, setUserPage] = useState(1);
+  const [groupPage, setGroupPage] = useState(1);
   const [broadcastTarget, setBroadcastTarget] = useState("all_students");
   useEffect(() => { setAdminUsersFallback(null); }, [data.users]);
   useEffect(() => { setAdminGroupsFallback(null); }, [data.groups]);
@@ -13999,6 +14002,10 @@ function AdminSection({
   const [adminUsersFallback, setAdminUsersFallback] = useState<GenericRow[] | null>(null);
   const [adminUsersTotal, setAdminUsersTotal] = useState(0);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [inactiveStudents, setInactiveStudents] = useState<GenericRow[]>([]);
+  const [inactiveStudentsLoading, setInactiveStudentsLoading] = useState(false);
+  const [inactiveStudentsPurging, setInactiveStudentsPurging] = useState(false);
+  const [inactivePanelOpen, setInactivePanelOpen] = useState(false);
   const [adminGroupsFallback, setAdminGroupsFallback] = useState<GenericRow[] | null>(null);
   const [adminGroupsTotal, setAdminGroupsTotal] = useState(0);
   const [adminGroupsLoading, setAdminGroupsLoading] = useState(false);
@@ -15473,7 +15480,7 @@ function AdminSection({
   )).filter(Boolean);
 
   const filteredUsers = users;
-  const userPageSize = 40;
+  const userPageSize = 100;
   const userPages = Math.max(1, Math.ceil(Number(adminUsersTotal || filteredUsers.length || 0) / userPageSize));
   const pagedUsers = filteredUsers;
   const selectedDetailUserId = Number(userDetail?.user?.id || selectedUserId || 0);
@@ -15485,6 +15492,10 @@ function AdminSection({
   useEffect(() => {
     setUserPage(1);
   }, [userRoleFilter, userSubjectFilter, debouncedUserSearch]);
+
+  useEffect(() => {
+    setGroupPage(1);
+  }, [groupSubjectFilter, groupTeacherFilter, groupLessonDayFilter, debouncedGroupNameSearch]);
 
   async function markAdminAttendanceStatus(userId: number, status: string, dateArg?: string) {
     if (!activeAdminAttendanceCard) return;
@@ -15669,16 +15680,19 @@ function AdminSection({
         <div className="admin-page-header">
           <div>
             <h2>👥 {tt("admin.users.title", "Foydalanuvchilar")}</h2>
-            <p>{tt("admin.users.subtitle", "Barcha foydalanuvchilarni boshqaring")}</p>
+            <p>{tt("admin.users.subtitle", "Barcha foydalanuvchilarni boshqaring")} · <strong>{Number(adminUsersTotal || users.length || 0)}</strong> foydalanuvchi</p>
           </div>
-          <button
-            className="admin-btn-primary"
-            type="button"
-            onClick={() => setAdminUserCreateOpen(true)}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-            {tt("admin.users.createAction", "Foydalanuvchi qo'shish")}
-          </button>
+          <div className="flex items-center gap-3">
+            {adminUsersLoading ? <span className="text-xs font-semibold text-ink-500 dark:text-navy-400 flex items-center gap-1"><svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading...</span> : null}
+            <button
+              className="admin-btn-primary"
+              type="button"
+              onClick={() => setAdminUserCreateOpen(true)}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              {tt("admin.users.createAction", "Foydalanuvchi qo'shish")}
+            </button>
+          </div>
         </div>
 
         {/* ── Create User Modal ── */}
@@ -16173,6 +16187,140 @@ function AdminSection({
               <button className="admin-page-btn" disabled={userPage >= userPages} onClick={() => setUserPage((prev) => Math.min(userPages, prev + 1))}>{tt("common.next", "Keyingi")}</button>
             </div>
           </div>
+        </div>
+
+        {/* ── Faolsiz o'quvchilar tozalash paneli ── */}
+        <div className="admin-table-card mt-4">
+          <div
+            className="flex items-center justify-between px-5 py-4 cursor-pointer select-none"
+            onClick={() => setInactivePanelOpen((prev) => !prev)}
+          >
+            <div className="flex items-center gap-3">
+              <span className="flex items-center justify-center w-9 h-9 rounded-xl bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                  <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                </svg>
+              </span>
+              <div>
+                <p className="font-bold text-sm text-navy-900 dark:text-white">Faolsiz o'quvchilar tozalash</p>
+                <p className="text-xs text-ink-500 dark:text-navy-400">60+ kun kirmagan, guruhi va to'lovi yo'q o'quvchilar</p>
+              </div>
+            </div>
+            <svg
+              width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2.5"
+              className={`text-ink-400 transition-transform duration-200 ${inactivePanelOpen ? "rotate-180" : ""}`}
+            >
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </div>
+
+          {inactivePanelOpen && (
+            <div className="border-t border-line dark:border-white/10 px-5 pb-5 pt-4">
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                <button
+                  className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-bold bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 text-ink-700 dark:text-navy-200 rounded-xl hover:border-blue-400 hover:text-blue-500 transition-all disabled:opacity-50"
+                  disabled={inactiveStudentsLoading}
+                  onClick={async () => {
+                    setInactiveStudentsLoading(true);
+                    try {
+                      const res = await requestJson<{ students: GenericRow[]; count: number }>(
+                        "/admin/students/inactive-preview", { method: "GET" }
+                      );
+                      setInactiveStudents(res.students || []);
+                    } catch {
+                      setInactiveStudents([]);
+                    } finally {
+                      setInactiveStudentsLoading(false);
+                    }
+                  }}
+                >
+                  {inactiveStudentsLoading ? (
+                    <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  )}
+                  Ko'rish (Preview)
+                </button>
+
+                {inactiveStudents.length > 0 && (
+                  <button
+                    className="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-white bg-red-600 hover:bg-red-700 rounded-xl transition-all disabled:opacity-50"
+                    disabled={inactiveStudentsPurging}
+                    onClick={async () => {
+                      const confirmed = window.confirm(
+                        `Haqiqatan ham ${inactiveStudents.length} ta faolsiz o'quvchini o'chirasizmi? Bu amalni qaytarib bo'lmaydi.`
+                      );
+                      if (!confirmed) return;
+                      setInactiveStudentsPurging(true);
+                      try {
+                        const res = await requestJson<{ deleted_count: number; message: string }>(
+                          "/admin/students/inactive-purge", { method: "DELETE" }
+                        );
+                        alert(`✅ ${res.deleted_count ?? inactiveStudents.length} ta o'quvchi o'chirildi.`);
+                        setInactiveStudents([]);
+                      } catch (e) {
+                        alert("Xatolik yuz berdi.");
+                      } finally {
+                        setInactiveStudentsPurging(false);
+                      }
+                    }}
+                  >
+                    {inactiveStudentsPurging ? (
+                      <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                      </svg>
+                    )}
+                    {inactiveStudents.length} tasini o'chirish
+                  </button>
+                )}
+
+                {inactiveStudents.length > 0 && (
+                  <span className="inline-block px-3 py-1.5 text-xs font-bold bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 border border-red-100 dark:border-red-500/20 rounded-lg">
+                    {inactiveStudents.length} ta topildi
+                  </span>
+                )}
+              </div>
+
+              {inactiveStudents.length > 0 && (
+                <div className="admin-table-card overflow-hidden">
+                  <div className="admin-users-table-wrap" style={{ maxHeight: 320 }}>
+                    <table className="admin-users-table">
+                      <thead>
+                        <tr>
+                          <th>#</th>
+                          <th>Ism</th>
+                          <th>Telefon</th>
+                          <th>Login ID</th>
+                          <th>Oxirgi kirish</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {inactiveStudents.map((row, idx) => (
+                          <tr key={`inactive-${row.id}-${idx}`}>
+                            <td className="text-ink-400 text-xs">{idx + 1}</td>
+                            <td className="font-semibold text-sm text-navy-900 dark:text-white">{String(row.full_name || row.first_name || "-")}</td>
+                            <td className="text-sm text-ink-600 dark:text-navy-300">{String(row.phone || "-")}</td>
+                            <td className="font-mono text-sm text-ink-600 dark:text-navy-300">{String(row.login_id || "-")}</td>
+                            <td className="text-xs text-ink-500 dark:text-navy-400">{String(row.last_login || row.last_active || "-").slice(0, 10)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {!inactiveStudentsLoading && inactiveStudents.length === 0 && (
+                <p className="text-sm text-ink-500 dark:text-navy-400 italic">
+                  Ko'rish tugmasini bosing yoki faolsiz o'quvchilar topilmadi.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -17948,6 +18096,9 @@ function AdminSection({
     const activeGroupSubject = normalizeSubjectLabel(String(groupDraft.subject || selectedGroup?.subject || ""));
     const tempTeacherSourceRows = tempTeacherRows.length ? tempTeacherRows : (((data.temporary_teacher_candidates || []) as GenericRow[]));
     const matchingTempTeacherRows = tempTeacherSourceRows.filter((row) => rowMatchesSubject(row, activeGroupSubject));
+    const groupPageSize = 40;
+    const groupPages = Math.max(1, Math.ceil(Number(adminGroupsTotal || visibleGroups.length || 0) / groupPageSize));
+    const pagedGroups = visibleGroups.slice((groupPage - 1) * groupPageSize, groupPage * groupPageSize);
     return (
       <div className="admin-groups-page">
 
@@ -18025,7 +18176,7 @@ function AdminSection({
             </label>
             <label className="admin-form-label">
               {tt("admin.filter.groupName", "Guruh nomi")}
-              <input value={groupNameSearch} onChange={(event) => setGroupNameSearch(event.target.value)} placeholder="Guruh nomini qidiring..." />
+              <input value={groupNameSearch} onChange={(event) => { setGroupPage(1); setGroupNameSearch(event.target.value); }} placeholder="Guruh nomini qidiring..." />
             </label>
           </div>
         </div>
@@ -18048,7 +18199,7 @@ function AdminSection({
                 </tr>
               </thead>
               <tbody>
-                {visibleGroups.map((group: GenericRow) => (
+                {pagedGroups.map((group: GenericRow) => (
                   <tr key={group.id}>
                     <td className="text-xs font-mono text-ink-400 dark:text-navy-500 whitespace-nowrap">#{group.id}</td>
                     <td>
@@ -18064,7 +18215,14 @@ function AdminSection({
                     <td>
                       <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{group.level || "-"}</span>
                     </td>
-                    <td className="text-sm font-mono text-ink-600 dark:text-navy-300 whitespace-nowrap">{group.lesson_date || "-"}</td>
+                    <td>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="inline-block px-2 py-1 text-[11px] font-bold bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 rounded-lg border border-violet-100 dark:border-violet-500/20 w-fit">{group.lesson_date || "-"}</span>
+                        {(group.lesson_start || group.start_time) ? (
+                          <span className="text-[11px] text-ink-500 dark:text-navy-400 font-mono">{String(group.lesson_start || group.start_time || "").slice(0,5)}{(group.lesson_end || group.end_time) ? ` – ${String(group.lesson_end || group.end_time || "").slice(0,5)}` : ""}</span>
+                        ) : null}
+                      </div>
+                    </td>
                     <td>
                       <span className="inline-flex items-center gap-1 text-sm font-semibold text-ink-700 dark:text-navy-200">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -18122,6 +18280,14 @@ function AdminSection({
                 ) : null}
               </tbody>
             </table>
+          </div>
+          {/* Pagination */}
+          <div className="admin-pagination">
+            <span className="admin-pagination-info">{tt("common.page", "Sahifa")} <strong>{groupPage}</strong> / <strong>{groupPages}</strong></span>
+            <div className="admin-pagination-btns">
+              <button className="admin-page-btn" disabled={groupPage <= 1} onClick={() => setGroupPage((prev) => Math.max(1, prev - 1))}>{tt("common.prev", "Oldingi")}</button>
+              <button className="admin-page-btn" disabled={groupPage >= groupPages} onClick={() => setGroupPage((prev) => Math.min(groupPages, prev + 1))}>{tt("common.next", "Keyingi")}</button>
+            </div>
           </div>
         </div>
 

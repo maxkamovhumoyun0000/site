@@ -173,11 +173,7 @@ export function TeacherLibraryPanel({
               Ommaviy
             </span>
           )}
-          {node.is_public && node.owner_id === myId && (
-            <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-100">
-              Ochiq
-            </span>
-          )}
+
 
           <div className="ml-auto flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
             {node.kind === "folder" && canEdit(node) && (
@@ -386,7 +382,6 @@ function CreateNodeModal({
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
   const [fileUrl, setFileUrl] = useState("");
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -399,7 +394,7 @@ function CreateNodeModal({
     if (kind === "file" && !fileUrl) { setError("Avval fayl yuklang"); return; }
     setBusy(true);
     const payload: Row = {
-      title, kind, parent_id: parentId, description, is_public: isPublic,
+      title, kind, parent_id: parentId, description, is_public: true,
     };
     if (kind === "file") payload.file_url = fileUrl;
     if (kind === "test") payload.payload = { questions: [{ kind: "write_sentence", prompt: "Yangi mashq", reference_answer: "" }] };
@@ -432,10 +427,7 @@ function CreateNodeModal({
             />
           </label>
         )}
-        <label className="flex items-center gap-2 text-sm font-bold text-navy-900 dark:text-white">
-          <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} className="h-4 w-4 accent-cyan-500" />
-          Barcha o'qituvchilarga ochiq (ommaviy)
-        </label>
+
         {error && <p className="text-sm font-bold text-red-500">{error}</p>}
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="rounded-xl border border-line px-4 py-2 font-bold dark:border-white/10 dark:text-white">Bekor</button>
@@ -457,7 +449,6 @@ function TestEditorModal({
   onSaved: () => void;
 }) {
   const [title, setTitle] = useState(node.title);
-  const [isPublic, setIsPublic] = useState(Boolean(node.is_public));
   const [questions, setQuestions] = useState<AiTestQuestion[]>(node.payload?.questions || []);
   const [notes] = useState(node.payload?.notes || "");
   const [reading] = useState(node.payload?.reading_text || "");
@@ -471,7 +462,7 @@ function TestEditorModal({
     setBusy(true);
     const res = await onApiCall(`/teacher/library/${node.id}`, {
       title,
-      is_public: isPublic,
+      is_public: true,
       payload: { questions, notes, reading_text: reading },
     }, "PATCH");
     setBusy(false);
@@ -483,10 +474,7 @@ function TestEditorModal({
     <ModalShell title={node.kind === "test" ? "Test muharriri" : "Element sozlamalari"} onClose={onClose} wide>
       <div className="space-y-4">
         <input className={FIELD} value={title} onChange={(e) => setTitle(e.target.value)} disabled={readOnly} />
-        <label className="flex items-center gap-2 text-sm font-bold text-navy-900 dark:text-white">
-          <input type="checkbox" checked={isPublic} onChange={(e) => setIsPublic(e.target.checked)} disabled={readOnly} className="h-4 w-4 accent-cyan-500" />
-          O'quvchilar ishlashi uchun ochiq
-        </label>
+
         {reading && (
           <div className="rounded-xl bg-surface-soft p-3 text-sm dark:bg-white/5">
             <p className="mb-1 text-xs font-black uppercase text-ink-500">Matn</p>
@@ -631,7 +619,7 @@ function AssignModal({
     setBusy(true);
     const res = await onApiCall(`/teacher/library/${node.id}/assign`, {
       group_id: groupId,
-      due_at: due ? `${due} 23:59:00` : null,
+      due_at: due ? new Date(due).toISOString() : null,
     }, "POST");
     setBusy(false);
     if (res) onDone();
@@ -648,8 +636,8 @@ function AssignModal({
           ))}
         </select>
         <label className="block text-sm font-bold text-navy-900 dark:text-white">
-          Muddat (ixtiyoriy)
-          <input type="date" className={`${FIELD} mt-1`} value={due} onChange={(e) => setDue(e.target.value)} />
+          Muddat va soat (ixtiyoriy)
+          <input type="datetime-local" className={`${FIELD} mt-1`} value={due} onChange={(e) => setDue(e.target.value)} />
         </label>
         {error && <p className="text-sm font-bold text-red-500">{error}</p>}
         <div className="flex justify-end gap-2">
@@ -717,7 +705,7 @@ function ImportModal({
       parent_id: parentId,
       subject,
       level: result?.level || level || null,
-      is_public: false,
+      is_public: true,
       payload: { questions, reading_text: result?.reading_text || "", notes: result?.notes || "" },
     }, "POST");
     setSaving(false);

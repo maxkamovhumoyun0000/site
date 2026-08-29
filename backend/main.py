@@ -1756,6 +1756,38 @@ class PaymentExportRequest(BaseModel):
     date_from: str | None = None
     date_to: str | None = None
 
+class TeacherStudentCreateRequest(BaseModel):
+    """Teacher tomonidan o'quvchi yaratish so'rovi. account_type MAJBURIY."""
+    account_type: Literal["student", "accountless"]
+    first_name: str
+    last_name: str
+    phone: str
+    parent_phone: str | None = None
+    subjects: list[str] = Field(default_factory=lambda: ["English"])
+    level: str | None = None
+    placement_subject: str | None = None
+    group_ids: list[int] = Field(default_factory=list)
+    joined_at: str | None = None
+    referral_student_id: int | None = None
+    instagram_url: str | None = None
+    telegram_url: str | None = None
+
+
+class TeacherGroupCreateRequest(BaseModel):
+    """Teacher tomonidan guruh yaratish so'rovi. teacher_id tokendan olinadi."""
+    name: str
+    level: str = "PRE-INTERMEDIATE"
+    subject: str | None = None
+    subject_id: int | None = None
+    course_id: int
+    lesson_date: str | None = None
+    lesson_start: str | None = None
+    lesson_end: str | None = None
+    telegram_group_url: str | None = None
+    pricing_type: str | None = "group"
+    lang: str | None = "uz"
+    owner_branch: int | None = None  # 1 = 1-filial (limited_admin_1), 2 = 2-filial (limited_admin_2)
+
 
 class FamilyGroupCreateRequest(BaseModel):
     name: str
@@ -30226,7 +30258,289 @@ async def teacher_student_performance(student_id: int, authorization: str | None
     }
 
 
-@app.post("/teacher/students/{student_id}/dcoin-adjust")
+@app.post("/teacher/students")
+async def teacher_create_student(
+    payload: TeacherStudentCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Teacher o'zi o'quvchi yaratadi — akountli yoki akountsiz. account_type MAJBURIY."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    teacher_id = int(user.get("id") or 0)
+    # Teacher's owner_admin_id — yangi student shu adminga biriktiriladi
+    teacher_owner_admin_id = int(user.get("owner_admin_id") or 0)
+
+    first_name = str(payload.first_name or "").strip()
+    last_name = str(payload.last_name or "").strip()
+    phone = str(payload.phone or "").strip()
+    if not first_name:
+        raise HTTPException(status_code=400, detail="first_name is required")
+    if not last_name:
+        raise HTTPException(status_code=400, detail="last_name is required")
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone is required")
+
+    account_type = str(payload.account_type or "").strip().lower()
+    if account_type not in ("student", "accountless"):
+        raise HTTPException(status_code=400, detail="account_type must be 'student' or 'accountless'")
+
+    subjects = _normalize_subjects(payload.subjects, fallback=["English"])
+    subject = subjects[0] if subjects else "English"
+    level = str(payload.level or "PRE-INTERMEDIATE").strip() or "PRE-INTERMEDIATE"
+    placement_subject = _normalize_subject_label(payload.placement_subject) or subject
+    parent_phone = str(payload.parent_phone or "").strip() or None
+    joined_at = payload.joined_at
+
+    # Guruhlarni tekshirish
+    group_ids = [int(gid) for gid in (payload.group_ids or []) if int(gid) > 0]
+    for gid in group_ids:
+        group = _safe_call(lambda group_id=gid: get_group(int(group_id)), None)
+        if not group:
+            raise HTTPException(status_code=404, detail=f"Group not found: {gid}")
+        if not _teacher_can_manage_group(user, group):
+            raise HTTPException(status_code=403, detail="You can only add students to your own groups")
+
+    _ensure_user_web_columns()
+    if account_type == "accountless":
+        # Akountsiz student (login_type=6, login_id=NULL, password=NULL)
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users
+            (login_id, password, password_used, first_name, last_name, phone, parent_phone,
+             subject, login_type, blocked, access_enabled, owner_admin_id,
+             placement_required, placement_subject, free_access)
+            VALUES (NULL, NULL, 1, ?, ?, ?, ?, ?, 6, 1, 0, ?, 0, ?, 0)
+            RETURNING id
+            """,
+            (first_name, last_name, phone, parent_phone, subject, teacher_owner_admin_id, subject),
+        )
+        row = cur.fetchone() or {}
+        new_user_id = int(row.get("id") or 0)
+        conn.commit()
+        conn.close()
+        if new_user_id <= 0:
+            raise HTTPException(status_code=500, detail="Could not create accountless student")
+        for gid in group_ids:
+            add_user_to_group(int(new_user_id), int(gid), joined_at=joined_at)
+        created_user = _safe_call(lambda: get_user_by_id(int(new_user_id)), None) or {"id": new_user_id}
+        _payment_prewarm_users_month_async(user_ids={int(new_user_id)}, reason="teacher_accountless_create")
+        return {
+            "message": "Accountless student created",
+            "user": _serialize_user_row(created_user),
+            "account_type": "accountless",
+        }
+    else:
+        # Akountli student (login_type=1, loginID+password generatsiya)
+        login_id, password = _generate_unique_student_credentials()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users
+            (login_id, password, password_used, first_name, last_name, phone, parent_phone,
+             subject, login_type, blocked, access_enabled, owner_admin_id,
+             placement_required, placement_subject, level, free_access)
+            VALUES (?, ?, 0, ?, ?, ?, ?, ?, 1, 0, 1, ?, 1, ?, ?, 0)
+            RETURNING id
+            """,
+            (
+                login_id, password, first_name, last_name, phone, parent_phone,
+                subject, teacher_owner_admin_id, placement_subject, level,
+            ),
+        )
+        row = cur.fetchone() or {}
+        new_user_id = int(row.get("id") or 0)
+        conn.commit()
+        conn.close()
+        if new_user_id <= 0:
+            raise HTTPException(status_code=500, detail="Could not create student account")
+        for gid in group_ids:
+            add_user_to_group(int(new_user_id), int(gid), joined_at=joined_at)
+        # QR token
+        qr_generated: dict = {}
+        try:
+            from auth import generate_qr_login_token
+            qr_generated = generate_qr_login_token(new_user_id) or {}
+        except Exception:
+            pass
+        created_user = _safe_call(lambda: get_user_by_id(int(new_user_id)), None) or {"id": new_user_id}
+        _payment_prewarm_users_month_async(user_ids={int(new_user_id)}, reason="teacher_student_create")
+        return {
+            "message": "Student account created",
+            "user": _serialize_user_row(created_user),
+            "account_type": "student",
+            "login_id": login_id,
+            "password": password,
+            "qr_token": str(qr_generated.get("qr_token") or ""),
+            "qr_payload": str(qr_generated.get("qr_payload") or ""),
+            "qr_expires_at": str(qr_generated.get("expires_at") or ""),
+        }
+
+
+@app.post("/teacher/groups")
+async def teacher_create_group(
+    payload: TeacherGroupCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Teacher o'zi guruh yaratadi. teacher_id tokendan olinadi."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    teacher_id = int(user.get("id") or 0)
+    teacher_owner_admin_id = int(user.get("owner_admin_id") or 0)
+
+    # owner_branch bo'yicha limited admin aniqlanadi
+    owner_admin_id = teacher_owner_admin_id
+    branch = int(payload.owner_branch or 0)
+    if branch > 0:
+        limited_ids = [int(x) for x in LIMITED_ADMIN_CHAT_IDS if int(x or 0) > 0]
+        if branch <= len(limited_ids):
+            owner_admin_id = limited_ids[branch - 1]
+
+    normalized_subject_input = _resolve_group_subject_input(payload.subject, payload.subject_id)
+    _, normalized_subject = _validate_group_teacher_and_subject(int(teacher_id), normalized_subject_input)
+    if not payload.course_id or int(payload.course_id) <= 0:
+        raise HTTPException(status_code=400, detail="course_id is required")
+    linked_course = _get_course_by_id(int(payload.course_id))
+    if not linked_course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    lesson_days = _normalize_lesson_days(payload.lesson_date) or "MWF"
+    if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
+        raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
+    group_level = "" if normalized_subject in ("Matematika", "Ona tili", "Tarix", "Arab tili") else (payload.level.strip() or "PRE-INTERMEDIATE")
+    try:
+        group_id = db_create_group(
+            payload.name.strip(),
+            int(teacher_id),
+            level=group_level,
+            subject=normalized_subject,
+            extra_subjects=[],
+            lesson_date=lesson_days,
+            lesson_start=payload.lesson_start,
+            lesson_end=payload.lesson_end,
+            owner_admin_id=int(owner_admin_id),
+            course_id=int(linked_course["id"]),
+            course_title=str(linked_course.get("title") or "").strip(),
+            monthly_fee_text=(
+                str(linked_course.get("individual_price_text") or "").strip()
+                if payload.pricing_type == "individual"
+                else str(linked_course.get("price_text") or "").strip()
+            ),
+            telegram_group_url=payload.telegram_group_url,
+            pricing_type=payload.pricing_type,
+            lang=payload.lang,
+        )
+    except Exception as exc:
+        logger.exception("teacher.groups.create failed teacher_id=%s name=%s", teacher_id, payload.name)
+        raise HTTPException(status_code=500, detail=f"Group create failed: {str(exc)[:220]}") from exc
+    if int(group_id or 0) <= 0:
+        raise HTTPException(status_code=422, detail="Group create failed: invalid group id")
+    update_group_extra_subjects(int(group_id), [])
+    return {"message": "Group created", "group_id": int(group_id)}
+
+
+@app.post("/teacher/groups/{group_id}/students")
+async def teacher_create_and_add_student(
+    group_id: int,
+    payload: TeacherStudentCreateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Teacher guruhiga yangi o'quvchi yaratib qo'shadi (guruh ma'lum bo'lganda shortcut)."""
+    # group_ids ni override qilamiz
+    payload.group_ids = [group_id]
+    # teacher_create_student ni to'g'ridan-to'g'ri chaqiramiz
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    teacher_id = int(user.get("id") or 0)
+    teacher_owner_admin_id = int(user.get("owner_admin_id") or 0)
+    first_name = str(payload.first_name or "").strip()
+    last_name = str(payload.last_name or "").strip()
+    phone = str(payload.phone or "").strip()
+    if not first_name:
+        raise HTTPException(status_code=400, detail="first_name is required")
+    if not last_name:
+        raise HTTPException(status_code=400, detail="last_name is required")
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone is required")
+    account_type = str(payload.account_type or "").strip().lower()
+    if account_type not in ("student", "accountless"):
+        raise HTTPException(status_code=400, detail="account_type must be 'student' or 'accountless'")
+    group = _safe_call(lambda: get_group(int(group_id)), None)
+    if not group:
+        raise HTTPException(status_code=404, detail=f"Group not found: {group_id}")
+    if not _teacher_can_manage_group(user, group):
+        raise HTTPException(status_code=403, detail="You can only add students to your own groups")
+    subjects = _normalize_subjects(payload.subjects, fallback=["English"])
+    subject = subjects[0] if subjects else "English"
+    level = str(payload.level or "PRE-INTERMEDIATE").strip() or "PRE-INTERMEDIATE"
+    placement_subject = _normalize_subject_label(payload.placement_subject) or subject
+    parent_phone = str(payload.parent_phone or "").strip() or None
+    joined_at = payload.joined_at
+    _ensure_user_web_columns()
+    if account_type == "accountless":
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users
+            (login_id, password, password_used, first_name, last_name, phone, parent_phone,
+             subject, login_type, blocked, access_enabled, owner_admin_id,
+             placement_required, placement_subject, free_access)
+            VALUES (NULL, NULL, 1, ?, ?, ?, ?, ?, 6, 1, 0, ?, 0, ?, 0)
+            RETURNING id
+            """,
+            (first_name, last_name, phone, parent_phone, subject, teacher_owner_admin_id, subject),
+        )
+        row = cur.fetchone() or {}
+        new_user_id = int(row.get("id") or 0)
+        conn.commit()
+        conn.close()
+        if new_user_id <= 0:
+            raise HTTPException(status_code=500, detail="Could not create accountless student")
+        add_user_to_group(int(new_user_id), int(group_id), joined_at=joined_at)
+        created_user = _safe_call(lambda: get_user_by_id(int(new_user_id)), None) or {"id": new_user_id}
+        _payment_prewarm_users_month_async(user_ids={int(new_user_id)}, reason="teacher_accountless_create_group")
+        return {"message": "Accountless student created", "user": _serialize_user_row(created_user), "account_type": "accountless"}
+    else:
+        login_id, password = _generate_unique_student_credentials()
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users
+            (login_id, password, password_used, first_name, last_name, phone, parent_phone,
+             subject, login_type, blocked, access_enabled, owner_admin_id,
+             placement_required, placement_subject, level, free_access)
+            VALUES (?, ?, 0, ?, ?, ?, ?, ?, 1, 0, 1, ?, 1, ?, ?, 0)
+            RETURNING id
+            """,
+            (login_id, password, first_name, last_name, phone, parent_phone, subject, teacher_owner_admin_id, placement_subject, level),
+        )
+        row = cur.fetchone() or {}
+        new_user_id = int(row.get("id") or 0)
+        conn.commit()
+        conn.close()
+        if new_user_id <= 0:
+            raise HTTPException(status_code=500, detail="Could not create student account")
+        add_user_to_group(int(new_user_id), int(group_id), joined_at=joined_at)
+        qr_generated: dict = {}
+        try:
+            from auth import generate_qr_login_token
+            qr_generated = generate_qr_login_token(new_user_id) or {}
+        except Exception:
+            pass
+        created_user = _safe_call(lambda: get_user_by_id(int(new_user_id)), None) or {"id": new_user_id}
+        _payment_prewarm_users_month_async(user_ids={int(new_user_id)}, reason="teacher_student_create_group")
+        return {
+            "message": "Student account created", "user": _serialize_user_row(created_user),
+            "account_type": "student", "login_id": login_id, "password": password,
+            "qr_token": str(qr_generated.get("qr_token") or ""),
+            "qr_payload": str(qr_generated.get("qr_payload") or ""),
+            "qr_expires_at": str(qr_generated.get("expires_at") or ""),
+        }
+
+
 @app.post("/teacher/students/{student_id}/dpoint-adjust")
 async def teacher_adjust_dpoint(student_id: int, payload: TeacherDcoinAdjustRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -42239,6 +42553,124 @@ async def admin_delete_user(user_id: int, authorization: str | None = Header(def
     if not ok:
         raise HTTPException(status_code=500, detail="User delete failed")
     return {"message": "User deleted", "user_id": int(user_id)}
+
+
+
+def _find_inactive_students(admin_ref: int, months: int = 2) -> list[dict]:
+    """2 oydan ortiq hech qanday aktiv guruhda bo'lmagan o'quvchilarni qaytaradi."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=30 * months)).strftime("%Y-%m-%d")
+    conn = get_conn()
+    cur = conn.cursor()
+    # O'quvchilar ro'yxati shu adminga tegishli
+    cur.execute(
+        """
+        SELECT u.id, u.first_name, u.last_name, u.phone, u.login_type, u.owner_admin_id,
+               u.created_at
+        FROM users u
+        WHERE u.owner_admin_id = ?
+          AND u.login_type IN (1, 6)
+          AND (u.blocked IS NULL OR u.blocked != 0)
+        """,
+        (admin_ref,),
+    )
+    all_students = [dict(r) for r in (cur.fetchall() or [])]
+    # Guruh memberligi
+    cur.execute(
+        """
+        SELECT gm.user_id, g.active, COALESCE(gm.joined_at, g.created_at, ?) as last_active
+        FROM group_members gm
+        JOIN groups g ON g.id = gm.group_id
+        WHERE g.owner_admin_id = ?
+        """,
+        (cutoff, admin_ref),
+    )
+    member_rows = cur.fetchall() or []
+    conn.close()
+    # user_id → max(last_active_date) from active groups
+    last_active_map: dict[int, str] = {}
+    for row in member_rows:
+        if int(row.get("active") or 0) == 0:
+            # Faol emas guruh — ignore
+            continue
+        uid = int(row.get("user_id") or 0)
+        la = str(row.get("last_active") or "")[:10]
+        if uid not in last_active_map or la > last_active_map[uid]:
+            last_active_map[uid] = la
+    inactive = []
+    for s in all_students:
+        uid = int(s.get("id") or 0)
+        last_active = last_active_map.get(uid, "")
+        if last_active == "" or last_active < cutoff:
+            inactive.append({
+                "id": uid,
+                "first_name": str(s.get("first_name") or ""),
+                "last_name": str(s.get("last_name") or ""),
+                "phone": str(s.get("phone") or ""),
+                "login_type": int(s.get("login_type") or 0),
+                "last_active_group": last_active or None,
+                "created_at": str(s.get("created_at") or ""),
+            })
+    return inactive
+
+
+@app.get("/admin/students/inactive-preview")
+async def admin_inactive_students_preview(
+    months: int = 2,
+    authorization: str | None = Header(default=None),
+):
+    """2 oydan ortiq (default) hech qanday aktiv guruhda bo'lmagan o'quvchilar ro'yxati."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    if months < 1 or months > 24:
+        raise HTTPException(status_code=400, detail="months must be between 1 and 24")
+    students = _find_inactive_students(admin_ref, months=months)
+    return {"inactive_count": len(students), "months": months, "students": students}
+
+
+@app.delete("/admin/students/inactive-purge")
+async def admin_inactive_students_purge(
+    months: int = 2,
+    dry_run: bool = False,
+    authorization: str | None = Header(default=None),
+):
+    """2 oydan ortiq hech qanday aktiv guruhda bo'lmagan o'quvchilarni o'chiradi.
+    dry_run=true bo'lsa faqat preview, o'chirish amalga oshirilmaydi."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    if months < 1 or months > 24:
+        raise HTTPException(status_code=400, detail="months must be between 1 and 24")
+    students = _find_inactive_students(admin_ref, months=months)
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_delete_count": len(students),
+            "months": months,
+            "students": students,
+        }
+    deleted_ids = []
+    failed_ids = []
+    for s in students:
+        uid = int(s.get("id") or 0)
+        try:
+            ok = hard_delete_user_profile(uid)
+            if ok:
+                deleted_ids.append(uid)
+                logger.info("inactive.purge deleted user_id=%s admin=%s months=%s", uid, admin_ref, months)
+            else:
+                failed_ids.append(uid)
+        except Exception:
+            failed_ids.append(uid)
+            logger.exception("inactive.purge error user_id=%s", uid)
+    return {
+        "deleted_count": len(deleted_ids),
+        "failed_count": len(failed_ids),
+        "deleted_ids": deleted_ids,
+        "failed_ids": failed_ids,
+        "months": months,
+    }
 
 
 @app.patch("/admin/groups/{group_id}")
