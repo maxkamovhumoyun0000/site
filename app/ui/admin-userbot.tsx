@@ -1,28 +1,121 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import {
-  Smartphone,
-  CheckCircle2,
-  XCircle,
-  Clock,
-  Send,
-  RefreshCw,
-  LogOut,
-  Sliders,
-  Bell,
-  Sparkles,
-  AlertTriangle,
-  Calendar,
-  Gift,
-  CreditCard,
-  MessageSquare,
-  UserPlus,
-  Zap,
-  Info,
-  ShieldCheck,
-  History,
-} from "lucide-react";
+
+// Clean SVG Icon Components
+const SmartphoneIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+  </svg>
+);
+
+const CheckCircleIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+const XCircleIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+const ClockIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+const SendIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+  </svg>
+);
+
+const RefreshIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+  </svg>
+);
+
+const LogOutIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+  </svg>
+);
+
+const SlidersIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+  </svg>
+);
+
+const BellIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+  </svg>
+);
+
+const AlertTriangleIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+  </svg>
+);
+
+const CalendarIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+  </svg>
+);
+
+const GiftIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v13m0-13V6a2 2 0 112 2h-2zm0 0V6a2 2 0 10-2 2h2zm0 0d17 11v8a2 2 0 01-2 2H5a2 2 0 01-2-2v-8a2 2 0 012-2h14a2 2 0 012 2z" />
+  </svg>
+);
+
+const CreditCardIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M7 15h1m4 0h1m-7 4h12a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+  </svg>
+);
+
+const MessageSquareIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+  </svg>
+);
+
+const UserPlusIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+  </svg>
+);
+
+const ZapIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+  </svg>
+);
+
+const InfoIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
+
+const ShieldCheckIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+  </svg>
+);
+
+const HistoryIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+  </svg>
+);
 
 interface UserbotSettings {
   is_enabled: boolean;
@@ -58,55 +151,55 @@ const TEMPLATE_META: Record<
 > = {
   attendance_absent: {
     label: "Darsga kelmaganlik",
-    icon: AlertTriangle,
+    icon: AlertTriangleIcon,
     vars: ["{student_name}", "{group_name}", "{course_title}"],
     defaultDesc: "O'qituvchi 'bormadi' deb belgilaganda otasiga/onasiga yuboriladi.",
   },
   attendance_late: {
     label: "Darsga kechikib kelish (5 daqiqadan keyin)",
-    icon: Clock,
+    icon: ClockIcon,
     vars: ["{student_name}", "{group_name}"],
     defaultDesc: "5 daqiqadan keyin holat 'keldiga' o'zgartirilsa yuboriladi.",
   },
   lesson_cancelled: {
     label: "Dars qoldirilishi / Bayram e'loni",
-    icon: Calendar,
+    icon: CalendarIcon,
     vars: ["{group_name}", "{reason}", "{date}"],
     defaultDesc: "Dars bekor qilinganda yoki admin bayram belgilaganda yuboriladi.",
   },
   homework_alert: {
     label: "Bajarilmagan vazifa / Past baho",
-    icon: MessageSquare,
+    icon: MessageSquareIcon,
     vars: ["{student_name}", "{group_name}", "{reason}", "{score}"],
     defaultDesc: "Vazifa deadline o'tganda yoki o'qituvchi bajarmadi deya belgilasa.",
   },
   achievement_notice: {
     label: "Reyting & Yutuqlar (1-o'rin / Do'kon)",
-    icon: Gift,
+    icon: GiftIcon,
     vars: ["{student_name}", "{reason}", "{group_name}"],
     defaultDesc: "O'quvchi guruhda 1-o'rinni egallaganda yoki sovg'a xarid qilganda.",
   },
   payment_reminder: {
     label: "To'lov eslatmasi (3 kun oldin)",
-    icon: Bell,
+    icon: BellIcon,
     vars: ["{student_name}", "{date}", "{amount}"],
     defaultDesc: "Oylik to'lov muddatiga 3 kun qolganda yuboriladi.",
   },
   overdue_alert: {
     label: "Qarzdorlik eslatmasi (Muddati o'tganda)",
-    icon: CreditCard,
+    icon: CreditCardIcon,
     vars: ["{student_name}", "{amount}"],
     defaultDesc: "To'lov muddati o'tganda avtomatik yuboriladi.",
   },
   payment_receipt: {
     label: "To'lov qabul qilindi (Chek)",
-    icon: ShieldCheck,
+    icon: ShieldCheckIcon,
     vars: ["{student_name}", "{amount}", "{date}"],
     defaultDesc: "Admin to'lovni kiritishi bilan chek va minnatdorchilik yuboriladi.",
   },
   welcome_message: {
     label: "Yangi o'quvchi xush kelibsiz xabari",
-    icon: UserPlus,
+    icon: UserPlusIcon,
     vars: ["{student_name}", "{group_name}", "{schedule}", "{start_time}", "{end_time}"],
     defaultDesc: "O'quvchi guruhga qo'shilganda dars jadvali va manzillar bilan yuboriladi.",
   },
@@ -137,7 +230,7 @@ export default function AdminUserbot() {
   const [testStatus, setTestStatus] = useState("");
 
   const getHeaders = () => {
-    const token = localStorage.getItem("token") || "";
+    const token = localStorage.getItem("diamond_token") || localStorage.getItem("token") || "";
     return {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
@@ -326,7 +419,7 @@ export default function AdminUserbot() {
   if (loading) {
     return (
       <div className="flex items-center justify-center p-12 text-slate-400">
-        <RefreshCw className="w-6 h-6 animate-spin mr-2" />
+        <RefreshIcon className="w-6 h-6 animate-spin mr-2" />
         Userbot sozlamalari yuklanmoqda...
       </div>
     );
@@ -338,7 +431,7 @@ export default function AdminUserbot() {
       <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/20 text-white flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-indigo-600/30 rounded-xl border border-indigo-400/30 text-indigo-300">
-            <Smartphone className="w-8 h-8" />
+            <SmartphoneIcon className="w-8 h-8" />
           </div>
           <div>
             <div className="flex items-center gap-3">
@@ -368,14 +461,14 @@ export default function AdminUserbot() {
                 onClick={() => setTestModalOpen(true)}
                 className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm transition flex items-center gap-2 shadow-lg shadow-indigo-600/20"
               >
-                <Send className="w-4 h-4" />
+                <SendIcon className="w-4 h-4" />
                 Test Xabar Yuborish
               </button>
               <button
                 onClick={handleLogout}
                 className="px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-medium text-sm transition flex items-center gap-2 border border-rose-500/30"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOutIcon className="w-4 h-4" />
                 Uzish
               </button>
             </>
@@ -388,7 +481,7 @@ export default function AdminUserbot() {
               }}
               className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-semibold text-sm transition flex items-center gap-2 shadow-lg shadow-emerald-500/20"
             >
-              <Zap className="w-4 h-4" />
+              <ZapIcon className="w-4 h-4" />
               Telegram Akkauntni Ulash
             </button>
           )}
@@ -406,7 +499,7 @@ export default function AdminUserbot() {
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
             }`}
           >
-            <Sliders className="w-4 h-4" />
+            <SlidersIcon className="w-4 h-4" />
             Bildirishnoma Modullari & Shablonlar
           </button>
           <button
@@ -420,7 +513,7 @@ export default function AdminUserbot() {
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
             }`}
           >
-            <History className="w-4 h-4" />
+            <HistoryIcon className="w-4 h-4" />
             Yuborilgan Xabarlar Tarixi ({logs.length})
           </button>
         </div>
@@ -445,7 +538,7 @@ export default function AdminUserbot() {
               disabled={saving}
               className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium text-sm transition flex items-center gap-2 shadow-md shadow-emerald-600/20"
             >
-              {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              {saving ? <RefreshIcon className="w-4 h-4 animate-spin" /> : <CheckCircleIcon className="w-4 h-4" />}
               Sozlamalarni Saqlash
             </button>
           </div>
@@ -488,7 +581,7 @@ export default function AdminUserbot() {
                   {/* Variables Helper */}
                   <div className="flex flex-wrap gap-1.5 mb-2">
                     <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                      <Info className="w-3 h-3" /> O'zgaruvchilar:
+                      <InfoIcon className="w-3 h-3" /> O'zgaruvchilar:
                     </span>
                     {meta.vars.map((v) => (
                       <button
@@ -522,14 +615,14 @@ export default function AdminUserbot() {
         <div className="rounded-2xl bg-slate-900/80 border border-slate-800 overflow-hidden">
           <div className="p-4 border-b border-slate-800 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-200 flex items-center gap-2">
-              <History className="w-4 h-4 text-indigo-400" />
+              <HistoryIcon className="w-4 h-4 text-indigo-400" />
               Telegram Userbot Orqali Yuborilgan So'nggi Xabarlar
             </h3>
             <button
               onClick={fetchLogs}
               className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition flex items-center gap-1.5"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshIcon className="w-3.5 h-3.5" />
               Yangilash
             </button>
           </div>
@@ -572,18 +665,18 @@ export default function AdminUserbot() {
                       <td className="p-3">
                         {log.status === "sent" ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1 w-fit">
-                            <CheckCircle2 className="w-3 h-3" /> Yuborildi
+                            <CheckCircleIcon className="w-3 h-3" /> Yuborildi
                           </span>
                         ) : log.status === "failed" ? (
                           <span
                             className="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1 w-fit"
                             title={log.error_message}
                           >
-                            <XCircle className="w-3 h-3" /> {log.error_message || "Xato"}
+                            <XCircleIcon className="w-3 h-3" /> {log.error_message || "Xato"}
                           </span>
                         ) : (
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1 w-fit">
-                            <Clock className="w-3 h-3" /> Navbatda
+                            <ClockIcon className="w-3 h-3" /> Navbatda
                           </span>
                         )}
                       </td>
@@ -602,7 +695,7 @@ export default function AdminUserbot() {
           <div className="w-full max-w-md p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl text-white space-y-5">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold flex items-center gap-2">
-                <Smartphone className="w-5 h-5 text-indigo-400" />
+                <SmartphoneIcon className="w-5 h-5 text-indigo-400" />
                 Telegram Akkauntini Ulash (Pyrogram)
               </h3>
               <button
@@ -615,7 +708,7 @@ export default function AdminUserbot() {
 
             {loginError && (
               <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <AlertTriangleIcon className="w-4 h-4 flex-shrink-0" />
                 {loginError}
               </div>
             )}
@@ -641,7 +734,7 @@ export default function AdminUserbot() {
                   disabled={loginLoading}
                   className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition flex items-center justify-center gap-2"
                 >
-                  {loginLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : "SMS Kod Yuborish"}
+                  {loginLoading ? <RefreshIcon className="w-4 h-4 animate-spin" /> : "SMS Kod Yuborish"}
                 </button>
               </div>
             ) : (
@@ -678,7 +771,7 @@ export default function AdminUserbot() {
                   disabled={loginLoading}
                   className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition flex items-center justify-center gap-2"
                 >
-                  {loginLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : "Tasdiqlash & Ulash"}
+                  {loginLoading ? <RefreshIcon className="w-4 h-4 animate-spin" /> : "Tasdiqlash & Ulash"}
                 </button>
               </div>
             )}
@@ -692,7 +785,7 @@ export default function AdminUserbot() {
           <div className="w-full max-w-md p-6 rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl text-white space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="text-base font-bold flex items-center gap-2">
-                <Send className="w-5 h-5 text-indigo-400" />
+                <SendIcon className="w-5 h-5 text-indigo-400" />
                 Test Telegram Xabari Yuborish
               </h3>
               <button onClick={() => setTestModalOpen(false)} className="text-slate-400 hover:text-white">
@@ -733,7 +826,7 @@ export default function AdminUserbot() {
               disabled={testSending}
               className="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition flex items-center justify-center gap-2"
             >
-              {testSending ? <RefreshCw className="w-4 h-4 animate-spin" /> : "Navbatga Qo'shish & Yuborish"}
+              {testSending ? <RefreshIcon className="w-4 h-4 animate-spin" /> : "Navbatga Qo'shish & Yuborish"}
             </button>
           </div>
         </div>
