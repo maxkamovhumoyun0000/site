@@ -10517,6 +10517,9 @@ function TeacherSection({
   const groups = teacherGroups;
   const [selectedGroupId, setSelectedGroupId] = useState<number>(0);
   const [teacherGroupSubjectFilter, setTeacherGroupSubjectFilter] = useState("all");
+  const [teacherGroupLessonDayFilter, setTeacherGroupLessonDayFilter] = useState("all");
+  const [teacherGroupNameSearch, setTeacherGroupNameSearch] = useState("");
+  const [teacherGroupPage, setTeacherGroupPage] = useState(1);
   const [attendanceDate, setAttendanceDate] = useState(new Date().toISOString().slice(0, 10));
   const attendanceCards = useMemo(
     () => buildUpcomingLessonCards((groups || []) as GenericRow[], Math.max(40, (groups || []).length || 0)) as AttendanceLessonCell[],
@@ -11291,50 +11294,54 @@ function TeacherSection({
 
   if (section === "groups") {
     const teacherSubjects = Array.from(new Set((groups || []).map((g: GenericRow) => String(g.subject || "").trim()).filter(Boolean))) as string[];
-    const visibleTeacherGroups = teacherGroupSubjectFilter === "all"
-      ? groups
-      : groups.filter((g: GenericRow) => String(g.subject || "") === teacherGroupSubjectFilter);
+    const visibleTeacherGroups = groups.filter((group: GenericRow) => {
+      const subjectOk = teacherGroupSubjectFilter === "all" || String(group.subject || "") === teacherGroupSubjectFilter;
+      const dayOk = teacherGroupLessonDayFilter === "all" || String(group.lesson_date || "").toUpperCase() === teacherGroupLessonDayFilter;
+      const nameOk = !teacherGroupNameSearch.trim() || String(group.name || "").toLowerCase().includes(teacherGroupNameSearch.trim().toLowerCase());
+      return subjectOk && dayOk && nameOk;
+    });
+    const teacherGroupPageSize = 40;
+    const teacherGroupPages = Math.max(1, Math.ceil(visibleTeacherGroups.length / teacherGroupPageSize));
+    const pagedTeacherGroups = visibleTeacherGroups.slice((teacherGroupPage - 1) * teacherGroupPageSize, teacherGroupPage * teacherGroupPageSize);
+
     return (
-      <div className="flex flex-col gap-8 pb-12 animate-fade-in">
+      <div className="admin-groups-page">
 
-        <section className="panel-card flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-          <div className="flex-1 max-w-xs">
-            <label className="text-xs font-bold text-ink-500 uppercase block mb-1">
-              Subject filter
-            </label>
-            <select
-              className="text-input w-full"
-              value={teacherGroupSubjectFilter}
-              onChange={(event) => setTeacherGroupSubjectFilter(event.target.value)}
-            >
-              <option value="all">All subjects</option>
-              {teacherSubjects.map((subject) => (
-                <option key={`teacher-group-sub-${subject}`} value={subject}>{subject}</option>
-              ))}
-            </select>
+        {/* ── Page Header ── */}
+        <div className="admin-page-header">
+          <div>
+            <h2>🏫 {tt("admin.groups.title", "Guruhlar")}</h2>
+            <p>{tt("admin.groups.subtitle", "Barcha guruhlaringizni boshqaring")} · <strong>{visibleTeacherGroups.length}</strong> guruh</p>
           </div>
-          <button
-            className="px-6 py-3 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
-            onClick={async () => {
-              setTeacherCreateGroupError("");
-              setTeacherCreateGroupModalOpen(true);
-              await loadTeacherCourses();
-            }}
-          >
-            + Yangi Guruh Yaratish
-          </button>
-        </section>
+          <div className="flex items-center gap-3">
+            <button
+              className="admin-btn-primary"
+              type="button"
+              onClick={async () => {
+                setTeacherCreateGroupError("");
+                setTeacherCreateGroupModalOpen(true);
+                await loadTeacherCourses();
+              }}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              + Guruh Yaratish
+            </button>
+          </div>
+        </div>
 
+        {/* ── Create Group Modal ── */}
         {teacherCreateGroupModalOpen && (
           <ModalPortal open={true}>
             <div className="overlay-modal-backdrop" onClick={() => setTeacherCreateGroupModalOpen(false)}>
-              <div className="overlay-modal-card max-w-lg w-full p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl text-navy-900 dark:text-white" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center justify-between border-b border-line dark:border-white/10 pb-4 mb-6">
-                  <h3 className="text-lg font-bold font-display flex items-center gap-2">
-                    <span className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center font-black">+</span>
-                    Yangi Guruh Yaratish
-                  </h3>
-                  <button className="text-ink-400 hover:text-navy-900 dark:hover:text-white font-bold" onClick={() => setTeacherCreateGroupModalOpen(false)}>✕</button>
+              <article className="overlay-modal-card admin-wide-modal text-left" onClick={(e) => e.stopPropagation()}>
+                <div className="row-between gap-3 mb-4">
+                  <div>
+                    <h3>+ Yangi Guruh Yaratish</h3>
+                    <p className="text-sm text-ink-500 dark:text-navy-300">Yangi guruh ma&apos;lumotlarini kiriting.</p>
+                  </div>
+                  <button className="admin-modal-close" type="button" onClick={() => setTeacherCreateGroupModalOpen(false)}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
                 </div>
 
                 {teacherCreateGroupError && (
@@ -11344,37 +11351,34 @@ function TeacherSection({
                 )}
 
                 <form onSubmit={handleTeacherCreateGroup} className="space-y-4">
-                  <div>
-                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Guruh Nomi *</label>
-                    <input
-                      type="text"
-                      className="text-input w-full"
-                      value={teacherCreateGroupDraft.name}
-                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, name: e.target.value }))}
-                      placeholder="masalan: IELTS Morning 09:00"
-                      required
-                    />
-                  </div>
+                  <div className="admin-form-grid-2">
+                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                      Guruh Nomi *
+                      <input
+                        type="text"
+                        value={teacherCreateGroupDraft.name}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder="masalan: IELTS Morning 09:00"
+                        required
+                      />
+                    </label>
 
-                  <div>
-                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Filial (Limited Admin) *</label>
-                    <select
-                      className="text-input w-full"
-                      value={teacherCreateGroupDraft.owner_branch}
-                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, owner_branch: e.target.value }))}
-                      required
-                    >
-                      <option value="">-- Filialni Tanlang (Majburiy) --</option>
-                      <option value="1">Limited Admin 1 (1-filial)</option>
-                      <option value="2">Limited Admin 2 (2-filial)</option>
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Fan (Subject) *</label>
+                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                      Filial (Limited Admin) * (Majburiy)
                       <select
-                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.owner_branch}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, owner_branch: e.target.value }))}
+                        required
+                      >
+                        <option value="">-- Filialni Tanlang (Majburiy) --</option>
+                        <option value="1">Limited Admin 1 (1-filial)</option>
+                        <option value="2">Limited Admin 2 (2-filial)</option>
+                      </select>
+                    </label>
+
+                    <label className="admin-form-label">
+                      Fan (Subject) *
+                      <select
                         value={teacherCreateGroupDraft.subject}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, subject: e.target.value }))}
                       >
@@ -11382,12 +11386,11 @@ function TeacherSection({
                           <option key={`create-grp-sub-${sub}`} value={sub}>{sub}</option>
                         ))}
                       </select>
-                    </div>
+                    </label>
 
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Kurs (Course) *</label>
+                    <label className="admin-form-label">
+                      Kurs (Course) *
                       <select
-                        className="text-input w-full"
                         value={teacherCreateGroupDraft.course_id}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, course_id: e.target.value }))}
                       >
@@ -11396,26 +11399,22 @@ function TeacherSection({
                           <option key={`create-grp-course-${c.id}`} value={c.id}>{c.title || `Kurs #${c.id}`} ({c.subject || ""})</option>
                         ))}
                       </select>
-                    </div>
-                  </div>
+                    </label>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Dars Kunlari *</label>
+                    <label className="admin-form-label">
+                      Dars Kunlari *
                       <select
-                        className="text-input w-full"
                         value={teacherCreateGroupDraft.lesson_date}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_date: e.target.value }))}
                       >
                         <option value="MWF">Mon, Wed, Fri (Dush/Chor/Jum)</option>
                         <option value="TTS">Tue, Thu, Sat (Sesh/Pay/Shan)</option>
                       </select>
-                    </div>
+                    </label>
 
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Boshlanish Vaqti</label>
+                    <label className="admin-form-label">
+                      Boshlanish Vaqti
                       <select
-                        className="text-input w-full"
                         value={teacherCreateGroupDraft.lesson_start}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_start: e.target.value }))}
                       >
@@ -11423,12 +11422,11 @@ function TeacherSection({
                           <option key={`start-${t}`} value={t}>{t}</option>
                         ))}
                       </select>
-                    </div>
+                    </label>
 
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Tugash Vaqti</label>
+                    <label className="admin-form-label">
+                      Tugash Vaqti
                       <select
-                        className="text-input w-full"
                         value={teacherCreateGroupDraft.lesson_end}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_end: e.target.value }))}
                       >
@@ -11436,39 +11434,37 @@ function TeacherSection({
                           <option key={`end-${t}`} value={t}>{t}</option>
                         ))}
                       </select>
-                    </div>
-                  </div>
+                    </label>
 
-                  {!["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherCreateGroupDraft.subject) && (
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Daraja (Level)</label>
-                      <select
-                        className="text-input w-full"
-                        value={teacherCreateGroupDraft.level}
-                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, level: e.target.value }))}
-                      >
-                        {CEFR_LEVELS.map((lvl) => (
-                          <option key={`lvl-${lvl}`} value={lvl}>{lvl}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                    {!["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherCreateGroupDraft.subject) && (
+                      <label className="admin-form-label">
+                        Daraja (Level)
+                        <select
+                          value={teacherCreateGroupDraft.level}
+                          onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, level: e.target.value }))}
+                        >
+                          {CEFR_LEVELS.map((lvl) => (
+                            <option key={`lvl-${lvl}`} value={lvl}>{lvl}</option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
 
-                  <div>
-                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Telegram Guruh Havolasi (ixtiyoriy)</label>
-                    <input
-                      type="url"
-                      className="text-input w-full"
-                      value={teacherCreateGroupDraft.telegram_group_url}
-                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, telegram_group_url: e.target.value }))}
-                      placeholder="https://t.me/joinchat/..."
-                    />
+                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                      Telegram Guruh Havolasi
+                      <input
+                        type="url"
+                        value={teacherCreateGroupDraft.telegram_group_url}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, telegram_group_url: e.target.value }))}
+                        placeholder="https://t.me/joinchat/..."
+                      />
+                    </label>
                   </div>
 
                   <div className="flex items-center justify-end gap-3 pt-4 border-t border-line dark:border-white/10">
                     <button
                       type="button"
-                      className="btn btn-soft"
+                      className="admin-page-btn"
                       onClick={() => setTeacherCreateGroupModalOpen(false)}
                     >
                       Bekor Qilish
@@ -11476,57 +11472,255 @@ function TeacherSection({
                     <button
                       type="submit"
                       disabled={teacherCreateGroupLoading}
-                      className="btn btn-primary"
+                      className="admin-btn-primary"
                     >
                       {teacherCreateGroupLoading ? "Yaratilmoqda..." : "Guruhni Yaratish"}
                     </button>
                   </div>
                 </form>
-              </div>
+              </article>
             </div>
           </ModalPortal>
         )}
-        <section className="teacher-groups-btn-row">
-          {visibleTeacherGroups.map((group: GenericRow) => (
-            <button
-              key={group.id}
-              className={`px-6 py-3 rounded-2xl font-bold text-sm transition-all ${
-                Number(selectedGroupId) === Number(group.id)
-                  ? "bg-cyan-500 text-white shadow-[0_0_20px_rgba(6,182,212,0.4)] hover:bg-cyan-600"
-                  : "bg-white border border-line dark:bg-white/5 dark:border-white/10 text-navy-900 dark:text-white hover:border-cyan-500 hover:text-cyan-500"
-              }`}
-              onClick={() => setSelectedGroupId(Number(group.id))}
-            >
-              {group.name} <span className="opacity-60">({group.student_count || 0})</span>
-              {group.temporary_access ? (
-                <span className="ml-2 rounded-full bg-gold-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-gold-700 dark:bg-gold-500/15 dark:text-gold-200">
-                  Temporary
-                </span>
-              ) : null}
-            </button>
-          ))}
-          {!visibleTeacherGroups.length ? (
-            <div className="w-full rounded-2xl border border-dashed border-line bg-white/70 p-6 text-center text-sm font-bold text-ink-500 dark:border-white/10 dark:bg-white/5 dark:text-navy-200">
-              Bu teacher uchun guruh topilmadi. Filter tanlangan bo'lsa, “All subjects”ni tanlang yoki admin panelda teacher assignmentni tekshiring.
+
+        {/* ── Filters ── */}
+        <div className="admin-filter-card">
+          <div className="admin-form-grid-3">
+            <label className="admin-form-label">
+              {tt("admin.filter.subject", "Fan")}
+              <select value={teacherGroupSubjectFilter} onChange={(e) => setTeacherGroupSubjectFilter(e.target.value)}>
+                <option value="all">{tt("common.subject.all", "Barcha fanlar")}</option>
+                {teacherSubjects.map((s) => (<option key={s} value={s}>{s}</option>))}
+              </select>
+            </label>
+            <label className="admin-form-label">
+              {tt("admin.filter.lessonDay", "Dars kuni")}
+              <select value={teacherGroupLessonDayFilter} onChange={(e) => setTeacherGroupLessonDayFilter(e.target.value)}>
+                <option value="all">{tt("admin.filter.allDays", "Barcha kunlar")}</option>
+                {LESSON_DAY_OPTIONS.map((d) => (
+                  <option key={d.value} value={d.value}>{d.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-form-label">
+              {tt("admin.filter.groupName", "Guruh nomi")}
+              <input value={teacherGroupNameSearch} onChange={(e) => { setTeacherGroupPage(1); setTeacherGroupNameSearch(e.target.value); }} placeholder="Guruh nomini qidiring..." />
+            </label>
+          </div>
+        </div>
+
+        {/* ── Groups Table ── */}
+        <div className="admin-table-card">
+          <div className="admin-groups-table-wrap">
+            <table className="admin-groups-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>{tt("admin.groups.table.name", "Nomi")}</th>
+                  <th>{tt("admin.groups.table.teacher", "O'qituvchi")}</th>
+                  <th>{tt("admin.groups.table.subject", "Fan")}</th>
+                  <th>{tt("admin.groups.table.level", "Daraja")}</th>
+                  <th>{tt("admin.groups.table.lessonDay", "Dars kuni")}</th>
+                  <th>{tt("admin.groups.table.students", "Talabalar")}</th>
+                  <th>{tt("admin.groups.table.fee", "To'lov")}</th>
+                  <th>{tt("admin.users.table.actions", "Amallar")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedTeacherGroups.map((group: GenericRow) => (
+                  <tr key={group.id}>
+                    <td className="text-xs font-mono text-ink-400 dark:text-navy-500 whitespace-nowrap">#{group.id}</td>
+                    <td>
+                      <span className="font-semibold text-sm text-navy-900 dark:text-white block min-w-[140px]">{group.name || "-"}</span>
+                      {group.telegram_link || group.telegram_group_url ? (
+                        <a href={String(group.telegram_link || group.telegram_group_url || "")} target="_blank" rel="noreferrer" className="text-[11px] text-blue-500 hover:underline">Telegram</a>
+                      ) : null}
+                      {group.temporary_access ? (
+                        <span className="ml-1 rounded-full bg-gold-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-gold-700 dark:bg-gold-500/15 dark:text-gold-200">
+                          Temporary
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="text-sm text-ink-700 dark:text-navy-300 whitespace-nowrap">{group.teacher_name || user.full_name || "-"}</td>
+                    <td>
+                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg border border-indigo-100 dark:border-indigo-500/20">{group.subject || "-"}</span>
+                    </td>
+                    <td>
+                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{group.level || "-"}</span>
+                    </td>
+                    <td>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="inline-block px-2 py-1 text-[11px] font-bold bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400 rounded-lg border border-violet-100 dark:border-violet-500/20 w-fit">{group.lesson_date || "-"}</span>
+                        {(group.lesson_start || group.start_time) ? (
+                          <span className="text-[11px] text-ink-500 dark:text-navy-400 font-mono">{String(group.lesson_start || group.start_time || "").slice(0,5)}{(group.lesson_end || group.end_time) ? ` – ${String(group.lesson_end || group.end_time || "").slice(0,5)}` : ""}</span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td>
+                      <span className="inline-flex items-center gap-1 text-sm font-semibold text-ink-700 dark:text-navy-200">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                        {group.student_count ?? "-"}
+                      </span>
+                    </td>
+                    <td className="text-sm font-semibold text-navy-900 dark:text-white whitespace-nowrap">
+                      {group.monthly_fee_text || "-"}
+                    </td>
+                    <td>
+                      <div className="admin-action-btns">
+                        <button
+                          className="admin-btn-edit"
+                          onClick={() => {
+                            setSelectedGroupId(Number(group.id || 0));
+                            setTeacherGroupDraft({
+                              name: group.name || "",
+                              subject: group.subject || "",
+                              level: group.level || "",
+                              lesson_date: group.lesson_date || "",
+                              lesson_start: group.lesson_start || group.start_time || "",
+                              lesson_end: group.lesson_end || group.end_time || "",
+                            });
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          {tt("admin.groups.manage", "Boshqarish")}
+                        </button>
+                        <button
+                          className="admin-btn-delete"
+                          onClick={async () => {
+                            if (!window.confirm(`"${group.name}" guruhini o'chirishni tasdiqlaysizmi?`)) return;
+                            await onApiCall(`/teacher/groups/${group.id}`, {}, "DELETE", "Guruh o'chirildi");
+                            await loadTeacherGroups();
+                          }}
+                        >
+                          {tt("common.delete", "O'chirish")}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {visibleTeacherGroups.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="text-center py-12 text-sm font-semibold text-ink-500 dark:text-navy-400">
+                      Guruh topilmadi
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          <div className="admin-pagination">
+            <span className="admin-pagination-info">{tt("common.page", "Sahifa")} <strong>{teacherGroupPage}</strong> / <strong>{teacherGroupPages}</strong></span>
+            <div className="admin-pagination-btns">
+              <button className="admin-page-btn" disabled={teacherGroupPage <= 1} onClick={() => setTeacherGroupPage((prev) => Math.max(1, prev - 1))}>{tt("common.prev", "Oldingi")}</button>
+              <button className="admin-page-btn" disabled={teacherGroupPage >= teacherGroupPages} onClick={() => setTeacherGroupPage((prev) => Math.min(teacherGroupPages, prev + 1))}>{tt("common.next", "Keyingi")}</button>
             </div>
-          ) : null}
-        </section>
-        {!selectedTeacherGroup ? (
-          <section className="rounded-[2rem] border border-dashed border-line bg-white/80 p-8 text-center text-sm font-bold text-ink-600 shadow-premium dark:border-white/10 dark:bg-navy-900/55 dark:text-navy-200">
-            Guruh sozlamalari va memberlar tanlangan guruhdan keyin ochiladi.
-          </section>
-        ) : null}
-        {selectedTeacherGroup ? (
+          </div>
+        </div>
+
+        {/* ── Manage Group Modal ── */}
+        {selectedTeacherGroup && (
           <ModalPortal open={true}>
             <div className="overlay-modal-backdrop" onClick={() => setSelectedGroupId(0)}>
-              <div className="overlay-modal-card admin-wide-modal" onClick={(e) => e.stopPropagation()}>
-                <section className="teacher-arena-panel p-6 md:p-8 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-[2rem] shadow-premium relative">
-                  <button className="modal-icon-close" onClick={() => setSelectedGroupId(0)} aria-label="Yopish">✕</button>
-                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-6 pr-8">
-                    <h3 className="text-xl font-bold text-navy-900 dark:text-white font-display">Group Members: {selectedTeacherGroup.name || "-"}</h3>
-                    <div className="flex flex-wrap gap-2">
+              <article className="overlay-modal-card admin-wide-modal text-left" onClick={(e) => e.stopPropagation()}>
+                {/* Modal Header */}
+                <div className="row-between gap-3">
+                  <div>
+                    <h3>🏫 {selectedTeacherGroup.name || "Guruhni boshqarish"}</h3>
+                    <p className="text-sm text-ink-500 dark:text-navy-300">{selectedTeacherGroup.subject || "-"} · {selectedTeacherGroup.level || "-"}</p>
+                  </div>
+                  <button className="admin-modal-close" type="button" onClick={() => setSelectedGroupId(0)}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+
+                {/* ── Section 1: Edit Group Info ── */}
+                <div className="flex flex-col gap-5 mt-4">
+                  <section className="admin-modal-section">
+                    <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">📋 Asosiy ma&apos;lumotlar</p>
+                    <div className="admin-form-grid-2">
+                      <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                        {tt("common.name", "Guruh nomi")}
+                        <input value={String(teacherGroupDraft.name || "")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Guruh nomi" />
+                      </label>
+                      <label className="admin-form-label">
+                        {tt("admin.groups.primarySubject", "Asosiy fan")}
+                        <select value={String(teacherGroupDraft.subject || "English")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, subject: e.target.value }))}>
+                          {SUBJECT_OPTIONS.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </label>
+                      {!["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(String(teacherGroupDraft.subject || "")) && (
+                        <label className="admin-form-label">
+                          {tt("common.level", "Daraja")}
+                          <select value={String(teacherGroupDraft.level || "B1")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, level: e.target.value }))}>
+                            {CEFR_LEVELS.map((lvl) => (
+                              <option key={lvl} value={lvl}>{lvl}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      <label className="admin-form-label">
+                        {tt("admin.groups.lessonDay", "Dars kunlari")}
+                        <select value={String(teacherGroupDraft.lesson_date || "MWF").toUpperCase()} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_date: e.target.value }))}>
+                          {LESSON_DAY_OPTIONS.map((d) => (
+                            <option key={d.value} value={d.value}>{d.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="admin-form-label">
+                        {tt("admin.groups.startTime", "Boshlanish vaqti")}
+                        <select value={String(teacherGroupDraft.lesson_start || "18:00")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_start: e.target.value }))}>
+                          {LESSON_TIME_OPTIONS.map((t) => <option key={`ts-${t}`} value={t}>{t}</option>)}
+                        </select>
+                      </label>
+                      <label className="admin-form-label">
+                        {tt("admin.groups.endTime", "Tugash vaqti")}
+                        <select value={String(teacherGroupDraft.lesson_end || "19:00")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_end: e.target.value }))}>
+                          {LESSON_TIME_OPTIONS.map((t) => <option key={`te-${t}`} value={t}>{t}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                    
+                    {teacherGroupEditError ? <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-600">{teacherGroupEditError}</div> : null}
+
+                    <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-ink-200 dark:border-navy-600">
                       <button
-                        className="px-4 py-2 text-sm font-bold text-white bg-cyan-500 rounded-xl hover:bg-cyan-600 transition-all"
+                        className="admin-btn-primary"
+                        onClick={async () => {
+                          if (!selectedGroupId) return;
+                          setTeacherGroupEditError("");
+                          const isNewSubject = ["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherGroupDraft.subject || "");
+                          const result = await onApiCall(`/teacher/groups/${selectedGroupId}`, {
+                            name: String(teacherGroupDraft.name || "").trim(),
+                            subject: normalizeSubjectLabel(String(teacherGroupDraft.subject || "")) || "English",
+                            level: isNewSubject ? "" : String(teacherGroupDraft.level || "B1"),
+                            lesson_date: String(teacherGroupDraft.lesson_date || "MWF").toUpperCase(),
+                            lesson_start: String(teacherGroupDraft.lesson_start || "18:00"),
+                            lesson_end: String(teacherGroupDraft.lesson_end || "19:00"),
+                          }, "PATCH", "Guruh yangilandi");
+                          if (result) await loadTeacherGroups();
+                        }}
+                      >
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                        {tt("common.save", "Saqlash")}
+                      </button>
+                      <button className="admin-page-btn" onClick={() => setSelectedGroupId(0)}>
+                        {tt("common.cancel", "Bekor qilish")}
+                      </button>
+                    </div>
+                  </section>
+                </div>
+
+                {/* ── Section 2: Group Roster ── */}
+                <section className="admin-modal-section mt-5">
+                  <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+                    <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">👥 {tt("admin.groups.roster", "Talabalar ro'yxati")}</p>
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <button
+                        className="admin-btn-primary !py-1.5 !px-3 !text-xs"
                         onClick={async () => {
                           setTeacherAddStudentModalOpen(true);
                           await loadTeacherAvailableStudents();
@@ -11536,143 +11730,76 @@ function TeacherSection({
                       </button>
                     </div>
                   </div>
-          {selectedTeacherGroup ? (
-            <div className="mb-6 rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-navy-900/45">
-              <h4 className="mb-3 text-sm font-black uppercase tracking-wide text-ink-500 dark:text-navy-300">Group settings</h4>
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
-                <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                  Name
-                  <input className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={teacherGroupDraft.name || ""} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, name: event.target.value }))} />
-                </label>
-                <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                  Subject
-                  <select className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={teacherGroupDraft.subject || "English"} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, subject: event.target.value }))}>
-                    {Array.from(new Set([...(groups || []).map((g: GenericRow) => String(g.subject || "").trim()).filter(Boolean), ...SUBJECT_OPTIONS])).map((subject) => (
-                      <option key={`teacher-edit-sub-${subject}`} value={subject}>{subject}</option>
-                    ))}
-                  </select>
-                </label>
-                {!["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherGroupDraft.subject || "") && (
-                  <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                    Level
-                    <select className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={teacherGroupDraft.level || "B1"} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, level: event.target.value }))}>
-                      {CEFR_LEVELS.map((level) => <option key={`teacher-edit-level-${level}`} value={level}>{level}</option>)}
-                    </select>
-                  </label>
-                )}
-                <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                  Lesson Days
-                  <select className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={String(teacherGroupDraft.lesson_date || "MWF").toUpperCase()} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_date: event.target.value }))}>
-                    {LESSON_DAY_OPTIONS.map((day) => <option key={`teacher-edit-day-${day.value}`} value={day.value}>{day.label}</option>)}
-                  </select>
-                </label>
-                <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                  Start
-                  <select className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={teacherGroupDraft.lesson_start || "18:00"} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_start: event.target.value }))}>
-                    {LESSON_TIME_OPTIONS.map((time) => <option key={`teacher-edit-start-${time}`} value={time}>{time}</option>)}
-                  </select>
-                </label>
-                <label className="text-xs font-bold text-ink-500 dark:text-navy-300">
-                  End
-                  <select className="mt-1 w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-navy-900 dark:border-white/10 dark:bg-navy-950 dark:text-white" value={teacherGroupDraft.lesson_end || "19:00"} onChange={(event) => setTeacherGroupDraft((prev) => ({ ...prev, lesson_end: event.target.value }))}>
-                    {LESSON_TIME_OPTIONS.map((time) => <option key={`teacher-edit-end-${time}`} value={time}>{time}</option>)}
-                  </select>
-                </label>
-                <div className="flex items-end md:col-span-2">
-                  <button
-                    className="w-full rounded-xl bg-cyan-500 px-4 py-2.5 text-sm font-black text-white shadow-[0_0_15px_rgba(6,182,212,0.25)] transition-all hover:bg-cyan-600"
-                    onClick={async () => {
-                      if (!selectedGroupId) return;
-                      setTeacherGroupEditError("");
-                      const isNewSubject = ["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherGroupDraft.subject || "");
-                      const result = await onApiCall(`/teacher/groups/${selectedGroupId}`, {
-                        name: String(teacherGroupDraft.name || "").trim(),
-                        subject: normalizeSubjectLabel(String(teacherGroupDraft.subject || "")) || "English",
-                        level: isNewSubject ? "" : String(teacherGroupDraft.level || "B1"),
-                        lesson_date: String(teacherGroupDraft.lesson_date || "MWF").toUpperCase(),
-                        lesson_start: String(teacherGroupDraft.lesson_start || "18:00"),
-                        lesson_end: String(teacherGroupDraft.lesson_end || "19:00"),
-                      }, "PATCH", "Group updated");
-                      if (result) await loadTeacherGroups();
-                    }}
-                  >
-                    Save Group
-                  </button>
-                </div>
-              </div>
-              {teacherGroupEditError ? <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-600">{teacherGroupEditError}</div> : null}
+
+                  <div className="admin-groups-table-wrap">
+                    <table className="admin-groups-table">
+                      <thead>
+                        <tr>
+                          <th>{tt("common.student", "Talaba")}</th>
+                          <th className="text-right">{tt("admin.users.table.actions", "Amallar")}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pagedMemberRows.map((row: GenericRow) => (
+                          <tr key={row.id}>
+                            <td className="font-semibold text-navy-900 dark:text-white">
+                              <UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} />
+                            </td>
+                            <td className="text-right">
+                              <button
+                                className="admin-btn-delete"
+                                disabled={Boolean(teacherMemberActionBusy[Number(row.id || 0)])}
+                                onClick={async () => {
+                                  const sid = Number(row.id || 0);
+                                  if (!sid) return;
+                                  const d = window.prompt("Guruhdan chiqarish sanasini kiriting (YYYY-MM-DD):", new Date().toISOString().split('T')[0]);
+                                  if (d === null) return;
+                                  setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: true }));
+                                  const removed = row;
+                                  setMemberRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
+                                  setTeacherAvailableRows((prev) => [removed, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                  try {
+                                    const token = localStorage.getItem("diamond_token");
+                                    if (!token) return;
+                                    const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members/${row.id}?removed_at=${encodeURIComponent(d)}`, { token, method: "DELETE" });
+                                    updateTeacherGroupCountLocal(Number(selectedGroupId), Number(result?.group_count));
+                                    emitUiToast(String(result?.message || "Student removed"), "success");
+                                  } catch (error) {
+                                    setMemberRows((prev) => [removed, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                    setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
+                                    emitUiToast(error instanceof Error ? error.message : "Student remove failed", "error");
+                                  } finally {
+                                    setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: false }));
+                                  }
+                                }}
+                              >
+                                Chiqarish
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {pagedMemberRows.length === 0 && (
+                          <tr><td colSpan={2} className="p-8 text-center text-ink-500 font-semibold">Guruhda talabalar yo'q</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="admin-pagination mt-4">
+                    <span className="admin-pagination-info">{tt("common.page", "Sahifa")} <strong>{memberPage}</strong> / <strong>{memberPages}</strong></span>
+                    <div className="admin-pagination-btns">
+                      <button className="admin-page-btn" disabled={memberPage <= 1} onClick={() => setMemberPage((prev) => Math.max(1, prev - 1))}>{tt("common.prev", "Oldingi")}</button>
+                      <button className="admin-page-btn" disabled={memberPage >= memberPages} onClick={() => setMemberPage((prev) => Math.min(memberPages, prev + 1))}>{tt("common.next", "Keyingi")}</button>
+                    </div>
+                  </div>
+                </section>
+              </article>
             </div>
-          ) : null}
-          <div className="table-wrap group-roster-scroll w-full max-w-full overflow-x-auto overflow-y-auto">
-            <table className="w-full text-left border-collapse min-w-0">
-              <thead>
-                <tr className="border-b border-line dark:border-white/10 text-xs uppercase tracking-wider text-ink-500 font-bold bg-surface-soft dark:bg-navy-900/50">
-                  <th className="p-4 rounded-tl-xl">{tt("admin.users.table.name", "Name")}</th>
-                  <th className="p-4 rounded-tr-xl text-right">{tt("admin.users.table.actions", "Actions")}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line dark:divide-white/5">
-                {pagedMemberRows.map((row: GenericRow) => (
-                  <tr key={row.id} className="hover:bg-surface-soft/50 dark:hover:bg-white/[0.02] transition-colors">
-                    <td className="p-4 font-semibold text-navy-900 dark:text-white">
-                      <UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} />
-                    </td>
-                    <td className="p-4 text-right">
-                      <button
-                        className="px-4 py-2 text-sm font-bold text-red-500 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/20 rounded-xl hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
-                        disabled={Boolean(teacherMemberActionBusy[Number(row.id || 0)])}
-                        onClick={async () => {
-                          const sid = Number(row.id || 0);
-                          if (!sid) return;
-                          const d = window.prompt("Guruhdan chiqarish sanasini kiriting (YYYY-MM-DD):", new Date().toISOString().split('T')[0]);
-                          if (d === null) return;
-                          setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: true }));
-                          const removed = row;
-                          setMemberRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
-                          setTeacherAvailableRows((prev) => [removed, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                          try {
-                            const token = localStorage.getItem("diamond_token");
-                            if (!token) return;
-                            const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members/${row.id}?removed_at=${encodeURIComponent(d)}`, { token, method: "DELETE" });
-                            updateTeacherGroupCountLocal(Number(selectedGroupId), Number(result?.group_count));
-                            emitUiToast(String(result?.message || "Student removed"), "success");
-                          } catch (error) {
-                            setMemberRows((prev) => [removed, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                            setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
-                            emitUiToast(error instanceof Error ? error.message : "Student remove failed", "error");
-                          } finally {
-                            setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: false }));
-                          }
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {pagedMemberRows.length === 0 && (
-                  <tr><td colSpan={2} className="p-8 text-center text-ink-500">No members found</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-between mt-6 pt-6 border-t border-line dark:border-white/10">
-            <span className="text-sm font-bold text-ink-500">Page {memberPage} / {memberPages}</span>
-            <div className="flex gap-3">
-              <button className="px-4 py-2 text-sm font-bold bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl disabled:opacity-40 hover:border-cyan-500 hover:text-cyan-500 transition-all" disabled={memberPage <= 1} onClick={() => setMemberPage((prev) => Math.max(1, prev - 1))}>Prev</button>
-              <button className="px-4 py-2 text-sm font-bold bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl disabled:opacity-40 hover:border-cyan-500 hover:text-cyan-500 transition-all" disabled={memberPage >= memberPages} onClick={() => setMemberPage((prev) => Math.min(memberPages, prev + 1))}>Next</button>
-            </div>
-          </div>
-        </section>
-        
-        </div>
-        </div>
-        </ModalPortal>
-        ) : null}
+          </ModalPortal>
+        )}
         {teacherAddStudentModalOpen ? (
           <ModalPortal open={true}>
             <div className="overlay-modal-backdrop" onClick={() => setTeacherAddStudentModalOpen(false)}>
-              <article className="overlay-modal-card roster-picker-modal max-w-xl w-full p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl text-navy-900 dark:text-white" onClick={(event) => event.stopPropagation()}>
+              <article className="overlay-modal-card roster-picker-modal max-w-xl w-full p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl text-navy-900 dark:text-white text-left" onClick={(event) => event.stopPropagation()}>
                 <div className="row-between mb-4">
                   <div>
                     <h3 className="text-lg font-bold font-display">Student qo'shish</h3>
@@ -11720,25 +11847,27 @@ function TeacherSection({
                       <div className="grid grid-cols-2 gap-3">
                         <button
                           type="button"
-                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${
+                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-left flex flex-col gap-1 ${
                             teacherCreateStudentDraft.account_type === "student"
-                              ? "border-cyan-500 bg-cyan-500/10 text-cyan-500 dark:text-cyan-400"
-                              : "border-line dark:border-white/10 text-ink-500 dark:text-navy-300"
+                              ? "bg-cyan-500/10 border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                              : "border-line dark:border-white/10 text-ink-600 dark:text-navy-300"
                           }`}
                           onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "student" }))}
                         >
-                          🔑 O'quvchi Hisobli (Login & Parol)
+                          <span>👤 Akkauntli O'quvchi</span>
+                          <span className="text-[10px] opacity-75 font-normal">Login ID va Parol beriladi</span>
                         </button>
                         <button
                           type="button"
-                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${
+                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-left flex flex-col gap-1 ${
                             teacherCreateStudentDraft.account_type === "accountless"
-                              ? "border-cyan-500 bg-cyan-500/10 text-cyan-500 dark:text-cyan-400"
-                              : "border-line dark:border-white/10 text-ink-500 dark:text-navy-300"
+                              ? "bg-cyan-500/10 border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                              : "border-line dark:border-white/10 text-ink-600 dark:text-navy-300"
                           }`}
                           onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "accountless" }))}
                         >
-                          📝 Hisobsiz O'quvchi (Faqat Guruh)
+                          <span>📋 Akkauntsiz O'quvchi</span>
+                          <span className="text-[10px] opacity-75 font-normal">Faqat davomad/to'lov uchun</span>
                         </button>
                       </div>
                     </div>
@@ -11751,7 +11880,7 @@ function TeacherSection({
                           className="text-input w-full"
                           value={teacherCreateStudentDraft.first_name}
                           onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, first_name: e.target.value }))}
-                          placeholder="masalan: Ali"
+                          placeholder="masalan: Jasur"
                           required
                         />
                       </div>
@@ -11762,7 +11891,7 @@ function TeacherSection({
                           className="text-input w-full"
                           value={teacherCreateStudentDraft.last_name}
                           onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, last_name: e.target.value }))}
-                          placeholder="masalan: Valiyev"
+                          placeholder="masalan: Karimov"
                           required
                         />
                       </div>
@@ -11796,7 +11925,7 @@ function TeacherSection({
                     <div className="flex items-center justify-end gap-3 pt-4 border-t border-line dark:border-white/10">
                       <button
                         type="button"
-                        className="btn btn-soft"
+                        className="admin-page-btn"
                         onClick={() => setTeacherAddStudentModalOpen(false)}
                       >
                         Bekor Qilish
@@ -11804,7 +11933,7 @@ function TeacherSection({
                       <button
                         type="submit"
                         disabled={teacherCreateStudentLoading}
-                        className="btn btn-primary"
+                        className="admin-btn-primary"
                       >
                         {teacherCreateStudentLoading ? "Yaratilmoqda..." : "O'quvchini Yaratish va Qo'shish"}
                       </button>
@@ -11812,13 +11941,14 @@ function TeacherSection({
                   </form>
                 ) : (
                   <>
-                    <label>
-                      Search
-                      <div className="button-grid inline">
+                    <label className="block mb-2 text-xs font-bold text-ink-500 uppercase">
+                      Talaba qidiruv
+                      <div className="button-grid inline mt-1 w-full">
                         <input
+                          className="text-input w-full"
                           value={teacherAvailableQuery}
                           onChange={(event) => setTeacherAvailableQuery(event.target.value)}
-                          placeholder="Name / Login ID / Telegram ID"
+                          placeholder="Ism / Login ID / Telefon..."
                         />
                         <button className="btn btn-soft small topbar-icon-btn" title="Search" aria-label="Search" onClick={() => loadTeacherAvailableStudents(teacherAvailableQuery)}>
                           <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -11832,37 +11962,42 @@ function TeacherSection({
                         </button>
                       </div>
                     </label>
-                    <div className="table-wrap table-wrap-no-scroll group-roster-scroll">
-                      <table>
+                    <div className="table-wrap table-wrap-no-scroll group-roster-scroll max-h-60 overflow-y-auto">
+                      <table className="admin-groups-table">
                         <thead>
-                          <tr><th>Student</th><th>Action</th></tr>
+                          <tr>
+                            <th>Talaba</th>
+                            <th className="text-right">Amallar</th>
+                          </tr>
                         </thead>
                         <tbody>
                           {teacherAvailableRows.map((row: GenericRow) => (
-                            <tr key={`teacher-modal-av-${row.id}`}>
-                              <td><UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} /></td>
+                            <tr key={`available-${row.id}`}>
                               <td>
+                                <UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} />
+                              </td>
+                              <td className="text-right">
                                 <button
-                                  className="btn btn-primary small"
+                                  className="admin-btn-primary !py-1 !px-2.5 !text-xs"
                                   disabled={Boolean(teacherMemberActionBusy[Number(row.id || 0)])}
                                   onClick={async () => {
                                     const sid = Number(row.id || 0);
                                     if (!sid || !selectedGroupId) return;
                                     setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: true }));
-                                    const added = row;
-                                    setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
-                                    setMemberRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
                                     try {
                                       const token = localStorage.getItem("diamond_token");
                                       if (!token) return;
-                                      const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members/${sid}`, { token, method: "POST" });
-                                      if (result?.member) {
-                                        setMemberRows((prev) => [result.member as GenericRow, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                                      }
+                                      const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members`, {
+                                        token,
+                                        method: "POST",
+                                        body: { user_id: sid },
+                                      });
+                                      setMemberRows((prev) => [row, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                      setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
                                       updateTeacherGroupCountLocal(Number(selectedGroupId), Number(result?.group_count));
                                       emitUiToast(String(result?.message || "Student added"), "success");
                                     } catch (error) {
-                                      setTeacherAvailableRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                      setTeacherAvailableRows((prev) => [row, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
                                       setMemberRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
                                       emitUiToast(error instanceof Error ? error.message : "Student add failed", "error");
                                     } finally {
