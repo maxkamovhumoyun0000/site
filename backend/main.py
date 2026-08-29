@@ -28780,15 +28780,15 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
         subject = str((group or {}).get("subject") or "general")
 
         if is_ai_generated:
-            earned_dcoins = -100
+            earned_dpoints = -100
             status = "not_done"
-            review_notes = f"⚠️ AI Matn Aniqlandi (Jarima: -100 D'coin):\n\n{feedback}"
+            review_notes = f"⚠️ AI Matn Aniqlandi (Jarima: -100 D'point):\n\n{feedback}"
         elif accepted:
-            earned_dcoins = round((score / 100.0) * 500.0)
+            earned_dpoints = round((score / 100.0) * 500.0)
             status = "done"
-            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (+{earned_dcoins} D'coin).\n\n{feedback}"
+            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (+{earned_dpoints} D'point).\n\n{feedback}"
         else:
-            earned_dcoins = 0
+            earned_dpoints = 0
             status = "not_done"
             review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (Qayta ishlash kerak).\n\n{feedback}"
 
@@ -28797,17 +28797,17 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
             student_id=student_id,
             reviewed_by=teacher_id if teacher_id > 0 else 0,
             status=status,
-            dcoin_delta=float(earned_dcoins),
+            dcoin_delta=float(earned_dpoints),
             review_note=review_notes,
         )
         submission["status"] = status
         submission["review_note"] = review_notes
-        submission["dpoints_delta"] = earned_dcoins
-        submission["dcoin_delta"] = earned_dcoins
+        submission["dpoints_delta"] = earned_dpoints
+        submission["dcoin_delta"] = earned_dpoints
 
         if is_ai_generated:
-            # Deduct -100 D'coins directly from student balance
-            add_dcoins(student_id, -100.0, subject, change_type="homework_ai_penalty")
+            # Deduct -100 D'points directly from student balance
+            add_dpoints(student_id, -100.0, subject, change_type="homework_ai_penalty")
             try:
                 conn = get_conn()
                 cur = conn.cursor()
@@ -28816,14 +28816,14 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                     INSERT INTO diamond_history (user_id, amount, reason, created_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     """,
-                    (student_id, -100.0, f"AI Matn Jarimasi: '{title}' (-100 D'coin)"),
+                    (student_id, -100.0, f"AI Matn Jarimasi: '{title}' (-100 D'point)"),
                 )
                 conn.commit()
                 conn.close()
             except Exception:
                 pass
-        elif accepted and earned_dcoins > 0:
-            add_dcoins(student_id, float(earned_dcoins), subject, change_type="homework_ai")
+        elif accepted and earned_dpoints > 0:
+            add_dpoints(student_id, float(earned_dpoints), subject, change_type="homework_ai")
             try:
                 conn = get_conn()
                 cur = conn.cursor()
@@ -28832,7 +28832,7 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                     INSERT INTO diamond_history (user_id, amount, reason, created_at)
                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
                     """,
-                    (student_id, float(earned_dcoins), f"AI Avto-Tekshiruv: '{title}' ({score}%)"),
+                    (student_id, float(earned_dpoints), f"AI Avto-Tekshiruv: '{title}' ({score}%)"),
                 )
                 conn.commit()
                 conn.close()
@@ -28841,10 +28841,10 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
 
         try:
             if is_ai_generated:
-                msg = f"⚠️ DIQQAT: '{title}' vazifasida AI matn aniqlandi!\nBalansingizdan -100 D'coin jarima ayirildi va vazifa rad etildi."
+                msg = f"⚠️ DIQQAT: '{title}' vazifasida AI matn aniqlandi!\nBalansingizdan -100 D'point jarima ayirildi va vazifa rad etildi."
             else:
                 status_text = "Bajarildi ✅" if accepted else "Qayta ishlash kerak ⚠️"
-                msg = f"🤖 Uyga vazifangiz O'qituvchi AI tomonidan tekshirildi!\nNatija: {score}% ({status_text})\nMukofot: {earned_dcoins} D'coin"
+                msg = f"🤖 Uyga vazifangiz O'qituvchi AI tomonidan tekshirildi!\nNatija: {score}% ({status_text})\nMukofot: {earned_dpoints} D'point"
             await _send_push_notification(student_id, "Uyga vazifa tekshirildi", msg, data={"type": "homework", "homework_id": homework_id})
         except Exception:
             pass
