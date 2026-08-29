@@ -10542,6 +10542,36 @@ function TeacherSection({
   const [teacherGroupDraft, setTeacherGroupDraft] = useState<GenericRow>({});
   const [teacherGroupEditError, setTeacherGroupEditError] = useState("");
   const [teacherMemberActionBusy, setTeacherMemberActionBusy] = useState<Record<number, boolean>>({});
+
+  // Teacher Group Creation state
+  const [teacherCreateGroupModalOpen, setTeacherCreateGroupModalOpen] = useState(false);
+  const [teacherCreateGroupLoading, setTeacherCreateGroupLoading] = useState(false);
+  const [teacherCreateGroupError, setTeacherCreateGroupError] = useState("");
+  const [teacherCoursesList, setTeacherCoursesList] = useState<GenericRow[]>(Array.isArray(data.courses) ? data.courses : []);
+  const [teacherCreateGroupDraft, setTeacherCreateGroupDraft] = useState({
+    name: "",
+    course_id: "" as number | string,
+    level: "PRE-INTERMEDIATE",
+    subject: "English",
+    lesson_date: "MWF",
+    lesson_start: "09:00",
+    lesson_end: "10:30",
+    telegram_group_url: "",
+    pricing_type: "group",
+  });
+
+  // Teacher Student Account Creation state
+  const [teacherAddStudentTab, setTeacherAddStudentTab] = useState<"search" | "create">("search");
+  const [teacherCreateStudentLoading, setTeacherCreateStudentLoading] = useState(false);
+  const [teacherCreateStudentError, setTeacherCreateStudentError] = useState("");
+  const [teacherCreateStudentDraft, setTeacherCreateStudentDraft] = useState({
+    account_type: "student" as "student" | "accountless",
+    first_name: "",
+    last_name: "",
+    phone: "",
+    parent_phone: "",
+    level: "PRE-INTERMEDIATE",
+  });
   const [substitutions, setSubstitutions] = useState<GenericRow[]>(data.substitutions || []);
   const [tempTeacherId, setTempTeacherId] = useState("");
   const [tempUpcomingCount, setTempUpcomingCount] = useState(3);
@@ -10902,6 +10932,135 @@ function TeacherSection({
     }
   }
 
+  async function loadTeacherCourses() {
+    try {
+      const token = localStorage.getItem("diamond_token");
+      const res = await requestJson<GenericRow>("/public/courses", { token });
+      if (res?.items) {
+        setTeacherCoursesList(res.items as GenericRow[]);
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  async function handleTeacherCreateGroup(e: React.FormEvent) {
+    e.preventDefault();
+    if (!teacherCreateGroupDraft.name.trim()) {
+      setTeacherCreateGroupError("Guruh nomini kiriting");
+      return;
+    }
+    const courseId = Number(teacherCreateGroupDraft.course_id || (teacherCoursesList[0]?.id || 0));
+    if (!courseId) {
+      setTeacherCreateGroupError("Kursni tanlang");
+      return;
+    }
+    setTeacherCreateGroupLoading(true);
+    setTeacherCreateGroupError("");
+    try {
+      const token = localStorage.getItem("diamond_token");
+      if (!token) throw new Error("Auth token missing");
+      const res = await requestJson<GenericRow>("/teacher/groups", {
+        method: "POST",
+        token,
+        body: {
+          name: teacherCreateGroupDraft.name.trim(),
+          course_id: courseId,
+          subject: teacherCreateGroupDraft.subject || "English",
+          level: teacherCreateGroupDraft.level || "PRE-INTERMEDIATE",
+          lesson_date: teacherCreateGroupDraft.lesson_date || "MWF",
+          lesson_start: teacherCreateGroupDraft.lesson_start || "09:00",
+          lesson_end: teacherCreateGroupDraft.lesson_end || "10:30",
+          telegram_group_url: teacherCreateGroupDraft.telegram_group_url.trim() || undefined,
+          pricing_type: teacherCreateGroupDraft.pricing_type || "group",
+          lang: "uz",
+        },
+      });
+      if (res?.group_id) {
+        setTeacherCreateGroupModalOpen(false);
+        setTeacherCreateGroupDraft({
+          name: "",
+          course_id: "",
+          level: "PRE-INTERMEDIATE",
+          subject: "English",
+          lesson_date: "MWF",
+          lesson_start: "09:00",
+          lesson_end: "10:30",
+          telegram_group_url: "",
+          pricing_type: "group",
+        });
+        emitUiToast("Yangi guruh muvaffaqiyatli yaratildi!", "success");
+        await loadTeacherGroups();
+      } else {
+        setTeacherCreateGroupError(String(res?.detail || "Guruh yaratishda xatolik"));
+      }
+    } catch (err: any) {
+      setTeacherCreateGroupError(err?.message || "Xatolik yuz berdi");
+    } finally {
+      setTeacherCreateGroupLoading(false);
+    }
+  }
+
+  async function handleTeacherCreateStudent(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedGroupId) return;
+    if (!teacherCreateStudentDraft.first_name.trim() || !teacherCreateStudentDraft.last_name.trim()) {
+      setTeacherCreateStudentError("Ism va familiyani kiriting");
+      return;
+    }
+    if (!teacherCreateStudentDraft.phone.trim()) {
+      setTeacherCreateStudentError("Telefon raqamini kiriting");
+      return;
+    }
+    setTeacherCreateStudentLoading(true);
+    setTeacherCreateStudentError("");
+    try {
+      const token = localStorage.getItem("diamond_token");
+      if (!token) throw new Error("Auth token missing");
+      const res = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/students`, {
+        method: "POST",
+        token,
+        body: {
+          account_type: teacherCreateStudentDraft.account_type,
+          first_name: teacherCreateStudentDraft.first_name.trim(),
+          last_name: teacherCreateStudentDraft.last_name.trim(),
+          phone: teacherCreateStudentDraft.phone.trim(),
+          parent_phone: teacherCreateStudentDraft.parent_phone.trim() || undefined,
+          level: teacherCreateStudentDraft.level || "PRE-INTERMEDIATE",
+          subjects: [selectedTeacherGroup?.subject || "English"],
+        },
+      });
+      if (res?.user || res?.account_type) {
+        setTeacherCreateStudentDraft({
+          account_type: "student",
+          first_name: "",
+          last_name: "",
+          phone: "",
+          parent_phone: "",
+          level: "PRE-INTERMEDIATE",
+        });
+        const createdUser = res.user as GenericRow;
+        if (createdUser) {
+          setMemberRows((prev) => [createdUser, ...prev]);
+        }
+        updateTeacherGroupCountLocal(Number(selectedGroupId), Number(selectedTeacherGroup?.student_count || 0) + 1);
+        if (res.account_type === "student" && createdUser?.login_id && createdUser?.password) {
+          alert(`Yangi o'quvchi akkaunti yaratildi! ✅\n\nLogin: ${createdUser.login_id}\nParol: ${createdUser.password}`);
+        } else {
+          emitUiToast("Yangi o'quvchi muvaffaqiyatli yaratildi va guruhga qo'shildi!", "success");
+        }
+        setTeacherAddStudentModalOpen(false);
+        await loadGroupMembers();
+      } else {
+        setTeacherCreateStudentError(String(res?.detail || "O'quvchi yaratishda xatolik"));
+      }
+    } catch (err: any) {
+      setTeacherCreateStudentError(err?.message || "Xatolik yuz berdi");
+    } finally {
+      setTeacherCreateStudentLoading(false);
+    }
+  }
+
   async function loadTeacherDcoinRows() {
     const result = await onApiCall("/teacher/economy/students", undefined, "GET");
     if (result?.items) {
@@ -11127,19 +11286,181 @@ function TeacherSection({
     return (
       <div className="flex flex-col gap-8 pb-12 animate-fade-in">
 
-        <section className="panel-card">
-          <div className="grid grid-3 compact-cards">
-            <label>
+        <section className="panel-card flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+          <div className="flex-1 max-w-xs">
+            <label className="text-xs font-bold text-ink-500 uppercase block mb-1">
               Subject filter
-              <select value={teacherGroupSubjectFilter} onChange={(event) => setTeacherGroupSubjectFilter(event.target.value)}>
-                <option value="all">All subjects</option>
-                {teacherSubjects.map((subject) => (
-                  <option key={`teacher-group-sub-${subject}`} value={subject}>{subject}</option>
-                ))}
-              </select>
             </label>
+            <select
+              className="text-input w-full"
+              value={teacherGroupSubjectFilter}
+              onChange={(event) => setTeacherGroupSubjectFilter(event.target.value)}
+            >
+              <option value="all">All subjects</option>
+              {teacherSubjects.map((subject) => (
+                <option key={`teacher-group-sub-${subject}`} value={subject}>{subject}</option>
+              ))}
+            </select>
           </div>
+          <button
+            className="px-6 py-3 rounded-2xl font-bold text-sm bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+            onClick={async () => {
+              setTeacherCreateGroupError("");
+              setTeacherCreateGroupModalOpen(true);
+              await loadTeacherCourses();
+            }}
+          >
+            + Yangi Guruh Yaratish
+          </button>
         </section>
+
+        {teacherCreateGroupModalOpen && (
+          <ModalPortal open={true}>
+            <div className="overlay-modal-backdrop" onClick={() => setTeacherCreateGroupModalOpen(false)}>
+              <div className="overlay-modal-card max-w-lg w-full p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl text-navy-900 dark:text-white" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between border-b border-line dark:border-white/10 pb-4 mb-6">
+                  <h3 className="text-lg font-bold font-display flex items-center gap-2">
+                    <span className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-500 flex items-center justify-center font-black">+</span>
+                    Yangi Guruh Yaratish
+                  </h3>
+                  <button className="text-ink-400 hover:text-navy-900 dark:hover:text-white font-bold" onClick={() => setTeacherCreateGroupModalOpen(false)}>✕</button>
+                </div>
+
+                {teacherCreateGroupError && (
+                  <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-semibold">
+                    {teacherCreateGroupError}
+                  </div>
+                )}
+
+                <form onSubmit={handleTeacherCreateGroup} className="space-y-4">
+                  <div>
+                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Guruh Nomi *</label>
+                    <input
+                      type="text"
+                      className="text-input w-full"
+                      value={teacherCreateGroupDraft.name}
+                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="masalan: IELTS Morning 09:00"
+                      required
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Fan (Subject) *</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.subject}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, subject: e.target.value }))}
+                      >
+                        {SUBJECT_OPTIONS.map((sub) => (
+                          <option key={`create-grp-sub-${sub}`} value={sub}>{sub}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Kurs (Course) *</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.course_id}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, course_id: e.target.value }))}
+                      >
+                        <option value="">-- Kursni Tanlang --</option>
+                        {teacherCoursesList.map((c: GenericRow) => (
+                          <option key={`create-grp-course-${c.id}`} value={c.id}>{c.title || `Kurs #${c.id}`} ({c.subject || ""})</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Dars Kunlari *</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.lesson_date}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_date: e.target.value }))}
+                      >
+                        <option value="MWF">Mon, Wed, Fri (Dush/Chor/Jum)</option>
+                        <option value="TTS">Tue, Thu, Sat (Sesh/Pay/Shan)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Boshlanish Vaqti</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.lesson_start}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_start: e.target.value }))}
+                      >
+                        {LESSON_TIME_OPTIONS.map((t) => (
+                          <option key={`start-${t}`} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Tugash Vaqti</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.lesson_end}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, lesson_end: e.target.value }))}
+                      >
+                        {LESSON_TIME_OPTIONS.map((t) => (
+                          <option key={`end-${t}`} value={t}>{t}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {!["Matematika", "Ona tili", "Tarix", "Arab tili"].includes(teacherCreateGroupDraft.subject) && (
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Daraja (Level)</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateGroupDraft.level}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, level: e.target.value }))}
+                      >
+                        {CEFR_LEVELS.map((lvl) => (
+                          <option key={`lvl-${lvl}`} value={lvl}>{lvl}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Telegram Guruh Havolasi (ixtiyoriy)</label>
+                    <input
+                      type="url"
+                      className="text-input w-full"
+                      value={teacherCreateGroupDraft.telegram_group_url}
+                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, telegram_group_url: e.target.value }))}
+                      placeholder="https://t.me/joinchat/..."
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-line dark:border-white/10">
+                    <button
+                      type="button"
+                      className="btn btn-soft"
+                      onClick={() => setTeacherCreateGroupModalOpen(false)}
+                    >
+                      Bekor Qilish
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={teacherCreateGroupLoading}
+                      className="btn btn-primary"
+                    >
+                      {teacherCreateGroupLoading ? "Yaratilmoqda..." : "Guruhni Yaratish"}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </ModalPortal>
+        )}
         <section className="teacher-groups-btn-row">
           {visibleTeacherGroups.map((group: GenericRow) => (
             <button
@@ -11325,84 +11646,230 @@ function TeacherSection({
         ) : null}
         {teacherAddStudentModalOpen ? (
           <ModalPortal open={true}>
-          <div className="overlay-modal-backdrop" onClick={() => setTeacherAddStudentModalOpen(false)}>
-            <article className="overlay-modal-card roster-picker-modal" onClick={(event) => event.stopPropagation()}>
-              <div className="row-between">
-                <div>
-                  <h3>Student qo'shish</h3>
-                  <p className="text-sm text-ink-500 dark:text-navy-300">{selectedTeacherGroup?.name || "Tanlangan guruh"}</p>
+            <div className="overlay-modal-backdrop" onClick={() => setTeacherAddStudentModalOpen(false)}>
+              <article className="overlay-modal-card roster-picker-modal max-w-xl w-full p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl text-navy-900 dark:text-white" onClick={(event) => event.stopPropagation()}>
+                <div className="row-between mb-4">
+                  <div>
+                    <h3 className="text-lg font-bold font-display">Student qo'shish</h3>
+                    <p className="text-xs font-semibold text-cyan-600 dark:text-cyan-400">{selectedTeacherGroup?.name || "Tanlangan guruh"}</p>
+                  </div>
+                  <button onClick={() => setTeacherAddStudentModalOpen(false)} className="modal-icon-close">✕</button>
                 </div>
-                <button onClick={() => setTeacherAddStudentModalOpen(false)} className="modal-icon-close">✕</button>
-              </div>
-              <label>
-                Search
-                <div className="button-grid inline">
-                  <input
-                    value={teacherAvailableQuery}
-                    onChange={(event) => setTeacherAvailableQuery(event.target.value)}
-                    placeholder="Name / Login ID / Telegram ID"
-                  />
-                  <button className="btn btn-soft small topbar-icon-btn" title="Search" aria-label="Search" onClick={() => loadTeacherAvailableStudents(teacherAvailableQuery)}>
-                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                      <path d="M11 4a7 7 0 1 0 4.6 12.3l4 4a1 1 0 0 0 1.4-1.4l-4-4A7 7 0 0 0 11 4zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" fill="currentColor" />
-                    </svg>
+
+                <div className="flex border-b border-line dark:border-white/10 mb-4 gap-2">
+                  <button
+                    className={`px-4 py-2 text-xs font-bold rounded-t-xl transition-all ${
+                      teacherAddStudentTab === "search"
+                        ? "bg-cyan-500 text-white shadow-md"
+                        : "text-ink-500 dark:text-navy-300 hover:bg-surface-soft dark:hover:bg-white/5"
+                    }`}
+                    onClick={() => setTeacherAddStudentTab("search")}
+                  >
+                    🔍 Mavjud o'quvchini qidirish
                   </button>
-                  <button className="btn btn-soft small topbar-icon-btn" title="Clear" aria-label="Clear search" onClick={() => { setTeacherAvailableQuery(""); loadTeacherAvailableStudents(""); }}>
-                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                      <path d="M6.7 5.3a1 1 0 0 0-1.4 1.4L10.6 12l-5.3 5.3a1 1 0 1 0 1.4 1.4l5.3-5.3 5.3 5.3a1 1 0 0 0 1.4-1.4L13.4 12l5.3-5.3a1 1 0 1 0-1.4-1.4L12 10.6 6.7 5.3z" fill="currentColor" />
-                    </svg>
+                  <button
+                    className={`px-4 py-2 text-xs font-bold rounded-t-xl transition-all ${
+                      teacherAddStudentTab === "create"
+                        ? "bg-cyan-500 text-white shadow-md"
+                        : "text-ink-500 dark:text-navy-300 hover:bg-surface-soft dark:hover:bg-white/5"
+                    }`}
+                    onClick={() => {
+                      setTeacherCreateStudentError("");
+                      setTeacherAddStudentTab("create");
+                    }}
+                  >
+                    ✨ + Yangi O'quvchi Akkaunti Yaratish
                   </button>
                 </div>
-              </label>
-              <div className="table-wrap table-wrap-no-scroll group-roster-scroll">
-                <table>
-                  <thead>
-                    <tr><th>Student</th><th>Action</th></tr>
-                  </thead>
-                  <tbody>
-                    {teacherAvailableRows.map((row: GenericRow) => (
-                      <tr key={`teacher-modal-av-${row.id}`}>
-                        <td><UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} /></td>
-                        <td>
-                          <button
-                            className="btn btn-primary small"
-                            disabled={Boolean(teacherMemberActionBusy[Number(row.id || 0)])}
-                            onClick={async () => {
-                              const sid = Number(row.id || 0);
-                              if (!sid || !selectedGroupId) return;
-                              setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: true }));
-                              const added = row;
-                              setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
-                              setMemberRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                              try {
-                                const token = localStorage.getItem("diamond_token");
-                                if (!token) return;
-                                const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members/${sid}`, { token, method: "POST" });
-                                if (result?.member) {
-                                  setMemberRows((prev) => [result.member as GenericRow, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                                }
-                                updateTeacherGroupCountLocal(Number(selectedGroupId), Number(result?.group_count));
-                                emitUiToast(String(result?.message || "Student added"), "success");
-                              } catch (error) {
-                                setTeacherAvailableRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
-                                setMemberRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
-                                emitUiToast(error instanceof Error ? error.message : "Student add failed", "error");
-                              } finally {
-                                setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: false }));
-                              }
-                            }}
-                          >
-                            Add
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                    {!teacherAvailableRows.length ? <tr><td colSpan={2} className="text-center text-ink-500">No available students</td></tr> : null}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          </div>
+
+                {teacherAddStudentTab === "create" ? (
+                  <form onSubmit={handleTeacherCreateStudent} className="space-y-4 text-left">
+                    {teacherCreateStudentError && (
+                      <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs font-semibold">
+                        {teacherCreateStudentError}
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Akkaunt Turi *</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        <button
+                          type="button"
+                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${
+                            teacherCreateStudentDraft.account_type === "student"
+                              ? "border-cyan-500 bg-cyan-500/10 text-cyan-500 dark:text-cyan-400"
+                              : "border-line dark:border-white/10 text-ink-500 dark:text-navy-300"
+                          }`}
+                          onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "student" }))}
+                        >
+                          🔑 O'quvchi Hisobli (Login & Parol)
+                        </button>
+                        <button
+                          type="button"
+                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-center ${
+                            teacherCreateStudentDraft.account_type === "accountless"
+                              ? "border-cyan-500 bg-cyan-500/10 text-cyan-500 dark:text-cyan-400"
+                              : "border-line dark:border-white/10 text-ink-500 dark:text-navy-300"
+                          }`}
+                          onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "accountless" }))}
+                        >
+                          📝 Hisobsiz O'quvchi (Faqat Guruh)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Ism *</label>
+                        <input
+                          type="text"
+                          className="text-input w-full"
+                          value={teacherCreateStudentDraft.first_name}
+                          onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, first_name: e.target.value }))}
+                          placeholder="masalan: Ali"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Familiya *</label>
+                        <input
+                          type="text"
+                          className="text-input w-full"
+                          value={teacherCreateStudentDraft.last_name}
+                          onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, last_name: e.target.value }))}
+                          placeholder="masalan: Valiyev"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Telefon Raqami *</label>
+                        <input
+                          type="text"
+                          className="text-input w-full"
+                          value={teacherCreateStudentDraft.phone}
+                          onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, phone: e.target.value }))}
+                          placeholder="+998901234567"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Ota-ona Telefon Raqami</label>
+                        <input
+                          type="text"
+                          className="text-input w-full"
+                          value={teacherCreateStudentDraft.parent_phone}
+                          onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, parent_phone: e.target.value }))}
+                          placeholder="+998909876543 (ixtiyoriy)"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Darajasi (Level)</label>
+                      <select
+                        className="text-input w-full"
+                        value={teacherCreateStudentDraft.level}
+                        onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, level: e.target.value }))}
+                      >
+                        {CEFR_LEVELS.map((lvl) => (
+                          <option key={`st-lvl-${lvl}`} value={lvl}>{lvl}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-3 pt-4 border-t border-line dark:border-white/10">
+                      <button
+                        type="button"
+                        className="btn btn-soft"
+                        onClick={() => setTeacherAddStudentModalOpen(false)}
+                      >
+                        Bekor Qilish
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={teacherCreateStudentLoading}
+                        className="btn btn-primary"
+                      >
+                        {teacherCreateStudentLoading ? "Yaratilmoqda..." : "O'quvchini Yaratish va Qo'shish"}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <>
+                    <label>
+                      Search
+                      <div className="button-grid inline">
+                        <input
+                          value={teacherAvailableQuery}
+                          onChange={(event) => setTeacherAvailableQuery(event.target.value)}
+                          placeholder="Name / Login ID / Telegram ID"
+                        />
+                        <button className="btn btn-soft small topbar-icon-btn" title="Search" aria-label="Search" onClick={() => loadTeacherAvailableStudents(teacherAvailableQuery)}>
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                            <path d="M11 4a7 7 0 1 0 4.6 12.3l4 4a1 1 0 0 0 1.4-1.4l-4-4A7 7 0 0 0 11 4zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" fill="currentColor" />
+                          </svg>
+                        </button>
+                        <button className="btn btn-soft small topbar-icon-btn" title="Clear" aria-label="Clear search" onClick={() => { setTeacherAvailableQuery(""); loadTeacherAvailableStudents(""); }}>
+                          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                            <path d="M6.7 5.3a1 1 0 0 0-1.4 1.4L10.6 12l-5.3 5.3a1 1 0 1 0 1.4 1.4l5.3-5.3 5.3 5.3a1 1 0 0 0 1.4-1.4L13.4 12l5.3-5.3a1 1 0 1 0-1.4-1.4L12 10.6 6.7 5.3z" fill="currentColor" />
+                          </svg>
+                        </button>
+                      </div>
+                    </label>
+                    <div className="table-wrap table-wrap-no-scroll group-roster-scroll">
+                      <table>
+                        <thead>
+                          <tr><th>Student</th><th>Action</th></tr>
+                        </thead>
+                        <tbody>
+                          {teacherAvailableRows.map((row: GenericRow) => (
+                            <tr key={`teacher-modal-av-${row.id}`}>
+                              <td><UserNameCell row={row} name={row.full_name || row.login_id || `#${row.id}`} /></td>
+                              <td>
+                                <button
+                                  className="btn btn-primary small"
+                                  disabled={Boolean(teacherMemberActionBusy[Number(row.id || 0)])}
+                                  onClick={async () => {
+                                    const sid = Number(row.id || 0);
+                                    if (!sid || !selectedGroupId) return;
+                                    setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: true }));
+                                    const added = row;
+                                    setTeacherAvailableRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
+                                    setMemberRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                    try {
+                                      const token = localStorage.getItem("diamond_token");
+                                      if (!token) return;
+                                      const result = await requestJson<GenericRow>(`/teacher/groups/${selectedGroupId}/members/${sid}`, { token, method: "POST" });
+                                      if (result?.member) {
+                                        setMemberRows((prev) => [result.member as GenericRow, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                      }
+                                      updateTeacherGroupCountLocal(Number(selectedGroupId), Number(result?.group_count));
+                                      emitUiToast(String(result?.message || "Student added"), "success");
+                                    } catch (error) {
+                                      setTeacherAvailableRows((prev) => [added, ...prev.filter((item) => Number(item.id || 0) !== sid)]);
+                                      setMemberRows((prev) => prev.filter((item) => Number(item.id || 0) !== sid));
+                                      emitUiToast(error instanceof Error ? error.message : "Student add failed", "error");
+                                    } finally {
+                                      setTeacherMemberActionBusy((prev) => ({ ...prev, [sid]: false }));
+                                    }
+                                  }}
+                                >
+                                  Add
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                          {!teacherAvailableRows.length ? <tr><td colSpan={2} className="text-center text-ink-500">No available students</td></tr> : null}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
+              </article>
+            </div>
           </ModalPortal>
         ) : null}
       </div>
