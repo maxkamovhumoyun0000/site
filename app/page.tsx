@@ -10551,6 +10551,7 @@ function TeacherSection({
   const [teacherCreateGroupDraft, setTeacherCreateGroupDraft] = useState({
     name: "",
     course_id: "" as number | string,
+    owner_branch: "" as number | string,
     level: "PRE-INTERMEDIATE",
     subject: "English",
     lesson_date: "MWF",
@@ -10950,6 +10951,10 @@ function TeacherSection({
       setTeacherCreateGroupError("Guruh nomini kiriting");
       return;
     }
+    if (!teacherCreateGroupDraft.owner_branch) {
+      setTeacherCreateGroupError("Filial (Limited Admin 1 yoki Limited Admin 2) tanlanishi majburiy!");
+      return;
+    }
     const courseId = Number(teacherCreateGroupDraft.course_id || (teacherCoursesList[0]?.id || 0));
     if (!courseId) {
       setTeacherCreateGroupError("Kursni tanlang");
@@ -10966,6 +10971,7 @@ function TeacherSection({
         body: {
           name: teacherCreateGroupDraft.name.trim(),
           course_id: courseId,
+          owner_branch: Number(teacherCreateGroupDraft.owner_branch),
           subject: teacherCreateGroupDraft.subject || "English",
           level: teacherCreateGroupDraft.level || "PRE-INTERMEDIATE",
           lesson_date: teacherCreateGroupDraft.lesson_date || "MWF",
@@ -10981,6 +10987,7 @@ function TeacherSection({
         setTeacherCreateGroupDraft({
           name: "",
           course_id: "",
+          owner_branch: "",
           level: "PRE-INTERMEDIATE",
           subject: "English",
           lesson_date: "MWF",
@@ -11012,6 +11019,10 @@ function TeacherSection({
       setTeacherCreateStudentError("Telefon raqamini kiriting");
       return;
     }
+    if (!teacherCreateStudentDraft.parent_phone.trim()) {
+      setTeacherCreateStudentError("Ota-ona telefon raqami kiritilishi majburiy!");
+      return;
+    }
     setTeacherCreateStudentLoading(true);
     setTeacherCreateStudentError("");
     try {
@@ -11025,7 +11036,7 @@ function TeacherSection({
           first_name: teacherCreateStudentDraft.first_name.trim(),
           last_name: teacherCreateStudentDraft.last_name.trim(),
           phone: teacherCreateStudentDraft.phone.trim(),
-          parent_phone: teacherCreateStudentDraft.parent_phone.trim() || undefined,
+          parent_phone: teacherCreateStudentDraft.parent_phone.trim(),
           level: teacherCreateStudentDraft.level || "PRE-INTERMEDIATE",
           subjects: [selectedTeacherGroup?.subject || "English"],
         },
@@ -11343,6 +11354,20 @@ function TeacherSection({
                       placeholder="masalan: IELTS Morning 09:00"
                       required
                     />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Filial (Limited Admin) *</label>
+                    <select
+                      className="text-input w-full"
+                      value={teacherCreateGroupDraft.owner_branch}
+                      onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, owner_branch: e.target.value }))}
+                      required
+                    >
+                      <option value="">-- Filialni Tanlang (Majburiy) --</option>
+                      <option value="1">Limited Admin 1 (1-filial)</option>
+                      <option value="2">Limited Admin 2 (2-filial)</option>
+                    </select>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -11756,13 +11781,14 @@ function TeacherSection({
                         />
                       </div>
                       <div>
-                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Ota-ona Telefon Raqami</label>
+                        <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Ota-ona Telefon Raqami * (Majburiy)</label>
                         <input
                           type="text"
                           className="text-input w-full"
                           value={teacherCreateStudentDraft.parent_phone}
                           onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, parent_phone: e.target.value }))}
-                          placeholder="+998909876543 (ixtiyoriy)"
+                          placeholder="+998909876543 (majburiy)"
+                          required
                         />
                       </div>
                     </div>

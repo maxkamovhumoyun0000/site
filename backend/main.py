@@ -30358,8 +30358,9 @@ async def teacher_create_student(
     subjects = _normalize_subjects(payload.subjects, fallback=["English"])
     subject = subjects[0] if subjects else "English"
     level = str(payload.level or "PRE-INTERMEDIATE").strip() or "PRE-INTERMEDIATE"
-    placement_subject = _normalize_subject_label(payload.placement_subject) or subject
-    parent_phone = str(payload.parent_phone or "").strip() or None
+    parent_phone = str(payload.parent_phone or "").strip()
+    if not parent_phone:
+        raise HTTPException(status_code=400, detail="Ota-ona telefon raqami (parent_phone) kiritilishi majburiy!")
     joined_at = payload.joined_at
 
     # Guruhlarni tekshirish
@@ -30461,13 +30462,15 @@ async def teacher_create_group(
     teacher_id = int(user.get("id") or 0)
     teacher_owner_admin_id = int(user.get("owner_admin_id") or 0)
 
-    # owner_branch bo'yicha limited admin aniqlanadi
-    owner_admin_id = teacher_owner_admin_id
+    # owner_branch bo'yicha limited admin aniqlanadi (MAJBURIY)
     branch = int(payload.owner_branch or 0)
-    if branch > 0:
-        limited_ids = [int(x) for x in LIMITED_ADMIN_CHAT_IDS if int(x or 0) > 0]
-        if branch <= len(limited_ids):
-            owner_admin_id = limited_ids[branch - 1]
+    if branch not in (1, 2):
+        raise HTTPException(status_code=400, detail="Filial / Limited Admin (1-filial yoki 2-filial) tanlanishi majburiy!")
+    limited_ids = [int(x) for x in LIMITED_ADMIN_CHAT_IDS if int(x or 0) > 0]
+    if branch <= len(limited_ids):
+        owner_admin_id = limited_ids[branch - 1]
+    else:
+        owner_admin_id = teacher_owner_admin_id
 
     normalized_subject_input = _resolve_group_subject_input(payload.subject, payload.subject_id)
     _, normalized_subject = _validate_group_teacher_and_subject(int(teacher_id), normalized_subject_input)
@@ -30545,8 +30548,9 @@ async def teacher_create_and_add_student(
     subjects = _normalize_subjects(payload.subjects, fallback=["English"])
     subject = subjects[0] if subjects else "English"
     level = str(payload.level or "PRE-INTERMEDIATE").strip() or "PRE-INTERMEDIATE"
-    placement_subject = _normalize_subject_label(payload.placement_subject) or subject
-    parent_phone = str(payload.parent_phone or "").strip() or None
+    parent_phone = str(payload.parent_phone or "").strip()
+    if not parent_phone:
+        raise HTTPException(status_code=400, detail="Ota-ona telefon raqami (parent_phone) kiritilishi majburiy!")
     joined_at = payload.joined_at
     _ensure_user_web_columns()
     if account_type == "accountless":
