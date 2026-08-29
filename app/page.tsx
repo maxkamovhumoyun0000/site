@@ -11037,7 +11037,7 @@ function TeacherSection({
           last_name: teacherCreateStudentDraft.last_name.trim(),
           phone: teacherCreateStudentDraft.phone.trim(),
           parent_phone: teacherCreateStudentDraft.parent_phone.trim(),
-          level: teacherCreateStudentDraft.level || "PRE-INTERMEDIATE",
+          level: selectedTeacherGroup?.level || "PRE-INTERMEDIATE",
           subjects: [selectedTeacherGroup?.subject || "English"],
         },
       });
@@ -11791,19 +11791,6 @@ function TeacherSection({
                           required
                         />
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Darajasi (Level)</label>
-                      <select
-                        className="text-input w-full"
-                        value={teacherCreateStudentDraft.level}
-                        onChange={(e) => setTeacherCreateStudentDraft((prev) => ({ ...prev, level: e.target.value }))}
-                      >
-                        {CEFR_LEVELS.map((lvl) => (
-                          <option key={`st-lvl-${lvl}`} value={lvl}>{lvl}</option>
-                        ))}
-                      </select>
                     </div>
 
                     <div className="flex items-center justify-end gap-3 pt-4 border-t border-line dark:border-white/10">

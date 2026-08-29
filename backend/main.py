@@ -30545,9 +30545,10 @@ async def teacher_create_and_add_student(
         raise HTTPException(status_code=404, detail=f"Group not found: {group_id}")
     if not _teacher_can_manage_group(user, group):
         raise HTTPException(status_code=403, detail="You can only add students to your own groups")
-    subjects = _normalize_subjects(payload.subjects, fallback=["English"])
-    subject = subjects[0] if subjects else "English"
-    level = str(payload.level or "PRE-INTERMEDIATE").strip() or "PRE-INTERMEDIATE"
+    group_subject = str(group.get("subject") or "").strip() or "English"
+    group_level = str(group.get("level") or "").strip() or "PRE-INTERMEDIATE"
+    subject = group_subject
+    level = str(payload.level or "").strip() or group_level
     parent_phone = str(payload.parent_phone or "").strip()
     if not parent_phone:
         raise HTTPException(status_code=400, detail="Ota-ona telefon raqami (parent_phone) kiritilishi majburiy!")
