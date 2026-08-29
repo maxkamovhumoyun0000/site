@@ -63,7 +63,7 @@ const EMPTY_BOOK_FORM: BookFormState = {
   cover_url: "",
   pdf_url: "",
   pdf_asset_id: null,
-  price: "",
+  price: "30",
   is_published: true,
 };
 
@@ -124,9 +124,9 @@ export function AdminBooks({
   const apiFetchRef = useRef(apiFetch);
   const booksRequestSeqRef = useRef(0);
   const apiPrefix = rolePrefix === "admin" ? "/admin" : rolePrefix === "support" ? "/support" : "/teacher";
-  const canManageBooks = rolePrefix === "admin" || Boolean(canUploadBooks);
-  const canEditBooks = rolePrefix === "admin";
-  const canManageTests = rolePrefix === "admin" || Boolean(canManageBookTests);
+  const canManageBooks = rolePrefix === "admin" || rolePrefix === "teacher" || Boolean(canUploadBooks);
+  const canEditBooks = rolePrefix === "admin" || rolePrefix === "teacher" || Boolean(canUploadBooks);
+  const canManageTests = rolePrefix === "admin" || rolePrefix === "teacher" || Boolean(canManageBookTests);
 
   useEffect(() => {
     apiFetchRef.current = apiFetch;
@@ -288,6 +288,11 @@ export function AdminBooks({
       setError("Thumbnail yuklash majburiy.");
       return;
     }
+    const numPrice = Number(bookForm.price || 0);
+    if (isNaN(numPrice) || numPrice < 30) {
+      setError("Minimal kitob narxi 30 D'coin bo'lishi kerak.");
+      return;
+    }
     setBookSaving(true);
     setError("");
     try {
@@ -301,12 +306,12 @@ export function AdminBooks({
         cover_url: bookForm.cover_url.trim(),
         pdf_url: bookForm.pdf_url.trim(),
         pdf_asset_id: bookForm.pdf_asset_id || null,
-        price: String(bookForm.price || "").trim() === "" ? null : Math.max(0, Number(bookForm.price || 0)),
+        price: numPrice,
         deadline_days: null,
         is_published: true,
       };
       if (editingBookId) {
-        await apiFetch(`/admin/books/${editingBookId}`, { method: "PUT", body });
+        await apiFetch(`${apiPrefix}/books/${editingBookId}`, { method: "PUT", body });
         emitToast("Kitob yangilandi.");
       } else {
         await apiFetch(`${apiPrefix}/books`, { method: "POST", body });
@@ -428,7 +433,7 @@ export function AdminBooks({
     if (!confirm(`"${book.title}" kitobini o'chirmoqchimisiz?`)) return;
     setError("");
     try {
-      await apiFetch(`/admin/books/${book.id}`, { method: "DELETE" });
+      await apiFetch(`${apiPrefix}/books/${book.id}`, { method: "DELETE" });
       setNotice("Kitob o'chirildi.");
       setBooks((prev) => prev.filter((item) => Number(item.id || 0) !== Number(book.id || 0)));
       if (Number(selectedBookId || 0) === Number(book.id || 0)) {
@@ -443,7 +448,7 @@ export function AdminBooks({
   async function togglePublish(book: BookItem) {
     setError("");
     try {
-      await apiFetch(`/admin/books/${book.id}`, { method: "PUT", body: { is_published: !Boolean(book.is_published) } });
+      await apiFetch(`${apiPrefix}/books/${book.id}`, { method: "PUT", body: { is_published: !Boolean(book.is_published) } });
       setNotice(Boolean(book.is_published) ? "Kitob qoralamaga o'tkazildi." : "Kitob nashr qilindi.");
       await fetchBooks();
     } catch (e) {
@@ -717,7 +722,7 @@ export function AdminBooks({
                 </div>
               ) : null}
 	              <input value={bookForm.pdf_url} onChange={(e) => setBookForm((prev) => ({ ...prev, pdf_url: e.target.value }))} placeholder="PDF yoki ePub URL (masalan: https://...book.epub)" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm sm:col-span-2" />
-	              <input type="number" min={0} value={bookForm.price} onChange={(e) => setBookForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Narx (D'coin)" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm" />
+	              <input type="number" min={30} value={bookForm.price} onChange={(e) => setBookForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="Narx (min 30 D'coin) *" className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm" />
 	              <textarea value={bookForm.description} onChange={(e) => setBookForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Tavsif" rows={4} className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2.5 text-sm sm:col-span-2 resize-none" />
             </div>
             <div className="flex justify-end gap-2">

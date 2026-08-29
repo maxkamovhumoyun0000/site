@@ -887,6 +887,14 @@ def _init_postgres_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teacher_homework_settings (
+                teacher_id BIGINT PRIMARY KEY,
+                ai_auto_grade INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # Ensure row exists - let BIGSERIAL handle the ID automatically
         try:
             cur.execute('''
@@ -1567,6 +1575,14 @@ def init_db():
             deadline_at TIMESTAMP,
             status TEXT DEFAULT 'active',
             UNIQUE(user_id, book_id)
+        )
+    ''')
+
+    cur.execute('''
+        CREATE TABLE IF NOT EXISTS teacher_homework_settings (
+            teacher_id BIGINT PRIMARY KEY,
+            ai_auto_grade INTEGER DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -21693,6 +21709,67 @@ def purchase_book_with_dcoins(
             conn.close()
 
 
+def get_teacher_homework_settings(teacher_id: int) -> dict:
+    """Returns homework settings for a teacher, defaulting ai_auto_grade to False."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM teacher_homework_settings WHERE teacher_id = ?", (int(teacher_id),))
+        row = cur.fetchone()
+        if not row:
+            return {"teacher_id": int(teacher_id), "ai_auto_grade": False}
+        res = _row_to_dict(row)
+        return {
+            "teacher_id": int(teacher_id),
+            "ai_auto_grade": bool(res.get("ai_auto_grade")),
+            "updated_at": str(res.get("updated_at") or ""),
+        }
+    except Exception:
+        logger.exception("get_teacher_homework_settings failed teacher_id=%s", teacher_id)
+        return {"teacher_id": int(teacher_id), "ai_auto_grade": False}
+    finally:
+        conn.close()
+
+
+def upsert_teacher_homework_settings(teacher_id: int, ai_auto_grade: bool) -> dict:
+    """Updates or inserts teacher homework settings."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        val = 1 if ai_auto_grade else 0
+        if _is_postgres_enabled():
+            cur.execute(
+                """
+                INSERT INTO teacher_homework_settings (teacher_id, ai_auto_grade, updated_at)
+                VALUES (%s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (teacher_id)
+                DO UPDATE SET ai_auto_grade = EXCLUDED.ai_auto_grade, updated_at = CURRENT_TIMESTAMP
+                """,
+                (int(teacher_id), val),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO teacher_homework_settings (teacher_id, ai_auto_grade, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (teacher_id)
+                DO UPDATE SET ai_auto_grade = excluded.ai_auto_grade, updated_at = CURRENT_TIMESTAMP
+                """,
+                (int(teacher_id), val),
+            )
+        conn.commit()
+        return {"teacher_id": int(teacher_id), "ai_auto_grade": bool(ai_auto_grade)}
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("upsert_teacher_homework_settings failed teacher_id=%s", teacher_id)
+        raise exc
+    finally:
+        conn.close()
+
+
 def transfer_dcoins_atomic(
     *,
     sender_id: int,
@@ -21746,20 +21823,41 @@ def transfer_dcoins_atomic(
                 "sender_balance_after": sender_after,
                 "recipient_balance_after": recipient_after,
             }
-        except Exception as exc:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            logger.exception("transfer_dcoins_atomic failed sender_id=%s recipient_id=%s", sender_id, recipient_id)
-            return {"ok": False, "reason": "transaction_failed", "error": str(exc)}
+        finally:
+            conn.close()
+
+def ensure_homework_schema():
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            _ensure_table_columns(
+                cur,
+                "web_homeworks",
+                [
+                    ("description", "TEXT"),
+                    ("group_id", "INTEGER"),
+                    ("target_type", "TEXT"),
+                    ("homework_kind", "TEXT"),
+                    ("due_at", "TIMESTAMP"),
+                    ("image_url", "TEXT"),
+                    ("dcoin_effect", "REAL DEFAULT 0"),
+                    ("status", "TEXT DEFAULT 'active'"),
+                    ("requires_voice_message", "BOOLEAN DEFAULT FALSE"),
+                    ("requires_file", "BOOLEAN DEFAULT FALSE"),
+                    ("requires_essay", "BOOLEAN DEFAULT FALSE"),
+                    ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
+                ],
+            )
+            conn.commit()
         finally:
             conn.close()
 
 
 def create_homework(
+    *,
     teacher_id: int,
-    student_id: int | None,
+    student_id: int | None = None,
     title: str,
     description: str | None = None,
     due_at: str | None = None,
@@ -21769,6 +21867,7 @@ def create_homework(
     homework_kind: str = "both",
     requires_voice_message: bool = False,
     requires_file: bool = False,
+    requires_essay: bool = False,
     is_voiceroom: bool = False,
     voiceroom_groups: list[dict] | None = None,
 ) -> dict | None:
@@ -21783,9 +21882,9 @@ def create_homework(
         cur.execute(
             """
             INSERT INTO web_homeworks(
-                teacher_id, student_id, group_id, target_type, homework_kind, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, is_voiceroom, status
+                teacher_id, student_id, group_id, target_type, homework_kind, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
             """,
             (
                 int(teacher_id),
@@ -21800,6 +21899,7 @@ def create_homework(
                 float(dcoin_effect or 0),
                 bool(requires_voice_message),
                 bool(requires_file),
+                bool(requires_essay),
                 bool(is_voiceroom),
             ),
         )
@@ -22254,7 +22354,7 @@ def record_homework_deadline_penalty(homework_id: int, student_id: int, penalty_
 def review_homework_submission(
     homework_id: int,
     student_id: int,
-    reviewed_by: int,
+    reviewed_by: int = 0,
     status: str = "done",
     dcoin_delta: float = 0.0,
     review_note: str | None = None,
@@ -22864,7 +22964,7 @@ def create_teacher_material(
     file_type: str = "other",
     file_size: int = 0,
     subject: str | None = None,
-    is_public: bool = False,
+    is_public: bool = True,
 ) -> dict | None:
     ensure_teacher_materials_schema()
     conn = get_conn()
@@ -22883,7 +22983,7 @@ def create_teacher_material(
                 str(file_type or "other").strip(),
                 int(file_size or 0),
                 str(subject or "").strip() or None,
-                bool(is_public),
+                True,
             ),
         )
         mat_id = int(getattr(cur, "lastrowid", 0) or 0)
@@ -23499,7 +23599,7 @@ def create_library_node(
     level: str | None = None,
     file_url: str | None = None,
     payload: dict | None = None,
-    is_public: bool = False,
+    is_public: bool = True,
 ) -> dict:
     ensure_library_schema()
     kind = str(kind or "folder").strip().lower()
@@ -23531,7 +23631,7 @@ def create_library_node(
                 level or None,
                 file_url or None,
                 json.dumps(payload, ensure_ascii=False) if payload else None,
-                bool(is_public),
+                True,
             ),
         )
         row = cur.fetchone()

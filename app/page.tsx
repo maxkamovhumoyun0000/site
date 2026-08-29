@@ -62,6 +62,7 @@ import { StudentAttendance } from "./ui/student-attendance";
 import { StudentNotesPanel } from "./ui/student-notes";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
+import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
 function Settings3DToggle() {
   const tt = useWebT();
@@ -5998,12 +5999,12 @@ function StudentHomework() {
     const isNotDone = persistedStatusRaw === "not_done" || Boolean(row.deadline_missed);
     const hasSubmission = Boolean(persistedStatusRaw) && persistedStatusRaw !== "not_done";
     const statusLabel = reviewed
-      ? (persistedStatusRaw === "not_done" ? tt("homework.statusNotDone", "✕ Bajarilmadi") : tt("homework.statusDone", "✓ Bajarildi"))
+      ? (persistedStatusRaw === "not_done" ? tt("homework.statusNotDone", "✕ Bajarilmadi") : tt("homework.statusDone", "✓ Tekshirildi"))
       : isNotDone
-      ? tt("homework.statusAutoMissed", "✕ Qilinmadi (muddati o'tdi)")
+      ? tt("homework.statusAutoMissed", "⏳ Muddati o'tdi")
       : hasSubmission
-      ? tt("homework.statusPending", "… Kutilmoqda")
-      : tt("homework.statusMissing", "— Topshirilmagan");
+      ? tt("homework.statusSubmitted", "📤 Topshirildi")
+      : tt("homework.statusMissing", "📝 Topshirilmagan");
     const statusClass = reviewed
       ? (persistedStatusRaw === "not_done" ? "not-done" : "done")
       : isNotDone
@@ -6011,7 +6012,7 @@ function StudentHomework() {
       : hasSubmission
       ? "pending"
       : "missing";
-    const statusShort = reviewed ? (persistedStatusRaw === "not_done" ? "✕" : "✓") : isNotDone ? "✕" : hasSubmission ? "…" : "—";
+    const statusShort = reviewed ? (persistedStatusRaw === "not_done" ? "✕" : "✓") : isNotDone ? "⏳" : hasSubmission ? "📤" : "📝";
     const isOverdue = isNotDone || (!hasSubmission && row.due_at && new Date(row.due_at).getTime() < Date.now());
     return { hid, teacherName, reviewed, hasSubmission, statusLabel, statusClass, statusShort, isOverdue };
   }
@@ -6278,16 +6279,6 @@ function StudentHomework() {
                   </button>
                 ) : null}
               </div>
-              <label>
-                <strong style={{fontSize:'13px'}}>{tt("homework.noteLabel", "Esse / Yozma javob")}</strong>
-                <textarea
-                  value={noteValue}
-                  onChange={(event) => setNoteDraft((prev) => ({ ...prev, [hid]: event.target.value }))}
-                  placeholder={tt("homework.leaveNote", "Esse yoki yozma javobingizni kiriting...")}
-                  disabled={isSubmitting || locked}
-                  rows={5}
-                />
-              </label>
               </>
               ) : null}
               {requiresVoiceMessage ? (
@@ -6329,20 +6320,23 @@ function StudentHomework() {
                   )}
                 </div>
               ) : null}
-              {!isVoiceroom && !requiresFile && requiresVoiceMessage ? (
-                <label>
-                  <strong style={{fontSize:'13px'}}>{tt("homework.noteLabel", "Esse / Yozma javob")}</strong>
+              {!isVoiceroom && !requiresTest ? (
+                <div className="homework-action-panel mt-4 p-4 border border-line dark:border-white/10 rounded-xl bg-surface-soft dark:bg-white/5">
+                  <div className="row-between mb-2">
+                    <strong style={{ fontSize: "14px", fontWeight: 700 }}>✍️ {tt("homework.noteLabel", "Yozma Ish / Esse")}</strong>
+                    <span className="text-xs font-mono opacity-70">
+                      {(noteValue.trim() ? noteValue.trim().split(/\s+/).length : 0)} ta so'z · {noteValue.length} ta belgi
+                    </span>
+                  </div>
                   <textarea
+                    className="w-full p-3 rounded-lg border border-line dark:border-white/10 bg-white dark:bg-black/20 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
                     value={noteValue}
                     onChange={(event) => setNoteDraft((prev) => ({ ...prev, [hid]: event.target.value }))}
-                    placeholder={tt("homework.leaveNote", "Esse yoki yozma javobingizni kiriting...")}
+                    placeholder={tt("homework.leaveNote", "Essengiz yoki yozma javobingizni bu yerga kiriting...")}
                     disabled={isSubmitting || locked}
-                    rows={5}
+                    rows={6}
                   />
-                </label>
-              ) : null}
-              {!isVoiceroom && !requiresFile && !requiresVoiceMessage ? (
-                <p className="chip">{tt("homework.testOnlyNote", "Bu homework faqat testdan iborat. Test tugashi bilan avtomatik topshiriladi.")}</p>
+                </div>
               ) : null}
               {row.review_note ? (
                 <div style={{ marginTop: 14, padding: "14px", borderRadius: 12, background: "var(--surface-2, #10b98111)", border: "1px solid #10b98144", fontSize: 13 }}>
@@ -6351,22 +6345,21 @@ function StudentHomework() {
                 </div>
               ) : null}
               <div className="row-between" style={{ marginTop: 14 }}>
-                {!isVoiceroom && (requiresFile || requiresVoiceMessage) ? (() => {
+                {!isVoiceroom ? (() => {
                   const missingUpload = requiresFile && (!proofDraft[hid] || proofDraft[hid].length === 0);
                   const missingVoice = requiresVoiceMessage && !voiceDraft[hid];
-                  const isDisabled = isSubmitting || isUploading || isRecording || locked;
-                  
-                  if (!locked && (missingUpload || missingVoice)) {
-                    return null;
-                  }
+                  const hasEssayText = Boolean(noteValue.trim());
+                  const missingEssay = !requiresFile && !requiresVoiceMessage && !requiresTest && !hasEssayText;
+                  const isDisabled = isSubmitting || isUploading || isRecording || locked || missingUpload || missingVoice || missingEssay;
                   
                   return (
                     <button
-                      className="btn btn-primary"
+                      className="btn btn-primary w-full"
+                      type="button"
                       disabled={isDisabled}
                       onClick={() => submit(hid)}
                     >
-                      {locked ? tt("homework.lockedSubmitted", "Topshirilgan") : isSubmitting ? tt("homework.sending", "Jo'natilmoqda...") : tt("common.send", "Yuborish")}
+                      {locked ? tt("homework.lockedSubmitted", "Topshirilgan") : isSubmitting ? tt("homework.sending", "Jo'natilmoqda...") : tt("homework.submit", "Vazifani topshirish")}
                     </button>
                   );
                 })() : <span />}
@@ -6509,6 +6502,7 @@ function TeacherHomeworkPanel({
   const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [testQuestions, setTestQuestions] = useState<any[]>([]);
   const [requiresFile, setRequiresFile] = useState(false);
+  const [requiresEssay, setRequiresEssay] = useState(false);
   const [requiresTest, setRequiresTest] = useState(false);
   const [requiresVoiceMessage, setRequiresVoiceMessage] = useState(false);
   const [reviewModalRow, setReviewModalRow] = useState<GenericRow | null>(null);
@@ -6526,6 +6520,24 @@ function TeacherHomeworkPanel({
   const [aiCheckResult, setAiCheckResult] = useState<Record<string, GenericRow>>({});
   const [aiNoteBusy, setAiNoteBusy] = useState<Record<string, boolean>>({});
   const [aiNoteResult, setAiNoteResult] = useState<Record<string, GenericRow>>({});
+  const [aiAutoGrade, setAiAutoGrade] = useState(false);
+
+  useEffect(() => {
+    onApiCall("/teacher/homework/settings", undefined, "GET")
+      .then((res) => {
+        if (res && typeof res.ai_auto_grade === "boolean") {
+          setAiAutoGrade(res.ai_auto_grade);
+        }
+      })
+      .catch(() => null);
+  }, []);
+
+  async function toggleAiAutoGrade(enabled: boolean) {
+    setAiAutoGrade(enabled);
+    try {
+      await onApiCall("/teacher/homework/settings", { ai_auto_grade: enabled }, "POST");
+    } catch {}
+  }
 
   function addAiResultsToReview(reviewKey: string, kinds: Array<"speaking" | "writing" | "note">) {
     const sections = kinds.flatMap((kind) => {
@@ -6556,7 +6568,8 @@ function TeacherHomeworkPanel({
     setDueAt("");
     setImageUrl("");
     setTestQuestions([]);
-    setRequiresFile(true);
+    setRequiresFile(false);
+    setRequiresEssay(true);
     setRequiresTest(false);
     setRequiresVoiceMessage(false);
     setIsVoiceroom(false);
@@ -6801,16 +6814,16 @@ function TeacherHomeworkPanel({
   }
 
   function homeworkStatusLabelFromKind(kind: string) {
-    if (kind === "done") return "✓ Bajarildi";
-    if (kind === "not-done") return "✕ Qilinmadi";
-    if (kind === "pending") return "… Kutilmoqda";
+    if (kind === "done") return "✓ Tekshirildi";
+    if (kind === "not-done") return "✕ Bajarilmadi";
+    if (kind === "pending") return "📤 Topshirildi";
     return "— Topshirilmadi";
   }
 
   function homeworkStatusShort(kind: string) {
     if (kind === "done") return "✓";
     if (kind === "not-done") return "✕";
-    if (kind === "pending") return "…";
+    if (kind === "pending") return "📤";
     return "—";
   }
 
@@ -6824,7 +6837,24 @@ function TeacherHomeworkPanel({
     <div className="page-stack">
 
       {panelError ? <div className="error-box">{panelError}</div> : null}
-      <section className="panel-card homework-create-card">
+      <section className="panel-card homework-create-card" style={{ marginBottom: "20px" }}>
+        <div className="row-between gap-3" style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid var(--border-color, rgba(0,0,0,0.08))" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+            <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(99,102,241,0.14)", color: "#6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", flexShrink: 0 }}>
+              🤖
+            </div>
+            <div>
+              <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>AI Avto-Tekshiruv (Strict Teacher)</h4>
+              <p style={{ margin: "2px 0 0 0", fontSize: "12px", opacity: 0.7 }}>O'quvchi yozma esse topshirganda AI avtomatik tekshirib 500 D'coin-gacha mukofot va izoh beradi</p>
+            </div>
+          </div>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: "10px", cursor: "pointer", background: aiAutoGrade ? "rgba(99,102,241,0.15)" : "var(--surface-2, rgba(0,0,0,0.05))", padding: "8px 16px", borderRadius: "100px", border: aiAutoGrade ? "1.5px solid #6366f1" : "1px solid transparent", transition: "all 0.2s", userSelect: "none" }}>
+            <input type="checkbox" checked={aiAutoGrade} onChange={(e) => toggleAiAutoGrade(e.target.checked)} style={{ width: "18px", height: "18px", accentColor: "#6366f1", cursor: "pointer" }} />
+            <span style={{ fontSize: "13px", fontWeight: 700, color: aiAutoGrade ? "#6366f1" : "inherit" }}>
+              {aiAutoGrade ? "Yoqilgan (Active)" : "O'chirilgan"}
+            </span>
+          </label>
+        </div>
         <div className="row-between gap-3">
           <div>
             <h3>Homework yuklash</h3>
@@ -6848,7 +6878,7 @@ function TeacherHomeworkPanel({
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
-        <div className="homework-type-toggle-grid homework-type-toggle-grid-top" role="group" aria-label="Homework turi">
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "12px", marginBottom: "16px" }}>
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresTest ? "is-active" : ""}`}
@@ -6872,8 +6902,21 @@ function TeacherHomeworkPanel({
             }}
           >
             <span className="homework-switch-control" aria-hidden="true"><span /></span>
-            <strong>Fayl / izoh</strong>
-            <em>Student izoh va fayl yuboradi.</em>
+            <strong>Fayl topshirig'i</strong>
+            <em>Student rasm, dokument yoki fayl yuklaydi.</em>
+          </button>
+          <button
+            type="button"
+            className={`homework-type-toggle homework-type-switch ${requiresEssay ? "is-active" : ""}`}
+            onClick={() => {
+              const next = !requiresEssay;
+              setRequiresEssay(next);
+              if (next) setIsVoiceroom(false);
+            }}
+          >
+            <span className="homework-switch-control" aria-hidden="true"><span /></span>
+            <strong>Esse / Yozma javob</strong>
+            <em>Student yozma esse yoki javob matnini kiritadi.</em>
           </button>
           <button
             type="button"
@@ -7003,7 +7046,17 @@ function TeacherHomeworkPanel({
         ) : null}
         {requiresTest ? (
           <div className="mt-6 border-t border-line dark:border-white/10 pt-6">
-            <SharedTestEditor questions={testQuestions} onChange={setTestQuestions} title={tt("homework.testTitle", "Homework testi")} />
+            <AiTestEditor
+              questions={testQuestions}
+              onChange={setTestQuestions}
+              onUploadAsset={async (file) => {
+                const formData = new FormData();
+                formData.append("file", file);
+                const res = await onApiCall("/teacher/library/upload", formData, "POST");
+                return res && res.url ? String(res.url) : null;
+              }}
+              title={tt("homework.testTitle", "Homework testi va mashqlari")}
+            />
           </div>
         ) : null}
         
@@ -7040,7 +7093,7 @@ function TeacherHomeworkPanel({
             className="w-full rounded-xl bg-cyan-500 py-3.5 text-sm font-black text-white hover:bg-cyan-600 shadow-premium transition-all mt-6"
             disabled={imageUploading || savingHomework}
             onClick={async () => {
-              if (!requiresFile && !requiresTest && !requiresVoiceMessage && !isVoiceroom) {
+              if (!requiresFile && !requiresEssay && !requiresTest && !requiresVoiceMessage && !isVoiceroom) {
                 setPanelError("Homework turi uchun kamida bittasini tanlang.");
                 emitUiToast("Homework turi uchun kamida bittasini tanlang.", "error");
                 return;
@@ -7051,7 +7104,7 @@ function TeacherHomeworkPanel({
                   emitUiToast("Test uchun kamida bitta savol qo'shing.", "error");
                   return;
                 }
-                const valErr = validateTestQuestions(testQuestions);
+                const valErr = validateAiQuestions(testQuestions);
                 if (valErr) {
                   setPanelError(valErr);
                   emitUiToast(valErr, "error");
@@ -7098,6 +7151,7 @@ function TeacherHomeworkPanel({
                     dpoint_effect: 0,
                     homework_kind: homeworkKindFromToggles(),
                     requires_file: requiresFile,
+                    requires_essay: requiresEssay,
                     requires_test: requiresTest,
                     requires_voice_message: requiresVoiceMessage,
                     is_voiceroom: isVoiceroom,
@@ -7586,6 +7640,36 @@ function TeacherHomeworkPanel({
 	                  </section>
 
 	                  <section className="homework-review-actions">
+	                    <button
+	                      className="btn btn-outline"
+	                      type="button"
+	                      disabled={reviewBusyNow}
+	                      style={{ background: "rgba(99,102,241,0.12)", border: "1.5px solid #6366f1", color: "#6366f1", fontWeight: 700 }}
+	                      onClick={async () => {
+	                        const hwId = Number(row.id || 0);
+	                        if (!hwId || !reviewStudentId) return;
+	                        setReviewBusy((prev) => ({ ...prev, [reviewKey]: true }));
+	                        try {
+	                          const res = await onApiCall(`/teacher/homework/${hwId}/ai-review/${reviewStudentId}`, undefined, "POST", "AI avto-tekshiruv yakunlandi");
+	                          if (res?.submission) {
+	                            const sub = res.submission as GenericRow;
+	                            if (sub.review_note) setReviewNote((prev) => ({ ...prev, [reviewKey]: String(sub.review_note) }));
+	                            if (sub.status) setReviewStatus((prev) => ({ ...prev, [reviewKey]: sub.status === "done" ? "done" : "not_done" }));
+	                            if (sub.dpoints_delta !== undefined || sub.dcoin_delta !== undefined) {
+	                              setReviewDelta((prev) => ({ ...prev, [reviewKey]: Number(sub.dpoints_delta ?? sub.dcoin_delta ?? 0) }));
+	                            }
+	                            setReviewModalRow(null);
+	                            await loadAll();
+	                          }
+	                        } catch (err) {
+	                          setPanelError(err instanceof Error ? err.message : "AI avto-tekshirish bajarilmadi");
+	                        } finally {
+	                          setReviewBusy((prev) => ({ ...prev, [reviewKey]: false }));
+	                        }
+	                      }}
+	                    >
+	                      🤖 AI bilan avto-tekshirish
+	                    </button>
 	                    {(speakingAiResult || writingAiResult || noteAiResult) ? (
 	                      <button
 	                        className="btn btn-soft small"

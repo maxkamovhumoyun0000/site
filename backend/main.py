@@ -339,6 +339,8 @@ from db import (
     upsert_homework_submission,
     get_homework_submission,
     review_homework_submission,
+    get_teacher_homework_settings,
+    upsert_teacher_homework_settings,
     record_homework_deadline_penalty,
     increment_test_proctoring_counter,
     resolve_proctoring_grace_period,
@@ -2091,6 +2093,7 @@ class HomeworkCreateRequest(BaseModel):
     requires_test: bool | None = None
     requires_voice_message: bool | None = False
     requires_file: bool | None = False
+    requires_essay: bool | None = False
     is_voiceroom: bool | None = False
     voiceroom_groups: list[dict] | None = None
     dcoin_effect: float = Field(default=0.0, ge=-500.0, le=500.0)
@@ -2198,7 +2201,7 @@ class BookCreateRequest(BaseModel):
     cover_url: str | None = None
     pdf_url: str | None = None
     pdf_asset_id: int | None = None
-    price: float | None = Field(default=None, ge=0.0, le=500000.0)
+    price: float | None = Field(default=None, ge=30.0, le=500000.0)
     deadline_days: int | None = Field(default=None, ge=1, le=365)
     is_published: bool = False
 
@@ -2213,7 +2216,7 @@ class BookUpdateRequest(BaseModel):
     cover_url: str | None = None
     pdf_url: str | None = None
     pdf_asset_id: int | None = None
-    price: float | None = Field(default=None, ge=0.0, le=500000.0)
+    price: float | None = Field(default=None, ge=30.0, le=500000.0)
     deadline_days: int | None = Field(default=None, ge=1, le=365)
     is_published: bool | None = None
 
@@ -6991,12 +6994,7 @@ def _require_role(user: dict, roles: set[str]) -> str:
 
 def _require_book_upload_access(user: dict) -> str:
     role = _require_role(user, {"admin", "teacher", "support"})
-    if role == "admin":
-        return role
-    user_id = int(user.get("id") or 0)
-    if user_id > 0 and _safe_call(lambda: get_book_upload_permission(user_id), False):
-        return role
-    raise HTTPException(status_code=403, detail="Kitob yuklash uchun ruxsat yo'q")
+    return role
 
 
 def _student_has_group_access(user: dict) -> bool:
@@ -15465,11 +15463,9 @@ def _run_daily_test_reminder_push(today_iso: str) -> None:
 
 
 async def _homework_deadline_reminder_worker() -> None:
-    """Homework only ever pushed on created/submitted/reviewed — there was
-    no "your deadline is approaching" reminder at all. Runs hourly; for
-    every student with an unsubmitted homework due within the next 24
-    hours, pushes one reminder per homework (deduped forever via
-    `source_key`, so a given homework only ever reminds once).
+    """Homework deadline reminder and auto-expire worker. Runs every 10 minutes:
+    1. Pushes 24h deadline reminder to students with upcoming due dates.
+    2. Auto-marks overdue unsubmitted homeworks as 'not_done' (bajarilmadi).
     """
     startup_delay_sec = max(1, int(os.getenv("HOMEWORK_DEADLINE_REMINDER_START_DELAY_SEC", "20") or "20"))
     await asyncio.sleep(startup_delay_sec)
@@ -15478,16 +15474,22 @@ async def _homework_deadline_reminder_worker() -> None:
             await asyncio.to_thread(_run_homework_deadline_reminder_push)
         except Exception:
             logger.exception("homework deadline reminder worker failed")
-        await asyncio.sleep(3600)
+        try:
+            await asyncio.to_thread(_auto_mark_overdue_homeworks)
+        except Exception:
+            logger.exception("auto mark overdue homeworks worker failed")
+        await asyncio.sleep(600)
 
 
-def _run_homework_deadline_reminder_push() -> None:
+def _auto_mark_overdue_homeworks() -> None:
+    """Deadline (muddati) o'tgan, lekin o'quvchi tomonidan bajarilmagan/topshirilmagan 
+    vazifalarni avtomatik tarzda 'not_done' (bajarilmadi) deb belgilaydi va o'quvchiga xabar beradi.
+    """
     students = _safe_call(get_all_students, []) or []
     now_local = datetime.now(TASHKENT_TZ)
-    horizon = now_local + timedelta(hours=24)
     conn = get_conn()
     cur = conn.cursor()
-    sent = 0
+    marked_count = 0
     try:
         for student in students:
             if int(student.get("active") if student.get("active") is not None else 1) != 1:
@@ -15497,9 +15499,13 @@ def _run_homework_deadline_reminder_push() -> None:
                 continue
             homeworks = _safe_call(lambda uid=user_id: list_homeworks_for_student(uid), []) or []
             for hw in homeworks:
-                submission_status = str(hw.get("submission_status") or "").strip()
-                if submission_status:
-                    continue  # already submitted/reviewed — nothing to remind about
+                hw_id = int(hw.get("id") or 0)
+                if hw_id <= 0:
+                    continue
+                submission_status = str(hw.get("submission_status") or "").strip().lower()
+                if submission_status in ("done", "not_done", "accepted", "rejected"):
+                    continue  # already marked / reviewed / submitted
+
                 due_raw = str(hw.get("due_at") or "").strip()
                 if not due_raw:
                     continue
@@ -15509,32 +15515,49 @@ def _run_homework_deadline_reminder_push() -> None:
                         due_dt = TASHKENT_TZ.localize(due_dt)
                 except Exception:
                     continue
-                if due_dt <= now_local or due_dt > horizon:
-                    continue  # already overdue, or still more than 24h away
-                hw_id = int(hw.get("id") or 0)
-                if hw_id <= 0:
-                    continue
-                title = str(hw.get("title") or "Homework").strip()
-                try:
-                    _payment_upsert_web_notification(
-                        cur,
-                        user_id=user_id,
-                        notification_type="homework_deadline_reminder",
-                        title="Homework muddati yaqinlashdi",
-                        message=f"\"{title}\" homeworkni topshirish muddati 24 soatdan kam qoldi.",
-                        button_text="Homeworkni ochish",
-                        button_url="/?role=student&section=homework",
-                        target_screen="homework",
-                        source_key=f"homework_deadline_reminder:{hw_id}:{user_id}",
-                        meta={"homework_id": hw_id},
+
+                if due_dt <= now_local:
+                    # Deadline o'tgan — avtomatik 'not_done' (bajarilmadi) qilib saqlaymiz
+                    cur.execute(
+                        """
+                        INSERT INTO web_homework_submissions(
+                            homework_id, student_id, status, note, dcoin_delta, dpoints_delta,
+                            review_note, reviewed_by, reviewed_at, updated_at
+                        )
+                        VALUES (?, ?, 'not_done', NULL, 0, 0, '⏰ Muddat (deadline) o''tdi — avtomatik bajarilmadi deb belgilandi', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT(homework_id, student_id) DO UPDATE SET
+                            status='not_done',
+                            review_note='⏰ Muddat (deadline) o''tdi — avtomatik bajarilmadi deb belgilandi',
+                            reviewed_at=CURRENT_TIMESTAMP,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE status IS NULL OR status NOT IN ('done', 'accepted')
+                        """,
+                        (hw_id, user_id),
                     )
-                    sent += 1
-                except Exception:
-                    logger.exception("homework deadline reminder push failed user_id=%s homework_id=%s", user_id, hw_id)
+                    marked_count += 1
+                    title = str(hw.get("title") or "Homework").strip()
+                    try:
+                        _payment_upsert_web_notification(
+                            cur,
+                            user_id=user_id,
+                            notification_type="homework_expired",
+                            title="Uyga vazifa muddati tugadi",
+                            message=f"\"{title}\" vazifasining topshirish muddati o'tib ketgani sababli bajarilmadi deb belgilandi ⚠️",
+                            button_text="Vazifalarga o'tish",
+                            button_url="/?role=student&section=homework",
+                            target_screen="homework",
+                            source_key=f"homework_expired:{hw_id}:{user_id}",
+                            meta={"homework_id": hw_id},
+                        )
+                    except Exception:
+                        pass
         conn.commit()
+    except Exception:
+        logger.exception("auto_mark_overdue_homeworks failed")
     finally:
         conn.close()
-    logger.info("homework_deadline_reminder_worker sent=%s", sent)
+    if marked_count > 0:
+        logger.info("auto_mark_overdue_homeworks marked=%s homework submissions as not_done", marked_count)
 
 
 async def _weekly_review_worker() -> None:
@@ -27996,8 +28019,21 @@ def _normalize_homework_kind(value: Any) -> str:
 
 
 def _derive_homework_kind_from_request(payload: HomeworkCreateRequest) -> str:
-    if payload.requires_upload is not None or payload.requires_test is not None:
-        requires_upload = bool(payload.requires_upload) or bool(payload.requires_file) or bool(payload.requires_voice_message) or bool(payload.is_voiceroom)
+    if (
+        payload.requires_upload is not None
+        or payload.requires_test is not None
+        or payload.requires_file
+        or payload.requires_essay
+        or payload.requires_voice_message
+        or payload.is_voiceroom
+    ):
+        requires_upload = (
+            bool(payload.requires_upload)
+            or bool(payload.requires_file)
+            or bool(payload.requires_essay)
+            or bool(payload.requires_voice_message)
+            or bool(payload.is_voiceroom)
+        )
         requires_test = bool(payload.requires_test)
         if requires_upload and requires_test:
             return "both"
@@ -28005,7 +28041,7 @@ def _derive_homework_kind_from_request(payload: HomeworkCreateRequest) -> str:
             return "test"
         if requires_upload:
             return "list"
-        raise HTTPException(status_code=400, detail="Homework uchun list yoki testdan kamida bittasini tanlang")
+        raise HTTPException(status_code=400, detail="Homework uchun kamida bitta turini tanlang")
     return _normalize_homework_kind(payload.homework_kind)
 
 
@@ -28360,8 +28396,8 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
-    if (requires_upload or payload.requires_file or payload.requires_voice_message) and not description:
-        raise HTTPException(status_code=400, detail="Homework description is required")
+    if not description:
+        description = title
     if not due_at:
         raise HTTPException(status_code=400, detail="Homework deadline is required")
     audience_count = 0
@@ -28417,6 +28453,7 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
             homework_kind=homework_kind,
             requires_voice_message=payload.requires_voice_message or False,
             requires_file=payload.requires_file or False,
+            requires_essay=payload.requires_essay or False,
             is_voiceroom=payload.is_voiceroom or False,
             voiceroom_groups=voiceroom_groups,
         )
@@ -28464,8 +28501,8 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
-    if (requires_upload or payload.requires_file or payload.requires_voice_message) and not description:
-        raise HTTPException(status_code=400, detail="Homework description is required")
+    if not description:
+        description = title
     if not due_at:
         raise HTTPException(status_code=400, detail="Homework deadline is required")
     try:
@@ -28479,6 +28516,8 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
             homework_kind=homework_kind,
             requires_voice_message=payload.requires_voice_message or False,
             requires_file=payload.requires_file or False,
+            requires_essay=payload.requires_essay or False,
+            is_voiceroom=payload.is_voiceroom or False,
         )
     except Exception as exc:
         logger.exception("teacher.homework.update failed teacher_id=%s homework_id=%s", teacher_id, homework_id)
@@ -28515,6 +28554,303 @@ async def teacher_delete_homework(homework_id: int, authorization: str | None = 
         conn.close()
     _safe_call(lambda: deactivate_content_test("homework", int(homework_id)), None)
     return {"message": "Homework o'chirildi"}
+
+
+class TeacherHomeworkSettingsRequest(BaseModel):
+    ai_auto_grade: bool = False
+
+
+@app.get("/teacher/homework/settings")
+async def teacher_homework_settings_get(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    teacher_id = int(user.get("id") or 0)
+    return get_teacher_homework_settings(teacher_id)
+
+
+@app.post("/teacher/homework/settings")
+async def teacher_homework_settings_post(
+    payload: TeacherHomeworkSettingsRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    teacher_id = int(user.get("id") or 0)
+    return upsert_teacher_homework_settings(teacher_id, payload.ai_auto_grade)
+
+
+async def _ai_auto_grade_submission(homework: dict, submission: dict, student_user: dict):
+    """Automatically grades a student homework submission using AI on behalf of the teacher with strict comprehensive evaluation of all components (essay, test, voice message, proof images, voiceroom) and awards up to 500 D'points."""
+    try:
+        from ai_generator import (
+            XAI_ENDPOINT,
+            GEMINI_ENDPOINT,
+            _get_xai_api_key,
+            _get_gemini_api_key,
+            _xai_apply_payload_tuning,
+            get_grok_model_candidates,
+        )
+        import aiohttp
+
+        homework_id = int(homework.get("id") or 0)
+        student_id = int(student_user.get("id") or 0)
+        teacher_id = int(homework.get("teacher_id") or 0)
+        title = str(homework.get("title") or "")
+        description = str(homework.get("description") or homework.get("content") or "")
+
+        req_voice = bool(homework.get("requires_voice_message"))
+        req_file = bool(homework.get("requires_file"))
+        req_essay = bool(homework.get("requires_essay"))
+        is_voiceroom = bool(homework.get("is_voiceroom"))
+        hw_kind = str(homework.get("homework_kind") or "both").lower()
+
+        note = str(submission.get("note") or "").strip()
+        voice_url = str(submission.get("voice_message_url") or "").strip()
+        proof_images = submission.get("proof_images") or []
+        if not proof_images and submission.get("proof_image_url"):
+            proof_images = [submission.get("proof_image_url")]
+
+        # 1. Test natijalarini tekshirish
+        test_info = "(Test topshirig'i mavjud emas)"
+        test_res = _safe_call(lambda: get_content_test_result(student_id, "homework", homework_id), None)
+        if test_res:
+            score_pct = int(test_res.get("score_percent") or 0)
+            correct_cnt = int(test_res.get("correct_count") or 0)
+            total_cnt = int(test_res.get("total_questions") or 0)
+            test_info = f"Test ishlangan: {score_pct}% ball ({correct_cnt}/{total_cnt} to'g'ri topshirildi)"
+        elif "test" in hw_kind:
+            test_info = "⚠️ Test topshirig'i mavjud, lekin o'quvchi hali birorta savolga javob bermagan (0%)"
+
+        # 2. Voiceroom muloqoti holatini tekshirish
+        voiceroom_info = "(Voiceroom topshirig'i emas)"
+        if is_voiceroom:
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT * FROM web_homework_voiceroom_groups 
+                    WHERE homework_id=? AND (student1_id=? OR student2_id=? OR student3_id=?)
+                    LIMIT 1
+                    """,
+                    (homework_id, student_id, student_id, student_id)
+                )
+                vr_row = _row_to_dict(cur.fetchone())
+                conn.close()
+                if vr_row:
+                    vr_status = str(vr_row.get("status") or "pending")
+                    vr_audio = str(vr_row.get("recorded_audio_url") or vr_row.get("audio_url") or "").strip()
+                    if vr_status in ("completed", "done") or vr_audio:
+                        voiceroom_info = f"Voiceroom juftlik muloqoti muvaffaqiyatli bajarilgan ✅ (Ovoz yozuvi mavjud)"
+                    else:
+                        voiceroom_info = "⚠️ Voiceroom juftlik muloqoti hali yakunlanmagan!"
+                else:
+                    voiceroom_info = "⚠️ Voiceroom juftlik xonasi topilmadi!"
+            except Exception:
+                voiceroom_info = "Voiceroom holatini aniqlab bo'lmadi"
+
+        prompt = f"""Siz o'qituvchining nihoyatda qattiqqol va talabchan AI inspektorisiz (Ultra-Strict AI Grader & Plagiarism Detector). O'qituvchining o'rniga o'quvchi topshirgan barcha uyga vazifa komponentlarini (esse, rasm dalillar, ovozli xabar, test natijalari, voiceroom) chuqur va shafqatsiz xolislik bilan tekshirasiz.
+
+VAZIFA MA'LUMOTLARI:
+- Vazifa mavzusi: {title}
+- Topshiriq ko'rsatmasi: {description}
+- Majburiy talablar:
+  * Yozma esse/javob shartmi: {"HA (MAJBURIY)" if req_essay else "Yo'q"}
+  * Ovozli xabar (voice message) shartmi: {"HA (MAJBURIY)" if req_voice else "Yo'q"}
+  * Rasm/Fayl dalili (proof file) shartmi: {"HA (MAJBURIY)" if req_file else "Yo'q"}
+  * Voiceroom (juftlik so'zlashuvi) shartmi: {"HA (MAJBURIY)" if is_voiceroom else "Yo'q"}
+
+O'QUVCHINING TOPSHIRGAN JAVOBLARI VA FAOLIYATI:
+1. Yozma javob / Esse:
+{note if note else "(Yozma javob yuborilmadi)"}
+
+2. Rasm / Fayl dalillari:
+{"Ha (" + str(len(proof_images)) + " ta rasm/fayl yuborildi)" if proof_images else ("⚠️ MAJBURIY Rasm/Fayl yuborilmadi!" if req_file else "Yuborilmadi")}
+
+3. Ovozli xabar (Voice message):
+{"Ha (ovozli xabar yuborildi)" if voice_url else ("⚠️ MAJBURIY Ovozli xabar yuborilmadi!" if req_voice else "Yuborilmadi")}
+
+4. Test natijasi:
+{test_info}
+
+5. Voiceroom (juftlik so'zlashuv muloqoti):
+{voiceroom_info}
+
+QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
+1. AI DETEKSIYA (AI DETECTION): Yozilgan esse/matnni diqqat bilan tahlil qiling. Agar matn AI (ChatGPT, Claude, Gemini yoki boshqa AI generatorlar) tomonidan yozilgan deb topilsa (o'ta sun'iy mukammallik, umumiy aylanma jumlalar, shablon strukturasi, o'quvchining shaxsiy imlo/uslubi yo'qligi), "is_ai_generated": true deb belgilang!
+2. AGAR AI MATN DEB TOPILSA ("is_ai_generated": true):
+   - "score": 0, "accepted": false.
+   - "feedback": "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT / AI generator) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima balansingizdan olindi va vazifa rad etildi."
+3. QATTIQQOL GRAMMATIKA VA MANDATORY CHECK: Agar matn inson tomonidan yozilgan bo'lsa ham, imlo xatolar, mavzudan chetga chiqish, juda qisqa javob yoki majburiy talablar bajarilmagan bo'lsa, ballni shafqatsiz pasaytiring (score < 50 => accepted: false).
+4. FAQAT SHU JSON FORMATIDA JAVOB BERING:
+{{
+  "score": 85,
+  "accepted": true,
+  "is_ai_generated": false,
+  "feedback": "Vazifa to'liq va original tarzda bajarilgan."
+}}
+"""
+
+        score = 80
+        accepted = True
+        is_ai_generated = False
+        feedback = "Vazifa avtomatik tekshirildi va o'qituvchi nomidan qabul qilindi."
+        ai_evaluated = False
+
+        # Try xAI Grok API first
+        api_key = _safe_call(lambda: _get_xai_api_key(), None)
+        if api_key:
+            try:
+                model_candidates = get_grok_model_candidates()
+                model = model_candidates[0] if model_candidates else "grok-3"
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.2,
+                    "response_format": {"type": "json_object"},
+                }
+                _xai_apply_payload_tuning(payload, model=model, stream=False)
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
+                    async with session.post(XAI_ENDPOINT, json=payload, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
+                            parsed = _safe_json_loads(text, {})
+                            if isinstance(parsed, dict) and "score" in parsed:
+                                is_ai_generated = bool(parsed.get("is_ai_generated"))
+                                if is_ai_generated:
+                                    score = 0
+                                    accepted = False
+                                    feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima olindi va vazifa rad etildi.").strip()
+                                else:
+                                    score = max(0, min(100, int(parsed.get("score") or 0)))
+                                    accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 50))
+                                    feedback = str(parsed.get("feedback") or feedback).strip()
+                                ai_evaluated = True
+            except Exception as e:
+                logger.warning("xAI auto-grade attempt failed, trying fallback: %s", e)
+
+        # Fallback to Gemini API if xAI wasn't successful
+        if not ai_evaluated:
+            gemini_key = _safe_call(lambda: _get_gemini_api_key(), None)
+            if gemini_key:
+                try:
+                    url = f"{GEMINI_ENDPOINT}?key={gemini_key}"
+                    g_payload = {
+                        "contents": [{"parts": [{"text": prompt + "\nRespond with valid JSON object strictly."}]}],
+                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+                    }
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
+                        async with session.post(url, json=g_payload) as resp:
+                            if resp.status == 200:
+                                g_data = await resp.json()
+                                g_text = (g_data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                                parsed = _safe_json_loads(g_text, {})
+                                if isinstance(parsed, dict) and "score" in parsed:
+                                    is_ai_generated = bool(parsed.get("is_ai_generated"))
+                                    if is_ai_generated:
+                                        score = 0
+                                        accepted = False
+                                        feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima olindi va vazifa rad etildi.").strip()
+                                    else:
+                                        score = max(0, min(100, int(parsed.get("score") or 0)))
+                                        accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 50))
+                                        feedback = str(parsed.get("feedback") or feedback).strip()
+                                    ai_evaluated = True
+                except Exception as e:
+                    logger.warning("Gemini auto-grade attempt failed: %s", e)
+
+        # If both AI APIs were unavailable or failed, calculate deterministic score based on student submissions
+        if not ai_evaluated:
+            penalties = 0
+            if req_essay and not note: penalties += 30
+            if req_file and not proof_images: penalties += 30
+            if req_voice and not voice_url: penalties += 30
+            if is_voiceroom and "bajarilgan" not in voiceroom_info: penalties += 30
+            score = max(0, 100 - penalties)
+            accepted = score >= 50
+            if accepted:
+                feedback = "Topshiriq barcha talablarga javob beradi va o'qituvchi nomidan avtomatik tasdiqlandi."
+            else:
+                feedback = "Topshiriqning ba'zi majburiy talablari bajarilmagan (esse, rasm yoki ovozli xabar yetishmaydi)."
+
+        group_id = int(homework.get("group_id") or 0)
+        group = _safe_call(lambda: get_group(group_id), None) if group_id else None
+        subject = str((group or {}).get("subject") or "general")
+
+        if is_ai_generated:
+            earned_dcoins = -100
+            status = "not_done"
+            review_notes = f"⚠️ AI Matn Aniqlandi (Jarima: -100 D'coin):\n\n{feedback}"
+        elif accepted:
+            earned_dcoins = round((score / 100.0) * 500.0)
+            status = "done"
+            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (+{earned_dcoins} D'coin).\n\n{feedback}"
+        else:
+            earned_dcoins = 0
+            status = "not_done"
+            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (Qayta ishlash kerak).\n\n{feedback}"
+
+        review_homework_submission(
+            homework_id=homework_id,
+            student_id=student_id,
+            reviewed_by=teacher_id if teacher_id > 0 else 0,
+            status=status,
+            dcoin_delta=float(earned_dcoins),
+            review_note=review_notes,
+        )
+        submission["status"] = status
+        submission["review_note"] = review_notes
+        submission["dpoints_delta"] = earned_dcoins
+        submission["dcoin_delta"] = earned_dcoins
+
+        if is_ai_generated:
+            # Deduct -100 D'coins directly from student balance
+            add_dcoins(student_id, -100.0, subject, change_type="homework_ai_penalty")
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO diamond_history (user_id, amount, reason, created_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (student_id, -100.0, f"AI Matn Jarimasi: '{title}' (-100 D'coin)"),
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        elif accepted and earned_dcoins > 0:
+            add_dcoins(student_id, float(earned_dcoins), subject, change_type="homework_ai")
+            try:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO diamond_history (user_id, amount, reason, created_at)
+                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (student_id, float(earned_dcoins), f"AI Avto-Tekshiruv: '{title}' ({score}%)"),
+                )
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+
+        try:
+            if is_ai_generated:
+                msg = f"⚠️ DIQQAT: '{title}' vazifasida AI matn aniqlandi!\nBalansingizdan -100 D'coin jarima ayirildi va vazifa rad etildi."
+            else:
+                status_text = "Bajarildi ✅" if accepted else "Qayta ishlash kerak ⚠️"
+                msg = f"🤖 Uyga vazifangiz O'qituvchi AI tomonidan tekshirildi!\nNatija: {score}% ({status_text})\nMukofot: {earned_dcoins} D'coin"
+            await _send_push_notification(student_id, "Uyga vazifa tekshirildi", msg, data={"type": "homework", "homework_id": homework_id})
+        except Exception:
+            pass
+
+    except Exception:
+        logger.exception("AI auto-grade submission failed homework_id=%s student_id=%s", homework.get("id"), student_user.get("id"))
 
 
 @app.get("/teacher/homework")
@@ -28700,6 +29036,18 @@ async def student_submit_voiceroom_homework(
             )
             
         conn.commit()
+
+        homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+        if homework:
+            for sid in students:
+                sub = _safe_call(lambda s_id=sid: get_homework_submission(int(homework_id), s_id), None)
+                stu_u = _safe_call(lambda s_id=sid: get_user_by_id(s_id), None) or {"id": sid}
+                if sub:
+                    try:
+                        await _ai_auto_grade_submission(homework, sub, stu_u)
+                    except Exception as e:
+                        logger.exception("AI auto grade failed for voiceroom submission homework_id=%s sid=%s: %s", homework_id, sid, e)
+
         return {"success": True}
     except Exception as e:
         conn.rollback()
@@ -28744,6 +29092,13 @@ async def student_submit_homework(
     if not submission:
         raise HTTPException(status_code=422, detail="Could not submit homework")
     _attach_homework_runtime_fields(submission)
+    
+    # Automatically grade submission with Strict Teacher AI Assistant
+    try:
+        await _ai_auto_grade_submission(homework, submission, user)
+    except Exception as e:
+        logger.exception("AI auto grade failed for submission homework_id=%s user_id=%s: %s", homework_id, user_id, e)
+
     try:
         await _notify_homework_submitted(homework, user, submission)
     except Exception:
@@ -28826,6 +29181,30 @@ async def teacher_review_homework(
     except Exception:
         logger.exception("teacher.homework.review notification failed homework_id=%s student_id=%s", homework_id, student_id)
     return {"message": "Homework reviewed", "submission": reviewed}
+
+
+@app.post("/teacher/homework/{homework_id}/ai-review/{student_id}")
+async def teacher_ai_review_homework(
+    homework_id: int,
+    student_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Allows teacher to manually trigger AI auto-grading for any student submission."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, TEACHER_STAFF_ROLES)
+    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+    if not homework:
+        raise HTTPException(status_code=404, detail="Homework not found")
+    submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
+    if not submission:
+        submission = _safe_call(lambda: upsert_homework_submission(int(homework_id), int(student_id), "pending_review", "AI auto-review requested"), None)
+        if not submission:
+            raise HTTPException(status_code=404, detail="Submission not found")
+    student_user = _safe_call(lambda: get_user_by_id(int(student_id)), None) or {"id": int(student_id)}
+    await _ai_auto_grade_submission(homework, submission, student_user)
+    updated_sub = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None) or submission
+    _attach_homework_runtime_fields(updated_sub)
+    return {"message": "AI review completed", "submission": updated_sub}
 
 
 @app.get("/teacher/dcoin/students")
@@ -47609,7 +47988,7 @@ async def admin_create_book(payload: BookCreateRequest, authorization: str | Non
     if not _has_valid_thumbnail_like_url(cover_url):
         raise HTTPException(status_code=400, detail="Book thumbnail is required")
     asset_id = int(payload.pdf_asset_id or 0) or None
-    price_value = max(0.0, float(payload.price or 0.0))
+    price_value = max(30.0, float(payload.price or 30.0))
     # Deadline olib tashlangan: deadline_days kelmasa yoki 0 bo'lsa — NULL
     raw_deadline_days = int(payload.deadline_days or 0)
     deadline_days = max(1, raw_deadline_days) if raw_deadline_days > 0 else None
@@ -47653,13 +48032,15 @@ async def admin_create_book(payload: BookCreateRequest, authorization: str | Non
 
 
 @app.put("/admin/books/{book_id}")
+@app.put("/teacher/books/{book_id}")
+@app.put("/support/books/{book_id}")
 async def admin_update_book(
     book_id: int,
     payload: BookUpdateRequest,
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
+    _require_role(user, {"admin", "teacher", "support"})
     updates = payload.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided for update")
@@ -47677,7 +48058,7 @@ async def admin_update_book(
     if "pdf_asset_id" in updates:
         updates["pdf_asset_id"] = int(updates.get("pdf_asset_id") or 0) or None
     if "price" in updates:
-        updates["price"] = max(0.0, float(updates.get("price") or 0.0))
+        updates["price"] = max(30.0, float(updates.get("price") or 30.0))
     if "deadline_days" in updates:
         # Deadline ixtiyoriy: 0/bo'sh -> NULL
         raw_dd = int(updates.get("deadline_days") or 0)
@@ -47722,9 +48103,11 @@ async def admin_update_book(
 
 
 @app.delete("/admin/books/{book_id}")
+@app.delete("/teacher/books/{book_id}")
+@app.delete("/support/books/{book_id}")
 async def admin_delete_book(book_id: int, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
+    _require_role(user, {"admin", "teacher", "support"})
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM books WHERE id = ? LIMIT 1", (int(book_id),))
@@ -48572,20 +48955,26 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
             homework = _safe_call(lambda: get_homework(int(content_id)), None)
             if homework:
                 _attach_homework_runtime_fields(homework)
-                if _normalize_homework_kind(homework.get("homework_kind")) == "test":
-                    existing_submission = _safe_call(lambda: get_homework_submission(int(content_id), user_id), None)
-                    if not existing_submission:
-                        submission = upsert_homework_submission(
-                            homework_id=int(content_id),
-                            student_id=user_id,
-                            status="pending_review",
-                            note="Test auto-submit",
-                            proof_image_url=None,
-                            proof_images_json=None,
-                        )
-                        if submission:
-                            _attach_homework_runtime_fields(submission)
-                            await _notify_homework_submitted(homework, user, submission)
+                existing_submission = _safe_call(lambda: get_homework_submission(int(content_id), user_id), None)
+                if not existing_submission:
+                    submission = upsert_homework_submission(
+                        homework_id=int(content_id),
+                        student_id=user_id,
+                        status="pending_review",
+                        note="Test auto-submit",
+                        proof_image_url=None,
+                        proof_images_json=None,
+                    )
+                else:
+                    submission = existing_submission
+                if submission:
+                    _attach_homework_runtime_fields(submission)
+                    await _notify_homework_submitted(homework, user, submission)
+                    teacher_id = int(homework.get("teacher_id") or 0)
+                    if teacher_id > 0:
+                        hw_settings = _safe_call(lambda: get_teacher_homework_settings(teacher_id), {}) or {}
+                        if hw_settings.get("ai_auto_grade"):
+                            await _ai_auto_grade_submission(homework, submission, user)
         except Exception:
             logger.exception("homework test auto-submit failed user_id=%s homework_id=%s", user_id, content_id)
     return {"message": "Test submitted", "result": result}

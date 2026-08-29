@@ -2471,7 +2471,7 @@ def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:
     if source_type == "homework":
         hid = int(attempt.get("source_id") or 0)
         if hid > 0:
-            _safe(
+            sub = _safe(
                 lambda: dbm.upsert_homework_submission(
                     homework_id=hid,
                     student_id=int(user.get("id") or 0),
@@ -2481,6 +2481,18 @@ def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:
                     proof_images_json=None,
                 )
             )
+            homework = _safe(lambda: dbm.get_homework(hid), None)
+            if homework and sub:
+                import asyncio
+                try:
+                    try:
+                        from main import _ai_auto_grade_submission
+                    except ImportError:
+                        from backend.main import _ai_auto_grade_submission
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_ai_auto_grade_submission(homework, sub, user))
+                except Exception as e:
+                    logger.warning("Failed to trigger _ai_auto_grade_submission in library_ai: %s", e)
     if source_type == "weekly_review":
         week_start = _week_bounds()[0]
         _safe(lambda: dbm.complete_weekly_review(int(user.get("id") or 0), week_start))
