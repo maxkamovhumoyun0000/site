@@ -44,6 +44,14 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 import push_notifications
+import userbot_manager
+from userbot_manager import (
+    send_userbot_otp_code,
+    verify_userbot_otp_code,
+    queue_userbot_notification,
+    render_userbot_template,
+    start_userbot_queue_worker,
+)
 from passwords import generate_password, hash_password, verify_password
 from config import (
     ADMIN_CHAT_IDS,
@@ -105,6 +113,10 @@ from db import (
     ensure_diamondvoy_chat_schema,
     ensure_media_assets_schema,
     ensure_universal_chat_schema,
+    ensure_userbot_schema,
+    get_userbot_settings,
+    update_userbot_settings,
+    list_userbot_logs,
     ensure_daily_test_attempt_and_items,
     ensure_group_extra_subjects_schema,
     _ensure_proctoring_schema_runtime,
@@ -1713,6 +1725,44 @@ class NormalStudentToAccountlessRequest(BaseModel):
 
 class PaymentSettingsRequest(BaseModel):
     values: dict[str, float] = Field(default_factory=dict)
+
+
+class UserbotSendCodeRequest(BaseModel):
+    api_id: int
+    api_hash: str
+    phone_number: str
+
+
+class UserbotVerifyCodeRequest(BaseModel):
+    phone_number: str
+    code: str
+    password: str | None = None
+
+
+class UserbotSettingsUpdateRequest(BaseModel):
+    is_active: int | None = None
+    notify_attendance_absent: int | None = None
+    notify_attendance_late: int | None = None
+    notify_homework_missing: int | None = None
+    notify_payment_reminder: int | None = None
+    notify_payment_receipt: int | None = None
+    notify_welcome_group: int | None = None
+    notify_holiday_cancellation: int | None = None
+    notify_achievements: int | None = None
+    tpl_attendance_absent: str | None = None
+    tpl_attendance_late: str | None = None
+    tpl_homework_missing: str | None = None
+    tpl_payment_reminder: str | None = None
+    tpl_payment_overdue: str | None = None
+    tpl_payment_receipt: str | None = None
+    tpl_welcome_group: str | None = None
+    tpl_holiday_cancellation: str | None = None
+    tpl_achievement: str | None = None
+
+
+class UserbotTestSendRequest(BaseModel):
+    phone_number: str
+    message_text: str
 
 
 class PaymentConfirmRequest(BaseModel):
@@ -16765,6 +16815,15 @@ async def startup_event() -> None:
     _log_step("ensure_web_competition_runtime_schema", step)
 
     step = time.perf_counter()
+    try:
+        ensure_userbot_schema()
+        start_userbot_queue_worker()
+        asyncio.create_task(userbot_manager.get_active_pyrogram_client())
+    except Exception:
+        logger.exception("startup_step=userbot_init failed")
+    _log_step("userbot_init", step)
+
+    step = time.perf_counter()
     _ensure_student_quiz_session_schema()
     _log_step("ensure_student_quiz_session_schema", step)
 
@@ -29089,6 +29148,10 @@ async def teacher_add_group_member(group_id: int, student_id: int, authorization
         user_ids={int(student_id)},
         reason="teacher_add_group_member",
     )
+    try:
+        userbot_manager.handle_userbot_group_join_event(int(student_id), int(group_id))
+    except Exception:
+        logger.exception("userbot group join trigger failed")
     return _group_membership_change_payload(int(group_id), int(student_id), "Student added to group")
 
 
@@ -29190,6 +29253,10 @@ async def teacher_mark_attendance(payload: AttendanceMarkRequest, authorization:
         lesson_date=str(payload.date),
         reason="teacher_attendance_mark",
     )
+    try:
+        userbot_manager.handle_userbot_attendance_event(int(payload.user_id), int(payload.group_id), str(payload.date), status)
+    except Exception:
+        logger.exception("userbot_attendance_event trigger failed")
     return {
         "message": "Attendance marked",
         "status": status,
@@ -29226,6 +29293,10 @@ async def teacher_bulk_mark_attendance(payload: AttendanceBulkMarkRequest, autho
             noops += 1
         effect_rows.append({"user_id": int(uid), **effect})
         add_attendance(int(uid), int(payload.group_id), str(payload.date), status=status)
+        try:
+            userbot_manager.handle_userbot_attendance_event(int(uid), int(payload.group_id), str(payload.date), status)
+        except Exception:
+            pass
         marked += 1
     _payment_invalidate_attendance_scope(
         user_ids=[int(uid) for uid in payload.user_ids],
@@ -33981,6 +34052,10 @@ async def add_student_member(
         user_ids={int(student_id)},
         reason="admin_add_group_member_existing" if joined_at else "admin_add_group_member_new",
     )
+    try:
+        userbot_manager.handle_userbot_group_join_event(int(student_id), int(group_id))
+    except Exception:
+        logger.exception("userbot group join trigger failed")
     return _group_membership_change_payload(
         int(group_id),
         int(student_id),
@@ -40772,6 +40847,15 @@ async def admin_payments_student_confirm(
             )
         except Exception:
             logger.exception("payment confirmation telegram notification failed user_id=%s tx_id=%s", int(user_id), int(tx_id))
+        try:
+            userbot_manager.handle_userbot_payment_received_event(
+                student_id=int(user_id),
+                amount=float(amount),
+                ym=str(month_key),
+                payment_method=str(payment_method)
+            )
+        except Exception:
+            logger.exception("userbot payment received trigger failed")
     return {
         "message": "Payment confirmed",
         "transaction_id": int(tx_id),
@@ -43189,6 +43273,86 @@ async def admin_student_shares(student_id: int, authorization: str | None = Head
         "admin_options": admin_options,
         "recommended_peer_admin_id": recommended_peer_admin_id,
     }
+
+
+# ==============================================================================
+# USERBOT ADMIN ENDPOINTS
+# ==============================================================================
+
+@app.get("/admin/userbot/settings")
+async def get_admin_userbot_settings(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    settings = get_userbot_settings()
+    # Mask session string for security
+    if settings.get("session_string"):
+        settings["has_session"] = True
+        settings["session_string"] = "******"
+    else:
+        settings["has_session"] = False
+    return settings
+
+
+@app.post("/admin/userbot/send-code")
+async def post_admin_userbot_send_code(req: UserbotSendCodeRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    try:
+        phone_code_hash = await send_userbot_otp_code(req.api_id, req.api_hash, req.phone_number)
+        return {"success": True, "phone_code_hash": phone_code_hash}
+    except Exception as e:
+        logger.exception("userbot send_code error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/admin/userbot/verify-code")
+async def post_admin_userbot_verify_code(req: UserbotVerifyCodeRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    try:
+        success = await verify_userbot_otp_code(req.phone_number, req.code, req.password)
+        return {"success": success}
+    except Exception as e:
+        logger.exception("userbot verify_code error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/admin/userbot/logout")
+async def post_admin_userbot_logout(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    success = await logout_userbot()
+    return {"success": success}
+
+
+@app.post("/admin/userbot/settings")
+async def post_admin_userbot_settings(req: UserbotSettingsUpdateRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    kwargs = {k: v for k, v in req.model_dump().items() if v is not None}
+    settings = update_userbot_settings(**kwargs)
+    if settings.get("session_string"):
+        settings["has_session"] = True
+        settings["session_string"] = "******"
+    else:
+        settings["has_session"] = False
+    return settings
+
+
+@app.post("/admin/userbot/test-send")
+async def post_admin_userbot_test_send(req: UserbotTestSendRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    ok = enqueue_userbot_message(req.phone_number, req.message_text, event_type="manual_test")
+    return {"success": ok}
+
+
+@app.get("/admin/userbot/logs")
+async def get_admin_userbot_logs(limit: int = 100, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    logs = list_userbot_logs(limit=limit)
+    return {"logs": logs}
 
 
 @app.post("/admin/student-shares")

@@ -41,6 +41,7 @@ import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import { AdminSms } from "./ui/admin-sms";
+import AdminUserbot from "./ui/admin-userbot";
 import { AdminCallbacksPanel } from "./ui/admin-callbacks";
 import { AdminHomeworkPanel } from "./ui/admin-homework";
 import { AdminSurveysPanel } from "./ui/admin-surveys";
@@ -15650,6 +15651,10 @@ function AdminSection({
 
   if (section === "sms") {
     return <AdminSms apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+  }
+
+  if (section === "userbot") {
+    return <AdminUserbot />;
   }
 
   if (section === "admin-callbacks") {

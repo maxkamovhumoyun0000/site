@@ -24152,3 +24152,328 @@ def _safe_json_list(raw: Any) -> list:
         return parsed if isinstance(parsed, list) else []
     except Exception:
         return []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TELEGRAM USERBOT SETTINGS, LOGS & CONTACT CACHE
+# ═══════════════════════════════════════════════════════════════════════════
+
+DEFAULT_USERBOT_TEMPLATES = {
+    "tpl_attendance_absent": "Hurmatli ota-ona! Farzandingiz {student_name} bugun ({date}) {group_name} darsiga kelmadi. Iltimos, o'quv markazimiz bilan bog'laning.",
+    "tpl_attendance_late": "Tuzatish: Farzandingiz {student_name} {group_name} darsiga kechikib keldi va darsda qatnashmoqda.",
+    "tpl_homework_missing": "Eslatma: Farzandingiz {student_name} {group_name} fanidan berilgan uyga vazifani bajarmadi.",
+    "tpl_payment_reminder": "Hurmatli ota-ona! Farzandingiz {student_name} uchun keyingi oy ({date}) to'lov kuni yaqinlashmoqda. Oylik to'lov: {fee_amount} so'm.",
+    "tpl_payment_overdue": "Hurmatli ota-ona! Farzandingiz {student_name} uchun {group_name} guruhining oylik to'lovi qarzdorligi mavjud: {fee_amount} so'm. Iltimos, to'lovni amalga oshirishingizni so'raymiz.",
+    "tpl_payment_receipt": "To'lov qabul qilindi! Farzandingiz {student_name} ({group_name}) uchun {amount} so'm to'lov kiritildi. Rahmat!",
+    "tpl_welcome_group": "Xush kelibsiz! Farzandingiz {student_name} {group_name} guruhiga muvaffaqiyatli qo'shildi. Dars kunlari: {schedule_days}, Vaqti: {schedule_time}.",
+    "tpl_holiday_cancellation": "Hurmatli ota-ona! {date} kuni bayram munosabati bilan {group_name} guruhida dars bo'lmaydi.",
+    "tpl_achievement": "Tabriklaymiz! Farzandingiz {student_name} {group_name} guruhida ajoyib natija ko'rsatdi: {achievement_text}! 🎉",
+}
+
+
+def ensure_userbot_schema() -> None:
+    if _schema_ready("userbot_settings"):
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS userbot_settings (
+                    id                          BIGSERIAL PRIMARY KEY,
+                    api_id                      INTEGER,
+                    api_hash                    TEXT,
+                    phone_number                TEXT,
+                    session_string              TEXT,
+                    is_active                   INTEGER DEFAULT 1,
+                    notify_attendance_absent    INTEGER DEFAULT 1,
+                    notify_attendance_late      INTEGER DEFAULT 1,
+                    notify_homework_missing     INTEGER DEFAULT 1,
+                    notify_payment_reminder     INTEGER DEFAULT 1,
+                    notify_payment_receipt      INTEGER DEFAULT 1,
+                    notify_welcome_group        INTEGER DEFAULT 1,
+                    notify_holiday_cancellation INTEGER DEFAULT 1,
+                    notify_achievements         INTEGER DEFAULT 1,
+                    tpl_attendance_absent       TEXT,
+                    tpl_attendance_late         TEXT,
+                    tpl_homework_missing        TEXT,
+                    tpl_payment_reminder        TEXT,
+                    tpl_payment_overdue         TEXT,
+                    tpl_payment_receipt         TEXT,
+                    tpl_welcome_group           TEXT,
+                    tpl_holiday_cancellation    TEXT,
+                    tpl_achievement             TEXT,
+                    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS userbot_settings (
+                    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    api_id                      INTEGER,
+                    api_hash                    TEXT,
+                    phone_number                TEXT,
+                    session_string              TEXT,
+                    is_active                   INTEGER DEFAULT 1,
+                    notify_attendance_absent    INTEGER DEFAULT 1,
+                    notify_attendance_late      INTEGER DEFAULT 1,
+                    notify_homework_missing     INTEGER DEFAULT 1,
+                    notify_payment_reminder     INTEGER DEFAULT 1,
+                    notify_payment_receipt      INTEGER DEFAULT 1,
+                    notify_welcome_group        INTEGER DEFAULT 1,
+                    notify_holiday_cancellation INTEGER DEFAULT 1,
+                    notify_achievements         INTEGER DEFAULT 1,
+                    tpl_attendance_absent       TEXT,
+                    tpl_attendance_late         TEXT,
+                    tpl_homework_missing        TEXT,
+                    tpl_payment_reminder        TEXT,
+                    tpl_payment_overdue         TEXT,
+                    tpl_payment_receipt         TEXT,
+                    tpl_welcome_group           TEXT,
+                    tpl_holiday_cancellation    TEXT,
+                    tpl_achievement             TEXT,
+                    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS userbot_contacts (
+                    phone_number                TEXT PRIMARY KEY,
+                    telegram_user_id            BIGINT,
+                    first_name                  TEXT,
+                    last_name                   TEXT,
+                    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS userbot_contacts (
+                    phone_number                TEXT PRIMARY KEY,
+                    telegram_user_id            INTEGER,
+                    first_name                  TEXT,
+                    last_name                   TEXT,
+                    updated_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS userbot_logs (
+                    id              BIGSERIAL PRIMARY KEY,
+                    target_phone    TEXT,
+                    telegram_user_id BIGINT,
+                    event_type      TEXT,
+                    message_text    TEXT,
+                    status          TEXT DEFAULT 'sent',
+                    error_detail    TEXT,
+                    sent_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS userbot_logs (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_phone    TEXT,
+                    telegram_user_id INTEGER,
+                    event_type      TEXT,
+                    message_text    TEXT,
+                    status          TEXT DEFAULT 'sent',
+                    error_detail    TEXT,
+                    sent_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS userbot_attendance_tracker (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    group_id            BIGINT NOT NULL,
+                    user_id             BIGINT NOT NULL,
+                    lesson_date         TEXT NOT NULL,
+                    marked_absent_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    absent_notified     INTEGER DEFAULT 0,
+                    late_notified       INTEGER DEFAULT 0
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS userbot_attendance_tracker (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id            INTEGER NOT NULL,
+                    user_id             INTEGER NOT NULL,
+                    lesson_date         TEXT NOT NULL,
+                    marked_absent_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    absent_notified     INTEGER DEFAULT 0,
+                    late_notified       INTEGER DEFAULT 0
+                )
+                """,
+            ],
+        )
+        for ddl in (
+            "CREATE INDEX IF NOT EXISTS idx_ub_log_time ON userbot_logs(sent_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_ub_log_phone ON userbot_logs(target_phone)",
+            "CREATE INDEX IF NOT EXISTS idx_ub_att_track ON userbot_attendance_tracker(group_id, user_id, lesson_date)",
+        ):
+            try:
+                cur.execute(ddl)
+            except Exception:
+                pass
+        conn.commit()
+        _mark_schema_ready("userbot_settings")
+    finally:
+        conn.close()
+
+
+def get_userbot_settings() -> dict:
+    ensure_userbot_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM userbot_settings WHERE id=1 LIMIT 1")
+        row = _row_to_dict(cur.fetchone())
+        if not row:
+            # First time default seed
+            cur.execute(
+                """
+                INSERT INTO userbot_settings (
+                    id, is_active, notify_attendance_absent, notify_attendance_late,
+                    notify_homework_missing, notify_payment_reminder, notify_payment_receipt,
+                    notify_welcome_group, notify_holiday_cancellation, notify_achievements,
+                    tpl_attendance_absent, tpl_attendance_late, tpl_homework_missing,
+                    tpl_payment_reminder, tpl_payment_overdue, tpl_payment_receipt,
+                    tpl_welcome_group, tpl_holiday_cancellation, tpl_achievement
+                ) VALUES (
+                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    DEFAULT_USERBOT_TEMPLATES["tpl_attendance_absent"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_attendance_late"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_homework_missing"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_payment_reminder"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_payment_overdue"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_payment_receipt"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_welcome_group"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_holiday_cancellation"],
+                    DEFAULT_USERBOT_TEMPLATES["tpl_achievement"],
+                ),
+            )
+            conn.commit()
+            cur.execute("SELECT * FROM userbot_settings WHERE id=1 LIMIT 1")
+            row = _row_to_dict(cur.fetchone()) or {}
+        return row
+    finally:
+        conn.close()
+
+
+def update_userbot_settings(fields: dict) -> dict:
+    ensure_userbot_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        get_userbot_settings() # Ensure ID 1 exists
+        sets: list[str] = []
+        params: list = []
+        allowed = {
+            "api_id", "api_hash", "phone_number", "session_string", "is_active",
+            "notify_attendance_absent", "notify_attendance_late", "notify_homework_missing",
+            "notify_payment_reminder", "notify_payment_receipt", "notify_welcome_group",
+            "notify_holiday_cancellation", "notify_achievements",
+            "tpl_attendance_absent", "tpl_attendance_late", "tpl_homework_missing",
+            "tpl_payment_reminder", "tpl_payment_overdue", "tpl_payment_receipt",
+            "tpl_welcome_group", "tpl_holiday_cancellation", "tpl_achievement",
+        }
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                params.append(v)
+        if sets:
+            sets.append("updated_at=CURRENT_TIMESTAMP")
+            cur.execute(f"UPDATE userbot_settings SET {', '.join(sets)} WHERE id=1", tuple(params))
+            conn.commit()
+        return get_userbot_settings()
+    finally:
+        conn.close()
+
+
+def cache_userbot_contact(phone: str, telegram_user_id: int, first_name: str | None = None, last_name: str | None = None) -> None:
+    ensure_userbot_schema()
+    clean_phone = "".join(c for c in str(phone or "") if c.isdigit() or c == "+")
+    if not clean_phone:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO userbot_contacts (phone_number, telegram_user_id, first_name, last_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT (phone_number) DO UPDATE SET
+                telegram_user_id=EXCLUDED.telegram_user_id,
+                first_name=COALESCE(EXCLUDED.first_name, userbot_contacts.first_name),
+                last_name=COALESCE(EXCLUDED.last_name, userbot_contacts.last_name),
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (clean_phone, int(telegram_user_id), first_name or None, last_name or None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_cached_userbot_contact(phone: str) -> dict | None:
+    ensure_userbot_schema()
+    clean_phone = "".join(c for c in str(phone or "") if c.isdigit() or c == "+")
+    if not clean_phone:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM userbot_contacts WHERE phone_number=? LIMIT 1", (clean_phone,))
+        return _row_to_dict(cur.fetchone()) or None
+    finally:
+        conn.close()
+
+
+def log_userbot_message(target_phone: str, telegram_user_id: int | None, event_type: str, message_text: str, status: str = "sent", error_detail: str | None = None) -> None:
+    ensure_userbot_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO userbot_logs (target_phone, telegram_user_id, event_type, message_text, status, error_detail)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(target_phone or "").strip(),
+                int(telegram_user_id) if telegram_user_id else None,
+                str(event_type or "general"),
+                str(message_text or ""),
+                str(status or "sent"),
+                str(error_detail or "") if error_detail else None,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_userbot_logs(limit: int = 100) -> list[dict]:
+    ensure_userbot_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM userbot_logs ORDER BY id DESC LIMIT ?", (int(limit),))
+        return [_row_to_dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()

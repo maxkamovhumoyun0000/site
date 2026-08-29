@@ -62,7 +62,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "profile",
   ],
   teacher: ["home", "chats", "groups", "substitutions", "attendance", "arena", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
   support: ["home", "chats", "bookings", "calendar", "attendance", "homework", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
@@ -98,6 +98,7 @@ export const SECTION_ALIAS: Record<string, string> = {
   holiday: "holidays",
   holidays: "holidays",
   sms: "sms",
+  userbot: "userbot",
   competitions: "competitions-history",
 };
 
@@ -133,6 +134,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "family-groups": "Family Groups",
   payments: "To'lovlar",
   purchases: "Xaridlar",
+  userbot: "📲 Telegram Userbot",
   broadcasts: "Yuborishlar",
   broadcast: "Broadcast",
   surveys: "So'rovnomalar",
