@@ -711,3 +711,66 @@ def handle_userbot_homework_missing_event(student_id: int, group_id: int | None 
         logger.exception("handle_userbot_homework_missing_event failed: %s", exc)
 
 
+def handle_userbot_payment_reminder_event(student_id: int, fee_amount: float | int, date_str: str, group_id: int | None = None, is_overdue: bool = False):
+    """Triggered for upcoming payment reminder or overdue payment notification."""
+    try:
+        from db import get_user_by_id, get_group
+        user = get_user_by_id(int(student_id))
+        if not user:
+            return
+        group = get_group(int(group_id)) if group_id else {}
+
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+        group_name = str((group or {}).get("title") or (group or {}).get("name") or "Diamond Education").strip()
+        formatted_amount = f"{float(fee_amount or 0):,.0f}".replace(",", " ")
+
+        tpl_key = "payment_overdue" if is_overdue else "payment_reminder"
+        ctx = {
+            "student_name": student_name,
+            "group_name": group_name,
+            "date": date_str,
+            "fee_amount": formatted_amount,
+            "amount": formatted_amount,
+        }
+        msg_text = render_userbot_template(tpl_key, ctx)
+        if msg_text:
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type=tpl_key)
+    except Exception as exc:
+        logger.exception("handle_userbot_payment_reminder_event failed: %s", exc)
+
+
+def handle_userbot_achievement_event(student_id: int, title: str, description: str = "", reward_dpoints: int = 0, reward_dcoins: int = 0):
+    """Triggered when a student unlocks an achievement or reward."""
+    try:
+        from db import get_user_by_id
+        user = get_user_by_id(int(student_id))
+        if not user:
+            return
+
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+
+        ctx = {
+            "student_name": student_name,
+            "achievement_title": title or "Yangi Yutuq",
+            "title": title or "Yangi Yutuq",
+            "description": description or "",
+            "dpoints": str(reward_dpoints),
+            "dcoins": str(reward_dcoins),
+        }
+        msg_text = render_userbot_template("achievement", ctx)
+        if msg_text:
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type="achievement")
+    except Exception as exc:
+        logger.exception("handle_userbot_achievement_event failed: %s", exc)
+
+
