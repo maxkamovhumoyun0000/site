@@ -299,24 +299,59 @@ def render_userbot_template(template_key: str, context: Dict[str, Any]) -> Optio
     """Helper to render message templates with dynamic context variables."""
     settings = get_userbot_settings()
     
-    # Check if this notification toggle is enabled
-    toggle_map = {
-        "tpl_attendance_absent": "notify_attendance_absent",
-        "tpl_attendance_late": "notify_attendance_late",
-        "tpl_homework_missing": "notify_homework_missing",
-        "tpl_payment_reminder": "notify_payment_reminder",
-        "tpl_payment_overdue": "notify_payment_reminder",
-        "tpl_payment_receipt": "notify_payment_receipt",
-        "tpl_welcome_group": "notify_welcome_group",
-        "tpl_holiday_cancellation": "notify_holiday_cancellation",
-        "tpl_achievement": "notify_achievements",
-    }
-    
-    toggle_key = toggle_map.get(template_key)
-    if toggle_key and not bool(settings.get(toggle_key, 1)):
-        return None # Disabled by admin
+    # Check if global userbot system is enabled
+    is_active = bool(settings.get("is_active", 1))
+    if not is_active:
+        return None
 
-    raw_tpl = str(settings.get(template_key) or "").strip()
+    # Flexible key mapping for DB columns and toggle flags
+    key_map = {
+        "attendance_absent": ("tpl_attendance_absent", "notify_attendance_absent"),
+        "tpl_attendance_absent": ("tpl_attendance_absent", "notify_attendance_absent"),
+        
+        "attendance_late": ("tpl_attendance_late", "notify_attendance_late"),
+        "tpl_attendance_late": ("tpl_attendance_late", "notify_attendance_late"),
+
+        "homework_missing": ("tpl_homework_missing", "notify_homework_missing"),
+        "homework_alert": ("tpl_homework_missing", "notify_homework_missing"),
+        "tpl_homework_missing": ("tpl_homework_missing", "notify_homework_missing"),
+
+        "payment_reminder": ("tpl_payment_reminder", "notify_payment_reminder"),
+        "tpl_payment_reminder": ("tpl_payment_reminder", "notify_payment_reminder"),
+
+        "payment_overdue": ("tpl_payment_overdue", "notify_payment_reminder"),
+        "overdue_alert": ("tpl_payment_overdue", "notify_payment_reminder"),
+        "tpl_payment_overdue": ("tpl_payment_overdue", "notify_payment_reminder"),
+
+        "payment_receipt": ("tpl_payment_receipt", "notify_payment_receipt"),
+        "tpl_payment_receipt": ("tpl_payment_receipt", "notify_payment_receipt"),
+
+        "welcome_group": ("tpl_welcome_group", "notify_welcome_group"),
+        "welcome_message": ("tpl_welcome_group", "notify_welcome_group"),
+        "tpl_welcome_group": ("tpl_welcome_group", "notify_welcome_group"),
+
+        "holiday_cancellation": ("tpl_holiday_cancellation", "notify_holiday_cancellation"),
+        "lesson_cancelled": ("tpl_holiday_cancellation", "notify_holiday_cancellation"),
+        "tpl_holiday_cancellation": ("tpl_holiday_cancellation", "notify_holiday_cancellation"),
+
+        "achievement": ("tpl_achievement", "notify_achievements"),
+        "achievement_notice": ("tpl_achievement", "notify_achievements"),
+        "tpl_achievement": ("tpl_achievement", "notify_achievements"),
+    }
+
+    if template_key not in key_map:
+        return None
+
+    tpl_col, notify_col = key_map[template_key]
+
+    if notify_col and not bool(settings.get(notify_col, 1)):
+        return None  # Disabled by admin
+
+    raw_tpl = str(settings.get(tpl_col) or "").strip()
+    if not raw_tpl:
+        from db import DEFAULT_USERBOT_TEMPLATES
+        raw_tpl = str(DEFAULT_USERBOT_TEMPLATES.get(tpl_col) or "").strip()
+
     if not raw_tpl:
         return None
 
@@ -326,3 +361,179 @@ def render_userbot_template(template_key: str, context: Dict[str, Any]) -> Optio
         placeholder = "{" + str(key) + "}"
         res = res.replace(placeholder, str(val if val is not None else ""))
     return res
+
+
+def handle_userbot_attendance_event(user_id: int, group_id: int, lesson_date: str, status: str):
+    """Triggered when student attendance is marked absent or late."""
+    try:
+        from db import get_user_by_id, get_group
+        user = get_user_by_id(int(user_id))
+        if not user:
+            return
+        group = get_group(int(group_id)) or {}
+
+        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
+        if not target_phone:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+        group_name = str(group.get("title") or group.get("name") or "Guruh").strip()
+        course_title = str(group.get("course_title") or group.get("subject") or "Fan").strip()
+
+        st = str(status or "").strip().lower()
+        if st in ("absent", "qoldirdi", "bormadi", "-"):
+            tpl_key = "attendance_absent"
+            ctx = {
+                "student_name": student_name,
+                "group_name": group_name,
+                "course_title": course_title,
+                "date": lesson_date,
+            }
+        elif st in ("late", "kechikdi"):
+            tpl_key = "attendance_late"
+            ctx = {
+                "student_name": student_name,
+                "group_name": group_name,
+                "date": lesson_date,
+            }
+        else:
+            return
+
+        msg_text = render_userbot_template(tpl_key, ctx)
+        if msg_text:
+            queue_userbot_notification(target_phone, msg_text, event_type=f"attendance_{st}")
+    except Exception as exc:
+        logger.exception("handle_userbot_attendance_event failed: %s", exc)
+
+
+def handle_userbot_group_join_event(student_id: int, group_id: int):
+    """Triggered when a student is added to a group."""
+    try:
+        from db import get_user_by_id, get_group
+        user = get_user_by_id(int(student_id))
+        if not user:
+            return
+        group = get_group(int(group_id)) or {}
+
+        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
+        if not target_phone:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+        group_name = str(group.get("title") or group.get("name") or "Guruh").strip()
+        schedule_days = str(group.get("schedule_days") or group.get("days") or "Belgilangan kunlar").strip()
+        schedule_time = str(group.get("schedule_time") or group.get("time") or "Belgilangan vaqt").strip()
+
+        ctx = {
+            "student_name": student_name,
+            "group_name": group_name,
+            "schedule_days": schedule_days,
+            "schedule_time": schedule_time,
+            "schedule": f"{schedule_days} {schedule_time}".strip(),
+            "start_time": schedule_time,
+            "end_time": "",
+        }
+        msg_text = render_userbot_template("welcome_group", ctx)
+        if msg_text:
+            queue_userbot_notification(target_phone, msg_text, event_type="welcome_group")
+    except Exception as exc:
+        logger.exception("handle_userbot_group_join_event failed: %s", exc)
+
+
+def handle_userbot_payment_received_event(student_id: int, amount: float | int, group_id: int | None = None, ym: str | None = None, payment_method: str | None = None):
+    """Triggered when payment is recorded for a student."""
+    try:
+        from db import get_user_by_id, get_group
+        user = get_user_by_id(int(student_id))
+        if not user:
+            return
+        group = get_group(int(group_id)) if group_id else {}
+
+        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
+        if not target_phone:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+        group_name = str((group or {}).get("title") or (group or {}).get("name") or "Diamond Education").strip()
+        formatted_amount = f"{float(amount or 0):,.0f}".replace(",", " ")
+
+        ctx = {
+            "student_name": student_name,
+            "group_name": group_name,
+            "amount": formatted_amount,
+            "fee_amount": formatted_amount,
+            "receipt_no": f"REC-{int(time.time())}",
+        }
+        msg_text = render_userbot_template("payment_receipt", ctx)
+        if msg_text:
+            queue_userbot_notification(target_phone, msg_text, event_type="payment_receipt")
+    except Exception as exc:
+        logger.exception("handle_userbot_payment_received_event failed: %s", exc)
+
+
+def handle_userbot_holiday_event(group_ids: list[int] | None, date_str: str, reason: str):
+    """Triggered when a holiday or lesson cancellation is announced."""
+    try:
+        from db import get_all_users, get_group_users, get_group
+        students = []
+        if group_ids:
+            for gid in group_ids:
+                group = get_group(int(gid)) or {}
+                gname = str(group.get("title") or group.get("name") or "Guruh").strip()
+                gstudents = get_group_users(int(gid)) or []
+                for s in gstudents:
+                    students.append((s, gname))
+        else:
+            all_u = get_all_users() or []
+            for u in all_u:
+                if int(u.get("login_type") or 0) in (1, 2):
+                    students.append((u, "Diamond Education"))
+
+        seen_phones = set()
+        for user, gname in students:
+            target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
+            if not target_phone or target_phone in seen_phones:
+                continue
+            seen_phones.add(target_phone)
+            student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+            ctx = {
+                "student_name": student_name,
+                "group_name": gname,
+                "date": date_str,
+                "reason": reason or "Dam olish kuni",
+            }
+            msg_text = render_userbot_template("holiday_cancellation", ctx)
+            if msg_text:
+                queue_userbot_notification(target_phone, msg_text, event_type="holiday_cancellation")
+    except Exception as exc:
+        logger.exception("handle_userbot_holiday_event failed: %s", exc)
+
+
+def handle_userbot_homework_missing_event(student_id: int, group_id: int | None = None, reason: str = "", score: str = ""):
+    """Triggered when homework is missed or unfulfilled."""
+    try:
+        from db import get_user_by_id, get_group
+        user = get_user_by_id(int(student_id))
+        if not user:
+            return
+        group = get_group(int(group_id)) if group_id else {}
+
+        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
+        if not target_phone:
+            return
+
+        student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+        group_name = str((group or {}).get("title") or (group or {}).get("name") or "Guruh").strip()
+
+        ctx = {
+            "student_name": student_name,
+            "group_name": group_name,
+            "reason": reason or "Vazifa topshirilmadi",
+            "score": str(score or "-"),
+        }
+        msg_text = render_userbot_template("homework_missing", ctx)
+        if msg_text:
+            queue_userbot_notification(target_phone, msg_text, event_type="homework_missing")
+    except Exception as exc:
+        logger.exception("handle_userbot_homework_missing_event failed: %s", exc)
+

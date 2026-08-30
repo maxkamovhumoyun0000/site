@@ -3281,6 +3281,11 @@ async def _notify_holiday_otmen_result(result: dict) -> None:
             t(lang, "admin_cancel_lessons_notify_student", date=date_str, reason=reason),
         )
 
+    try:
+        userbot_manager.handle_userbot_holiday_event(None, date_str, reason)
+    except Exception:
+        logger.exception("userbot holiday notification trigger failed")
+
 
 async def _run_broadcast_job(
     broadcast_id: int,
@@ -28394,6 +28399,17 @@ async def _notify_homework_reviewed(homework: dict, student_id: int, reviewed: d
     tg = str(student.get("telegram_id") or "").strip()
     if token and tg:
         await _send_telegram_text(token, tg, message, button_text=button_text, button_url=tg_url, button_web_app=True)
+
+    if not is_done:
+        try:
+            userbot_manager.handle_userbot_homework_missing_event(
+                student_id=int(student_id),
+                group_id=int(homework.get("group_id") or 0),
+                reason=f"\"{title}\" vazifasi o'qituvchi tomonidan bajarilmadi deb baholandi",
+                score=f"{delta:g}"
+            )
+        except Exception:
+            logger.exception("userbot homework missing trigger failed")
 
 
 @app.post("/teacher/homework")
