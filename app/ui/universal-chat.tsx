@@ -567,7 +567,7 @@ function DiamondVoyHomeworkWizard({
                 <p className="font-medium">Testni qanday yaratmoqchisiz?</p>
                 <div className="flex flex-col gap-2">
                   <button onClick={() => setTestMode("manual")} className="w-full px-4 py-2 border border-cyan-500 text-cyan-600 dark:text-cyan-400 font-bold rounded-xl">O'zim kiritaman</button>
-                  <button onClick={() => setTestMode("ai")} className="w-full px-4 py-2 bg-purple-500 text-white font-bold rounded-xl">AI orqali yaratish</button>
+                  <button onClick={() => setTestMode("ai")} className="w-full px-4 py-2 bg-[#1429F2] hover:bg-blue-700 text-white font-bold rounded-xl transition-colors">AI orqali yaratish</button>
                 </div>
               </div>
             )}
@@ -607,7 +607,7 @@ function DiamondVoyHomeworkWizard({
                     <button
                       disabled={!topic.trim() || loading}
                       onClick={() => handleAction("generate-test", { topic, question_count: Number(qCount) })}
-                      className="mt-2 w-full px-4 py-2 bg-purple-500 text-white font-bold rounded-xl disabled:opacity-50"
+                      className="mt-2 w-full px-4 py-2 bg-[#1429F2] hover:bg-blue-700 text-white font-bold rounded-xl disabled:opacity-50 transition-colors"
                     >
                       {tt("chat.wizard.generateTest", "Test yaratish")}
                     </button>
@@ -642,7 +642,7 @@ function DiamondVoyHomeworkWizard({
                     <button
                       disabled={!rawTestText.trim() || loading}
                       onClick={() => handleAction("parse-test", { raw_test_text: rawTestText })}
-                      className="w-full px-4 py-2 bg-purple-500 text-white font-bold rounded-xl disabled:opacity-50"
+                      className="w-full px-4 py-2 bg-[#1429F2] hover:bg-blue-700 text-white font-bold rounded-xl disabled:opacity-50 transition-colors"
                     >
                       AI orqali ajratib olish
                     </button>
@@ -1109,9 +1109,9 @@ function DiamondVoyAppVersionWizard({
   }
 
   return (
-    <div className="w-full max-w-xl border border-purple-200 dark:border-purple-800/50 rounded-2xl bg-white dark:bg-[#1A2332] shadow-lg overflow-hidden flex flex-col">
-      <div className="px-4 py-3 bg-purple-50 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-800/30 flex justify-between items-center">
-        <h4 className="font-bold text-purple-800 dark:text-purple-300">
+    <div className="w-full max-w-xl border border-blue-200 dark:border-blue-800/50 rounded-2xl bg-white dark:bg-[#1A2332] shadow-lg overflow-hidden flex flex-col">
+      <div className="px-4 py-3 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-100 dark:border-blue-800/30 flex justify-between items-center">
+        <h4 className="font-bold text-blue-800 dark:text-blue-300">
           🚀 Mobil Ilovalar Versiyasi (Force Update)
         </h4>
       </div>
@@ -1221,7 +1221,7 @@ function DiamondVoyAppVersionWizard({
         <button
           disabled={saving}
           onClick={handleSave}
-          className="w-full px-4 py-2.5 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl disabled:opacity-50 transition-colors shadow-md text-sm cursor-pointer"
+          className="w-full px-4 py-2.5 bg-[#1429F2] hover:bg-blue-700 text-white font-bold rounded-xl disabled:opacity-50 transition-colors shadow-md text-sm cursor-pointer"
         >
           {saving ? "Saqlanmoqda..." : "💾 Versiyalarni Saqlash"}
         </button>
@@ -2070,7 +2070,7 @@ export function UniversalChat({
                   👥 Yangi o'quvchilar qo'shish
                 </button>
                 <button
-                  className="px-4 py-2 rounded-xl bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 text-sm font-bold border border-purple-200 dark:border-purple-800/50 hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors"
+                  className="px-4 py-2 rounded-xl bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 text-sm font-bold border border-blue-200 dark:border-blue-800/50 hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
                   onClick={() => {
                     setInput("Mobil ilovalar versiyasi");
                     setTimeout(() => sendDiamondvoyMessage("Mobil ilovalar versiyasi").catch(() => null), 50);
