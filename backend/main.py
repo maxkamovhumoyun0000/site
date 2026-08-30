@@ -1730,14 +1730,15 @@ class PaymentSettingsRequest(BaseModel):
 
 
 class UserbotSendCodeRequest(BaseModel):
-    api_id: int
-    api_hash: str
     phone_number: str
+    api_id: int | None = None
+    api_hash: str | None = None
 
 
 class UserbotVerifyCodeRequest(BaseModel):
     phone_number: str
-    code: str
+    code: str | None = None
+    phone_code: str | None = None
     password: str | None = None
 
 
@@ -43728,9 +43729,16 @@ async def get_admin_userbot_settings(authorization: str | None = Header(default=
 async def post_admin_userbot_send_code(req: UserbotSendCodeRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    settings = get_userbot_settings()
+    api_id = req.api_id or settings.get("api_id") or os.environ.get("TELEGRAM_API_ID") or 2040
+    api_hash = req.api_hash or settings.get("api_hash") or os.environ.get("TELEGRAM_API_HASH") or "b18441a1ed607e10e394949103722e18"
     try:
-        phone_code_hash = await send_userbot_otp_code(req.api_id, req.api_hash, req.phone_number)
-        return {"success": True, "phone_code_hash": phone_code_hash}
+        res = await send_userbot_otp_code(int(api_id), str(api_hash), req.phone_number)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("error") or "SMS kod yuborishda xatolik")
+        return res
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("userbot send_code error")
         raise HTTPException(status_code=400, detail=str(e))
@@ -43740,9 +43748,16 @@ async def post_admin_userbot_send_code(req: UserbotSendCodeRequest, authorizatio
 async def post_admin_userbot_verify_code(req: UserbotVerifyCodeRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    code_val = req.code or req.phone_code
+    if not code_val:
+        raise HTTPException(status_code=400, detail="Telegram SMS kodini kiriting")
     try:
-        success = await verify_userbot_otp_code(req.phone_number, req.code, req.password)
-        return {"success": success}
+        res = await verify_userbot_otp_code(req.phone_number, code_val, req.password)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=res.get("error") or "Kodni tasdiqlashda xatolik")
+        return res
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception("userbot verify_code error")
         raise HTTPException(status_code=400, detail=str(e))

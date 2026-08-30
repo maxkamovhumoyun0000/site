@@ -271,7 +271,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
 
   const fetchSettings = async () => {
     try {
-      const data = await doFetch("/admin/userbot/settings");
+      const data = await doFetch("/api/admin/userbot/settings");
       if (data) {
         setSettings(data);
       }
@@ -284,7 +284,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
 
   const fetchLogs = async () => {
     try {
-      const data = await doFetch("/admin/userbot/logs?limit=50");
+      const data = await doFetch("/api/admin/userbot/logs?limit=50");
       if (data?.logs) {
         setLogs(data.logs || []);
       }
@@ -321,7 +321,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     if (!settings) return;
     setSaving(true);
     try {
-      const data = await doFetch("/admin/userbot/settings", {
+      const data = await doFetch("/api/admin/userbot/settings", {
         method: "POST",
         body: settings,
       });
@@ -345,7 +345,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     setLoginLoading(true);
     setLoginError("");
     try {
-      const data = await doFetch("/admin/userbot/send-code", {
+      const data = await doFetch("/api/admin/userbot/send-code", {
         method: "POST",
         body: { phone_number: phoneInput.trim() },
       });
@@ -370,16 +370,17 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     setLoginLoading(true);
     setLoginError("");
     try {
-      const data = await doFetch("/admin/userbot/verify-code", {
+      const data = await doFetch("/api/admin/userbot/verify-code", {
         method: "POST",
         body: {
           phone_number: phoneInput.trim(),
           phone_code_hash: phoneCodeHash,
+          code: codeInput.trim(),
           phone_code: codeInput.trim(),
           password: passwordInput.trim() || undefined,
         },
       });
-      if (data?.success) {
+      if (data?.success || data?.ok) {
         setLoginModalOpen(false);
         fetchSettings();
         alert("Telegram Userbot akkaunti muvaffaqiyatli ulandi! ✅");
@@ -396,7 +397,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
   const handleLogout = async () => {
     if (!confirm("Haqiqatan ham Userbot akkauntini uzmoqchimisiz?")) return;
     try {
-      await doFetch("/admin/userbot/logout", { method: "POST" });
+      await doFetch("/api/admin/userbot/logout", { method: "POST" });
       fetchSettings();
     } catch (e) {
       console.error(e);
@@ -408,7 +409,7 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     setTestSending(true);
     setTestStatus("");
     try {
-      const data = await doFetch("/admin/userbot/test-send", {
+      const data = await doFetch("/api/admin/userbot/test-send", {
         method: "POST",
         body: {
           phone_number: testPhone.trim(),
