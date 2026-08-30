@@ -29608,10 +29608,7 @@ async def teacher_add_group_member(group_id: int, student_id: int, authorization
         user_ids={int(student_id)},
         reason="teacher_add_group_member",
     )
-    try:
-        userbot_manager.handle_userbot_group_join_event(int(student_id), int(group_id))
-    except Exception:
-        logger.exception("userbot group join trigger failed")
+
     return _group_membership_change_payload(int(group_id), int(student_id), "Student added to group")
 
 
@@ -29713,10 +29710,7 @@ async def teacher_mark_attendance(payload: AttendanceMarkRequest, authorization:
         lesson_date=str(payload.date),
         reason="teacher_attendance_mark",
     )
-    try:
-        userbot_manager.handle_userbot_attendance_event(int(payload.user_id), int(payload.group_id), str(payload.date), status)
-    except Exception:
-        logger.exception("userbot_attendance_event trigger failed")
+
     return {
         "message": "Attendance marked",
         "status": status,
@@ -29753,10 +29747,7 @@ async def teacher_bulk_mark_attendance(payload: AttendanceBulkMarkRequest, autho
             noops += 1
         effect_rows.append({"user_id": int(uid), **effect})
         add_attendance(int(uid), int(payload.group_id), str(payload.date), status=status)
-        try:
-            userbot_manager.handle_userbot_attendance_event(int(uid), int(payload.group_id), str(payload.date), status)
-        except Exception:
-            pass
+
         marked += 1
     _payment_invalidate_attendance_scope(
         user_ids=[int(uid) for uid in payload.user_ids],
@@ -34526,10 +34517,7 @@ async def add_student_member(
         user_ids={int(student_id)},
         reason="admin_add_group_member_existing" if joined_at else "admin_add_group_member_new",
     )
-    try:
-        userbot_manager.handle_userbot_group_join_event(int(student_id), int(group_id))
-    except Exception:
-        logger.exception("userbot group join trigger failed")
+
     return _group_membership_change_payload(
         int(group_id),
         int(student_id),
@@ -43688,15 +43676,7 @@ async def admin_mark_attendance(payload: AttendanceMarkRequest, authorization: s
         lesson_date=str(payload.date),
         reason="admin_attendance_mark",
     )
-    try:
-        userbot_manager.handle_userbot_attendance_event(
-            user_id=int(payload.user_id),
-            group_id=int(payload.group_id),
-            lesson_date=str(payload.date),
-            status=status,
-        )
-    except Exception:
-        logger.exception("admin attendance mark userbot trigger failed")
+
     return {
         "message": "Attendance marked",
         "status": status,

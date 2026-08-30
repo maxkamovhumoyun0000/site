@@ -240,19 +240,23 @@ def _is_truthy(val: Any, default: bool = True) -> bool:
 
 def get_target_phones_for_user(user: dict) -> list[str]:
     """
-    Returns all parent and student phone numbers for a user.
+    Returns parent phone numbers for a user.
+    Lookup hierarchy:
+    1. Parent phone(s) listed in user['parent_phone'] or user['parent_phone_number']
+    2. Parent accounts linked via family_group_id
+    3. Fallback to student's own phone ONLY if no parent phone exists.
     """
     if not user:
         return []
 
-    target_phones: list[str] = []
+    parent_phones: list[str] = []
 
     # 1. Parent phone column on student user
     raw_parent_phone = user.get("parent_phone") or user.get("parent_phone_number")
     if raw_parent_phone:
         for p in extract_all_phones(raw_parent_phone):
-            if p not in target_phones:
-                target_phones.append(p)
+            if p not in parent_phones:
+                parent_phones.append(p)
 
     # 2. Check linked parent users in same family_group_id if present
     family_group_id = user.get("family_group_id")
@@ -271,24 +275,30 @@ def get_target_phones_for_user(user: dict) -> list[str]:
                 p_phone = r.get("phone")
                 if p_phone:
                     for p in extract_all_phones(p_phone):
-                        if p not in target_phones:
-                            target_phones.append(p)
+                        if p not in parent_phones:
+                            parent_phones.append(p)
                 p_parent_phone = r.get("parent_phone")
                 if p_parent_phone:
                     for p in extract_all_phones(p_parent_phone):
-                        if p not in target_phones:
-                            target_phones.append(p)
+                        if p not in parent_phones:
+                            parent_phones.append(p)
         except Exception as exc:
             logger.exception("Failed to fetch family_group_id phones: %s", exc)
 
-    # 3. Student's own phone
+    # IF PARENT PHONES EXIST, RETURN ONLY PARENT PHONES!
+    if parent_phones:
+        return parent_phones
+
+    # 3. Fallback ONLY if no parent phone exists: student's own phone
     user_phone = user.get("phone") or user.get("login_id")
     if user_phone:
+        student_phones: list[str] = []
         for p in extract_all_phones(user_phone):
-            if p not in target_phones:
-                target_phones.append(p)
+            if p not in student_phones:
+                student_phones.append(p)
+        return student_phones
 
-    return target_phones
+    return []
 
 
 async def send_direct_userbot_message(phone_number: str, message_text: str, event_type: str = "general") -> Dict[str, Any]:
@@ -563,8 +573,25 @@ def handle_userbot_group_join_event(student_id: int, group_id: int):
 
         student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
         group_name = str(group.get("title") or group.get("name") or "Guruh").strip()
-        schedule_days = str(group.get("schedule_days") or group.get("days") or "Belgilangan kunlar").strip()
-        schedule_time = str(group.get("schedule_time") or group.get("time") or "Belgilangan vaqt").strip()
+
+        raw_days = (
+            group.get("lesson_date")
+            or group.get("schedule_days")
+            or group.get("days")
+            or group.get("lesson_days")
+        )
+        schedule_days = str(raw_days).strip() if raw_days else "Belgilangan kunlar"
+
+        start_t = str(group.get("lesson_start") or group.get("start_time") or "").strip()
+        end_t = str(group.get("lesson_end") or group.get("end_time") or "").strip()
+
+        if start_t and end_t:
+            schedule_time = f"{start_t} - {end_t}"
+        elif start_t:
+            schedule_time = start_t
+        else:
+            raw_time = group.get("schedule_time") or group.get("time")
+            schedule_time = str(raw_time).strip() if raw_time else "Belgilangan vaqt"
 
         ctx = {
             "student_name": student_name,
@@ -572,8 +599,8 @@ def handle_userbot_group_join_event(student_id: int, group_id: int):
             "schedule_days": schedule_days,
             "schedule_time": schedule_time,
             "schedule": f"{schedule_days} {schedule_time}".strip(),
-            "start_time": schedule_time,
-            "end_time": "",
+            "start_time": start_t or schedule_time,
+            "end_time": end_t,
         }
         msg_text = render_userbot_template("welcome_group", ctx)
         if msg_text:
