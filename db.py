@@ -24259,15 +24259,104 @@ def _safe_json_list(raw: Any) -> list:
 # ═══════════════════════════════════════════════════════════════════════════
 
 DEFAULT_USERBOT_TEMPLATES = {
-    "tpl_attendance_absent": "Hurmatli ota-ona! Farzandingiz {student_name} bugun ({date}) {group_name} darsiga kelmadi. Iltimos, o'quv markazimiz bilan bog'laning.",
-    "tpl_attendance_late": "Tuzatish: Farzandingiz {student_name} {group_name} darsiga kechikib keldi va darsda qatnashmoqda.",
-    "tpl_homework_missing": "Eslatma: Farzandingiz {student_name} {group_name} fanidan berilgan uyga vazifani bajarmadi.",
-    "tpl_payment_reminder": "Hurmatli ota-ona! Farzandingiz {student_name} uchun keyingi oy ({date}) to'lov kuni yaqinlashmoqda. Oylik to'lov: {fee_amount} so'm.",
-    "tpl_payment_overdue": "Hurmatli ota-ona! Farzandingiz {student_name} uchun {group_name} guruhining oylik to'lovi qarzdorligi mavjud: {fee_amount} so'm. Iltimos, to'lovni amalga oshirishingizni so'raymiz.",
-    "tpl_payment_receipt": "To'lov qabul qilindi! Farzandingiz {student_name} ({group_name}) uchun {amount} so'm to'lov kiritildi. Rahmat!",
-    "tpl_welcome_group": "Xush kelibsiz! Farzandingiz {student_name} {group_name} guruhiga muvaffaqiyatli qo'shildi. Dars kunlari: {schedule_days}, Vaqti: {schedule_time}.",
-    "tpl_holiday_cancellation": "Hurmatli ota-ona! {date} kuni bayram munosabati bilan {group_name} guruhida dars bo'lmaydi.",
-    "tpl_achievement": "Tabriklaymiz! Farzandingiz {student_name} {group_name} guruhida ajoyib natija ko'rsatdi: {achievement_text}! 🎉",
+    "tpl_attendance_absent": (
+        "⚠️ **DARSGA KELMADI / OTСУТСТВИЕ НА УРОКЕ**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** bugun (**{date}**) **{group_name}** guruhidagi darsga kelmadi.\n"
+        "Iltimos, darsni o'tkazib yuborganlik sababini ma'lum qilishingizni yoki o'quv markazimiz bilan bog'lanishingizni so'raymiz. 📞\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Ваш ребёнок **{student_name}** сегодня (**{date}**) не пришёл(шла) на занятие в группе **{group_name}**.\n"
+        "Пожалуйста, сообщите причину отсутствия или свяжитесь с нашим учебным центром. 📞"
+    ),
+    "tpl_attendance_late": (
+        "⏰ **DARSGA KECHIKDI / ОПОЗДАНИЕ НА УРОК**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** **{group_name}** darsiga biroz kechikib keldi va hozirda darsda qatnashmoqda. 📚\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Ваш ребёнок **{student_name}** немного опоздал(а) на урок группы **{group_name}** и сейчас занимается на занятии. 📚"
+    ),
+    "tpl_homework_missing": (
+        "📝 **UYGA VAZIFA OGOHLANTIRISHI / ДОМАШНЕЕ ЗАДАНИЕ**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** **{group_name}** bo'yicha berilgan navbatdagi uyga vazifani o'z vaqtida bajarmadi.\n"
+        "Iltimos, farzandingizning darslarga tayyorgarligini nazorat qilib berishingizni so'raymiz. 📖💡\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Ваш ребёнок **{student_name}** не выполнил(а) вовремя домашнее задание по предмету **{group_name}**.\n"
+        "Пожалуйста, проконтролируйте подготовку ребёнка к занятиям. 📖💡"
+    ),
+    "tpl_payment_reminder": (
+        "💳 **TO'LOV ESLATMASI / НАПОМИНАНИЕ ОБ ОПЛАТЕ**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** uchun keyingi oy (**{date}**) to'lov muddati yaqinlashmoqda.\n"
+        "Oylik to'lov summasi: **{fee_amount} so'm**.\n"
+        "To'lovni o'z vaqtida amalga oshirishingizni so'raymiz. Rahmat! ✨\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Приближается срок оплаты за следующий месяц (**{date}**) для вашего ребёнка **{student_name}**.\n"
+        "Сумма ежемесячной оплаты: **{fee_amount} сум**.\n"
+        "Просим произвести оплату вовремя. Спасибо! ✨"
+    ),
+    "tpl_payment_overdue": (
+        "🚨 **TO'LOV MUDDATI O'TDI / ЗАДОЛЖЕННОСТЬ ПО ОПЛАТЕ**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** (**{group_name}**) uchun oylik to'lov muddati o'tgan.\n"
+        "Mavjud qarzdorlik summasi: **{fee_amount} so'm**.\n"
+        "Iltimos, darslar to'xtatilib qolmasligi uchun to'lovni tez fursatda amalga oshirishingizni so'raymiz. 📲\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Истёк срок оплаты за обучение вашего ребёнка **{student_name}** в группе **{group_name}**.\n"
+        "Сумма задолженности: **{fee_amount} сум**.\n"
+        "Пожалуйста, произведите оплату в ближайшее время для продолжения обучения. 📲"
+    ),
+    "tpl_payment_receipt": (
+        "✅ **TO'LOV QABUL QILINDI / ОПЛАТА ПОЛУЧЕНА**\n\n"
+        "Hurmatli ota-ona!\n"
+        "Farzandingiz **{student_name}** (**{group_name}**) uchun **{amount} so'm** miqdoridagi to'lov muvaffaqiyatli qabul qilindi.\n"
+        "Ishonchingiz uchun tashakkur! 🌟\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "Оплата в размере **{amount} сум** за обучение вашего ребёнка **{student_name}** в группе **{group_name}** успешно принята.\n"
+        "Благодарим за доверие! 🌟"
+    ),
+    "tpl_welcome_group": (
+        "🎓 **XUSH KELIBSIZ! / ДОБРО ПОЖАЛОВАТЬ!**\n\n"
+        "Hurmatli ota-ona va o'quvchi!\n"
+        "Farzandingiz **{student_name}** Diamond Education **{group_name}** guruhiga muvaffaqiyatli qo'shildi.\n\n"
+        "📅 **Dars kunlari:** {schedule_days}\n"
+        "⏰ **Dars vaqti:** {schedule_time}\n\n"
+        "O'qishlarida ulkan zafarlar va yuksak marralar tilaymiz! 🚀\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители и ученик!\n"
+        "Ваш ребёнок **{student_name}** успешно зачислен(а) в группу **{group_name}** в Diamond Education.\n\n"
+        "📅 **Дни занятий:** {schedule_days}\n"
+        "⏰ **Время занятий:** {schedule_time}\n\n"
+        "Желаем успехов и высоких достижений в учёбе! 🚀"
+    ),
+    "tpl_holiday_cancellation": (
+        "📢 **DARS QOLDIRILISHI E'LONI / ОТМЕНА ЗАНЯТИЙ**\n\n"
+        "Hurmatli ota-ona!\n"
+        "**{date}** kuni bayram/dam olish munosabati bilan **{group_name}** guruhida dars bo'lmaydi.\n"
+        "Darslar belgilangan jadval bo'yicha keyingi kundan davom etadi. 🗓️\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Уважаемые родители!\n"
+        "**{date}** в связи с праздником/выходным днём занятия в группе **{group_name}** проводиться не будут.\n"
+        "Занятия возобновятся со следующего дня по расписанию. 🗓️"
+    ),
+    "tpl_achievement": (
+        "🏆 **FARANDINGIZNING YUTUQI / ДОСТИЖЕНИЕ РЕБЁНКА**\n\n"
+        "Ajoyib xushxabar! 🥳\n"
+        "Farzandingiz **{student_name}** **{group_name}** guruhida ajoyib natija ko'rsatdi:\n"
+        "👉 **{achievement_text}**\n\n"
+        "Farzandingizning bilimi va mehnati bilan faxrlanamiz! 🎉👏\n\n"
+        "— — — — — — — — — — — — — — —\n"
+        "Отличные новости! 🥳\n"
+        "Ваш ребёнок **{student_name}** показал(а) отличный результат в группе **{group_name}**:\n"
+        "👉 **{achievement_text}**\n\n"
+        "Мы гордимся успехами вашего ребёнка! 🎉👏"
+    ),
 }
 
 
@@ -24468,8 +24557,17 @@ def get_userbot_settings() -> dict:
                 ),
             )
             conn.commit()
-            cur.execute("SELECT * FROM userbot_settings WHERE id=1 LIMIT 1")
-            row = _row_to_dict(cur.fetchone()) or {}
+        if row:
+            # Refresh defaults to bilingual Uzbek + Russian if templates are single-line/old
+            updated_any = False
+            for k, v in DEFAULT_USERBOT_TEMPLATES.items():
+                val = str(row.get(k) or "").strip()
+                if not val or "\n" not in val:
+                    cur.execute(f"UPDATE userbot_settings SET {k}=? WHERE id=1", (v,))
+                    row[k] = v
+                    updated_any = True
+            if updated_any:
+                conn.commit()
         return row
     finally:
         conn.close()
