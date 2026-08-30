@@ -5,13 +5,18 @@ from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import FORCE_SUBSCRIBE, FORCE_SUBSCRIBE_CHANNEL_ID, FORCE_SUBSCRIBE_CHANNEL_URL
+from config import FORCE_SUBSCRIBE_CHANNEL_ID, FORCE_SUBSCRIBE_CHANNEL_URL
 from i18n import t
 
 
 async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
-    """Return True if subscription is disabled or the user is a member of the channel."""
-    if not FORCE_SUBSCRIBE or not FORCE_SUBSCRIBE_CHANNEL_ID:
+    """Return True only when no channel is configured or the user joined it.
+
+    The native student app and bot share this policy: configuring a channel
+    enables the gate.  That avoids an old ``FORCE_SUBSCRIBE=false`` setting
+    accidentally leaving the newly mandatory membership check disabled.
+    """
+    if not FORCE_SUBSCRIBE_CHANNEL_ID:
         return True
 
     try:

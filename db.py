@@ -10645,6 +10645,180 @@ def consume_mobile_telegram_login_request(
         finally:
             conn.close()
 
+
+# ==================== STUDENT CHANNEL MEMBERSHIP HAND-OFF ====================
+
+def ensure_student_channel_link_schema() -> None:
+    """Store short-lived app-to-bot linking requests for channel membership.
+
+    A native-app bearer token must never be placed in a Telegram deep link.
+    Instead the authenticated app creates an opaque request and the student
+    explicitly confirms the Telegram account that should be connected to the
+    already signed-in app account.
+    """
+    schema_key = "student_channel_link_requests_v1"
+    if _schema_ready(schema_key):
+        return
+    with DB_WRITE_LOCK:
+        if _schema_ready(schema_key):
+            return
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS student_channel_link_requests (
+                    id BIGSERIAL PRIMARY KEY,
+                    request_token TEXT UNIQUE NOT NULL,
+                    user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    telegram_id TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    approved_at TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_student_channel_link_lookup
+                ON student_channel_link_requests (request_token, status, expires_at)
+                """
+            )
+            conn.commit()
+            _mark_schema_ready(schema_key)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def create_student_channel_link_request(
+    request_token: str,
+    *,
+    user_id: int,
+    expires_at: datetime,
+) -> None:
+    """Persist a one-time link request created by an authenticated student."""
+    ensure_student_channel_link_schema()
+    token = str(request_token or "").strip()
+    uid = int(user_id or 0)
+    if not token or uid <= 0:
+        raise ValueError("request_token and user_id are required")
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                DELETE FROM student_channel_link_requests
+                WHERE expires_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                   OR approved_at < CURRENT_TIMESTAMP - INTERVAL '1 day'
+                """
+            )
+            cur.execute(
+                """
+                INSERT INTO student_channel_link_requests
+                    (request_token, user_id, status, expires_at)
+                VALUES (?, ?, 'pending', ?)
+                """,
+                (token, uid, expires_at),
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def approve_student_channel_link_request(
+    request_token: str,
+    *,
+    telegram_id: str | int,
+) -> dict | None:
+    """Bind a pending app request to the Telegram account that confirms it.
+
+    The unique Telegram link is never stolen from another user.  The caller
+    receives a small status dict suitable for bot UI, never profile data.
+    """
+    ensure_student_channel_link_schema()
+    token = str(request_token or "").strip()
+    tg = str(telegram_id or "").strip()
+    if not token or not tg:
+        return None
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT user_id
+                FROM student_channel_link_requests
+                WHERE request_token=?
+                  AND status='pending'
+                  AND expires_at > CURRENT_TIMESTAMP
+                LIMIT 1
+                """,
+                (token,),
+            )
+            request_row = cur.fetchone()
+            if not request_row:
+                conn.commit()
+                return {"status": "expired"}
+
+            uid = int(request_row["user_id"])
+            cur.execute(
+                "SELECT id, login_type FROM users WHERE telegram_id=? LIMIT 1",
+                (tg,),
+            )
+            linked = cur.fetchone()
+            if linked and int(linked["id"] or 0) != uid:
+                conn.commit()
+                return {"status": "telegram_in_use"}
+
+            cur.execute(
+                """
+                UPDATE users
+                SET telegram_id=?, logged_in=1, failed_logins=0,
+                    last_login_at=CURRENT_TIMESTAMP, last_activity=CURRENT_TIMESTAMP
+                WHERE id=? AND login_type IN (1, 2)
+                RETURNING id
+                """,
+                (tg, uid),
+            )
+            user_row = cur.fetchone()
+            if not user_row:
+                conn.commit()
+                return {"status": "invalid_user"}
+
+            cur.execute(
+                """
+                UPDATE student_channel_link_requests
+                SET status='approved', telegram_id=?, approved_at=CURRENT_TIMESTAMP
+                WHERE request_token=? AND status='pending'
+                """,
+                (tg, token),
+            )
+            conn.commit()
+            return {"status": "approved", "user_id": uid}
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
 def enable_access(user_id, days=None):
     logger.info(f"db.enable_access(user_id={user_id}, days={days})")
     conn = get_conn()
@@ -20176,7 +20350,13 @@ AI_CONTENT_TEST_KINDS = {
     "speak_sentence", "write_sentence", "guided_writing", "translation",
     "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
     "picture_description", "listening", "dictation", "spelling",
-    "matching", "scrambled_sentence", "gap_fill", "word_practice", "passage_cloze", "reading_set",
+    "matching", "scrambled_sentence", "gap_fill", "word_practice",
+    "passage_cloze", "reading_set",
+    # Tinglash mashqlarining yangi turlari xom JSON holida saqlanishi shart;
+    # aks holda ular eski MCQ normalizatoridan o'tib kind/audio ma'lumotini
+    # yo'qotadi va student appda bo'sh test bo'lib ko'rinadi.
+    "listening_tf", "listening_dictation", "listening_open",
+    "listening_gap", "listening_order", "listening_set",
 }
 
 
@@ -23658,7 +23838,7 @@ def create_library_node(
                 level or None,
                 file_url or None,
                 json.dumps(payload, ensure_ascii=False) if payload else None,
-                True,
+                bool(is_public),
             ),
         )
         row = cur.fetchone()
@@ -24021,6 +24201,40 @@ def get_active_ai_test_attempt(user_id: int) -> dict | None:
         if not row:
             return None
         return get_ai_test_attempt(int((row or {}).get("id") or 0))
+    finally:
+        conn.close()
+
+
+def get_completed_ai_test_attempt_for_source(
+    user_id: int,
+    source_type: str,
+    source_id: int,
+) -> dict | None:
+    """Return the latest completed AI attempt for one assignment source.
+
+    AI homework uses ``ai_test_attempts`` rather than the normal MCQ
+    ``web_content_test_attempts`` table. Keeping this lookup here lets the
+    homework list show it as completed and prevents a completed assignment
+    from silently creating a fresh attempt on every tap.
+    """
+    ensure_ai_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id
+            FROM ai_test_attempts
+            WHERE user_id=? AND source_type=? AND source_id=? AND status='completed'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(user_id), str(source_type or ""), int(source_id)),
+        )
+        row = _row_to_dict(cur.fetchone())
+        if not row:
+            return None
+        return get_ai_test_attempt(int(row.get("id") or 0), int(user_id))
     finally:
         conn.close()
 
@@ -24817,4 +25031,3 @@ def update_app_version_settings(fields: dict) -> dict:
             conn.close()
 
     return get_app_version_settings()
-

@@ -98,6 +98,7 @@ from db import (
     create_duel_session,
     create_media_asset,
     create_mobile_telegram_login_request,
+    create_student_channel_link_request,
     create_diamondvoy_chat,
     create_lesson_booking_request,
     create_or_update_proctoring_device_session,
@@ -113,6 +114,7 @@ from db import (
     enable_access,
     ensure_diamondvoy_chat_schema,
     ensure_media_assets_schema,
+    ensure_student_channel_link_schema,
     ensure_universal_chat_schema,
     ensure_userbot_schema,
     get_userbot_settings,
@@ -17553,33 +17555,122 @@ async def get_current_user(authorization: str | None = Header(default=None)):
     return _build_user_payload(_user_row_from_bearer(authorization))
 
 
+def _student_channel_membership_config() -> tuple[bool, str, str, str]:
+    """Return the active membership policy without leaking the bot token.
+
+    A configured channel is intentionally treated as mandatory.  This keeps
+    old deployments that still have ``FORCE_SUBSCRIBE=false`` from silently
+    disabling the student-app gate after the feature has been enabled.
+    """
+    from config import (
+        FORCE_SUBSCRIBE_CHANNEL_ID,
+        FORCE_SUBSCRIBE_CHANNEL_URL,
+        STUDENT_BOT_TOKEN,
+    )
+
+    channel_id = str(FORCE_SUBSCRIBE_CHANNEL_ID or "").strip()
+    channel_url = str(FORCE_SUBSCRIBE_CHANNEL_URL or "").strip()
+    bot_token = str(STUDENT_BOT_TOKEN or "").strip()
+    return bool(channel_id), channel_id, channel_url, bot_token
+
+
+async def _student_channel_membership_status(user: dict) -> dict:
+    """Check the current server-side Telegram membership for one student.
+
+    This is deliberately fail-closed when the configured bot cannot verify a
+    membership, so leaving the channel is picked up by the next app poll.
+    """
+    required, channel_id, channel_url, bot_token = _student_channel_membership_config()
+    telegram_id = str(user.get("telegram_id") or "").strip()
+    result = {
+        "required": required,
+        "linked": bool(telegram_id),
+        "subscribed": not required,
+        "channel_url": channel_url,
+        "bot_url": f"https://t.me/{STUDENT_BOT_USERNAME}" if STUDENT_BOT_USERNAME else "",
+    }
+    if not required:
+        return result
+    if not telegram_id or not bot_token:
+        result["subscribed"] = False
+        return result
+
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/getChatMember"
+        params = {"chat_id": channel_id, "user_id": telegram_id}
+        timeout = aiohttp.ClientTimeout(total=6)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, params=params) as resp:
+                data = await resp.json(content_type=None)
+        status = str((data or {}).get("result", {}).get("status") or "").lower()
+        result["subscribed"] = bool((data or {}).get("ok")) and status in {
+            "member",
+            "administrator",
+            "creator",
+            "owner",
+        }
+    except Exception:
+        result["subscribed"] = False
+    return result
+
+
 @app.get("/user/subscription-status")
 async def get_subscription_status(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    telegram_id = user.get("telegram_id")
     login_type = int(user.get("login_type") or 0)
-    # Check if user is NOT a student (student is 2 or 1)
-    if not telegram_id or login_type not in (1, 2):
-        return {"subscribed": True}
+    if login_type not in (1, 2):
+        return {"required": False, "linked": True, "subscribed": True}
+    # Re-fetch to observe a bot hand-off that completed after this JWT was
+    # issued.  The JWT itself intentionally does not contain Telegram data.
+    refreshed = _safe_call(lambda: get_user_by_id(int(user.get("id") or 0)), None)
+    return await _student_channel_membership_status(refreshed or user)
 
-    from config import STUDENT_BOT_TOKEN, FORCE_SUBSCRIBE, FORCE_SUBSCRIBE_CHANNEL_ID
-    if not FORCE_SUBSCRIBE or not FORCE_SUBSCRIBE_CHANNEL_ID or not STUDENT_BOT_TOKEN:
-        return {"subscribed": True}
 
-    try:
-        url = f"https://api.telegram.org/bot{STUDENT_BOT_TOKEN}/getChatMember"
-        params = {"chat_id": FORCE_SUBSCRIBE_CHANNEL_ID, "user_id": telegram_id}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=5.0) as resp:
-                data = await resp.json()
-                if not data.get("ok"):
-                    return {"subscribed": False}
-                status = data.get("result", {}).get("status")
-                is_sub = status in ("member", "administrator", "creator")
-                return {"subscribed": is_sub}
-    except Exception:
-        # Fallback true on error to avoid blocking if telegram API is down
-        return {"subscribed": True}
+@app.get("/student/channel-membership/status")
+async def student_channel_membership_status(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    refreshed = _safe_call(lambda: get_user_by_id(int(user.get("id") or 0)), None)
+    return await _student_channel_membership_status(refreshed or user)
+
+
+@app.post("/student/channel-membership/link")
+async def start_student_channel_membership_link(
+    authorization: str | None = Header(default=None),
+):
+    """Create the opaque app-to-bot hand-off for a signed-in student."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    required, _channel_id, channel_url, bot_token = _student_channel_membership_config()
+    if not required:
+        return {
+            "required": False,
+            "bot_url": f"https://t.me/{STUDENT_BOT_USERNAME}",
+            "channel_url": channel_url,
+        }
+    if not bot_token or not STUDENT_BOT_USERNAME:
+        raise HTTPException(status_code=503, detail="Student Telegram bot is not configured")
+
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    ensure_student_channel_link_schema()
+    request_token = f"channel_link_{secrets.token_urlsafe(24)}"
+    expires_at = _now_utc() + timedelta(seconds=MOBILE_TELEGRAM_LOGIN_TTL_SECONDS)
+    create_student_channel_link_request(
+        request_token,
+        user_id=user_id,
+        expires_at=expires_at,
+    )
+    return {
+        "required": True,
+        "request_token": request_token,
+        "bot_url": f"https://t.me/{STUDENT_BOT_USERNAME}?start={request_token}",
+        "channel_url": channel_url,
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 @app.post("/user/public-offer/agree", response_model=User)
@@ -21319,6 +21410,13 @@ def _collect_notifications_for_user(user: dict, limit: int | None = 120) -> list
             "auto_start_intent": raw.get("auto_start_intent"),
         }
         normalized.append(item)
+    # A broadcast is an explicit admin announcement, not an ordinary inbox
+    # reminder.  Promote it before applying the API limit so the mobile and
+    # web popup pollers cannot miss it when a student has many routine items.
+    normalized = [
+        *[item for item in normalized if item["type"].strip().lower() == "broadcast"],
+        *[item for item in normalized if item["type"].strip().lower() != "broadcast"],
+    ]
     if limit is None:
         return normalized
     return normalized[: max(1, min(120, int(limit)))]
@@ -28291,6 +28389,62 @@ def _attach_homework_runtime_fields(row: dict) -> dict:
     return row
 
 
+def _homework_test_result_for_student(
+    student_id: int,
+    homework_id: int,
+    test: dict | None = None,
+) -> dict | None:
+    """Return a common result shape for MCQ and AI homework tests."""
+    if int(student_id or 0) <= 0 or int(homework_id or 0) <= 0:
+        return None
+    resolved_test = test
+    if resolved_test is None:
+        resolved_test = _safe_call(
+            lambda: get_content_test(
+                "homework",
+                int(homework_id),
+                include_inactive=False,
+                include_answers=False,
+            ),
+            None,
+        )
+    result = _safe_call(
+        lambda: get_content_test_result(
+            int(student_id), "homework", int(homework_id)
+        ),
+        None,
+    )
+    is_ai_test = any(
+        isinstance(question, dict)
+        and str(question.get("kind") or "").strip()
+        for question in ((resolved_test or {}).get("questions") or [])
+    )
+    if not is_ai_test:
+        return result
+
+    # Material-library AI exercises are persisted in ai_test_attempts, not
+    # web_content_test_attempts. Convert their completed attempt to the same
+    # summary used by the teacher and student homework screens.
+    from db import get_completed_ai_test_attempt_for_source
+
+    ai_attempt = _safe_call(
+        lambda: get_completed_ai_test_attempt_for_source(
+            int(student_id), "homework", int(homework_id)
+        ),
+        None,
+    )
+    if not ai_attempt:
+        return result
+    return {
+        "correct_count": int(ai_attempt.get("correct_count") or 0),
+        "wrong_count": int(ai_attempt.get("wrong_count") or 0),
+        "skipped_count": int(ai_attempt.get("skipped_count") or 0),
+        "total_questions": len(ai_attempt.get("questions") or []),
+        "dpoints_delta": float(ai_attempt.get("dpoints_delta") or 0.0),
+        "submitted_at": ai_attempt.get("completed_at") or ai_attempt.get("started_at"),
+    }
+
+
 def _strip_notification_html(text: str) -> str:
     """Telegram uchun yozilgan HTML teglarni (<b>, <i>, <a>...) web/push
     bildirishnomadan olib tashlaydi va asosiy entity'larni oddiy belgiga aylantiradi."""
@@ -29038,7 +29192,7 @@ async def teacher_homework_list(authorization: str | None = Header(default=None)
         if hid > 0 and hid not in tests:
             tests[hid] = bool(_safe_call(lambda homework_id=hid: get_content_test("homework", homework_id, include_inactive=False, include_answers=False), None))
         sid = int(row.get("submission_student_id") or row.get("student_id") or 0)
-        result = _safe_call(lambda student_id=sid, homework_id=hid: get_content_test_result(student_id, "homework", homework_id), None) if sid > 0 and hid > 0 else None
+        result = _homework_test_result_for_student(sid, hid)
         row["test_available"] = bool(tests.get(hid))
         row["test_completed"] = bool(result)
         if row["test_completed"]:
@@ -29149,7 +29303,7 @@ async def student_homework_list(authorization: str | None = Header(default=None)
         _attach_homework_runtime_fields(row)
         hid = int(row.get("id") or 0)
         test = _safe_call(lambda homework_id=hid: get_content_test("homework", homework_id, include_inactive=False, include_answers=False), None) if hid > 0 else None
-        result = _safe_call(lambda homework_id=hid: get_content_test_result(user_id, "homework", homework_id), None) if hid > 0 else None
+        result = _homework_test_result_for_student(user_id, hid, test)
         row["test_available"] = bool(test)
         row["test_completed"] = bool(result)
         if row["test_completed"]:
@@ -34024,7 +34178,7 @@ async def admin_homework_report(homework_id: int, authorization: str | None = He
     for row in rows:
         _attach_homework_runtime_fields(row)
         sid = int(row.get("submission_student_id") or row.get("student_id") or 0)
-        result = _safe_call(lambda student_id=sid: get_content_test_result(student_id, "homework", int(homework_id)), None) if sid > 0 else None
+        result = _homework_test_result_for_student(sid, int(homework_id), test)
         items.append(
             {
                 **row,
@@ -49415,7 +49569,10 @@ async def teacher_homework_report(homework_id: int, authorization: str | None = 
     for row in rows:
         _attach_homework_runtime_fields(row)
         sid = int(row.get("submission_student_id") or row.get("student_id") or 0)
-        result = _safe_call(lambda student_id=sid: get_content_test_result(student_id, "homework", int(homework_id)), None) if sid > 0 else None
+        # Kutubxonadan yaratilgan AI testlar natijasi ai_test_attempts'da,
+        # oddiy testniki esa web_content_test_attempts'da turadi. Ikkalasini
+        # bir xil report formatida qaytaramiz.
+        result = _homework_test_result_for_student(sid, int(homework_id), test) if sid > 0 else None
         items.append(
             {
                 **row,
@@ -50941,6 +51098,7 @@ async def teacher_upload_material_file(
 class MaterialSendRequest(BaseModel):
     group_id: int | None = None
     student_id: int | None = None
+    due_at: str | None = None
 
 
 @app.post("/teacher/materials/{material_id}/send")
@@ -50965,8 +51123,17 @@ async def teacher_send_material(
     title = str(mat.get("title") or "Material")
     description = str(mat.get("description") or title)
     file_url = str(mat.get("file_url") or "")
+    # Eski mijozlar uchun 7 kunlik defaultni saqlaymiz, yangi teacher app
+    # esa aniq kun va vaqtni yuboradi.
     import datetime
-    due_at_str = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    due_at_str = str(payload.due_at or "").strip()
+    if due_at_str:
+        parsed_due_at = _parse_homework_due_at(due_at_str)
+        if parsed_due_at is None:
+            raise HTTPException(status_code=422, detail="Deadline sana yoki vaqti noto'g'ri")
+        due_at_str = parsed_due_at.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        due_at_str = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     try:
         hw = create_homework(
             teacher_id=teacher_id,

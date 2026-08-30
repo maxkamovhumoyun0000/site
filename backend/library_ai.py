@@ -643,6 +643,11 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
                 description=description,
                 due_at=due_at,
                 group_id=group_id if student_id is None else None,
+                # File materiallari student ilovasida aynan shu URL orqali
+                # ochiladi. U avval yuborilayotgan homeworkga yozilmagani
+                # uchun PDF/audio/video materiallari student tomonda yo'q
+                # bo'lib ko'rinardi.
+                image_url=str(node.get("file_url") or "") or None,
                 homework_kind="test" if kind == "test" else "list",
             )
         except Exception as exc:
@@ -1313,14 +1318,21 @@ def _question_for_student(question: dict) -> dict:
         random.shuffle(tokens)
         out["tokens"] = tokens
     elif kind == "listening_set":
-        out["sub_questions"] = [
-            {
+        sub_questions = []
+        for s in (question.get("sub_questions") or []):
+            item = {
                 "type": s.get("type"),
                 "prompt": s.get("prompt"),
                 "options": list(s.get("options") or []),
             }
-            for s in (question.get("sub_questions") or [])
-        ]
+            # Tartiblash turida ham to'g'ri javob yashiriladi, faqat aralash
+            # tokenlar beriladi. Bu web va Flutter oynalari uchun zarur.
+            if str(s.get("type") or "") == "order":
+                tokens = list(s.get("tokens") or [])
+                random.shuffle(tokens)
+                item["tokens"] = tokens
+            sub_questions.append(item)
+        out["sub_questions"] = sub_questions
     elif kind == "matching":
         pairs = question.get("pairs") or []
         out["left_items"] = [p.get("left") for p in pairs]
@@ -2276,12 +2288,35 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     _require_student_learning_access(user)
     user_id = int(user.get("id") or 0)
     source_id = int(payload.source_id or payload.homework_id or 0) or None
+    source_type = str(payload.source_type or "library_test").strip().lower()
+
+    # Homework testini faqat unga biriktirilgan o'quvchi ishga tushirishi
+    # mumkin. Generic content-test endpointi bu tekshiruvni allaqachon
+    # qiladi, AI runner esa alohida route bo'lgani uchun uni shu yerda ham
+    # qo'llash kerak.
+    if source_type == "homework":
+        if not source_id:
+            raise HTTPException(status_code=400, detail="Homework tanlanmadi")
+        from backend.main import _require_student_content_test_access
+
+        _require_student_content_test_access(user, "homework", int(source_id))
+        completed = _safe(
+            lambda: dbm.get_completed_ai_test_attempt_for_source(
+                user_id, "homework", int(source_id)
+            )
+        )
+        if completed:
+            return {
+                "message": "Test avval yakunlangan",
+                "attempt": _attempt_state(completed),
+                "resumed": True,
+            }
 
     # 5 soatlik davom ettirish: shu manba uchun active attempt bo'lsa qaytaramiz.
     existing = _safe(lambda: dbm.get_active_ai_test_attempt(user_id))
     if existing and not existing.get("is_finished"):
         same_source = (
-            str(existing.get("source_type") or "") == str(payload.source_type)
+            str(existing.get("source_type") or "") == source_type
             and int(existing.get("source_id") or 0) == int(source_id or 0)
         )
         if same_source and _attempt_within_hours(existing.get("started_at"), 5):
@@ -2289,7 +2324,7 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
             if not state["is_finished"]:
                 return {"message": "Davom ettirildi", "attempt": state, "resumed": True}
 
-    questions, title = _questions_from_source(user, payload.source_type, payload.source_id, payload.homework_id)
+    questions, title = _questions_from_source(user, source_type, payload.source_id, payload.homework_id)
     # Polimorf savollarni (word_practice) shu student uchun random turga, guruh
     # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
     lang = _student_lang(user)
@@ -2303,7 +2338,7 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     attempt = _safe(
         lambda: dbm.start_ai_test_attempt(
             user_id,
-            payload.source_type,
+            source_type,
             source_id,
             questions,
             title=title,

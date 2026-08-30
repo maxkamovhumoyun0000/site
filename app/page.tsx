@@ -5919,17 +5919,13 @@ function StudentHomework() {
   async function startHomeworkTest(row: GenericRow) {
     const hid = Number(row.id || 0);
     if (!hid) return;
-    // Yangi test turlaridan (AI/avtomatik) iborat bo'lsa — taymersiz AI runner'ga.
+    // Kutubxonadan kelgan barcha `kind`li mashqlar taymersiz runner'da
+    // ishlaydi. Shunday qilib keyin qo'shiladigan test turi ham eski 30 s
+    // taymerli oynaga tushib qolmaydi.
     try {
-      const AI_KINDS = new Set([
-        "speak_sentence", "write_sentence", "guided_writing", "translation",
-        "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
-        "picture_description", "listening", "dictation", "spelling",
-        "matching", "scrambled_sentence", "gap_fill", "passage_cloze", "reading_set",
-      ]);
       const test = await requestJson<GenericRow>(`/student/homework/${hid}/test`, { method: "GET" });
       const questions = (test?.questions || (test?.test as GenericRow)?.questions || []) as GenericRow[];
-      const hasAiKind = Array.isArray(questions) && questions.some((q) => AI_KINDS.has(String(q?.kind || "")));
+      const hasAiKind = Array.isArray(questions) && questions.some((q) => String(q?.kind || "").trim());
       if (hasAiKind) {
         router.push(`/student/ai-tests/homework/${hid}`);
         return;
@@ -21608,7 +21604,9 @@ function DashboardShell({
   const [unreadCount, setUnreadCount] = useState(0);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [notificationToast, setNotificationToast] = useState<GenericRow | null>(null);
+  const [broadcastPopup, setBroadcastPopup] = useState<GenericRow | null>(null);
   const notificationToastSeenRef = useRef<Set<string>>(new Set());
+  const broadcastPopupBaselineReadyRef = useRef(false);
   const reminderAutoOpenTimerRef = useRef<number | null>(null);
   const reminderAutoHideTimerRef = useRef<number | null>(null);
 
@@ -21884,6 +21882,8 @@ function DashboardShell({
 
   useEffect(() => {
     notificationToastSeenRef.current = new Set<string>();
+    broadcastPopupBaselineReadyRef.current = false;
+    setBroadcastPopup(null);
     try {
       const uid = String(user?.id || "").trim();
       if (!uid) return;
@@ -21893,8 +21893,12 @@ function DashboardShell({
       if (Array.isArray(parsed)) {
         notificationToastSeenRef.current = new Set(parsed.map((item) => String(item || "")).filter(Boolean));
       }
+      broadcastPopupBaselineReadyRef.current =
+        localStorage.getItem(`diamond_broadcast_popup_baseline_v2_${uid}`) === "1";
     } catch {
-      // no-op
+      // A session-local baseline still prevents a popup flood if storage is
+      // unavailable (for example, a privacy-restricted browser context).
+      broadcastPopupBaselineReadyRef.current = true;
     }
   }, [user?.id]);
 
@@ -21912,8 +21916,40 @@ function DashboardShell({
         const payload = await requestJson<{ items: GenericRow[]; unread_count: number }>("/notifications?limit=8", { token });
         if (cancelled) return;
         const items = (payload.items || []) as GenericRow[];
+        const broadcasts = items.filter((note) =>
+          String(note.type || "").trim().toLowerCase() === "broadcast",
+        );
+        // First run after this announcement-modal release: existing inbox
+        // broadcasts are history, not "new" alerts. Keep them readable in
+        // Notifications, but only interrupt the user for later broadcasts.
+        if (!broadcastPopupBaselineReadyRef.current) {
+          broadcasts.forEach((note) => {
+            const noteId = String(note.id || "").trim();
+            if (noteId) rememberNotificationToastSeen(noteId);
+          });
+          const uid = String(user?.id || "").trim();
+          if (uid) localStorage.setItem(`diamond_broadcast_popup_baseline_v2_${uid}`, "1");
+          broadcastPopupBaselineReadyRef.current = true;
+          return;
+        }
+        const broadcast = broadcasts.find((note) =>
+          !notificationToastSeenRef.current.has(String(note.id || "").trim()),
+        ) || null;
+        const broadcastId = String(broadcast?.id || "").trim();
+        if (broadcast && broadcastId) {
+          // Broadcasts are intentionally a centred modal rather than the
+          // small bottom toast used for ordinary notifications.  The local
+          // marker prevents a closed announcement reopening on every poll
+          // without changing the user's inbox read state.
+          rememberNotificationToastSeen(broadcastId);
+          setBroadcastPopup((prev) => (
+            String(prev?.id || "") === broadcastId ? prev : broadcast
+          ));
+          maybeShowBrowserNotification(broadcast);
+        }
         const candidate = items.find((note) => {
           if (Boolean(note.read)) return false;
+          if (String(note.type || "").trim().toLowerCase() === "broadcast") return false;
           if (isPaymentNotification(note) && !canShowPaymentReminderToast(note)) return false;
           return true;
         }) || null;
@@ -22377,6 +22413,80 @@ function DashboardShell({
             <button className="app-toast-close" type="button" aria-label="Yopish" onClick={onDismissNotice}>×</button>
           </div>
         ) : null}
+        {!isChatsFullscreen && broadcastPopup ? (() => {
+          const hasTarget = Boolean(String(broadcastPopup.button_url || "").trim() || String(broadcastPopup.target_screen || "").trim());
+          const closeBroadcast = () => {
+            const noteId = String(broadcastPopup.id || "").trim();
+            if (noteId) rememberNotificationToastSeen(noteId);
+            setBroadcastPopup(null);
+          };
+          const openBroadcastTarget = () => {
+            const noteId = String(broadcastPopup.id || "").trim();
+            if (noteId) {
+              rememberNotificationToastSeen(noteId);
+              markNotificationRead(noteId).catch(() => null);
+            }
+            openNotificationTarget(broadcastPopup);
+            setBroadcastPopup(null);
+          };
+          return (
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="Yangi e'lon"
+              style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 10000,
+                display: "grid",
+                placeItems: "center",
+                padding: 20,
+                background: "rgba(1, 9, 84, 0.54)",
+              }}
+            >
+              <section
+                className="panel-card"
+                style={{ width: "min(520px, 100%)", position: "relative", padding: "28px 30px" }}
+              >
+                <button
+                  type="button"
+                  aria-label="Yopish"
+                  title="Yopish"
+                  onClick={closeBroadcast}
+                  style={{
+                    position: "absolute",
+                    top: 12,
+                    right: 14,
+                    width: 34,
+                    height: 34,
+                    border: 0,
+                    borderRadius: "50%",
+                    cursor: "pointer",
+                    fontSize: 24,
+                    lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+                <div className="mb-4 pr-9">
+                  <div className="mb-2 text-2xl" aria-hidden="true">📢</div>
+                  <h2 className="text-xl font-extrabold text-ink-900 dark:text-white">
+                    {String(broadcastPopup.title || "Yangi e'lon")}
+                  </h2>
+                </div>
+                <p className="whitespace-pre-wrap text-sm leading-6 text-ink-600 dark:text-navy-300">
+                  {String(broadcastPopup.message || "Siz uchun yangi xabar bor.")}
+                </p>
+                <div className="mt-6 flex flex-wrap justify-end gap-2">
+                  <button type="button" className="btn btn-soft" onClick={closeBroadcast}>Yopish</button>
+                  {hasTarget ? (
+                    <button type="button" className="btn btn-primary" onClick={openBroadcastTarget}>Ko‘rish</button>
+                  ) : null}
+                </div>
+              </section>
+            </div>
+          );
+        })() : null}
         {!isChatsFullscreen && notificationToast ? (() => {
           const hasTarget = Boolean(String(notificationToast.button_url || "").trim() || String(notificationToast.target_screen || "").trim());
           const openToastTarget = () => {

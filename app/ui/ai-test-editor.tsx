@@ -20,6 +20,12 @@ export type AiTestKind =
   | "picture_description"
   | "listening"
   | "dictation"
+  | "listening_tf"
+  | "listening_dictation"
+  | "listening_open"
+  | "listening_gap"
+  | "listening_order"
+  | "listening_set"
   | "spelling"
   | "matching"
   | "scrambled_sentence"
@@ -58,6 +64,16 @@ export type AiTestQuestion = {
     answer?: string;
     accepted_answers?: string[];
   }[];
+  sub_questions?: {
+    type?: string;
+    prompt?: string;
+    options?: string[];
+    correct_index?: number;
+    answer?: string;
+    accepted_answers?: string[];
+    tokens?: string[];
+    reference_answer?: string;
+  }[];
   needs_audio_upload?: boolean;
   // Kengaytirilgan maydonlar
   hint?: string | null;          // spelling: ta'rif; gap_fill: qavs so'z; dictation: mavzu
@@ -70,7 +86,7 @@ type KindMeta = {
   label: string;
   hint: string;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set" | "listening_set";
   needsAudio: boolean;
   icon: string;
 };
@@ -131,6 +147,36 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Audio yuklash SHART. Student eshitganini yozadi, avtomatik tekshiriladi.",
     check: "auto", input: "text", needsAudio: true, icon: "🎼",
   },
+  listening_tf: {
+    label: "Listening: True / False / Not Given",
+    hint: "Audio yuklash shart. Student audio asosida True, False yoki Not Given ni tanlaydi.",
+    check: "auto", input: "choice", needsAudio: true, icon: "🎧",
+  },
+  listening_dictation: {
+    label: "Listening: diktant",
+    hint: "Audio yuklash shart. Student eshitgan gap yoki matnni yozadi.",
+    check: "auto", input: "text", needsAudio: true, icon: "🎙️",
+  },
+  listening_open: {
+    label: "Listening: ochiq savol",
+    hint: "Audio yuklash shart. Student audio asosida yozma javob beradi, AI tekshiradi.",
+    check: "ai", input: "text", needsAudio: true, icon: "💭",
+  },
+  listening_gap: {
+    label: "Listening: bo'sh joyni to'ldirish",
+    hint: "Audio yuklash shart. Student eshitib kerakli so'z yoki iborani yozadi.",
+    check: "auto", input: "text", needsAudio: true, icon: "␣",
+  },
+  listening_order: {
+    label: "Listening: so'zlar tartibi",
+    hint: "Audio yuklash shart. Student so'zlarni eshitgan gap tartibida joylaydi.",
+    check: "auto", input: "order", needsAudio: true, icon: "🧩",
+  },
+  listening_set: {
+    label: "Listening Set: bitta audio, ko'p savol",
+    hint: "Bitta audio ostida bir nechta savol. Student hammasini bir oynada bajaradi.",
+    check: "auto", input: "listening_set", needsAudio: true, icon: "🎧",
+  },
   spelling: {
     label: "To'g'ri yozish",
     hint: "So'zni imlo bilan yozish. Avtomatik tekshiriladi.",
@@ -180,6 +226,12 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   switch (kind) {
     case "matching": return { ...base, pairs: [{ left: "", right: "" }, { left: "", right: "" }] };
     case "listening": return { ...base, audio_url: "", options: ["", "", "", ""], correct_index: 0 };
+    case "listening_tf": return { ...base, audio_url: "", correct_index: 0 };
+    case "listening_dictation": return { ...base, audio_url: "", answer: "", accepted_answers: [], hint: "" };
+    case "listening_open": return { ...base, audio_url: "", reference_answer: "" };
+    case "listening_gap": return { ...base, audio_url: "", answer: "", accepted_answers: [], hint: "" };
+    case "listening_order": return { ...base, audio_url: "", answer: "", tokens: [], distractors: [] };
+    case "listening_set": return { ...base, audio_url: "", sub_questions: [{ type: "mcq", prompt: "", options: ["", ""], correct_index: 0 }] };
     case "scrambled_sentence": return { ...base, answer: "", tokens: [], distractors: [] };
     case "passage_cloze": return { kind, instruction: "", passage: "", answers: [{ answer: "" }], word_bank: [] };
     case "reading_set": return { kind, passage: "", questions: [{ type: "true_false_ng", prompt: "", options: ["True", "False", "Not given"], answer: "" }] };
@@ -254,6 +306,36 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
       if (new Set(opts).size !== opts.length) return `${n}-mashq variantlari takrorlangan.`;
       const idx = Number(q.correct_index ?? 0);
       if (!Number.isInteger(idx) || idx < 0 || idx >= opts.length) return `${n}-mashqda to'g'ri variant belgilanmagan.`;
+      continue;
+    }
+    if (q.kind === "listening_tf") {
+      if (!String(q.prompt || "").trim()) return `${n}-mashqda audio asosidagi savol matni bo'lishi kerak.`;
+      continue;
+    }
+    if (q.kind === "listening_dictation" || q.kind === "listening_gap") {
+      if (!String(q.prompt || "").trim()) return `${n}-mashqda student uchun ko'rsatma bo'lishi kerak.`;
+      if (!String(q.answer || "").trim()) return `${n}-mashq uchun to'g'ri javob kiritilmagan.`;
+      continue;
+    }
+    if (q.kind === "listening_open") {
+      if (!String(q.prompt || "").trim()) return `${n}-mashqda audio asosidagi savol matni bo'lishi kerak.`;
+      continue;
+    }
+    if (q.kind === "listening_order") {
+      if (!String(q.prompt || "").trim()) return `${n}-mashqda ko'rsatma bo'lishi kerak.`;
+      if (!String(q.answer || "").trim()) return `${n}-mashq uchun to'g'ri gap kiritilmagan.`;
+      continue;
+    }
+    if (q.kind === "listening_set") {
+      const subs = q.sub_questions || [];
+      if (!String(q.prompt || "").trim()) return `${n}-mashqda ko'rsatma bo'lishi kerak.`;
+      if (!subs.length) return `${n}-mashqda kamida bitta audio savol bo'lishi kerak.`;
+      for (let subIndex = 0; subIndex < subs.length; subIndex++) {
+        const sub = subs[subIndex];
+        if (!String(sub.prompt || "").trim()) return `${n}-mashqning ${subIndex + 1}-savoli bo'sh.`;
+        if (sub.type === "mcq" && (sub.options || []).filter((x) => String(x).trim()).length < 2) return `${n}-mashqning ${subIndex + 1}-savolida kamida 2 ta variant kerak.`;
+        if (["gap", "dictation", "short", "order"].includes(String(sub.type || "")) && !String(sub.answer || "").trim()) return `${n}-mashqning ${subIndex + 1}-savolida to'g'ri javob bo'lishi kerak.`;
+      }
       continue;
     }
     if (q.kind === "matching") {
@@ -645,6 +727,9 @@ function DictationCard({
           onClear={() => patch({ audio_url: "", needs_audio_upload: true })}
         />
       </div>
+      <FullField label="Studentga ko'rsatma *" required>
+        <input value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={INPUT_CLS} placeholder="Audioni tinglang va eshitganingizni yozing." />
+      </FullField>
       <FullField label="Mavzu yoki hint (studentga ko'rsatiladi, ixtiyoriy)">
         <input value={String(q.hint || "")} onChange={(e) => patch({ hint: e.target.value })} className={INPUT_CLS} placeholder="Weather forecast audio — listen and write exactly what you hear." />
       </FullField>
@@ -659,6 +744,80 @@ function DictationCard({
           placeholder="vergul bilan ajrating"
         />
       </FullField>
+      <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
+    </>
+  );
+}
+
+function ListeningTfCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion; patch: PatchFn; uploading: boolean; onUpload: UploadField }) {
+  const options = ["True", "False", "Not Given"];
+  return (
+    <>
+      <div className={SECTION_CLS}><AssetField label="Audio fayl *" value={q.audio_url} accept="audio/*" required uploading={uploading} onUpload={(file) => onUpload("audio_url", file)} onClear={() => patch({ audio_url: "", needs_audio_upload: true })} /></div>
+      <FullField label="Audio asosidagi gap yoki savol *" required><textarea value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={`${INPUT_CLS} min-h-[56px]`} placeholder="The speaker says that the shop opens at 9 a.m." /></FullField>
+      <div className={SECTION_CLS}>
+        <label className={LABEL_CLS}>To'g'ri javob *</label>
+        <div className="flex flex-wrap gap-2">{options.map((option, index) => <button key={option} type="button" onClick={() => patch({ correct_index: index })} className={`rounded-xl border-2 px-4 py-2 text-sm font-black ${Number(q.correct_index ?? 0) === index ? "border-cyan-500 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/15 dark:text-cyan-100" : "border-line bg-surface-soft text-ink-600 dark:border-white/10 dark:bg-white/5 dark:text-navy-200"}`}>{option}</button>)}</div>
+      </div>
+      <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
+    </>
+  );
+}
+
+function ListeningTextCard({ q, patch, uploading, onUpload, mode }: { q: AiTestQuestion; patch: PatchFn; uploading: boolean; onUpload: UploadField; mode: "dictation" | "open" | "gap" }) {
+  const isOpen = mode === "open";
+  return (
+    <>
+      <div className={SECTION_CLS}><AssetField label="Audio fayl *" value={q.audio_url} accept="audio/*" required uploading={uploading} onUpload={(file) => onUpload("audio_url", file)} onClear={() => patch({ audio_url: "", needs_audio_upload: true })} /></div>
+      <FullField label="Studentga topshiriq *" required><textarea value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={`${INPUT_CLS} min-h-[56px]`} placeholder={isOpen ? "Audioni tinglang. Nima uchun speaker kechikdi?" : mode === "gap" ? "Audioni tinglang va bo'sh joyni to'ldiring: She arrived ___." : "Audioni tinglang va eshitganingizni yozing."} /></FullField>
+      {isOpen ? <ReferenceAnswerField value={q.reference_answer} onChange={(v) => patch({ reference_answer: v })} /> : <>
+        <FullField label="To'g'ri javob *" required><input value={String(q.answer || "")} onChange={(e) => patch({ answer: e.target.value })} className={INPUT_CLS} placeholder="student yozishi kerak bo'lgan javob" /></FullField>
+        <FullField label="Qabul qilinadigan boshqa javoblar"><input value={(q.accepted_answers || []).join(", ")} onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} className={INPUT_CLS} placeholder="vergul bilan ajrating" /></FullField>
+      </>}
+      {!isOpen && <FullField label="Hint (ixtiyoriy)"><input value={String(q.hint || "")} onChange={(e) => patch({ hint: e.target.value })} className={INPUT_CLS} placeholder="Studentga ko'rinadigan qisqa yo'riqnoma" /></FullField>}
+      <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
+    </>
+  );
+}
+
+function ListeningOrderCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion; patch: PatchFn; uploading: boolean; onUpload: UploadField }) {
+  return (
+    <>
+      <div className={SECTION_CLS}><AssetField label="Audio fayl *" value={q.audio_url} accept="audio/*" required uploading={uploading} onUpload={(file) => onUpload("audio_url", file)} onClear={() => patch({ audio_url: "", needs_audio_upload: true })} /></div>
+      <ScrambledCard q={q} patch={patch} />
+    </>
+  );
+}
+
+function ListeningSetCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion; patch: PatchFn; uploading: boolean; onUpload: UploadField }) {
+  const subs = q.sub_questions || [];
+  const patchSub = (index: number, value: NonNullable<AiTestQuestion["sub_questions"]>[number]) => {
+    const next = [...subs]; next[index] = value; patch({ sub_questions: next });
+  };
+  return (
+    <>
+      <div className={SECTION_CLS}><AssetField label="Barcha savollar uchun audio *" value={q.audio_url} accept="audio/*" required uploading={uploading} onUpload={(file) => onUpload("audio_url", file)} onClear={() => patch({ audio_url: "", needs_audio_upload: true })} /></div>
+      <FullField label="Studentga ko'rsatma *" required><input value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={INPUT_CLS} placeholder="Audioni tinglang va barcha savollarga javob bering." /></FullField>
+      <div className={SECTION_CLS}>
+        <label className={LABEL_CLS}>Audio ostidagi savollar *</label>
+        <div className="space-y-3">
+          {subs.map((sub, index) => {
+            const type = String(sub.type || "mcq");
+            const options = sub.options || ["", ""];
+            const needsChoice = type === "mcq";
+            const needsAnswer = ["short", "gap", "dictation", "order"].includes(type);
+            return <div key={index} className="rounded-xl border border-line p-3 dark:border-white/10">
+              <div className="mb-2 flex gap-2"><strong className="pt-2 text-sm text-ink-500">{index + 1}.</strong><select value={type} onChange={(e) => patchSub(index, { ...sub, type: e.target.value, options: e.target.value === "mcq" ? options : undefined, correct_index: 0, answer: "", tokens: [] })} className="flex-1 rounded-lg border border-line bg-surface-soft px-2 py-1 text-sm font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white"><option value="mcq">Tanlov</option><option value="tf">True / False / Not Given</option><option value="short">Qisqa javob</option><option value="gap">Bo'sh joy</option><option value="dictation">Diktant</option><option value="order">So'zlar tartibi</option><option value="open">Ochiq javob</option></select><button type="button" onClick={() => patch({ sub_questions: subs.filter((_, i) => i !== index) })} className="px-2 text-red-500">✕</button></div>
+              <input value={String(sub.prompt || "")} onChange={(e) => patchSub(index, { ...sub, prompt: e.target.value })} className={`${INPUT_CLS} mb-2`} placeholder="Savol matni" />
+              {needsChoice && <div className="space-y-1">{options.map((option, optionIndex) => <div key={optionIndex} className="flex gap-2"><input type="radio" checked={Number(sub.correct_index ?? 0) === optionIndex} onChange={() => patchSub(index, { ...sub, correct_index: optionIndex })} className="accent-cyan-500" /><input value={option} onChange={(e) => { const nextOptions = [...options]; nextOptions[optionIndex] = e.target.value; patchSub(index, { ...sub, options: nextOptions }); }} className={INPUT_CLS} placeholder={`${optionIndex + 1}-variant`} /></div>)}</div>}
+              {type === "tf" && <select value={String(sub.correct_index ?? 0)} onChange={(e) => patchSub(index, { ...sub, correct_index: Number(e.target.value) })} className={INPUT_CLS}><option value="0">True</option><option value="1">False</option><option value="2">Not Given</option></select>}
+              {needsAnswer && <input value={String(sub.answer || "")} onChange={(e) => patchSub(index, { ...sub, answer: e.target.value, tokens: type === "order" ? e.target.value.replace(/[.,!?;:]/g, "").split(/\s+/).filter(Boolean) : sub.tokens })} className={INPUT_CLS} placeholder={type === "order" ? "To'g'ri gap" : "To'g'ri javob"} />}
+              {type === "open" && <input value={String(sub.reference_answer || "")} onChange={(e) => patchSub(index, { ...sub, reference_answer: e.target.value })} className={INPUT_CLS} placeholder="Namuna javob (ixtiyoriy)" />}
+            </div>;
+          })}
+        </div>
+        <button type="button" onClick={() => patch({ sub_questions: [...subs, { type: "mcq", prompt: "", options: ["", ""], correct_index: 0 }] })} className="mt-2 rounded-xl border border-line bg-surface-soft px-3 py-1.5 text-xs font-black dark:border-white/10 dark:bg-white/5 dark:text-white">+ Savol qo'shish</button>
+      </div>
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
     </>
   );
@@ -1233,6 +1392,12 @@ export function AiTestEditor({
               {q.kind === "dictation" && (
                 <DictationCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />
               )}
+              {q.kind === "listening_tf" && <ListeningTfCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "listening_dictation" && <ListeningTextCard q={q} patch={patchQ} mode="dictation" uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "listening_open" && <ListeningTextCard q={q} patch={patchQ} mode="open" uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "listening_gap" && <ListeningTextCard q={q} patch={patchQ} mode="gap" uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "listening_order" && <ListeningOrderCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "listening_set" && <ListeningSetCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />}
               {q.kind === "spelling" && <SpellingCard q={q} patch={patchQ} />}
               {q.kind === "matching" && <MatchingCard q={q} patch={patchQ} />}
               {q.kind === "scrambled_sentence" && <ScrambledCard q={q} patch={patchQ} />}

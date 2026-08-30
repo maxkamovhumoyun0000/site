@@ -7,15 +7,6 @@ import { StudentBookTest } from "@/app/ui/student-book-test";
 
 type ContentRouteType = "book" | "video" | "homework";
 
-// Yangi (AI/avtomatik) test turlari — bular topilsa taymersiz AI runner'ga
-// yo'naltiramiz (eski MCQ runner ularni bo'sh/blank ko'rsatardi).
-const AI_TEST_KINDS = new Set([
-  "speak_sentence", "write_sentence", "guided_writing", "translation",
-  "reading_open", "read_aloud", "paraphrase", "dialogue_completion",
-  "picture_description", "listening", "dictation", "spelling",
-  "matching", "scrambled_sentence", "gap_fill", "word_practice", "passage_cloze", "reading_set",
-]);
-
 function normalizeContentType(value?: string): ContentRouteType | "" {
   const raw = String(value || "").trim().toLowerCase();
   if (raw === "book" || raw === "books") return "book";
@@ -57,9 +48,11 @@ export default function StudentContentTestPage() {
         retries: 0,
       });
       const loadedTest = payload?.test || null;
-      // Homework testi yangi turlardan iborat bo'lsa — taymersiz AI runner'ga.
+      // Kutubxonadan berilgan barcha mashqlar `kind` bilan keladi. Ularni
+      // nomlar ro'yxati bilan cheklamaymiz: yangi tur qo'shilsa ham doim
+      // taymersiz runner ochiladi. Eski MCQ testlarida esa `kind` bo'lmaydi.
       const qs = (loadedTest?.questions || []) as Array<{ kind?: string }>;
-      if (contentType === "homework" && qs.some((q) => AI_TEST_KINDS.has(String(q?.kind || "")))) {
+      if (contentType === "homework" && qs.some((q) => String(q?.kind || "").trim())) {
         router.replace(`/student/ai-tests/homework/${contentId}`);
         return;
       }

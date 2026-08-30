@@ -610,16 +610,25 @@ function AssignModal({
   onDone: () => void;
 }) {
   const [groupId, setGroupId] = useState(0);
-  const [due, setDue] = useState("");
+  const [due, setDue] = useState(() => {
+    const date = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  });
+  const [title, setTitle] = useState(node.title);
+  const [description, setDescription] = useState(String(node.description || ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const assign = async () => {
     if (!groupId) { setError("Guruh tanlang"); return; }
+    if (!due) { setError("Deadline kuni va vaqtini tanlang"); return; }
     setBusy(true);
     const res = await onApiCall(`/teacher/library/${node.id}/assign`, {
       group_id: groupId,
-      due_at: due ? new Date(due).toISOString() : null,
+      due_at: new Date(due).toISOString(),
+      title: title.trim() || node.title,
+      description: description.trim() || null,
     }, "POST");
     setBusy(false);
     if (res) onDone();
@@ -636,8 +645,16 @@ function AssignModal({
           ))}
         </select>
         <label className="block text-sm font-bold text-navy-900 dark:text-white">
-          Muddat va soat (ixtiyoriy)
-          <input type="datetime-local" className={`${FIELD} mt-1`} value={due} onChange={(e) => setDue(e.target.value)} />
+          Homework nomi
+          <input className={`${FIELD} mt-1`} value={title} onChange={(e) => setTitle(e.target.value)} placeholder={node.title} />
+        </label>
+        <label className="block text-sm font-bold text-navy-900 dark:text-white">
+          Izoh (ixtiyoriy)
+          <textarea className={`${FIELD} mt-1 min-h-[68px]`} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Student uchun qisqa ko'rsatma" />
+        </label>
+        <label className="block text-sm font-bold text-navy-900 dark:text-white">
+          Deadline kuni va vaqti *
+          <input type="datetime-local" required className={`${FIELD} mt-1`} value={due} onChange={(e) => setDue(e.target.value)} />
         </label>
         {error && <p className="text-sm font-bold text-red-500">{error}</p>}
         <div className="flex justify-end gap-2">

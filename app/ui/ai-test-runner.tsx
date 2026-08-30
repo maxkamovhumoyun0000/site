@@ -15,15 +15,17 @@ import { useWebT } from "./web-i18n";
 type Kind =
   | "speak_sentence" | "write_sentence" | "guided_writing" | "translation"
   | "reading_open" | "read_aloud" | "paraphrase" | "dialogue_completion"
-  | "picture_description" | "listening" | "dictation" | "spelling"
+  | "picture_description" | "listening" | "dictation" | "listening_tf"
+  | "listening_dictation" | "listening_open" | "listening_gap"
+  | "listening_order" | "listening_set" | "spelling"
   | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze" | "reading_set";
 
-type SubQuestion = { type: string; prompt: string; options?: string[] };
+type SubQuestion = { type: string; prompt: string; options?: string[]; tokens?: string[] };
 
 type Question = {
   kind: Kind;
   check: "ai" | "auto";
-  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set";
+  input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set" | "listening_set";
   retry_until_correct: boolean;
   prompt?: string;
   instruction?: string;
@@ -246,6 +248,12 @@ const KIND_TITLE: Record<Kind, string> = {
   picture_description: "Rasmni tasvirlang",
   listening: "Tinglang va tanlang",
   dictation: "Tinglang va yozing",
+  listening_tf: "Tinglang va True / False / Not Given ni tanlang",
+  listening_dictation: "Tinglang va eshitganingizni yozing",
+  listening_open: "Audio asosida savolga javob bering",
+  listening_gap: "Tinglab bo'sh joyni to'ldiring",
+  listening_order: "Tinglang va so'zlarni tartiblang",
+  listening_set: "Audio bo'yicha savollarga javob bering",
   spelling: "To'g'ri yozing",
   matching: "Juftlarni moslang",
   scrambled_sentence: "So'zlardan gap tuzing",
@@ -382,6 +390,11 @@ function AnswerInput({
   const [audioUrl, setAudioUrl] = useState("");
   const [voiceMode, setVoiceMode] = useState(false);
   const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
+  const [listeningSetAnswers, setListeningSetAnswers] = useState<Record<number, {
+    choice_index?: number;
+    answer_text?: string;
+    order?: string[];
+  }>>({});
 
   const disabled = checking;
   // Guided writing: live word count
@@ -548,6 +561,96 @@ function AnswerInput({
           disabled={disabled || answers.some((x) => !x.trim())}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >
+          {retrying ? tt("aitest.resend", "Qayta yuborish") : tt("aitest.submit", "Tekshirish")}
+        </button>
+      </div>
+    );
+  }
+
+  // ── Bitta audio + bir nechta savol (listening_set) ──
+  // Har savolning javobi alohida saqlanadi; audio QuestionCard yuqorisida
+  // bitta marta ko'rsatiladi. Bu uzun listening mashqlarini telefon va webda
+  // bir xil, bosqichma-bosqich ishlatadi.
+  if (question.input === "listening_set") {
+    const subs = question.sub_questions || [];
+    const setSub = (index: number, next: { choice_index?: number; answer_text?: string; order?: string[] }) =>
+      setListeningSetAnswers((prev) => ({ ...prev, [index]: { ...prev[index], ...next } }));
+    const isFilled = (s: SubQuestion, index: number) => {
+      const answer = listeningSetAnswers[index] || {};
+      if (s.type === "mcq" || s.type === "tf") return answer.choice_index !== undefined;
+      if (s.type === "order") return (answer.order || []).length > 0;
+      return Boolean(answer.answer_text?.trim());
+    };
+    const submitSet = () => {
+      if (subs.some((s, index) => !isFilled(s, index))) return;
+      onSubmit({ sub_answers: subs.map((_, index) => listeningSetAnswers[index] || {}) });
+    };
+
+    return (
+      <div className="space-y-4">
+        <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 dark:bg-blue-500/10 dark:text-blue-100">
+          Audioni kerak bo'lsa qayta eshiting, so'ng barcha savollarga javob bering. Taymer yo'q.
+        </p>
+        {subs.map((s, index) => {
+          const answer = listeningSetAnswers[index] || {};
+          const options = s.type === "tf" ? ["True", "False", "Not Given"] : (s.options || []);
+          const tokens = s.tokens || [];
+          const chosen = answer.order || [];
+          return (
+            <section key={index} className="rounded-2xl border border-line p-4 dark:border-white/10">
+              <p className="mb-3 font-black text-navy-900 dark:text-white">{index + 1}. {s.prompt}</p>
+              {(s.type === "mcq" || s.type === "tf") && (
+                <div className="flex flex-wrap gap-2">
+                  {options.map((option, optionIndex) => (
+                    <button
+                      key={`${option}-${optionIndex}`}
+                      type="button"
+                      onClick={() => setSub(index, { choice_index: optionIndex })}
+                      className={`rounded-xl border-2 px-3 py-2 text-sm font-bold transition ${
+                        answer.choice_index === optionIndex
+                          ? "border-cyan-500 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/15 dark:text-cyan-100"
+                          : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white"
+                      }`}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {s.type === "order" && (
+                <div className="space-y-2">
+                  <div className="min-h-[48px] rounded-xl border-2 border-dashed border-cyan-300 bg-cyan-50/40 p-2 dark:border-cyan-500/40 dark:bg-cyan-500/5">
+                    <div className="flex flex-wrap gap-2">
+                      {chosen.map((token, tokenIndex) => (
+                        <button key={`${token}-${tokenIndex}`} type="button" onClick={() => setSub(index, { order: chosen.filter((_, i) => i !== tokenIndex) })} className="rounded-lg bg-cyan-600 px-2.5 py-1 text-sm font-black text-white">
+                          {token}
+                        </button>
+                      ))}
+                      {chosen.length === 0 && <span className="p-1 text-sm font-bold text-ink-400">So'zlarni bosib tartiblang</span>}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {tokens.map((token, tokenIndex) => {
+                      const used = chosen.filter((x) => x === token).length;
+                      const seen = tokens.slice(0, tokenIndex + 1).filter((x) => x === token).length;
+                      const unavailable = seen <= used;
+                      return <button key={`${token}-${tokenIndex}`} type="button" disabled={unavailable} onClick={() => setSub(index, { order: [...chosen, token] })} className="rounded-lg border border-line bg-surface-soft px-2.5 py-1 text-sm font-bold text-navy-900 disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-white">{token}</button>;
+                    })}
+                  </div>
+                </div>
+              )}
+              {!(["mcq", "tf", "order"] as string[]).includes(s.type) && (
+                <input
+                  value={answer.answer_text || ""}
+                  onChange={(e) => setSub(index, { answer_text: e.target.value })}
+                  className="w-full rounded-xl border border-line bg-surface-soft px-3 py-2 font-semibold text-navy-900 outline-none focus:ring-2 focus:ring-cyan-500 dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                  placeholder={tt("aitest.answerPlaceholder", "Javobingizni yozing…")}
+                />
+              )}
+            </section>
+          );
+        })}
+        <button onClick={submitSet} disabled={disabled || subs.length === 0 || subs.some((s, index) => !isFilled(s, index))} className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60">
           {retrying ? tt("aitest.resend", "Qayta yuborish") : tt("aitest.submit", "Tekshirish")}
         </button>
       </div>

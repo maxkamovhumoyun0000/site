@@ -134,6 +134,7 @@ from db import (
     enqueue_arena_group_teacher_refresh,
     user_is_present_for_group_on_date,
     approve_mobile_telegram_login_request,
+    approve_student_channel_link_request,
 )
 from lesson_window import is_group_lesson_window_active
 from auth import (
@@ -2734,6 +2735,7 @@ async def cmd_otp(message: types.Message):
 
 
 _MOBILE_APP_LOGIN_CALLBACK_PREFIX = "mobile_login:"
+_CHANNEL_LINK_CALLBACK_PREFIX = "channel_link:"
 
 
 def _mobile_app_login_token_from_start(message: types.Message) -> str:
@@ -2743,6 +2745,62 @@ def _mobile_app_login_token_from_start(message: types.Message) -> str:
     if re.fullmatch(r"app_login_[A-Za-z0-9_-]{24,64}", token):
         return token
     return ""
+
+
+def _channel_link_token_from_start(message: types.Message) -> str:
+    """Read the opaque account-sync token issued to an authenticated app."""
+    parts = str(message.text or "").strip().split(maxsplit=1)
+    token = parts[1].strip() if len(parts) == 2 else ""
+    if re.fullmatch(r"channel_link_[A-Za-z0-9_-]{24,64}", token):
+        return token
+    return ""
+
+
+def _channel_link_copy(lang: str, key: str) -> str:
+    copy = {
+        "uz": {
+            "prompt": "Diamond Students ilovasidagi akkauntni shu Telegram profiliga bog‘lashni tasdiqlang. Keyin kanal a’zoligi tekshiriladi.",
+            "button": "✅ Akkauntni bog‘lash",
+            "approved": "✅ Akkaunt bog‘landi. Kanal a’zoligi tasdiqlandi — endi ilovaga qayting.",
+            "join_first": "Akkaunt bog‘landi. Endi pastdagi tugma orqali kanalga a’zo bo‘ling, so‘ng ilovaga qayting.",
+            "expired": "Bu akkauntni bog‘lash so‘rovi tugagan. Ilovadan qayta urinib ko‘ring.",
+            "in_use": "Bu Telegram profili boshqa akkauntga bog‘langan. Adminga murojaat qiling.",
+        },
+        "ru": {
+            "prompt": "Подтвердите привязку аккаунта Diamond Students к этому профилю Telegram. Затем будет проверена подписка на канал.",
+            "button": "✅ Привязать аккаунт",
+            "approved": "✅ Аккаунт привязан, подписка подтверждена. Вернитесь в приложение.",
+            "join_first": "Аккаунт привязан. Подпишитесь на канал по кнопке ниже, затем вернитесь в приложение.",
+            "expired": "Запрос на привязку истек. Повторите попытку из приложения.",
+            "in_use": "Этот профиль Telegram уже привязан к другому аккаунту. Обратитесь к администратору.",
+        },
+        "en": {
+            "prompt": "Confirm linking the Diamond Students account to this Telegram profile. Channel membership will then be checked.",
+            "button": "✅ Link account",
+            "approved": "✅ Account linked and membership confirmed. Return to the app.",
+            "join_first": "Account linked. Join the channel with the button below, then return to the app.",
+            "expired": "This account-link request expired. Try again from the app.",
+            "in_use": "This Telegram profile is already linked to another account. Contact an administrator.",
+        },
+    }
+    return copy.get(lang, copy["uz"])[key]
+
+
+async def _send_channel_link_confirmation(
+    message: types.Message,
+    *,
+    request_token: str,
+    lang: str,
+) -> None:
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text=_channel_link_copy(lang, "button"),
+                callback_data=f"{_CHANNEL_LINK_CALLBACK_PREFIX}{request_token}",
+            ),
+        ]],
+    )
+    await message.answer(_channel_link_copy(lang, "prompt"), reply_markup=keyboard)
 
 
 def _mobile_app_login_copy(lang: str, key: str) -> str:
@@ -2829,6 +2887,42 @@ async def confirm_mobile_app_login(callback: CallbackQuery):
     await callback.message.answer(_mobile_app_login_copy(lang, "approved"))
 
 
+@dp.callback_query(lambda c: str(c.data or "").startswith(_CHANNEL_LINK_CALLBACK_PREFIX))
+async def confirm_student_channel_link(callback: CallbackQuery):
+    """Sync a signed-in app student with the Telegram profile pressing this button."""
+    request_token = str(callback.data or "")[len(_CHANNEL_LINK_CALLBACK_PREFIX):]
+    if not re.fullmatch(r"channel_link_[A-Za-z0-9_-]{24,64}", request_token):
+        await callback.answer("So‘rov yaroqsiz", show_alert=True)
+        return
+
+    telegram_id = str(callback.from_user.id)
+    known_user = get_user_by_telegram(telegram_id)
+    lang = detect_lang_from_user(known_user or callback.from_user)
+    result = approve_student_channel_link_request(
+        request_token,
+        telegram_id=telegram_id,
+    ) or {"status": "expired"}
+    status = str(result.get("status") or "expired")
+    if status == "telegram_in_use":
+        await callback.answer(_channel_link_copy(lang, "in_use"), show_alert=True)
+        return
+    if status != "approved":
+        await callback.answer(_channel_link_copy(lang, "expired"), show_alert=True)
+        return
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer()
+    from force_subscribe import check_subscription_and_notify
+
+    subscribed = await check_subscription_and_notify(callback.message.bot, callback, lang=lang)
+    await callback.message.answer(
+        _channel_link_copy(lang, "approved" if subscribed else "join_first")
+    )
+
+
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
     """Handle /start command - check login status or show login instructions"""
@@ -2837,6 +2931,17 @@ async def cmd_start(message: types.Message):
     telegram_id = str(message.from_user.id)
     user = get_user_by_telegram(telegram_id)
     lang = detect_lang_from_user(user or message.from_user)
+    channel_link_token = _channel_link_token_from_start(message)
+    # This special hand-off must be processed before checking membership:
+    # an app user who has never opened the bot cannot be checked until their
+    # Telegram profile has been linked to the app account.
+    if channel_link_token:
+        await _send_channel_link_confirmation(
+            message,
+            request_token=channel_link_token,
+            lang=lang,
+        )
+        return
     if not await check_subscription_and_notify(message.bot, message, lang=lang):
         return
 
