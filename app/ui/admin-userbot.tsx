@@ -122,6 +122,8 @@ interface UserbotSettings {
   phone_number: string | null;
   account_name: string | null;
   is_authenticated: boolean;
+  api_id?: number | null;
+  api_hash?: string | null;
   notify_absent: boolean;
   notify_late: boolean;
   notify_homework: boolean;
@@ -180,22 +182,22 @@ const TEMPLATE_META: Record<
     defaultDesc: "O'quvchi guruhda 1-o'rinni egallaganda yoki sovg'a xarid qilganda.",
   },
   payment_reminder: {
-    label: "To'lov eslatmasi (3 kun oldin)",
-    icon: BellIcon,
-    vars: ["{student_name}", "{date}", "{amount}"],
-    defaultDesc: "Oylik to'lov muddatiga 3 kun qolganda yuboriladi.",
-  },
-  overdue_alert: {
-    label: "Qarzdorlik eslatmasi (Muddati o'tganda)",
-    icon: CreditCardIcon,
-    vars: ["{student_name}", "{amount}"],
-    defaultDesc: "To'lov muddati o'tganda avtomatik yuboriladi.",
-  },
-  payment_receipt: {
-    label: "To'lov qabul qilindi (Chek)",
+    label: "To'lov eslatmasi (Darsga 3 kun qolganda)",
     icon: ShieldCheckIcon,
     vars: ["{student_name}", "{amount}", "{date}"],
-    defaultDesc: "Admin to'lovni kiritishi bilan chek va minnatdorchilik yuboriladi.",
+    defaultDesc: "To'lov muddati tugashidan 3 kun oldin avtomatik yuboriladi.",
+  },
+  overdue_alert: {
+    label: "Muddati o'tgan to'lov ogohlantirishi",
+    icon: AlertTriangleIcon,
+    vars: ["{student_name}", "{amount}", "{days}"],
+    defaultDesc: "To'lov muddati 1 kun o'tib ketganda ota-onaga yuboriladi.",
+  },
+  payment_receipt: {
+    label: "To'lov qabul qilindi kvitansiyasi",
+    icon: CheckCircleIcon,
+    vars: ["{student_name}", "{amount}", "{receipt_no}"],
+    defaultDesc: "Kassaga to'lov tushganda rasmiy kvitansiya sifatida yuboriladi.",
   },
   welcome_message: {
     label: "Yangi o'quvchi xush kelibsiz xabari",
@@ -219,6 +221,8 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
   // Login Modal state
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [loginStep, setLoginStep] = useState<"phone" | "code">("phone");
+  const [apiIdInput, setApiIdInput] = useState("");
+  const [apiHashInput, setApiHashInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [codeInput, setCodeInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
@@ -275,6 +279,8 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
       const data = await doFetch("/api/admin/userbot/settings");
       if (data) {
         setSettings(data);
+        if (data.api_id) setApiIdInput(String(data.api_id));
+        if (data.api_hash) setApiHashInput(data.api_hash);
       }
     } catch (e) {
       console.error("Failed to fetch userbot settings", e);
@@ -348,7 +354,11 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     try {
       const data = await doFetch("/api/admin/userbot/send-code", {
         method: "POST",
-        body: { phone_number: phoneInput.trim() },
+        body: {
+          phone_number: phoneInput.trim(),
+          api_id: apiIdInput.trim() ? parseInt(apiIdInput.trim(), 10) : undefined,
+          api_hash: apiHashInput.trim() || undefined,
+        },
       });
       if (data?.phone_code_hash) {
         setPhoneCodeHash(data.phone_code_hash);
@@ -732,16 +742,46 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
 
             {loginStep === "phone" ? (
               <div className="space-y-4">
-                <p className="text-xs text-slate-600 dark:text-slate-300">
-                  O'quv markazi Telegram profiliga ulangan telefon raqamini kiriting. Telegram SMS kodi shu raqam Telegram ilovasiga yuboriladi.
-                </p>
+                <div className="p-3 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 text-xs text-indigo-900 dark:text-indigo-200 space-y-1">
+                  <p className="font-semibold flex items-center gap-1.5">
+                    <InfoIcon className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                    my.telegram.org Kalitlari:
+                  </p>
+                  <p>
+                    Telegram xavfsizlik talablariga ko'ra profil ulash uchun <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="underline font-semibold text-indigo-600 dark:text-indigo-400">my.telegram.org</a> saytidan bepul olingan <b>API ID</b> va <b>API Hash</b> kiritilishi lozim.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1">API ID:</label>
+                    <input
+                      type="text"
+                      value={apiIdInput}
+                      onChange={(e) => setApiIdInput(e.target.value)}
+                      placeholder="masalan: 28194821"
+                      className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 focus:border-indigo-500 focus:outline-none text-xs font-mono text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1">API Hash:</label>
+                    <input
+                      type="text"
+                      value={apiHashInput}
+                      onChange={(e) => setApiHashInput(e.target.value)}
+                      placeholder="masalan: e3f8921a48..."
+                      className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 focus:border-indigo-500 focus:outline-none text-xs font-mono text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600"
+                    />
+                  </div>
+                </div>
+
                 <div>
                   <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1">Telefon Raqami:</label>
                   <input
                     type="text"
                     value={phoneInput}
                     onChange={(e) => setPhoneInput(e.target.value)}
-                    placeholder="+998901234567"
+                    placeholder="+998901234567 yoki +447529599103"
                     className="w-full p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 focus:border-indigo-500 focus:outline-none text-sm font-mono text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-600"
                   />
                 </div>
