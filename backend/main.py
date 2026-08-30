@@ -48,6 +48,7 @@ import userbot_manager
 from userbot_manager import (
     send_userbot_otp_code,
     verify_userbot_otp_code,
+    send_direct_userbot_message,
     queue_userbot_notification,
     render_userbot_template,
     start_userbot_queue_worker,
@@ -1768,7 +1769,8 @@ class UserbotSettingsUpdateRequest(BaseModel):
 
 class UserbotTestSendRequest(BaseModel):
     phone_number: str
-    message_text: str
+    message_text: str | None = None
+    message: str | None = None
 
 
 class PaymentConfirmRequest(BaseModel):
@@ -43849,8 +43851,14 @@ async def post_admin_userbot_settings(request: Request, authorization: str | Non
 async def post_admin_userbot_test_send(req: UserbotTestSendRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    ok = enqueue_userbot_message(req.phone_number, req.message_text, event_type="manual_test")
-    return {"success": ok}
+    phone = (req.phone_number or "").strip()
+    text = (req.message_text or req.message or "").strip()
+    if not phone or not text:
+        raise HTTPException(status_code=400, detail="Telefon raqami va xabar matni bo'sh bo'lmasligi kerak")
+    res = await send_direct_userbot_message(phone, text, event_type="manual_test")
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error") or "Xabar yuborib bo'lmadi")
+    return {"success": True, "detail": res}
 
 
 @app.get("/admin/userbot/logs")

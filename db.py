@@ -17440,35 +17440,24 @@ def ensure_group_extra_subjects_schema() -> bool:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        for col_name, col_sql in (
-            ("course_id", "INTEGER"),
-            ("course_title", "TEXT"),
-            ("monthly_fee_text", "TEXT"),
-            ("telegram_group_url", "TEXT"),
-            ("pricing_type", "TEXT DEFAULT 'group'"),
-            ("lang", "TEXT DEFAULT 'uz'"),
-        ):
-            try:
-                if _is_postgres_enabled():
-                    cur.execute(
-                        """
-                        SELECT 1
-                        FROM information_schema.columns
-                        WHERE table_name='groups' AND column_name=?
-                        """,
-                        (col_name,),
-                    )
-                    has_col = bool(cur.fetchone())
-                else:
-                    cur.execute("PRAGMA table_info(groups)")
-                    has_col = any(
-                        str((dict(r) if isinstance(r, dict) else {"name": r[1]}).get("name")) == col_name
-                        for r in (cur.fetchall() or [])
-                    )
-                if not has_col:
-                    cur.execute(f"ALTER TABLE groups ADD COLUMN {col_name} {col_sql}")
-            except Exception:
-                pass
+        _ensure_table_columns(
+            cur,
+            "groups",
+            [
+                ("course_id", "INTEGER"),
+                ("course_title", "TEXT"),
+                ("monthly_fee_text", "TEXT"),
+                ("telegram_group_url", "TEXT"),
+                ("pricing_type", "TEXT DEFAULT 'group'"),
+                ("lang", "TEXT DEFAULT 'uz'"),
+            ],
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
         _execute_ddl_candidates(
             cur,
