@@ -18837,9 +18837,12 @@ function AdminSection({
               <AdminGroupCreatePanel
                 onCreate={async (payload) => {
                   const result = await onAdminCall("/admin/groups", payload, "POST", tt("admin.groups.createSuccess", "Guruh yaratildi"));
-                  if (result && result.id) {
-                    setAdminGroupsFallback((prev) => [result as any, ...(prev !== null ? prev : (data.groups || []))]);
-                    setAdminGroupsTotal((prev) => prev + 1);
+                  if (result) {
+                    const createdGroup = (result.group || (result.id || result.group_id ? { ...result, id: Number(result.id || result.group_id) } : null)) as GenericRow | null;
+                    if (createdGroup && createdGroup.id) {
+                      setAdminGroupsFallback((prev) => [createdGroup as any, ...(prev !== null ? prev : (data.groups || []))]);
+                      setAdminGroupsTotal((prev) => prev + 1);
+                    }
                   }
                   setAdminGroupCreateOpen(false);
                   return result;

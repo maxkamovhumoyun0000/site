@@ -34405,7 +34405,16 @@ async def create_admin_group(payload: GroupCreateRequest, authorization: str | N
     extras_ok = bool(update_group_extra_subjects(int(group_id), []))
     if not extras_ok:
         logger.warning("admin.groups.create extra subjects sync failed group_id=%s", int(group_id))
-    return {"message": "Group created", "group_id": int(group_id)}
+
+    created_row = _safe_call(lambda: get_group(int(group_id)), None)
+    serialized = _serialize_group_row(created_row) if created_row else {"id": int(group_id), "name": payload.name.strip()}
+    return {
+        "message": "Group created",
+        "group_id": int(group_id),
+        "id": int(group_id),
+        "group": serialized,
+        **serialized,
+    }
 
 
 @app.post("/admin/groups/{group_id}/members/{student_id}")
