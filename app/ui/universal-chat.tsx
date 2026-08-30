@@ -1802,6 +1802,21 @@ export function UniversalChat({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => {
+                setInput("Yangi o'quvchilar qo'shish");
+                setTimeout(() => sendDiamondvoyMessage("Yangi o'quvchilar qo'shish").catch(() => null), 50);
+              }}
+              disabled={sending || !activeChatId}
+              className="px-2.5 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-xs font-bold hover:bg-emerald-500/20 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+              title="Excel/Word orqali o'quvchilar ro'yxatini qo'shish"
+            >
+              <span>👥</span>
+              <span className="hidden sm:inline">O'quvchilar qo'shish</span>
+            </button>
+          )}
           {canRegenerate && (
             <button type="button" onClick={() => regenerateLastAnswer().catch(() => null)} disabled={sending || !activeChatId} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white disabled:opacity-50">
               {tt("chat.regenerate", "Qayta javob ber")}

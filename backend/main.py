@@ -19086,9 +19086,9 @@ async def _diamondvoy_stream_events(
     if user_text:
         _safe_call(lambda: _diamondvoy_upsert_user_style(user_id, user_text, query_lang), None)
 
-    if not regenerate and role in {"teacher", "support"}:
+    if not regenerate and role in {"teacher", "support", "admin"}:
         norm = user_text.strip().lower()
-        if re.search(r"^(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish)", norm):
+        if re.search(r"(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish|vazifa yaratish)", norm):
             async def fast_wizard_stream():
                 current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
                 assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "homework"})
@@ -19097,10 +19097,10 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_wizard_stream(), media_type="text/event-stream")
 
-    if not regenerate and role == "admin":
+    if not regenerate and role in {"admin", "teacher"}:
         norm = user_text.strip().lower()
         if re.search(
-            r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx)",
+            r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx|student.*ro|o.quvchi.*ro|ro.yxat|royhat|excel|word|docx)",
             norm,
         ):
             async def fast_add_students_stream():
