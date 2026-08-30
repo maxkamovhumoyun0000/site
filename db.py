@@ -459,7 +459,13 @@ def _init_postgres_db():
                 tz TEXT DEFAULT 'Asia/Tashkent',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 owner_admin_id BIGINT,
-                active INTEGER DEFAULT 1
+                active INTEGER DEFAULT 1,
+                course_id BIGINT,
+                course_title TEXT,
+                monthly_fee_text TEXT,
+                telegram_group_url TEXT,
+                pricing_type TEXT DEFAULT 'group',
+                lang TEXT DEFAULT 'uz'
             )
         """)
         
@@ -17440,6 +17446,7 @@ def ensure_group_extra_subjects_schema() -> bool:
             ("monthly_fee_text", "TEXT"),
             ("telegram_group_url", "TEXT"),
             ("pricing_type", "TEXT DEFAULT 'group'"),
+            ("lang", "TEXT DEFAULT 'uz'"),
         ):
             try:
                 if _is_postgres_enabled():

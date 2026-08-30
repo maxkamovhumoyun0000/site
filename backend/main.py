@@ -1450,6 +1450,8 @@ class GroupCreateRequest(BaseModel):
     pricing_type: str | None = "group"
     #: 'uz' (default) yoki 'ru' (yevro/rus guruh — testlar ruscha tarjima bilan)
     lang: str | None = "uz"
+    owner_admin_id: int | None = None
+    owner_branch: int | None = None
 
 
 class GroupMemberAddRequest(BaseModel):
@@ -46271,6 +46273,13 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
     lesson_days = _normalize_lesson_days(payload.lesson_date) or "MWF"
     if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
         raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
+    effective_owner_admin_id = int(admin_ref)
+    if payload.owner_admin_id is not None and int(payload.owner_admin_id) > 0:
+        effective_owner_admin_id = int(payload.owner_admin_id)
+    elif payload.owner_branch in (1, 2):
+        limited_ids = [int(x) for x in LIMITED_ADMIN_CHAT_IDS if int(x or 0) > 0]
+        if payload.owner_branch <= len(limited_ids):
+            effective_owner_admin_id = limited_ids[payload.owner_branch - 1]
     try:
         group_id = db_create_group(
             payload.name.strip(),
@@ -46281,7 +46290,7 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
             lesson_date=lesson_days,
             lesson_start=payload.lesson_start,
             lesson_end=payload.lesson_end,
-            owner_admin_id=int(admin_ref),
+            owner_admin_id=int(effective_owner_admin_id),
             course_id=int(linked_course["id"]) if linked_course else None,
             course_title=str(linked_course.get("title") or "").strip() if linked_course else None,
             monthly_fee_text=(
