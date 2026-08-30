@@ -22,6 +22,7 @@ from diamondvoy_helpers import (
     diamondvoy_gemini_answer,
     stream_diamondvoy_text_reply,
     try_diamondvoy_bot_info,
+    try_diamondvoy_app_version_action,
 )
 from i18n import t
 from logging_config import get_logger
@@ -359,8 +360,18 @@ class DiamondVoyAdmin:
         if _intent_student_search(q) and name_part:
             await self._flow_student_search(message, status_msg, name_part, lang)
             return
-        if _intent_payment(q):
-            await self._flow_payment(message, status_msg, name_part, lang)
+        ver_text = try_diamondvoy_app_version_action(q, is_admin=True, lang=lang)
+        if ver_text is not None:
+            try:
+                await self.bot.edit_message_text(
+                    ver_text,
+                    chat_id=message.chat.id,
+                    message_id=status_msg.message_id,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                await message.answer(ver_text, parse_mode="HTML")
+            log_diamondvoy_query(uid_log, q, ver_text, subject=subj_hint, bot_scope="admin_full")
             return
 
         info_text = try_diamondvoy_bot_info(

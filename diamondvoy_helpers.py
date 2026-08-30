@@ -277,6 +277,12 @@ async def diamondvoy_gemini_answer(
     if lc not in ("ru", "en", "uz"):
         lc = "uz"
 
+    # Check direct admin app version commands/queries
+    if is_admin_context:
+        ver_action = try_diamondvoy_app_version_action(question, is_admin=True, lang=lang)
+        if ver_action is not None:
+            return ver_action
+
     # Static System Prompts (easily cached)
     if is_admin_context:
         if lc == "ru":
@@ -398,6 +404,13 @@ async def diamondvoy_gemini_answer_stream(
     lc = ((lang or "uz").lower())[:2]
     if lc not in ("ru", "en", "uz"):
         lc = "uz"
+
+    # Check direct admin app version commands/queries
+    if is_admin_context:
+        ver_action = try_diamondvoy_app_version_action(question, is_admin=True, lang=lang)
+        if ver_action is not None:
+            yield ver_action
+            return
 
     # Static System Prompts (easily cached)
     if is_admin_context:
@@ -543,6 +556,162 @@ _PERSONAL_HINTS = re.compile(
     r"meniki|dcoinim|d'coinim|balansim|reytingim|мой баланс|my balance|my dcoin",
     re.I,
 )
+
+
+def try_diamondvoy_app_version_action(
+    query: str,
+    *,
+    is_admin: bool = False,
+    lang: str = "uz",
+) -> str | None:
+    """
+    Handles version queries and automatic version update requests for Diamondvoy AI.
+    Admin can ask about versions or request version updates (e.g. "student app versiyasini 1.2.0 qil").
+    """
+    if not is_admin:
+        return None
+    raw = (query or "").strip()
+    if not raw:
+        return None
+    ql = raw.lower()
+
+    # Must contain version-related keywords
+    version_keywords = re.search(
+        r"\b(versiya|versiyalar|versiyasi|version|versions|build|force update|force_update|app versiya|app version|min_version|min_build)\b",
+        ql,
+    )
+    if not version_keywords:
+        return None
+
+    from db import get_app_version_settings, update_app_version_settings
+
+    # Check if this is an UPDATE command
+    is_set_command = any(
+        k in ql
+        for k in (
+            "qil",
+            "o'zgartir",
+            "ozgartir",
+            "o‘zgartir",
+            "set",
+            "update",
+            "oshir",
+            "tengla",
+            "qo'y",
+            "qoy",
+            "o'zgar",
+            "измени",
+            "обнови",
+            "поставить",
+            "сделать",
+        )
+    )
+
+    ver_match = re.search(r"\b(\d+\.\d+(?:\.\d+)?)\b", ql)
+    build_match = re.search(r"\b(?:build|b)[\s:=]*(\d+)\b", ql)
+
+    if is_set_command and ver_match:
+        new_ver = ver_match.group(1)
+        new_build = int(build_match.group(1)) if build_match else None
+
+        target_student = any(k in ql for k in ("student", "o'quvchi", "oquvchi", "talaba", "ученик", "студент"))
+        target_teacher = any(k in ql for k in ("teacher", "o'qituvchi", "oqituvchi", "ustoz", "учитель", "преподаватель"))
+
+        if not target_student and not target_teacher:
+            target_student = True
+            target_teacher = True
+
+        settings = get_app_version_settings()
+
+        if target_student:
+            b_num = new_build if new_build is not None else settings["student"]["min_build"]
+            update_app_version_settings("student", min_version=new_ver, min_build=b_num)
+        if target_teacher:
+            b_num = new_build if new_build is not None else settings["teacher"]["min_build"]
+            update_app_version_settings("teacher", min_version=new_ver, min_build=b_num)
+
+        updated = get_app_version_settings()
+
+        if lang == "ru":
+            return (
+                "🚀 <b>Версия мобильного приложения обновлена!</b>\n\n"
+                f"📱 <b>Diamond Students App</b>:\n"
+                f"• Мин. версия: <code>{updated['student']['min_version']}</code>\n"
+                f"• Мин. build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+                f"• Мин. версия: <code>{updated['teacher']['min_version']}</code>\n"
+                f"• Мин. build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                "📌 Все пользователи с версией ниже указанной будут перенаправлены на экран обязательного обновления."
+            )
+        elif lang == "en":
+            return (
+                "🚀 <b>Mobile App Version Updated!</b>\n\n"
+                f"📱 <b>Diamond Students App</b>:\n"
+                f"• Min Version: <code>{updated['student']['min_version']}</code>\n"
+                f"• Min Build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+                f"• Min Version: <code>{updated['teacher']['min_version']}</code>\n"
+                f"• Min Build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                "📌 All users with an older app version will now see the forced update screen."
+            )
+        else:
+            return (
+                "🚀 <b>Mobil ilovalar versiyasi muvaffaqiyatli yangilandi!</b>\n\n"
+                f"📱 <b>Diamond Students App</b>:\n"
+                f"• Minimal versiya: <code>{updated['student']['min_version']}</code>\n"
+                f"• Minimal build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+                f"• Minimal versiya: <code>{updated['teacher']['min_version']}</code>\n"
+                f"• Minimal build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                "📌 Endi ushbu versiyadan past bo'lgan barcha ilovalarda majburiy yangilanish ekrani chiqadi."
+            )
+
+    current = get_app_version_settings()
+    if lang == "ru":
+        return (
+            "🚀 <b>Текущие настройки версий мобильных приложений</b>:\n\n"
+            f"📱 <b>Diamond Students App</b>:\n"
+            f"• Мин. версия: <code>{current['student']['min_version']}</code>\n"
+            f"• Мин. build: <code>{current['student']['min_build']}</code>\n"
+            f"• Play Store: {current['student']['store_url']}\n"
+            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+            f"• Мин. версия: <code>{current['teacher']['min_version']}</code>\n"
+            f"• Мин. build: <code>{current['teacher']['min_build']}</code>\n"
+            f"• Play Store: {current['teacher']['store_url']}\n"
+            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            "💡 <i>Чтобы обновить версию, напишите например: «Student app версию 1.2.0 build 15 сделать»</i>"
+        )
+    elif lang == "en":
+        return (
+            "🚀 <b>Current Mobile App Version Settings</b>:\n\n"
+            f"📱 <b>Diamond Students App</b>:\n"
+            f"• Min Version: <code>{current['student']['min_version']}</code>\n"
+            f"• Min Build: <code>{current['student']['min_build']}</code>\n"
+            f"• Play Store: {current['student']['store_url']}\n"
+            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+            f"• Min Version: <code>{current['teacher']['min_version']}</code>\n"
+            f"• Min Build: <code>{current['teacher']['min_build']}</code>\n"
+            f"• Play Store: {current['teacher']['store_url']}\n"
+            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            "💡 <i>To update version, write e.g.: 'Set Student app version to 1.2.0 build 15'</i>"
+        )
+    else:
+        return (
+            "🚀 <b>Hozirgi Mobil Ilovalar Versiyalari Sozlamalari</b>:\n\n"
+            f"📱 <b>Diamond Students App</b>:\n"
+            f"• Minimal versiya: <code>{current['student']['min_version']}</code>\n"
+            f"• Minimal build: <code>{current['student']['min_build']}</code>\n"
+            f"• Google Play: {current['student']['store_url']}\n"
+            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
+            f"• Minimal versiya: <code>{current['teacher']['min_version']}</code>\n"
+            f"• Minimal build: <code>{current['teacher']['min_build']}</code>\n"
+            f"• Google Play: {current['teacher']['store_url']}\n"
+            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            "💡 <i>Versiyani o'zgartirish uchun masalan: 'Student app versiyasini 1.2.0 build 15 qil' deb yozishingiz mumkin.</i>"
+        )
 
 
 def _count_student_flow_online(student_state_map: dict | None) -> int | None:
