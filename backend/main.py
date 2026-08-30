@@ -28532,6 +28532,7 @@ async def _notify_homework_reviewed(homework: dict, student_id: int, reviewed: d
 
 
 @app.post("/teacher/homework")
+@app.post("/teacher/homeworks")
 async def teacher_create_homework(payload: HomeworkCreateRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
@@ -28541,14 +28542,15 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
     title = str(payload.title or "").strip()
     description = str(payload.description or "").strip()
     due_at = str(payload.due_at or "").strip()
+    if not due_at:
+        import datetime
+        due_at = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     homework_kind = _derive_homework_kind_from_request(payload)
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
     if not description:
         description = title
-    if not due_at:
-        raise HTTPException(status_code=400, detail="Homework deadline is required")
     audience_count = 0
     if group_id > 0:
         group = _safe_call(lambda: get_group(group_id), None)

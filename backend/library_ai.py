@@ -627,20 +627,27 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
 
     title = str(payload.title or node.get("title") or "Kutubxona vazifasi").strip()
     description = str(payload.description or node.get("description") or "").strip() or None
+    due_at = str(payload.due_at or "").strip() or None
+    if not due_at:
+        import datetime
+        due_at = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+
     created: list[dict] = []
     targets: list[int | None] = student_ids or [None]
     for student_id in targets:
-        homework = _safe(
-            lambda sid=student_id: dbm.create_homework(
-                int(user.get("id") or 0),
-                sid,
-                title,
+        try:
+            homework = dbm.create_homework(
+                teacher_id=int(user.get("id") or 0),
+                student_id=student_id,
+                title=title,
                 description=description,
-                due_at=payload.due_at,
-                group_id=group_id if sid is None else None,
+                due_at=due_at,
+                group_id=group_id if student_id is None else None,
                 homework_kind="test" if kind == "test" else "list",
             )
-        )
+        except Exception as exc:
+            logger.exception("library_assign create_homework failed for student_id=%s: %s", student_id, exc)
+            homework = None
         if not homework:
             continue
         homework_id = int(homework.get("id") or 0)
