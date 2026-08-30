@@ -242,10 +242,11 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
   };
 
   const doFetch = async (endpoint: string, options?: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: any }) => {
+    const cleanPath = endpoint.startsWith("/api") ? endpoint.substring(4) : endpoint;
     if (apiFetch) {
-      return await apiFetch(endpoint, options);
+      return await apiFetch(cleanPath, options);
     }
-    const apiPath = endpoint.startsWith("/api") ? endpoint : `/api${endpoint}`;
+    const apiPath = `/api${cleanPath}`;
     const res = await fetch(apiPath, {
       method: options?.method || "GET",
       headers: getHeaders(),

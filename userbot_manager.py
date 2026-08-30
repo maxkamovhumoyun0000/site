@@ -23,6 +23,8 @@ try:
         SessionPasswordNeeded,
         UserPrivacyRestricted,
         PeerIdInvalid,
+        PhoneNumberInvalid,
+        ApiIdInvalid,
     )
     from pyrogram.types import InputPhoneContact
     PYROGRAM_AVAILABLE = True
@@ -39,17 +41,19 @@ _pending_login_clients: Dict[str, Dict[str, Any]] = {}
 
 def format_phone(phone: str) -> str:
     """Clean phone number into E.164 format (+998901234567)."""
-    clean = re.sub(r"[^\d+]", "", str(phone or "")).strip()
-    if not clean:
+    raw = str(phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
         return ""
-    if not clean.startswith("+"):
-        if clean.startswith("998"):
-            clean = "+" + clean
-        elif len(clean) == 9:
-            clean = "+998" + clean
-        else:
-            clean = "+" + clean
-    return clean
+    if digits.startswith("998") and len(digits) == 12:
+        return "+" + digits
+    if len(digits) == 9:
+        return "+998" + digits
+    if raw.startswith("+"):
+        return "+" + digits
+    if digits.startswith("998"):
+        return "+" + digits
+    return "+" + digits
 
 
 async def get_active_pyrogram_client() -> Optional[Any]:
@@ -97,11 +101,11 @@ async def get_active_pyrogram_client() -> Optional[Any]:
 async def send_userbot_otp_code(api_id: int, api_hash: str, phone_number: str) -> Dict[str, Any]:
     """Sends SMS OTP code via Pyrogram to initiate userbot login."""
     if not PYROGRAM_AVAILABLE:
-        return {"ok": False, "error": "Pyrogram package not installed"}
+        return {"ok": False, "error": "Pyrogram kutubxonasi serverda o'rnatilmagan"}
 
     phone = format_phone(phone_number)
-    if not phone:
-        return {"ok": False, "error": "Telefon raqami noto'g'ri"}
+    if not phone or len(re.sub(r"\D", "", phone)) < 9:
+        return {"ok": False, "error": f"Telefon raqami formati noto'g'ri ({phone_number}). Misol: +998901234567"}
 
     try:
         temp_client = Client(
@@ -126,9 +130,18 @@ async def send_userbot_otp_code(api_id: int, api_hash: str, phone_number: str) -
             "phone_code_hash": sent_code.phone_code_hash,
             "message": "SMS kod Telegram ilovasi/raqamiga yuborildi",
         }
+    except PhoneNumberInvalid:
+        return {"ok": False, "error": f"Telefon raqami Telegramda topilmadi yoki noto'g'ri ({phone}). Xalqaro formatda kiritib ko'ring: +998901234567"}
+    except ApiIdInvalid:
+        return {"ok": False, "error": "Telegram API ID yoki API Hash noto'g'ri."}
+    except FloodWait as fw:
+        return {"ok": False, "error": f"Telegram cheklovi (FloodWait): {fw.value} soniyadan keyin qayta urinib ko'ring."}
     except Exception as exc:
+        err_msg = str(exc)
+        if "PHONE_NUMBER_INVALID" in err_msg:
+            return {"ok": False, "error": f"Telefon raqami Telegramda noto'g'ri ({phone}). Misol: +998901234567"}
         logger.exception("send_userbot_otp_code failed for %s", phone)
-        return {"ok": False, "error": f"Kod yuborishda xatolik: {str(exc)}"}
+        return {"ok": False, "error": f"Kod yuborishda xatolik: {err_msg}"}
 
 
 async def verify_userbot_otp_code(phone_number: str, code: str, password: Optional[str] = None) -> Dict[str, Any]:
