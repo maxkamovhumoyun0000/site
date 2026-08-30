@@ -11781,6 +11781,12 @@ def add_user_to_group(user_id, group_id, joined_at: str | None = None):
         conn.commit()
         conn.close()
 
+    try:
+        import userbot_manager
+        userbot_manager.handle_userbot_group_join_event(int(user_id), int(group_id))
+    except Exception:
+        pass
+
 
 def add_user_to_group_legacy(user_id, group_id):
     """Eski usul - faqat bitta guruh (backward compatibility)"""
@@ -12539,7 +12545,14 @@ def add_attendance(user_id, group_id, date, status='Present'):
             )
         conn.commit()
         conn.close()
-        return True
+
+    try:
+        import userbot_manager
+        userbot_manager.handle_userbot_attendance_event(int(user_id), int(group_id), str(day), str(status))
+    except Exception:
+        pass
+
+    return True
 
 def get_attendance(user_id, group_id, date):
     """Konkret davomat yozuvini olish"""
