@@ -24702,3 +24702,119 @@ def list_userbot_logs(limit: int = 100) -> list[dict]:
         return [_row_to_dict(r) for r in (cur.fetchall() or [])]
     finally:
         conn.close()
+
+
+def ensure_app_version_settings_schema():
+    schema_key = "app_version_settings"
+    if _schema_ready(schema_key):
+        return
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            if _is_postgres_enabled():
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_version_settings (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        min_student_version TEXT DEFAULT '1.0.0',
+                        min_student_build INTEGER DEFAULT 1,
+                        student_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.students',
+                        student_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        min_teacher_version TEXT DEFAULT '1.0.0',
+                        min_teacher_build INTEGER DEFAULT 1,
+                        teacher_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.teachers',
+                        teacher_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            else:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS app_version_settings (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        min_student_version TEXT DEFAULT '1.0.0',
+                        min_student_build INTEGER DEFAULT 1,
+                        student_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.students',
+                        student_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        min_teacher_version TEXT DEFAULT '1.0.0',
+                        min_teacher_build INTEGER DEFAULT 1,
+                        teacher_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.teachers',
+                        teacher_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+            conn.commit()
+            _mark_schema_ready(schema_key)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def get_app_version_settings() -> dict:
+    ensure_app_version_settings_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM app_version_settings WHERE id=1 LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            with DB_WRITE_LOCK:
+                cur.execute(
+                    """
+                    INSERT INTO app_version_settings (id, min_student_version, min_student_build, min_teacher_version, min_teacher_build)
+                    VALUES (1, '1.0.0', 1, '1.0.0', 1)
+                    """
+                )
+                conn.commit()
+                cur.execute("SELECT * FROM app_version_settings WHERE id=1 LIMIT 1")
+                row = cur.fetchone()
+        return _row_to_dict(row) if row else {
+            "min_student_version": "1.0.0",
+            "min_student_build": 1,
+            "student_play_store_url": "https://play.google.com/store/apps/details?id=com.diamond.students",
+            "student_app_store_url": "https://apps.apple.com/app/id6742398571",
+            "min_teacher_version": "1.0.0",
+            "min_teacher_build": 1,
+            "teacher_play_store_url": "https://play.google.com/store/apps/details?id=com.diamond.teachers",
+            "teacher_app_store_url": "https://apps.apple.com/app/id6742398571",
+        }
+    finally:
+        conn.close()
+
+
+def update_app_version_settings(fields: dict) -> dict:
+    ensure_app_version_settings_schema()
+    get_app_version_settings()
+    allowed = {
+        "min_student_version", "min_student_build", "student_play_store_url", "student_app_store_url",
+        "min_teacher_version", "min_teacher_build", "teacher_play_store_url", "teacher_app_store_url"
+    }
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return get_app_version_settings()
+
+    sets = []
+    params = []
+    for k, v in updates.items():
+        sets.append(f"{k}=?")
+        params.append(v)
+
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(f"UPDATE app_version_settings SET {', '.join(sets)} WHERE id=1", tuple(params))
+            conn.commit()
+        finally:
+            conn.close()
+
+    return get_app_version_settings()
+

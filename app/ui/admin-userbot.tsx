@@ -216,7 +216,18 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
   const [logs, setLogs] = useState<UserbotLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<"modules" | "logs">("modules");
+  const [activeTab, setActiveTab] = useState<"modules" | "logs" | "version">("modules");
+  const [versionSettings, setVersionSettings] = useState({
+    min_student_version: "1.0.0",
+    min_student_build: 1,
+    student_play_store_url: "https://play.google.com/store/apps/details?id=com.diamond.students",
+    student_app_store_url: "https://apps.apple.com/app/id6742398571",
+    min_teacher_version: "1.0.0",
+    min_teacher_build: 1,
+    teacher_play_store_url: "https://play.google.com/store/apps/details?id=com.diamond.teachers",
+    teacher_app_store_url: "https://apps.apple.com/app/id6742398571",
+  });
+  const [savingVersion, setSavingVersion] = useState(false);
 
   // Login Modal state
   const [loginModalOpen, setLoginModalOpen] = useState(false);
@@ -289,20 +300,37 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     }
   };
 
-  const fetchLogs = async () => {
+  const fetchVersionSettings = async () => {
     try {
-      const data = await doFetch("/api/admin/userbot/logs?limit=50");
-      if (data?.logs) {
-        setLogs(data.logs || []);
-      }
+      const data = await doFetch("/api/admin/app-version-settings");
+      if (data) setVersionSettings(data);
     } catch (e) {
-      console.error("Failed to fetch userbot logs", e);
+      console.error("Failed to fetch app version settings", e);
+    }
+  };
+
+  const handleSaveVersionSettings = async () => {
+    setSavingVersion(true);
+    try {
+      const data = await doFetch("/api/admin/app-version-settings", {
+        method: "POST",
+        body: versionSettings,
+      });
+      if (data) {
+        setVersionSettings(data);
+        alert("Ilova versiyalari va Force Update sozlamalari saqlandi! ✅");
+      }
+    } catch (e: any) {
+      alert(e.message || "Saqlashda xatolik");
+    } finally {
+      setSavingVersion(false);
     }
   };
 
   useEffect(() => {
     fetchSettings();
     fetchLogs();
+    fetchVersionSettings();
   }, []);
 
   const handleToggle = (key: keyof UserbotSettings) => {
@@ -543,6 +571,20 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
             <HistoryIcon className="w-4 h-4" />
             Yuborilgan Xabarlar Tarixi ({logs.length})
           </button>
+          <button
+            onClick={() => {
+              setActiveTab("version");
+              fetchVersionSettings();
+            }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
+              activeTab === "version"
+                ? "bg-indigo-600 text-white"
+                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+            }`}
+          >
+            <ZapIcon className="w-4 h-4" />
+            Mobil Ilovalar Versiyasi (Force Update)
+          </button>
         </div>
 
         {activeTab === "modules" && (
@@ -712,6 +754,141 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: APP VERSION CONTROL & FORCE UPDATE */}
+      {activeTab === "version" && (
+        <div className="space-y-6">
+          <div className="p-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                  <SmartphoneIcon className="w-5 h-5 text-indigo-500" />
+                  Mobil Ilovalar Versiyasini Boshqarish & Majburiy Yangilash (Force Update)
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  App Store va Google Play'ga yangi versiya chiqarganingizda minimally qaysi versiyadan past bo'lgan foydalanuvchilarga "Yangilash" ekranini chiqarishni belgilaysiz.
+                </p>
+              </div>
+              <button
+                onClick={handleSaveVersionSettings}
+                disabled={savingVersion}
+                className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm transition flex items-center gap-2 shadow-md shadow-emerald-600/20"
+              >
+                {savingVersion ? <RefreshIcon className="w-4 h-4 animate-spin" /> : <CheckCircleIcon className="w-4 h-4" />}
+                Versiya Sozlamalarini Saqlash
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* STUDENT APP SETTINGS */}
+              <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+                  <span className="p-2 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold text-xs">🎓 STUDENT APP</span>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">O'quvchilar Ilovasi</h4>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Eng Kam Versiya (Min Version):</label>
+                    <input
+                      type="text"
+                      value={versionSettings.min_student_version}
+                      onChange={(e) => setVersionSettings({ ...versionSettings, min_student_version: e.target.value })}
+                      placeholder="2.0.0"
+                      className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Eng Kam Build Kodi (Build Number):</label>
+                    <input
+                      type="number"
+                      value={versionSettings.min_student_build}
+                      onChange={(e) => setVersionSettings({ ...versionSettings, min_student_build: parseInt(e.target.value, 10) || 1 })}
+                      placeholder="1"
+                      className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Google Play Store Havolasi (Android):</label>
+                  <input
+                    type="text"
+                    value={versionSettings.student_play_store_url}
+                    onChange={(e) => setVersionSettings({ ...versionSettings, student_play_store_url: e.target.value })}
+                    placeholder="https://play.google.com/store/apps/details?id=..."
+                    className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Apple App Store Havolasi (iOS):</label>
+                  <input
+                    type="text"
+                    value={versionSettings.student_app_store_url}
+                    onChange={(e) => setVersionSettings({ ...versionSettings, student_app_store_url: e.target.value })}
+                    placeholder="https://apps.apple.com/app/id..."
+                    className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+
+              {/* TEACHER APP SETTINGS */}
+              <div className="p-5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 space-y-4">
+                <div className="flex items-center gap-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+                  <span className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold text-xs">👨‍🏫 TEACHER APP</span>
+                  <h4 className="font-bold text-sm text-slate-900 dark:text-slate-100">O'qituvchilar Ilovasi</h4>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Eng Kam Versiya (Min Version):</label>
+                    <input
+                      type="text"
+                      value={versionSettings.min_teacher_version}
+                      onChange={(e) => setVersionSettings({ ...versionSettings, min_teacher_version: e.target.value })}
+                      placeholder="1.0.0"
+                      className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Eng Kam Build Kodi (Build Number):</label>
+                    <input
+                      type="number"
+                      value={versionSettings.min_teacher_build}
+                      onChange={(e) => setVersionSettings({ ...versionSettings, min_teacher_build: parseInt(e.target.value, 10) || 1 })}
+                      placeholder="1"
+                      className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Google Play Store Havolasi (Android):</label>
+                  <input
+                    type="text"
+                    value={versionSettings.teacher_play_store_url}
+                    onChange={(e) => setVersionSettings({ ...versionSettings, teacher_play_store_url: e.target.value })}
+                    placeholder="https://play.google.com/store/apps/details?id=..."
+                    className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-600 dark:text-slate-400 block mb-1 font-medium">Apple App Store Havolasi (iOS):</label>
+                  <input
+                    type="text"
+                    value={versionSettings.teacher_app_store_url}
+                    onChange={(e) => setVersionSettings({ ...versionSettings, teacher_app_store_url: e.target.value })}
+                    placeholder="https://apps.apple.com/app/id..."
+                    className="w-full p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs font-mono text-slate-900 dark:text-slate-100"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

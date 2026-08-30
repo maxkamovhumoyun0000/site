@@ -17277,6 +17277,82 @@ async def start_mobile_telegram_login(payload: TelegramMobileLoginStartRequest):
     )
 
 
+def _is_app_version_below(current_ver: str, min_ver: str, current_build: int = 0, min_build: int = 0) -> bool:
+    """Returns True if current_ver is strictly below min_ver, or build is below min_build."""
+    if not min_ver:
+        return False
+    c_parts = [int(p) for p in re.findall(r'\d+', str(current_ver or ""))]
+    m_parts = [int(p) for p in re.findall(r'\d+', str(min_ver or ""))]
+    if not c_parts:
+        c_parts = [0]
+    if not m_parts:
+        m_parts = [0]
+
+    max_len = max(len(c_parts), len(m_parts))
+    c_parts += [0] * (max_len - len(c_parts))
+    m_parts += [0] * (max_len - len(m_parts))
+
+    if c_parts < m_parts:
+        return True
+    if c_parts > m_parts:
+        return False
+
+    if min_build > 0 and current_build > 0:
+        return current_build < min_build
+
+    return False
+
+
+@app.get("/api/app-version-check")
+async def check_app_version(
+    app: str = Query(default="student"),
+    platform: str = Query(default="android"),
+    current_version: str = Query(default="1.0.0"),
+    build_number: int = Query(default=1),
+):
+    """Public endpoint for Student and Teacher apps to check if force update is required."""
+    settings = get_app_version_settings()
+    app_type = str(app or "student").strip().lower()
+    plat = str(platform or "android").strip().lower()
+
+    if app_type == "teacher":
+        min_ver = str(settings.get("min_teacher_version") or "1.0.0")
+        min_build = int(settings.get("min_teacher_build") or 1)
+        store_url = str(settings.get("teacher_app_store_url") if plat == "ios" else settings.get("teacher_play_store_url"))
+    else:
+        min_ver = str(settings.get("min_student_version") or "1.0.0")
+        min_build = int(settings.get("min_student_build") or 1)
+        store_url = str(settings.get("student_app_store_url") if plat == "ios" else settings.get("student_play_store_url"))
+
+    force = _is_app_version_below(current_version, min_ver, build_number, min_build)
+
+    return {
+        "force_update": force,
+        "current_version": current_version,
+        "build_number": build_number,
+        "min_version": min_ver,
+        "min_build": min_build,
+        "store_url": store_url,
+        "message_uz": "Ilovaning yangi versiyasi chiqdi! Davom etish uchun ilovani yangilang.",
+        "message_ru": "Доступна новая версия приложения! Обновите приложение для продолжения.",
+        "message_en": "A new version of the app is available! Please update to continue.",
+    }
+
+
+@app.get("/admin/app-version-settings")
+async def admin_get_version_settings(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    return get_app_version_settings()
+
+
+@app.post("/admin/app-version-settings")
+async def admin_update_version_settings(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    return update_app_version_settings(payload)
+
+
 @app.get("/auth/telegram/mobile/status/{request_token}")
 async def get_mobile_telegram_login_status(request_token: str):
     """Let the originating app poll its opaque request while the bot is open."""
