@@ -8814,6 +8814,24 @@ async def _notify_admins_purchase_created(
             except Exception:
                 failed += 1
                 logger.exception("admin purchase telegram notification failed chat_id=%s purchase_id=%s", chat_id, purchase_id)
+    # Send Userbot direct Telegram notification to parent/student for gift purchase
+    try:
+        target_phones = userbot_manager.get_target_phones_for_user(buyer or {})
+        if target_phones:
+            student_name = _display_name(buyer)
+            bal_str = f"\n💰 Qolgan balans: {float(balance_after):.1f} D'coin" if balance_after is not None else ""
+            ub_msg = (
+                f"🎁 **YANGI XARID / SOVGA**\n\n"
+                f"Hurmatli ota-ona!\n"
+                f"Farzandingiz **{student_name}** **{title}** ({item_label}) mahsulotini xarid qildi.\n"
+                f"💎 Sarflangan: {amount:.1f} D'coin{bal_str}\n"
+                f"🕒 Vaqt: {when_text}"
+            )
+            for p in target_phones:
+                userbot_manager.queue_userbot_notification(p, ub_msg, event_type="gift_purchase")
+    except Exception as exc:
+        logger.exception("Userbot gift purchase notification failed: %s", exc)
+
     logger.info(
         "purchase_admin_notification item_type=%s purchase_id=%s web=%s telegram_sent=%s telegram_failed=%s",
         str(item_type or "other"),
