@@ -117,6 +117,8 @@ from db import (
     ensure_userbot_schema,
     get_userbot_settings,
     update_userbot_settings,
+    get_app_version_settings,
+    update_app_version_settings,
     list_userbot_logs,
     ensure_daily_test_attempt_and_items,
     ensure_group_extra_subjects_schema,
@@ -17305,17 +17307,17 @@ def _is_app_version_below(current_ver: str, min_ver: str, current_build: int = 0
 
 @app.get("/api/app-version-check")
 async def check_app_version(
-    app: str = Query(default="student"),
+    app_type: str = Query(default="student", alias="app"),
     platform: str = Query(default="android"),
     current_version: str = Query(default="1.0.0"),
     build_number: int = Query(default=1),
 ):
     """Public endpoint for Student and Teacher apps to check if force update is required."""
     settings = get_app_version_settings()
-    app_type = str(app or "student").strip().lower()
+    app_name = str(app_type or "student").strip().lower()
     plat = str(platform or "android").strip().lower()
 
-    if app_type == "teacher":
+    if app_name == "teacher":
         min_ver = str(settings.get("min_teacher_version") or "1.0.0")
         min_build = int(settings.get("min_teacher_build") or 1)
         store_url = str(settings.get("teacher_app_store_url") if plat == "ios" else settings.get("teacher_play_store_url"))
