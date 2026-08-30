@@ -43668,18 +43668,60 @@ async def admin_student_shares(student_id: int, authorization: str | None = Head
 # USERBOT ADMIN ENDPOINTS
 # ==============================================================================
 
+def _format_userbot_settings_response(raw: dict) -> dict:
+    has_session = bool(raw.get("session_string") and str(raw.get("session_string")).strip() != "")
+    is_active = bool(raw.get("is_active", 1))
+
+    t_absent = raw.get("tpl_attendance_absent") or DEFAULT_USERBOT_TEMPLATES["tpl_attendance_absent"]
+    t_late = raw.get("tpl_attendance_late") or DEFAULT_USERBOT_TEMPLATES["tpl_attendance_late"]
+    t_holiday = raw.get("tpl_holiday_cancellation") or DEFAULT_USERBOT_TEMPLATES["tpl_holiday_cancellation"]
+    t_hw = raw.get("tpl_homework_missing") or DEFAULT_USERBOT_TEMPLATES["tpl_homework_missing"]
+    t_ach = raw.get("tpl_achievement") or DEFAULT_USERBOT_TEMPLATES["tpl_achievement"]
+    t_pay_rem = raw.get("tpl_payment_reminder") or DEFAULT_USERBOT_TEMPLATES["tpl_payment_reminder"]
+    t_pay_due = raw.get("tpl_payment_overdue") or DEFAULT_USERBOT_TEMPLATES["tpl_payment_overdue"]
+    t_pay_rec = raw.get("tpl_payment_receipt") or DEFAULT_USERBOT_TEMPLATES["tpl_payment_receipt"]
+    t_welcome = raw.get("tpl_welcome_group") or DEFAULT_USERBOT_TEMPLATES["tpl_welcome_group"]
+
+    res = dict(raw)
+    res["is_enabled"] = is_active
+    res["is_active"] = 1 if is_active else 0
+    res["has_session"] = has_session
+    res["is_authenticated"] = has_session
+    res["account_name"] = raw.get("account_name") or (f"Ulandigan Telegram ({raw.get('phone_number')})" if has_session and raw.get("phone_number") else ("Aktiv Telegram Userbot" if has_session else "Ulanmagan"))
+    res["session_string"] = "******" if has_session else None
+
+    # Toggles for UI
+    res["notify_absent"] = bool(raw.get("notify_attendance_absent", 1))
+    res["notify_late"] = bool(raw.get("notify_attendance_late", 1))
+    res["notify_homework"] = bool(raw.get("notify_homework_missing", 1))
+    res["notify_achievements"] = bool(raw.get("notify_achievements", 1))
+    res["notify_payment_reminder"] = bool(raw.get("notify_payment_reminder", 1))
+    res["notify_overdue"] = bool(raw.get("notify_payment_reminder", 1))
+    res["notify_payment_receipt"] = bool(raw.get("notify_payment_receipt", 1))
+    res["notify_welcome"] = bool(raw.get("notify_welcome_group", 1))
+    res["notify_lesson_cancelled"] = bool(raw.get("notify_holiday_cancellation", 1))
+
+    # Templates dict for UI
+    res["templates"] = {
+        "attendance_absent": t_absent,
+        "attendance_late": t_late,
+        "lesson_cancelled": t_holiday,
+        "homework_alert": t_hw,
+        "achievement_notice": t_ach,
+        "payment_reminder": t_pay_rem,
+        "overdue_alert": t_pay_due,
+        "payment_receipt": t_pay_rec,
+        "welcome_message": t_welcome,
+    }
+    return res
+
+
 @app.get("/admin/userbot/settings")
 async def get_admin_userbot_settings(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    settings = get_userbot_settings()
-    # Mask session string for security
-    if settings.get("session_string"):
-        settings["has_session"] = True
-        settings["session_string"] = "******"
-    else:
-        settings["has_session"] = False
-    return settings
+    raw_settings = get_userbot_settings()
+    return _format_userbot_settings_response(raw_settings)
 
 
 @app.post("/admin/userbot/send-code")
@@ -43715,17 +43757,58 @@ async def post_admin_userbot_logout(authorization: str | None = Header(default=N
 
 
 @app.post("/admin/userbot/settings")
-async def post_admin_userbot_settings(req: UserbotSettingsUpdateRequest, authorization: str | None = Header(default=None)):
+async def post_admin_userbot_settings(request: Request, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    kwargs = {k: v for k, v in req.model_dump().items() if v is not None}
-    settings = update_userbot_settings(**kwargs)
-    if settings.get("session_string"):
-        settings["has_session"] = True
-        settings["session_string"] = "******"
-    else:
-        settings["has_session"] = False
-    return settings
+    body = await request.json()
+    db_fields = {}
+
+    toggle_map = {
+        "notify_absent": "notify_attendance_absent",
+        "notify_late": "notify_attendance_late",
+        "notify_homework": "notify_homework_missing",
+        "notify_achievements": "notify_achievements",
+        "notify_payment_reminder": "notify_payment_reminder",
+        "notify_payment_receipt": "notify_payment_receipt",
+        "notify_welcome": "notify_welcome_group",
+        "notify_lesson_cancelled": "notify_holiday_cancellation",
+        "is_enabled": "is_active",
+        "is_active": "is_active",
+    }
+    for fe_key, db_col in toggle_map.items():
+        if fe_key in body and body[fe_key] is not None:
+            db_fields[db_col] = 1 if body[fe_key] else 0
+
+    for col in (
+        "notify_attendance_absent", "notify_attendance_late", "notify_homework_missing",
+        "notify_payment_reminder", "notify_payment_receipt", "notify_welcome_group",
+        "notify_holiday_cancellation", "notify_achievements",
+        "tpl_attendance_absent", "tpl_attendance_late", "tpl_homework_missing",
+        "tpl_payment_reminder", "tpl_payment_overdue", "tpl_payment_receipt",
+        "tpl_welcome_group", "tpl_holiday_cancellation", "tpl_achievement"
+    ):
+        if col in body and body[col] is not None:
+            db_fields[col] = body[col]
+
+    templates = body.get("templates")
+    if isinstance(templates, dict):
+        tpl_map = {
+            "attendance_absent": "tpl_attendance_absent",
+            "attendance_late": "tpl_attendance_late",
+            "lesson_cancelled": "tpl_holiday_cancellation",
+            "homework_alert": "tpl_homework_missing",
+            "achievement_notice": "tpl_achievement",
+            "payment_reminder": "tpl_payment_reminder",
+            "overdue_alert": "tpl_payment_overdue",
+            "payment_receipt": "tpl_payment_receipt",
+            "welcome_message": "tpl_welcome_group",
+        }
+        for fe_key, db_col in tpl_map.items():
+            if fe_key in templates and templates[fe_key] is not None:
+                db_fields[db_col] = str(templates[fe_key])
+
+    raw_settings = update_userbot_settings(db_fields)
+    return _format_userbot_settings_response(raw_settings)
 
 
 @app.post("/admin/userbot/test-send")
