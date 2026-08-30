@@ -622,13 +622,19 @@ def try_diamondvoy_app_version_action(
             target_teacher = True
 
         settings = get_app_version_settings()
+        upd = {}
 
         if target_student:
-            b_num = new_build if new_build is not None else settings["student"]["min_build"]
-            update_app_version_settings("student", min_version=new_ver, min_build=b_num)
+            b_num = new_build if new_build is not None else settings.get("min_student_build", 1)
+            upd["min_student_version"] = new_ver
+            upd["min_student_build"] = b_num
         if target_teacher:
-            b_num = new_build if new_build is not None else settings["teacher"]["min_build"]
-            update_app_version_settings("teacher", min_version=new_ver, min_build=b_num)
+            b_num = new_build if new_build is not None else settings.get("min_teacher_build", 1)
+            upd["min_teacher_version"] = new_ver
+            upd["min_teacher_build"] = b_num
+
+        if upd:
+            update_app_version_settings(upd)
 
         updated = get_app_version_settings()
 
@@ -636,33 +642,33 @@ def try_diamondvoy_app_version_action(
             return (
                 "🚀 <b>Версия мобильного приложения обновлена!</b>\n\n"
                 f"📱 <b>Diamond Students App</b>:\n"
-                f"• Мин. версия: <code>{updated['student']['min_version']}</code>\n"
-                f"• Мин. build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"• Мин. версия: <code>{updated.get('min_student_version')}</code>\n"
+                f"• Мин. build: <code>{updated.get('min_student_build')}</code>\n\n"
                 f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-                f"• Мин. версия: <code>{updated['teacher']['min_version']}</code>\n"
-                f"• Мин. build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                f"• Мин. версия: <code>{updated.get('min_teacher_version')}</code>\n"
+                f"• Мин. build: <code>{updated.get('min_teacher_build')}</code>\n\n"
                 "📌 Все пользователи с версией ниже указанной будут перенаправлены на экран обязательного обновления."
             )
         elif lang == "en":
             return (
                 "🚀 <b>Mobile App Version Updated!</b>\n\n"
                 f"📱 <b>Diamond Students App</b>:\n"
-                f"• Min Version: <code>{updated['student']['min_version']}</code>\n"
-                f"• Min Build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"• Min Version: <code>{updated.get('min_student_version')}</code>\n"
+                f"• Min Build: <code>{updated.get('min_student_build')}</code>\n\n"
                 f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-                f"• Min Version: <code>{updated['teacher']['min_version']}</code>\n"
-                f"• Min Build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                f"• Min Version: <code>{updated.get('min_teacher_version')}</code>\n"
+                f"• Min Build: <code>{updated.get('min_teacher_build')}</code>\n\n"
                 "📌 All users with an older app version will now see the forced update screen."
             )
         else:
             return (
                 "🚀 <b>Mobil ilovalar versiyasi muvaffaqiyatli yangilandi!</b>\n\n"
                 f"📱 <b>Diamond Students App</b>:\n"
-                f"• Minimal versiya: <code>{updated['student']['min_version']}</code>\n"
-                f"• Minimal build: <code>{updated['student']['min_build']}</code>\n\n"
+                f"• Minimal versiya: <code>{updated.get('min_student_version')}</code>\n"
+                f"• Minimal build: <code>{updated.get('min_student_build')}</code>\n\n"
                 f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-                f"• Minimal versiya: <code>{updated['teacher']['min_version']}</code>\n"
-                f"• Minimal build: <code>{updated['teacher']['min_build']}</code>\n\n"
+                f"• Minimal versiya: <code>{updated.get('min_teacher_version')}</code>\n"
+                f"• Minimal build: <code>{updated.get('min_teacher_build')}</code>\n\n"
                 "📌 Endi ushbu versiyadan past bo'lgan barcha ilovalarda majburiy yangilanish ekrani chiqadi."
             )
 
@@ -671,45 +677,45 @@ def try_diamondvoy_app_version_action(
         return (
             "🚀 <b>Текущие настройки версий мобильных приложений</b>:\n\n"
             f"📱 <b>Diamond Students App</b>:\n"
-            f"• Мин. версия: <code>{current['student']['min_version']}</code>\n"
-            f"• Мин. build: <code>{current['student']['min_build']}</code>\n"
-            f"• Play Store: {current['student']['store_url']}\n"
-            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"• Мин. версия: <code>{current.get('min_student_version')}</code>\n"
+            f"• Мин. build: <code>{current.get('min_student_build')}</code>\n"
+            f"• Play Store: {current.get('student_play_store_url')}\n"
+            f"• App Store: {current.get('student_app_store_url')}\n\n"
             f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-            f"• Мин. версия: <code>{current['teacher']['min_version']}</code>\n"
-            f"• Мин. build: <code>{current['teacher']['min_build']}</code>\n"
-            f"• Play Store: {current['teacher']['store_url']}\n"
-            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            f"• Мин. версия: <code>{current.get('min_teacher_version')}</code>\n"
+            f"• Мин. build: <code>{current.get('min_teacher_build')}</code>\n"
+            f"• Play Store: {current.get('teacher_play_store_url')}\n"
+            f"• App Store: {current.get('teacher_app_store_url')}\n\n"
             "💡 <i>Чтобы обновить версию, напишите например: «Student app версию 1.2.0 build 15 сделать»</i>"
         )
     elif lang == "en":
         return (
             "🚀 <b>Current Mobile App Version Settings</b>:\n\n"
             f"📱 <b>Diamond Students App</b>:\n"
-            f"• Min Version: <code>{current['student']['min_version']}</code>\n"
-            f"• Min Build: <code>{current['student']['min_build']}</code>\n"
-            f"• Play Store: {current['student']['store_url']}\n"
-            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"• Min Version: <code>{current.get('min_student_version')}</code>\n"
+            f"• Min Build: <code>{current.get('min_student_build')}</code>\n"
+            f"• Play Store: {current.get('student_play_store_url')}\n"
+            f"• App Store: {current.get('student_app_store_url')}\n\n"
             f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-            f"• Min Version: <code>{current['teacher']['min_version']}</code>\n"
-            f"• Min Build: <code>{current['teacher']['min_build']}</code>\n"
-            f"• Play Store: {current['teacher']['store_url']}\n"
-            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            f"• Min Version: <code>{current.get('min_teacher_version')}</code>\n"
+            f"• Min Build: <code>{current.get('min_teacher_build')}</code>\n"
+            f"• Play Store: {current.get('teacher_play_store_url')}\n"
+            f"• App Store: {current.get('teacher_app_store_url')}\n\n"
             "💡 <i>To update version, write e.g.: 'Set Student app version to 1.2.0 build 15'</i>"
         )
     else:
         return (
             "🚀 <b>Hozirgi Mobil Ilovalar Versiyalari Sozlamalari</b>:\n\n"
             f"📱 <b>Diamond Students App</b>:\n"
-            f"• Minimal versiya: <code>{current['student']['min_version']}</code>\n"
-            f"• Minimal build: <code>{current['student']['min_build']}</code>\n"
-            f"• Google Play: {current['student']['store_url']}\n"
-            f"• App Store: {current['student']['ios_store_url']}\n\n"
+            f"• Minimal versiya: <code>{current.get('min_student_version')}</code>\n"
+            f"• Minimal build: <code>{current.get('min_student_build')}</code>\n"
+            f"• Google Play: {current.get('student_play_store_url')}\n"
+            f"• App Store: {current.get('student_app_store_url')}\n\n"
             f"👨‍🏫 <b>Diamond Teachers App</b>:\n"
-            f"• Minimal versiya: <code>{current['teacher']['min_version']}</code>\n"
-            f"• Minimal build: <code>{current['teacher']['min_build']}</code>\n"
-            f"• Google Play: {current['teacher']['store_url']}\n"
-            f"• App Store: {current['teacher']['ios_store_url']}\n\n"
+            f"• Minimal versiya: <code>{current.get('min_teacher_version')}</code>\n"
+            f"• Minimal build: <code>{current.get('min_teacher_build')}</code>\n"
+            f"• Google Play: {current.get('teacher_play_store_url')}\n"
+            f"• App Store: {current.get('teacher_app_store_url')}\n\n"
             "💡 <i>Versiyani o'zgartirish uchun masalan: 'Student app versiyasini 1.2.0 build 15 qil' deb yozishingiz mumkin.</i>"
         )
 
