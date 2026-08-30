@@ -16859,6 +16859,7 @@ async def startup_event() -> None:
     step = time.perf_counter()
     try:
         ensure_userbot_schema()
+        userbot_manager.set_main_event_loop(asyncio.get_running_loop())
         start_userbot_queue_worker()
         asyncio.create_task(userbot_manager.get_active_pyrogram_client())
     except Exception:
@@ -28689,20 +28690,20 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
             except Exception:
                 voiceroom_info = "Voiceroom holatini aniqlab bo'lmadi"
 
-        prompt = f"""Siz o'qituvchining nihoyatda qattiqqol va talabchan AI inspektorisiz (Ultra-Strict AI Grader & Plagiarism Detector). O'qituvchining o'rniga o'quvchi topshirgan barcha uyga vazifa komponentlarini (esse, rasm dalillar, ovozli xabar, test natijalari, voiceroom) chuqur va shafqatsiz xolislik bilan tekshirasiz.
+        prompt = f"""Siz o'qituvchining nihoyatda qattiqqol, talabchan va xolis AI inspektorisiz (Ultra-Strict AI Grader & Plagiarism Detector). O'qituvchining o'rniga o'quvchi topshirgan barcha uyga vazifa komponentlarini (esse/yozma matn, rasm dalillar, ovozli xabar, test natijalari, voiceroom) SHAFQATSIZ XOLISLIK VA SINCHKOV TEKSHIRING.
 
-VAZIFA MA'LUMOTLARI:
-- Vazifa mavzusi: {title}
-- Topshiriq ko'rsatmasi: {description}
+O'QITUVCHI TARAFIYIDAN BERILGAN TOPSHIRIQ VA KO'RSATMALAR:
+- Topshiriq nomi / mavzusi: {title}
+- Topshiriq ko'rsatmasi (Teacher instructions): {description if description else "(Ko'rsatma yo'q)"}
 - Majburiy talablar:
-  * Yozma esse/javob shartmi: {"HA (MAJBURIY)" if req_essay else "Yo'q"}
-  * Ovozli xabar (voice message) shartmi: {"HA (MAJBURIY)" if req_voice else "Yo'q"}
-  * Rasm/Fayl dalili (proof file) shartmi: {"HA (MAJBURIY)" if req_file else "Yo'q"}
-  * Voiceroom (juftlik so'zlashuvi) shartmi: {"HA (MAJBURIY)" if is_voiceroom else "Yo'q"}
+  * Yozma esse/javob majburiymi: {"HA (MAJBURIY)" if req_essay else "Yo'q"}
+  * Ovozli xabar (voice message) majburiymi: {"HA (MAJBURIY)" if req_voice else "Yo'q"}
+  * Rasm/Fayl dalili (proof file) majburiymi: {"HA (MAJBURIY)" if req_file else "Yo'q"}
+  * Voiceroom (juftlik so'zlashuvi) majburiymi: {"HA (MAJBURIY)" if is_voiceroom else "Yo'q"}
 
-O'QUVCHINING TOPSHIRGAN JAVOBLARI VA FAOLIYATI:
+O'QUVCHINING TOPSHIRGAN JAVOBI VA FAOLIYATI:
 1. Yozma javob / Esse:
-{note if note else "(Yozma javob yuborilmadi)"}
+{note if note else "(Yozma javob topshirilmadi)"}
 
 2. Rasm / Fayl dalillari:
 {"Ha (" + str(len(proof_images)) + " ta rasm/fayl yuborildi)" if proof_images else ("⚠️ MAJBURIY Rasm/Fayl yuborilmadi!" if req_file else "Yuborilmadi")}
@@ -28717,12 +28718,18 @@ O'QUVCHINING TOPSHIRGAN JAVOBLARI VA FAOLIYATI:
 {voiceroom_info}
 
 QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
-1. AI DETEKSIYA (AI DETECTION): Yozilgan esse/matnni diqqat bilan tahlil qiling. Agar matn AI (ChatGPT, Claude, Gemini yoki boshqa AI generatorlar) tomonidan yozilgan deb topilsa (o'ta sun'iy mukammallik, umumiy aylanma jumlalar, shablon strukturasi, o'quvchining shaxsiy imlo/uslubi yo'qligi), "is_ai_generated": true deb belgilang!
-2. AGAR AI MATN DEB TOPILSA ("is_ai_generated": true):
-   - "score": 0, "accepted": false.
-   - "feedback": "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT / AI generator) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima balansingizdan olindi va vazifa rad etildi."
-3. QATTIQQOL GRAMMATIKA VA MANDATORY CHECK: Agar matn inson tomonidan yozilgan bo'lsa ham, imlo xatolar, mavzudan chetga chiqish, juda qisqa javob yoki majburiy talablar bajarilmagan bo'lsa, ballni shafqatsiz pasaytiring (score < 50 => accepted: false).
-4. FAQAT SHU JSON FORMATIDA JAVOB BERING:
+1. MAZMUN VA TOPSHIRIQ KO'RSATMASIGA MOSLIK (CRITICAL): O'quvchi yozgan matnni ({note}) o'qituvchining vazifa ko'rsatmasi ({description}) va mavzusiga ({title}) TAQQOSLANG!
+   - Agar o'quvchi shunchaki ma'nosiz harflar ("asdf", "qqq", "123"), "bajarildi", "ok", "hello" kabi yuzaki o'ta qisqa (<10 so'z) matn, yoki topshiriq mavzusiga umuman aloqasiz matn yuborgan bo'lsa:
+     "score": 0..20, "accepted": false, "is_ai_generated": false, "feedback": "⚠️ Topshiriq matni o'qituvchi bergan ko'rsatmaga javob bermaydi yoki ma'nosiz. Qayta bajaring!"
+2. MAJBURITY TALABLAR YETISHMASLIGI: Agar majburiy rasm, majburiy voice yoki majburiy esse yuborilmagan bo'lsa, "score": 0..40, "accepted": false.
+3. AI MATN DETEKSIYASI (AI PLAGIARISM): Yozilgan esse/matnni diqqat bilan tahlil qiling. Agar matn AI (ChatGPT, Claude, Gemini) tomonidan yozilgan deb topilsa (sun'iy mukammallik, umumiy aylanma jumlalar, shablon uslubi):
+   - "is_ai_generated": true, "score": 0, "accepted": false, "feedback": "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima balansingizdan olindi va vazifa rad etildi."
+4. BAHOLASH SHKALASI:
+   - 90–100%: Mukammal, to'liq va original javob.
+   - 60–89%: Qabul qilinadi (accepted: true), lekin kamchiliklari uchun ball mos ravishda pasaytirilgan.
+   - 0–59%: QAYTA ISHLASH KERAK (accepted: false). Rad etiladi va ball berilmaydi!
+
+FAQAT SHU JSON FORMATIDA JAVOB BERING:
 {{
   "score": 85,
   "accepted": true,
@@ -28731,10 +28738,10 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
 }}
 """
 
-        score = 80
-        accepted = True
+        score = 0
+        accepted = False
         is_ai_generated = False
-        feedback = "Vazifa avtomatik tekshirildi va o'qituvchi nomidan qabul qilindi."
+        feedback = "Vazifa tekshirildi."
         ai_evaluated = False
 
         # Try xAI Grok API first
@@ -28747,7 +28754,7 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                 payload = {
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
+                    "temperature": 0.15,
                     "response_format": {"type": "json_object"},
                 }
                 _xai_apply_payload_tuning(payload, model=model, stream=False)
@@ -28762,10 +28769,10 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                                 if is_ai_generated:
                                     score = 0
                                     accepted = False
-                                    feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima olindi va vazifa rad etildi.").strip()
+                                    feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima olindi va vazifa rad etildi.").strip()
                                 else:
                                     score = max(0, min(100, int(parsed.get("score") or 0)))
-                                    accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 50))
+                                    accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 60))
                                     feedback = str(parsed.get("feedback") or feedback).strip()
                                 ai_evaluated = True
             except Exception as e:
@@ -28779,7 +28786,7 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                     url = f"{GEMINI_ENDPOINT}?key={gemini_key}"
                     g_payload = {
                         "contents": [{"parts": [{"text": prompt + "\nRespond with valid JSON object strictly."}]}],
-                        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"}
+                        "generationConfig": {"temperature": 0.15, "responseMimeType": "application/json"}
                     }
                     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
                         async with session.post(url, json=g_payload) as resp:
@@ -28792,10 +28799,10 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
                                     if is_ai_generated:
                                         score = 0
                                         accepted = False
-                                        feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'coin jarima olindi va vazifa rad etildi.").strip()
+                                        feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima olindi va vazifa rad etildi.").strip()
                                     else:
                                         score = max(0, min(100, int(parsed.get("score") or 0)))
-                                        accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 50))
+                                        accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 60))
                                         feedback = str(parsed.get("feedback") or feedback).strip()
                                     ai_evaluated = True
                 except Exception as e:
@@ -28804,16 +28811,30 @@ QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
         # If both AI APIs were unavailable or failed, calculate deterministic score based on student submissions
         if not ai_evaluated:
             penalties = 0
-            if req_essay and not note: penalties += 30
-            if req_file and not proof_images: penalties += 30
-            if req_voice and not voice_url: penalties += 30
-            if is_voiceroom and "bajarilgan" not in voiceroom_info: penalties += 30
+            note_clean = str(note or "").strip()
+            words_count = len(note_clean.split()) if note_clean else 0
+
+            if req_essay:
+                if not note_clean or words_count < 5:
+                    penalties += 70
+                elif words_count < 15:
+                    penalties += 40
+            elif note_clean and words_count < 3 and not proof_images and not voice_url:
+                penalties += 50
+
+            if req_file and not proof_images:
+                penalties += 40
+            if req_voice and not voice_url:
+                penalties += 40
+            if is_voiceroom and "bajarilgan" not in voiceroom_info:
+                penalties += 40
+
             score = max(0, 100 - penalties)
-            accepted = score >= 50
+            accepted = (score >= 60)
             if accepted:
-                feedback = "Topshiriq barcha talablarga javob beradi va o'qituvchi nomidan avtomatik tasdiqlandi."
+                feedback = f"Topshiriq talablari bajarildi ({score}% ball)."
             else:
-                feedback = "Topshiriqning ba'zi majburiy talablari bajarilmagan (esse, rasm yoki ovozli xabar yetishmaydi)."
+                feedback = f"Topshiriq ko'rsatmasi yoki majburiy talablar yetarlicha bajarilmagan ({score}% ball). Qayta ishlang!"
 
         group_id = int(homework.get("group_id") or 0)
         group = _safe_call(lambda: get_group(group_id), None) if group_id else None

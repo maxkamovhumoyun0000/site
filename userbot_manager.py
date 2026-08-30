@@ -391,6 +391,15 @@ def start_userbot_queue_worker(loop: Optional[asyncio.AbstractEventLoop] = None)
         _worker_task = loop.create_task(_userbot_queue_worker())
 
 
+_main_event_loop: Optional[asyncio.AbstractEventLoop] = None
+
+
+def set_main_event_loop(loop: asyncio.AbstractEventLoop):
+    """Sets main running event loop for threadsafe notification dispatching."""
+    global _main_event_loop
+    _main_event_loop = loop
+
+
 def queue_userbot_notification(phone: str, text: str, event_type: str = "general"):
     """Pushes a notification message to the Userbot dispatch queue."""
     clean_phone = format_phone(phone)
@@ -406,6 +415,14 @@ def queue_userbot_notification(phone: str, text: str, event_type: str = "general
             return
     except RuntimeError:
         pass
+
+    global _main_event_loop
+    if _main_event_loop and _main_event_loop.is_running():
+        try:
+            asyncio.run_coroutine_threadsafe(send_direct_userbot_message(clean_phone, text, event_type), _main_event_loop)
+            return
+        except Exception:
+            pass
 
     try:
         _userbot_queue.put_nowait({
