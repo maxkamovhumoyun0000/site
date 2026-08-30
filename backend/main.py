@@ -307,6 +307,7 @@ from db import (
     update_group_subject,
     update_group_teacher,
     update_group_telegram_url,
+    update_group_lang,
     add_face_sample,
     finalize_face_enrollment_session,
     create_gift,
@@ -1879,6 +1880,7 @@ class GroupUpdateRequest(BaseModel):
     tz: str | None = None
     telegram_group_url: str | None = None
     pricing_type: str | None = None
+    lang: str | None = None
 
 
 class DpointSettingsUpdateRequest(BaseModel):
@@ -13749,6 +13751,7 @@ def _serialize_group_row(row: dict) -> dict:
         "lesson_end": row.get("lesson_end"),
         "student_count": student_count,
         "active": int(row.get("active") or 1) == 1,
+        "lang": str(row.get("lang") or "uz").strip().lower(),
         "telegram_group_url": row.get("telegram_group_url") or None,
         "teacher_instagram_url": teacher.get("instagram_url") if teacher else None,
         "teacher_telegram_url": teacher.get("telegram_url") if teacher else None,
@@ -13918,6 +13921,7 @@ def _serialize_group_rows_bulk(rows: list[dict]) -> list[dict]:
                 "lesson_end": row.get("lesson_end"),
                 "student_count": int(student_count_by_group.get(group_id, 0)),
                 "active": int(row.get("active") or 1) == 1,
+                "lang": str(row.get("lang") or "uz").strip().lower(),
                 "temporary_access": bool(row.get("temporary_access")),
                 "temp_assignment_next_date": row.get("temp_assignment_next_date"),
                 "temp_assignment_start": row.get("temp_assignment_start"),
@@ -29504,6 +29508,8 @@ async def teacher_update_group(group_id: int, payload: GroupUpdateRequest, autho
             payload.lesson_end if payload.lesson_end is not None else group.get("lesson_end"),
             payload.tz if payload.tz is not None else group.get("tz") or "Asia/Tashkent",
         )
+    if payload.lang is not None:
+        update_group_lang(int(group_id), payload.lang)
     refreshed = _safe_call(lambda: get_group(int(group_id)), None)
     if affected_user_ids:
         _payment_prewarm_users_month_async(
@@ -43230,6 +43236,8 @@ async def admin_update_group(group_id: int, payload: GroupUpdateRequest, authori
             payload.lesson_end if payload.lesson_end is not None else group.get("lesson_end"),
             payload.tz if payload.tz is not None else group.get("tz") or "Asia/Tashkent",
         )
+    if payload.lang is not None:
+        update_group_lang(int(group_id), payload.lang)
     refreshed = _safe_call(lambda: get_group(int(group_id)), None)
     if affected_user_ids:
         _payment_prewarm_users_month_async(

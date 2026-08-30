@@ -11223,14 +11223,17 @@ def create_group(
         conn = get_conn()
         cur = conn.cursor()
         group_id = 0
+        effective_lang = str(lang or "uz").strip().lower()
+        if effective_lang not in ("uz", "ru"):
+            effective_lang = "uz"
         try:
             cur.execute(
                 """
                 INSERT INTO groups (
                     name, teacher_id, level, subject, lesson_date, lesson_start, lesson_end, tz, owner_admin_id,
-                    course_id, course_title, monthly_fee_text, telegram_group_url, pricing_type
+                    course_id, course_title, monthly_fee_text, telegram_group_url, pricing_type, lang
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 (
@@ -11248,6 +11251,7 @@ def create_group(
                     str(monthly_fee_text or "").strip() or None,
                     str(telegram_group_url or "").strip() or None,
                     str(pricing_type or "group").strip() or "group",
+                    effective_lang,
                 ),
             )
             row = cur.fetchone()
@@ -11258,9 +11262,9 @@ def create_group(
                 """
                 INSERT INTO groups (
                     name, teacher_id, level, subject, lesson_date, lesson_start, lesson_end, tz, owner_admin_id,
-                    course_id, course_title, monthly_fee_text, telegram_group_url, pricing_type
+                    course_id, course_title, monthly_fee_text, telegram_group_url, pricing_type, lang
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name,
@@ -11277,6 +11281,7 @@ def create_group(
                     str(monthly_fee_text or "").strip() or None,
                     str(telegram_group_url or "").strip() or None,
                     str(pricing_type or "group").strip() or "group",
+                    effective_lang,
                 ),
             )
             group_id = int(getattr(cur, "lastrowid", 0) or 0)
@@ -12149,6 +12154,19 @@ def update_group_telegram_url(group_id: int, telegram_group_url: str | None):
         cur.execute("UPDATE groups SET telegram_group_url=? WHERE id=?", (telegram_group_url, group_id))
         conn.commit()
         conn.close()
+
+
+def update_group_lang(group_id: int, lang: str | None):
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        val = str(lang or "uz").strip().lower()
+        if val not in ("uz", "ru"):
+            val = "uz"
+        cur.execute("UPDATE groups SET lang=? WHERE id=?", (val, group_id))
+        conn.commit()
+        conn.close()
+
 
 
 def delete_group(group_id: int):
