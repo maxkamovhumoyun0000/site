@@ -16353,7 +16353,7 @@ function AdminSection({
   }
 
   if (section === "userbot") {
-    return <AdminUserbot />;
+    return <AdminUserbot apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
   }
 
   if (section === "admin-callbacks") {

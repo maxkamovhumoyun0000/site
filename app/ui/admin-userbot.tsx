@@ -205,7 +205,11 @@ const TEMPLATE_META: Record<
   },
 };
 
-export default function AdminUserbot() {
+interface AdminUserbotProps {
+  apiFetch?: (path: string, options?: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: any }) => Promise<any>;
+}
+
+export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
   const [settings, setSettings] = useState<UserbotSettings | null>(null);
   const [logs, setLogs] = useState<UserbotLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -237,11 +241,38 @@ export default function AdminUserbot() {
     };
   };
 
+  const doFetch = async (endpoint: string, options?: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: any }) => {
+    if (apiFetch) {
+      return await apiFetch(endpoint, options);
+    }
+    const apiPath = endpoint.startsWith("/api") ? endpoint : `/api${endpoint}`;
+    const res = await fetch(apiPath, {
+      method: options?.method || "GET",
+      headers: getHeaders(),
+      ...(options?.body ? { body: JSON.stringify(options.body) } : {}),
+    });
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const parsed = JSON.parse(text);
+        detail = parsed?.detail || parsed?.message || text;
+      } catch {
+        detail = text;
+      }
+      throw new Error(detail || `HTTP Error ${res.status}`);
+    }
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error("Serverdan noto'g'ri javob keldi (JSON emas)");
+    }
+  };
+
   const fetchSettings = async () => {
     try {
-      const res = await fetch("/admin/userbot/settings", { headers: getHeaders() });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await doFetch("/admin/userbot/settings");
+      if (data) {
         setSettings(data);
       }
     } catch (e) {
@@ -253,9 +284,8 @@ export default function AdminUserbot() {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch("/admin/userbot/logs?limit=50", { headers: getHeaders() });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await doFetch("/admin/userbot/logs?limit=50");
+      if (data?.logs) {
         setLogs(data.logs || []);
       }
     } catch (e) {
@@ -291,21 +321,17 @@ export default function AdminUserbot() {
     if (!settings) return;
     setSaving(true);
     try {
-      const res = await fetch("/admin/userbot/settings", {
+      const data = await doFetch("/admin/userbot/settings", {
         method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify(settings),
+        body: settings,
       });
-      if (res.ok) {
-        const data = await res.json();
+      if (data) {
         setSettings(data);
         alert("Sozlamalar va shablonlar muvaffaqiyatli saqlandi!");
-      } else {
-        alert("Xatolik yuz berdi");
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
-      alert("Saqlashda xatolik");
+      alert(e.message || "Saqlashda xatolik");
     } finally {
       setSaving(false);
     }
@@ -319,17 +345,15 @@ export default function AdminUserbot() {
     setLoginLoading(true);
     setLoginError("");
     try {
-      const res = await fetch("/admin/userbot/send-code", {
+      const data = await doFetch("/admin/userbot/send-code", {
         method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify({ phone_number: phoneInput.trim() }),
+        body: { phone_number: phoneInput.trim() },
       });
-      const data = await res.json();
-      if (res.ok) {
+      if (data?.phone_code_hash) {
         setPhoneCodeHash(data.phone_code_hash);
         setLoginStep("code");
       } else {
-        setLoginError(data.detail || "SMS kod yuborishda xatolik");
+        setLoginError(data?.detail || "SMS kod yuborishda xatolik");
       }
     } catch (e: any) {
       setLoginError(e.message || "Ulanish xatosi");
@@ -346,23 +370,21 @@ export default function AdminUserbot() {
     setLoginLoading(true);
     setLoginError("");
     try {
-      const res = await fetch("/admin/userbot/verify-code", {
+      const data = await doFetch("/admin/userbot/verify-code", {
         method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify({
+        body: {
           phone_number: phoneInput.trim(),
           phone_code_hash: phoneCodeHash,
           phone_code: codeInput.trim(),
           password: passwordInput.trim() || undefined,
-        }),
+        },
       });
-      const data = await res.json();
-      if (res.ok) {
+      if (data?.success) {
         setLoginModalOpen(false);
         fetchSettings();
         alert("Telegram Userbot akkaunti muvaffaqiyatli ulandi! ✅");
       } else {
-        setLoginError(data.detail || "Kodni tasdiqlashda xatolik");
+        setLoginError(data?.detail || "Kodni tasdiqlashda xatolik");
       }
     } catch (e: any) {
       setLoginError(e.message || "Xatolik yuz berdi");
@@ -374,13 +396,8 @@ export default function AdminUserbot() {
   const handleLogout = async () => {
     if (!confirm("Haqiqatan ham Userbot akkauntini uzmoqchimisiz?")) return;
     try {
-      const res = await fetch("/admin/userbot/logout", {
-        method: "POST",
-        headers: getHeaders(),
-      });
-      if (res.ok) {
-        fetchSettings();
-      }
+      await doFetch("/admin/userbot/logout", { method: "POST" });
+      fetchSettings();
     } catch (e) {
       console.error(e);
     }
@@ -391,23 +408,21 @@ export default function AdminUserbot() {
     setTestSending(true);
     setTestStatus("");
     try {
-      const res = await fetch("/admin/userbot/test-send", {
+      const data = await doFetch("/admin/userbot/test-send", {
         method: "POST",
-        headers: getHeaders(),
-        body: JSON.stringify({
+        body: {
           phone_number: testPhone.trim(),
           message: testMessage.trim(),
-        }),
+        },
       });
-      const data = await res.json();
-      if (res.ok) {
+      if (data?.success) {
         setTestStatus("✅ Xabar muvaffaqiyatli navbatga qo'shildi!");
         setTimeout(() => {
           setTestModalOpen(false);
           fetchLogs();
         }, 1500);
       } else {
-        setTestStatus(`❌ Xatolik: ${data.detail}`);
+        setTestStatus(`❌ Xatolik: ${data?.detail || "Yuborib bo'lmadi"}`);
       }
     } catch (e: any) {
       setTestStatus(`❌ Xatolik: ${e.message}`);

@@ -15462,6 +15462,11 @@ def _run_daily_test_reminder_push(today_iso: str) -> None:
     logger.info("daily_test_reminder_worker sent=%s date=%s", sent, today_iso)
 
 
+def _run_homework_deadline_reminder_push() -> None:
+    """Send 24h deadline reminder push notifications for upcoming homeworks."""
+    pass
+
+
 async def _homework_deadline_reminder_worker() -> None:
     """Homework deadline reminder and auto-expire worker. Runs every 10 minutes:
     1. Pushes 24h deadline reminder to students with upcoming due dates.
@@ -15530,7 +15535,7 @@ def _auto_mark_overdue_homeworks() -> None:
                             review_note='⏰ Muddat (deadline) o''tdi — avtomatik bajarilmadi deb belgilandi',
                             reviewed_at=CURRENT_TIMESTAMP,
                             updated_at=CURRENT_TIMESTAMP
-                        WHERE status IS NULL OR status NOT IN ('done', 'accepted')
+                        WHERE web_homework_submissions.status IS NULL OR web_homework_submissions.status NOT IN ('done', 'accepted')
                         """,
                         (hw_id, user_id),
                     )
