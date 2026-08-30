@@ -28112,6 +28112,16 @@ def _apply_homework_deadline_penalties(rows: list[dict[str, Any]]) -> bool:
                 subject=(_user_subjects_from_row(student) or ["GLOBAL"])[0],
                 change_type=f"homework_deadline_missed:{homework_id}",
             )
+            try:
+                group_id = int(row.get("group_id") or 0)
+                userbot_manager.handle_userbot_homework_missing_event(
+                    student_id=student_id,
+                    group_id=group_id if group_id > 0 else None,
+                    reason="Vazifa muddati o'tdi va topshirilmadi",
+                    score=f"{penalty:g}",
+                )
+            except Exception:
+                logger.exception("userbot homework deadline missing event failed")
             applied_any = True
         except Exception:
             logger.exception("homework deadline penalty failed homework_id=%s student_id=%s", homework_id, student_id)
@@ -43639,6 +43649,15 @@ async def admin_mark_attendance(payload: AttendanceMarkRequest, authorization: s
         lesson_date=str(payload.date),
         reason="admin_attendance_mark",
     )
+    try:
+        userbot_manager.handle_userbot_attendance_event(
+            user_id=int(payload.user_id),
+            group_id=int(payload.group_id),
+            lesson_date=str(payload.date),
+            status=status,
+        )
+    except Exception:
+        logger.exception("admin attendance mark userbot trigger failed")
     return {
         "message": "Attendance marked",
         "status": status,

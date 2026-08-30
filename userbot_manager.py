@@ -205,6 +205,84 @@ async def verify_userbot_otp_code(phone_number: str, code: str, password: Option
         return {"ok": False, "error": f"Tasdiqlashda xatolik: {str(exc)}"}
 
 
+def extract_all_phones(raw_input: Any) -> list[str]:
+    """Extracts clean E.164 formatted phone numbers (+998...) from raw input text."""
+    if not raw_input:
+        return []
+    text = str(raw_input).strip()
+    if not text:
+        return []
+
+    parts = re.split(r"[,;/|\n\t]+", text)
+    cleaned_phones: list[str] = []
+    for part in parts:
+        part_str = part.strip()
+        if not part_str:
+            continue
+        formatted = format_phone(part_str)
+        if formatted and len(re.sub(r"\D", "", formatted)) >= 9 and formatted not in cleaned_phones:
+            cleaned_phones.append(formatted)
+    return cleaned_phones
+
+
+def get_target_phones_for_user(user: dict) -> list[str]:
+    """
+    Returns all parent phone numbers for a student user.
+    Lookup hierarchy:
+    1. Parent phone(s) listed in user['parent_phone']
+    2. Parent accounts (login_type=6 or role=parent) linked via family_group_id
+    3. Fallback to student's own phone if no parent phone exists
+    """
+    if not user:
+        return []
+
+    target_phones: list[str] = []
+
+    # 1. Parent phone column on student user
+    raw_parent_phone = user.get("parent_phone")
+    if raw_parent_phone:
+        for p in extract_all_phones(raw_parent_phone):
+            if p not in target_phones:
+                target_phones.append(p)
+
+    # 2. Check linked parent users in same family_group_id if present
+    family_group_id = user.get("family_group_id")
+    if family_group_id and int(family_group_id) > 0:
+        try:
+            from db import get_conn, _row_to_dict
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT phone, parent_phone FROM users WHERE family_group_id=? AND id!=?",
+                (int(family_group_id), int(user.get("id") or 0))
+            )
+            rows = [_row_to_dict(r) for r in (cur.fetchall() or [])]
+            conn.close()
+            for r in rows:
+                p_phone = r.get("phone")
+                if p_phone:
+                    for p in extract_all_phones(p_phone):
+                        if p not in target_phones:
+                            target_phones.append(p)
+                p_parent_phone = r.get("parent_phone")
+                if p_parent_phone:
+                    for p in extract_all_phones(p_parent_phone):
+                        if p not in target_phones:
+                            target_phones.append(p)
+        except Exception as exc:
+            logger.exception("Failed to fetch family_group_id phones: %s", exc)
+
+    # 3. Fallback to student's own phone if no parent phone was found
+    if not target_phones:
+        user_phone = user.get("phone")
+        if user_phone:
+            for p in extract_all_phones(user_phone):
+                if p not in target_phones:
+                    target_phones.append(p)
+
+    return target_phones
+
+
 async def send_direct_userbot_message(phone_number: str, message_text: str, event_type: str = "general") -> Dict[str, Any]:
     """Resolves phone number to Telegram contact and sends direct message."""
     client = await get_active_pyrogram_client()
@@ -220,21 +298,39 @@ async def send_direct_userbot_message(phone_number: str, message_text: str, even
     if cached and cached.get("telegram_user_id"):
         tg_user_id = int(cached["telegram_user_id"])
 
-    try:
-        if not tg_user_id:
-            # Import contact to resolve user_id
-            contacts = await client.import_contacts([InputPhoneContact(phone, "Parent")])
-            if contacts and contacts.users:
-                user = contacts.users[0]
-                tg_user_id = user.id
-                cache_userbot_contact(phone, user.id, user.first_name, user.last_name)
-            else:
-                log_userbot_message(phone, None, event_type, message_text, "failed", "Telegram foydalanuvchisi topilmadi yoki maxfiylik sozlamalari yopiq")
-                return {"ok": False, "error": "Foydalanuvchi Telegramdan topilmadi."}
+    # Attempt sending to cached tg_user_id first
+    if tg_user_id:
+        try:
+            await client.send_message(tg_user_id, message_text)
+            log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
+            return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
+        except Exception as exc:
+            logger.info("Sending to cached tg_user_id %s failed for %s (%s). Re-resolving contact...", tg_user_id, phone, exc)
+            tg_user_id = None
 
-        await client.send_message(tg_user_id, message_text)
-        log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
-        return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
+    # Resolve contact via Pyrogram import_contacts
+    try:
+        contacts = await client.import_contacts([InputPhoneContact(phone, "Parent", "Contact")])
+        if contacts and getattr(contacts, "users", None):
+            user = contacts.users[0]
+            tg_user_id = user.id
+            cache_userbot_contact(phone, user.id, getattr(user, "first_name", None), getattr(user, "last_name", None))
+            await client.send_message(tg_user_id, message_text)
+            log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
+            return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
+        else:
+            # Fallback direct send attempt to phone number string
+            try:
+                msg = await client.send_message(phone, message_text)
+                if msg and getattr(msg, "chat", None):
+                    cache_userbot_contact(phone, msg.chat.id, getattr(msg.chat, "first_name", None), getattr(msg.chat, "last_name", None))
+                    log_userbot_message(phone, msg.chat.id, event_type, message_text, "sent")
+                    return {"ok": True, "phone": phone, "telegram_user_id": msg.chat.id}
+            except Exception:
+                pass
+
+            log_userbot_message(phone, None, event_type, message_text, "failed", "Telegram foydalanuvchisi topilmadi yoki maxfiylik sozlamalari yopiq")
+            return {"ok": False, "error": "Foydalanuvchi Telegramdan topilmadi."}
     except FloodWait as exc:
         wait_seconds = exc.value
         logger.warning("Userbot FloodWait: waiting %s seconds", wait_seconds)
@@ -372,8 +468,8 @@ def handle_userbot_attendance_event(user_id: int, group_id: int, lesson_date: st
             return
         group = get_group(int(group_id)) or {}
 
-        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
-        if not target_phone:
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
             return
 
         student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
@@ -401,7 +497,8 @@ def handle_userbot_attendance_event(user_id: int, group_id: int, lesson_date: st
 
         msg_text = render_userbot_template(tpl_key, ctx)
         if msg_text:
-            queue_userbot_notification(target_phone, msg_text, event_type=f"attendance_{st}")
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type=f"attendance_{st}")
     except Exception as exc:
         logger.exception("handle_userbot_attendance_event failed: %s", exc)
 
@@ -415,8 +512,8 @@ def handle_userbot_group_join_event(student_id: int, group_id: int):
             return
         group = get_group(int(group_id)) or {}
 
-        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
-        if not target_phone:
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
             return
 
         student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
@@ -435,7 +532,8 @@ def handle_userbot_group_join_event(student_id: int, group_id: int):
         }
         msg_text = render_userbot_template("welcome_group", ctx)
         if msg_text:
-            queue_userbot_notification(target_phone, msg_text, event_type="welcome_group")
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type="welcome_group")
     except Exception as exc:
         logger.exception("handle_userbot_group_join_event failed: %s", exc)
 
@@ -449,8 +547,8 @@ def handle_userbot_payment_received_event(student_id: int, amount: float | int, 
             return
         group = get_group(int(group_id)) if group_id else {}
 
-        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
-        if not target_phone:
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
             return
 
         student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
@@ -466,7 +564,8 @@ def handle_userbot_payment_received_event(student_id: int, amount: float | int, 
         }
         msg_text = render_userbot_template("payment_receipt", ctx)
         if msg_text:
-            queue_userbot_notification(target_phone, msg_text, event_type="payment_receipt")
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type="payment_receipt")
     except Exception as exc:
         logger.exception("handle_userbot_payment_received_event failed: %s", exc)
 
@@ -491,20 +590,21 @@ def handle_userbot_holiday_event(group_ids: list[int] | None, date_str: str, rea
 
         seen_phones = set()
         for user, gname in students:
-            target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
-            if not target_phone or target_phone in seen_phones:
-                continue
-            seen_phones.add(target_phone)
-            student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
-            ctx = {
-                "student_name": student_name,
-                "group_name": gname,
-                "date": date_str,
-                "reason": reason or "Dam olish kuni",
-            }
-            msg_text = render_userbot_template("holiday_cancellation", ctx)
-            if msg_text:
-                queue_userbot_notification(target_phone, msg_text, event_type="holiday_cancellation")
+            target_phones = get_target_phones_for_user(user)
+            for target_phone in target_phones:
+                if not target_phone or target_phone in seen_phones:
+                    continue
+                seen_phones.add(target_phone)
+                student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
+                ctx = {
+                    "student_name": student_name,
+                    "group_name": gname,
+                    "date": date_str,
+                    "reason": reason or "Dam olish kuni",
+                }
+                msg_text = render_userbot_template("holiday_cancellation", ctx)
+                if msg_text:
+                    queue_userbot_notification(target_phone, msg_text, event_type="holiday_cancellation")
     except Exception as exc:
         logger.exception("handle_userbot_holiday_event failed: %s", exc)
 
@@ -518,8 +618,8 @@ def handle_userbot_homework_missing_event(student_id: int, group_id: int | None 
             return
         group = get_group(int(group_id)) if group_id else {}
 
-        target_phone = str(user.get("parent_phone") or user.get("phone") or "").strip()
-        if not target_phone:
+        target_phones = get_target_phones_for_user(user)
+        if not target_phones:
             return
 
         student_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip() or "O'quvchi"
@@ -533,7 +633,8 @@ def handle_userbot_homework_missing_event(student_id: int, group_id: int | None 
         }
         msg_text = render_userbot_template("homework_missing", ctx)
         if msg_text:
-            queue_userbot_notification(target_phone, msg_text, event_type="homework_missing")
+            for phone in target_phones:
+                queue_userbot_notification(phone, msg_text, event_type="homework_missing")
     except Exception as exc:
         logger.exception("handle_userbot_homework_missing_event failed: %s", exc)
 
