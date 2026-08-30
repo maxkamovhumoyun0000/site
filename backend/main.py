@@ -19086,9 +19086,9 @@ async def _diamondvoy_stream_events(
     if user_text:
         _safe_call(lambda: _diamondvoy_upsert_user_style(user_id, user_text, query_lang), None)
 
-    if not regenerate and role in {"teacher", "support", "admin"}:
+    if not regenerate and role in {"teacher", "support"}:
         norm = user_text.strip().lower()
-        if re.search(r"(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish|vazifa yaratish)", norm):
+        if re.search(r"^(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish)", norm):
             async def fast_wizard_stream():
                 current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
                 assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "homework"})
@@ -19097,10 +19097,10 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_wizard_stream(), media_type="text/event-stream")
 
-    if not regenerate and role in {"admin", "teacher"}:
+    if not regenerate and role == "admin":
         norm = user_text.strip().lower()
         if re.search(
-            r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx|student.*ro|o.quvchi.*ro|ro.yxat|royhat|excel|word|docx)",
+            r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx)",
             norm,
         ):
             async def fast_add_students_stream():
@@ -19110,6 +19110,18 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("delta", {"delta": "", "content": assistant_text})
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_add_students_stream(), media_type="text/event-stream")
+
+        if re.search(
+            r"(mobil.*versiya|app.*version|force.*update|versiya.*boshqar|versiya.*sozlam|app.*versiya|versiyalarni.*boshqarish)",
+            norm,
+        ):
+            async def fast_app_version_stream():
+                current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
+                assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "app_version"})
+                _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+                yield _sse_pack("delta", {"delta": "", "content": assistant_text})
+                yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
+            return StreamingResponse(fast_app_version_stream(), media_type="text/event-stream")
 
     async def event_stream():
         current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
