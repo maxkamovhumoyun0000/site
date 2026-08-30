@@ -300,6 +300,19 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     }
   };
 
+  const fetchLogs = async () => {
+    try {
+      const data = await doFetch("/api/admin/userbot/logs");
+      if (Array.isArray(data?.logs)) {
+        setLogs(data.logs);
+      } else if (Array.isArray(data)) {
+        setLogs(data);
+      }
+    } catch (e) {
+      console.error("Failed to fetch userbot logs", e);
+    }
+  };
+
   const fetchVersionSettings = async () => {
     try {
       const data = await doFetch("/api/admin/app-version-settings");
