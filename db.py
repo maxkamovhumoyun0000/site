@@ -24262,12 +24262,12 @@ DEFAULT_USERBOT_TEMPLATES = {
     "tpl_attendance_absent": (
         "⚠️ **DARSGA KELMADI / OTСУТСТВИЕ НА УРОКЕ**\n\n"
         "Hurmatli ota-ona!\n"
-        "Farzandingiz **{student_name}** bugun (**{date}**) **{group_name}** guruhidagi darsga kelmadi.\n"
-        "Iltimos, darsni o'tkazib yuborganlik sababini ma'lum qilishingizni yoki o'quv markazimiz bilan bog'lanishingizni so'raymiz. 📞\n\n"
+        "Farzandingiz **{student_name}** bugun (**{date}**) **{group_name}** guruhidagi darsga kelmadi.\n\n"
+        "Har bir dars farzandingiz kelajagi uchun muhim qadamdir. Muqaddas darsni qoldirish kichik e'tiborsizlik bo'lmasligini va farzandingiz ta'limiga birgalikda mas'uliyat bilan yondashishimizni so'raymiz. 📖✨\n\n"
         "— — — — — — — — — — — — — — —\n"
         "Уважаемые родители!\n"
-        "Ваш ребёнок **{student_name}** сегодня (**{date}**) не пришёл(шла) на занятие в группе **{group_name}**.\n"
-        "Пожалуйста, сообщите причину отсутствия или свяжитесь с нашим учебным центром. 📞"
+        "Ваш ребёнок **{student_name}** сегодня (**{date}**) не пришёл(шла) на занятие в группе **{group_name}**.\n\n"
+        "Каждый урок — это важный шаг к будущему вашего ребёнка. Пропуск занятия не должен оставаться без внимания, ведь образование наших детей — это наш общий главный приоритет. 📖✨"
     ),
     "tpl_attendance_late": (
         "⏰ **DARSGA KECHIKDI / ОПОЗДАНИЕ НА УРОК**\n\n"
@@ -24558,11 +24558,11 @@ def get_userbot_settings() -> dict:
             )
             conn.commit()
         if row:
-            # Refresh defaults to bilingual Uzbek + Russian if templates are single-line/old
+            # Refresh defaults to bilingual Uzbek + Russian if templates are single-line/old or contain call requests
             updated_any = False
             for k, v in DEFAULT_USERBOT_TEMPLATES.items():
                 val = str(row.get(k) or "").strip()
-                if not val or "\n" not in val:
+                if not val or "\n" not in val or (k == "tpl_attendance_absent" and ("bog'lanishingizni" in val or "сообщите причину" in val)):
                     cur.execute(f"UPDATE userbot_settings SET {k}=? WHERE id=1", (v,))
                     row[k] = v
                     updated_any = True
