@@ -6,7 +6,7 @@ import { SectionTitle } from "./primitives";
 
 export function AdminCompetitions() {
   const tt = useWebT();
-  const [mode, setMode] = useState("arena-group");
+  const [mode, setMode] = useState("arena-boss");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -67,14 +67,12 @@ export function AdminCompetitions() {
       <SectionTitle
         kicker="Natijalar"
         title="Musobaqalar Tarixi"
-        subtitle="Barcha guruh arenalari, daily arenalar va duellar natijalarini kuzatib boring."
+        subtitle="Boss Arena va duellar natijalarini kuzatib boring."
       />
 
       {/* TABS */}
       <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
         {[
-          { id: "arena-group", label: "Group Arena" },
-          { id: "arena-daily", label: "Daily Arena" },
           { id: "arena-boss", label: "Boss Arena" },
           { id: "duel", label: "Duellar" }
         ].map(m => (

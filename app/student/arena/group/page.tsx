@@ -1,9 +1,5 @@
-import { StudentCompetitionRedirect } from "../../competition-redirect";
+import { redirect } from "next/navigation";
 
-export default function StudentGroupArenaPage({
-  searchParams,
-}: {
-  searchParams?: Record<string, string | string[] | undefined>;
-}) {
-  return <StudentCompetitionRedirect section="arena-group" arenaMode="arena-group" searchParams={searchParams} />;
+export default function StudentGroupArenaPage() {
+  redirect("/?role=student&section=arena");
 }

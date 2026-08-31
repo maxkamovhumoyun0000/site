@@ -1,7 +1,5 @@
-"use client";
-
-import { StudentCompetitionRuntimePage } from "../../../test-views";
+import { redirect } from "next/navigation";
 
 export default function StudentGroupArenaRunPage() {
-  return <StudentCompetitionRuntimePage mode="group" />;
+  redirect("/?role=student&section=arena");
 }

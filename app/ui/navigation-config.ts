@@ -44,8 +44,6 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "gamified",
     "vocabulary-process",
     "arena",
-    "arena-daily",
-    "arena-group",
     "arena-boss",
     "duel-1v1",
     "duel-3v3",
@@ -61,7 +59,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "notes",
     "profile",
   ],
-  teacher: ["home", "chats", "groups", "substitutions", "attendance", "arena", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  teacher: ["home", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
   support: ["home", "chats", "bookings", "calendar", "attendance", "homework", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
@@ -69,13 +67,15 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
 export const HIDDEN_SECTION_IDS = new Set([
   "daily-test-process",
   "vocabulary-process",
-  "arena-daily",
-  "arena-group",
   "arena-boss",
   "duel-1v1",
   "duel-3v3",
   "duel-5v5",
 ]);
+
+// Daily and teacher-run group arenas are retired. This protects against a
+// stale section list returned by an older client or backend response.
+export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "arena"]);
 
 export const SECTION_ALIAS: Record<string, string> = {
   dashboard: "home",
@@ -85,8 +85,6 @@ export const SECTION_ALIAS: Record<string, string> = {
   "gamified-tests": "gamified",
   "vocabulary-process": "vocabulary-process",
   learn: "grammar",
-  "daily-arena": "arena-daily",
-  "group-arena": "arena-group",
   "boss-arena": "arena-boss",
   duel1v1: "duel-1v1",
   duel3v3: "duel-3v3",
@@ -113,8 +111,6 @@ export const SECTION_LABELS: Record<string, string> = {
   gamified: "Gamified Testlar",
   "vocabulary-process": "Lug'at Test Jarayoni",
   arena: "Arena va Duel",
-  "arena-daily": "Daily Arena",
-  "arena-group": "Group Arena",
   "arena-boss": "Boss Arena",
   "duel-1v1": "Duel 1v1",
   "duel-3v3": "Duel 3v3",

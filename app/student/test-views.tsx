@@ -739,11 +739,7 @@ function supportsTelegramBackButton(webApp: any): boolean {
 function competitionRuntimePath(modeOrSection: string, options?: { subject?: string; autoJoin?: boolean }) {
   const normalized = String(modeOrSection || "").trim().toLowerCase();
   const map: Record<string, { path: string; arenaMode: string }> = {
-    daily: { path: "/student/arena/daily/run", arenaMode: "arena-daily" },
-    group: { path: "/student/arena/group/run", arenaMode: "arena-group" },
     boss: { path: "/student/arena/boss/run", arenaMode: "arena-boss" },
-    "arena-daily": { path: "/student/arena/daily/run", arenaMode: "arena-daily" },
-    "arena-group": { path: "/student/arena/group/run", arenaMode: "arena-group" },
     "arena-boss": { path: "/student/arena/boss/run", arenaMode: "arena-boss" },
     "duel-1v1": { path: "/student/duel/1v1/run", arenaMode: "duel-1v1" },
     "duel-3v3": { path: "/student/duel/3v3/run", arenaMode: "duel-3v3" },
@@ -3709,8 +3705,6 @@ export function StudentArena({
     <div className="flex flex-col gap-4 pb-12 animate-fade-in">
       <section className="grid grid-cols-2 gap-3 sm:gap-4 arena-duel-grid">
         {[
-          { id: "arena-daily", title: tt("arena.daily.title", "Daily Arena"), description: tt("arena.daily.subtitle", "Kamida 10 o'quvchi, 5 bosqich va final 4 uchun arena."), icon: "⚔️" },
-          { id: "arena-group", title: tt("arena.group.title", "Group Arena"), description: tt("arena.group.subtitle", "O'qituvchi boshlagan guruh arenasi. Faqat Keldi o'quvchilar qatnashadi."), icon: "🛡️" },
           { id: "arena-boss", title: tt("arena.boss.title", "Boss Arena"), description: tt("arena.boss.subtitle", "Kamida 5 o'quvchi, 15 qiyin savol."), icon: "👹" },
           { id: "duel-1v1", title: tt("duel.duel-1v1.title", "Duel 1v1"), description: tt("duel.duel-1v1.subtitle", "Fan bo'yicha 1 ga 1 duel. Level faqat ma'lumot uchun ko'rsatiladi."), icon: "🤺" },
           { id: "duel-3v3", title: tt("duel.duel-3v3.title", "Duel 3v3"), description: tt("duel.duel-3v3.subtitle", "Fan bo'yicha 6 o'quvchilik jamoaviy duel. Level faqat ma'lumot uchun ko'rsatiladi."), icon: "👥" },
@@ -3751,29 +3745,6 @@ export function StudentArena({
         </div>
         <div className="p-5 sm:p-8 grid gap-6 sm:grid-cols-2">
           <div className="space-y-4">
-            <div>
-              <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2 mb-2">
-                <span className="w-6 h-6 rounded-lg bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 flex items-center justify-center">⚔️</span>
-                {tt("arena.rules.daily.title", "Daily Arena qoidalari")}
-              </h3>
-              <ul className="text-sm text-ink-600 dark:text-navy-200 space-y-1.5 list-disc pl-5 marker:text-cyan-500">
-                <li>{tt("arena.rules.dailyNoStartBelowMin", "Daily Arena 10 tadan kam qatnashchi bilan boshlanmaydi.")}</li>
-                <li>{tt("arena.rules.stages", "Bosqichlar")}: 5. {tt("arena.rules.elimination", "Studentlar bosqichma-bosqich chiqariladi.")}</li>
-                <li>{tt("arena.rules.finalFour", "Final bosqichida faqat 4 student qoladi.")}</li>
-                <li>{tt("arena.rules.harderEachStage", "Har bosqichda yangi va qiyinroq savollar beriladi.")}</li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2 mb-2">
-                <span className="w-6 h-6 rounded-lg bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 flex items-center justify-center">🛡️</span>
-                {tt("arena.rules.group.title", "Group Arena qoidalari")}
-              </h3>
-              <ul className="text-sm text-ink-600 dark:text-navy-200 space-y-1.5 list-disc pl-5 marker:text-cyan-500">
-                <li>{tt("arena.rules.groupOnly", "Faqat tanlangan guruh studentlari qatnashadi.")}</li>
-                <li>{tt("arena.rules.presentOnly", "Faqat davomatda 'Keldi' bo'lgan studentlar kira oladi.")}</li>
-                <li>{tt("arena.rules.lessonTimeOnly", "Teacher Group Arenani faqat dars vaqtida boshlaydi.")}</li>
-              </ul>
-            </div>
             <div>
               <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2 mb-2">
                 <span className="w-6 h-6 rounded-lg bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 flex items-center justify-center">👹</span>

@@ -9,6 +9,7 @@ import {
   HIDDEN_SECTION_IDS,
   LESSON_DAY_OPTIONS,
   LESSON_TIME_OPTIONS,
+  RETIRED_SECTION_IDS,
   SECTION_ALIAS,
   SECTION_LABELS,
   SUBJECT_OPTIONS,
@@ -345,6 +346,12 @@ const GENERATOR_JOB_STORAGE_KEY = "diamond_active_generator_job";
 const GENERATOR_JOB_POLL_MS = 1200;
 const GENERATOR_JOB_ACTIVE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
 const GENERATOR_JOB_DONE_MAX_AGE_MS = 15 * 60 * 1000;
+const RETIRED_ARENA_NOTIFICATION_TYPES = new Set([
+  "arena_daily",
+  "daily_arena_prestart",
+  "group_arena_started",
+  "group_arena_questions_ready",
+]);
 type GeneratorJobKind = "vocabulary" | "daily-tests" | "arena" | "bulk";
 type GeneratorJobSnapshot = {
   job_id: string;
@@ -410,6 +417,10 @@ function readGeneratorJobSnapshot(): GeneratorJobSnapshot | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as GeneratorJobSnapshot;
     if (!parsed || typeof parsed !== "object" || !parsed.job_id) return null;
+    if (parsed.kind === "arena") {
+      writeGeneratorJobSnapshot(null);
+      return null;
+    }
     if (isGeneratorJobSnapshotExpired(parsed)) {
       writeGeneratorJobSnapshot(null);
       return null;
@@ -783,8 +794,6 @@ function withStudentRuntimeSections(role: Role, sections: string[]) {
   const runtimeSections = [
     "daily-test-process",
     "vocabulary-process",
-    "arena-daily",
-    "arena-group",
     "arena-boss",
     "duel-1v1",
     "duel-3v3",
@@ -830,7 +839,7 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
         const studentExclusions = new Set([
           "daily-test", "daily-test-process", "gamified",
           "vocabulary", "vocabulary-process",
-          "arena", "arena-daily", "arena-group", "arena-boss",
+          "arena", "arena-boss",
           "duel-1v1", "duel-3v3", "duel-5v5", "grammar",
           "leaderboard", "dcoin", "gifts"
         ]);
@@ -843,7 +852,12 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
       }
     }
   }
-  return withStudentRuntimeSections(role, list);
+  return withStudentRuntimeSections(role, list).filter((item) => {
+    // Students keep the Arena hub for Boss Arena and duels; teachers no
+    // longer have an Arena destination at all.
+    if (item === "arena" && role !== "teacher") return true;
+    return !RETIRED_SECTION_IDS.has(item);
+  });
 }
 
 function buildLegacyStudentRuntimeTarget(section: string, params: URLSearchParams) {
@@ -860,8 +874,6 @@ function buildLegacyStudentRuntimeTarget(section: string, params: URLSearchParam
     return `${basePath}?${next.toString()}`;
   };
 
-  if (normalized === "arena-daily") return buildCompetitionTarget("/student/arena/daily/run", "arena-daily");
-  if (normalized === "arena-group") return buildCompetitionTarget("/student/arena/group/run", "arena-group");
   if (normalized === "arena-boss") return buildCompetitionTarget("/student/arena/boss/run", "arena-boss");
   if (normalized === "duel-1v1") return buildCompetitionTarget("/student/duel/1v1/run", "duel-1v1");
   if (normalized === "duel-3v3") return buildCompetitionTarget("/student/duel/3v3/run", "duel-3v3");
@@ -2966,8 +2978,8 @@ function StudentHome({
             <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("vocabulary")}>
               <span className="truncate">{tt("student.dashboard.vocabulary", "Lug'at")}</span> <span>→</span>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("arena-daily")}>
-              <span className="truncate">{tt("student.dashboard.dailyArena", "Daily Arena")}</span> <span>→</span>
+            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("arena-boss")}>
+              <span className="truncate">{tt("arena.boss.title", "Boss Arena")}</span> <span>→</span>
             </button>
             <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("duel-1v1")}>
               <span className="truncate">{tt("student.dashboard.duel1v1", "Duel 1v1")}</span> <span>→</span>
@@ -8705,7 +8717,11 @@ function AdminGiftsPanel({
 
 function StudentNotifications({ data }: { data: GenericRow }) {
   const tt = useWebT();
-  const [notifications, setNotifications] = useState<GenericRow[]>(() => (data.notifications || []) as GenericRow[]);
+  const [notifications, setNotifications] = useState<GenericRow[]>(() =>
+    ((data.notifications || []) as GenericRow[]).filter(
+      (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+    ),
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -8722,7 +8738,11 @@ function StudentNotifications({ data }: { data: GenericRow }) {
         timeoutMs: 30000,
         retries: 0,
       });
-      setNotifications(payload.items || []);
+      setNotifications(
+        (payload.items || []).filter(
+          (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+        ),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : tt("notifications.loadFailed", "Bildirishnomalar yuklanmadi."));
     } finally {
@@ -18569,6 +18589,12 @@ function AdminSection({
       "family_discount_percent",
       "multi_group_discount_percent",
       "entry_fee_dcoin",
+      "daily_arena_reward_first",
+      "daily_arena_reward_second",
+      "daily_arena_reward_third",
+      "daily_arena_min_players",
+      "daily_arena_max_players",
+      "group_arena_winner_reward",
     ]);
     const keys = Object.keys(dpointSettingsDraft).filter((key) => !hiddenAliasKeys.has(key));
     const auditRows = (data.dpoint_settings_audit || []) as GenericRow[];
@@ -21693,7 +21719,11 @@ function DashboardShell({
       const token = localStorage.getItem("diamond_token");
       if (!token) return;
       const payload = await requestJson<{ items: GenericRow[]; unread_count: number }>("/notifications?limit=30", { token });
-      setTopNotifications(payload.items || []);
+      setTopNotifications(
+        (payload.items || []).filter(
+          (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+        ),
+      );
       setUnreadCount(Number(payload.unread_count || 0));
     } catch {
       setTopNotifications([]);
@@ -21842,6 +21872,9 @@ function DashboardShell({
   }
 
   function openNotificationTarget(note: GenericRow) {
+    if (RETIRED_ARENA_NOTIFICATION_TYPES.has(String(note?.type || "").trim().toLowerCase())) {
+      return;
+    }
     const url = String(note?.button_url || "").trim();
     if (url.startsWith("/")) {
       const parsed = new URL(url, window.location.origin);
@@ -22143,8 +22176,6 @@ function DashboardShell({
     else if (currentSection === "daily-test-process") content = <StudentDailyTestProcess data={roleData} onNavigate={handleNavigate} />;
     else if (currentSection === "gamified") content = <StudentGamified data={roleData} onNavigate={handleNavigate} />;
     else if (currentSection === "arena") content = <StudentArena data={roleData} onNavigate={handleNavigate} />;
-    else if (currentSection === "arena-daily") content = <StudentCompetitionPage data={roleData} mode="daily" onNavigate={handleNavigate} />;
-    else if (currentSection === "arena-group") content = <StudentCompetitionPage data={roleData} mode="group" onNavigate={handleNavigate} />;
     else if (currentSection === "arena-boss") content = <StudentCompetitionPage data={roleData} mode="boss" onNavigate={handleNavigate} />;
     else if (currentSection === "duel-1v1") content = <StudentCompetitionPage data={roleData} mode="duel-1v1" onNavigate={handleNavigate} />;
     else if (currentSection === "duel-3v3") content = <StudentCompetitionPage data={roleData} mode="duel-3v3" onNavigate={handleNavigate} />;
@@ -22681,6 +22712,11 @@ export default function DiamondEducationApp() {
     const onProgress = (event: Event) => {
       const detail = (event as CustomEvent<GeneratorJobSnapshot>).detail;
       if (!detail) return;
+      if (detail.kind === "arena") {
+        writeGeneratorJobSnapshot(null);
+        setActiveGeneratorJob(null);
+        return;
+      }
       setActiveGeneratorJob(detail);
     };
     window.addEventListener("diamond:generator-progress", onProgress as EventListener);

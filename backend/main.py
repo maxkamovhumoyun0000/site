@@ -675,6 +675,25 @@ async def localized_http_exception_handler(request: Request, exc: HTTPException)
         detail = _translate_detail(detail, _request_locale(request))
     return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=exc.headers)
 
+
+@app.middleware("http")
+async def block_retired_arena_routes(request: Request, call_next):
+    """Keep retired Daily/Group Arena APIs unreachable, including old deep links."""
+    path = request.url.path.rstrip("/") or "/"
+    if path == "/teacher/generator/arena" or path.startswith("/teacher/arena/"):
+        return JSONResponse(
+            status_code=410,
+            content={"detail": "Group Arena has been retired."},
+        )
+    if path.startswith("/admin/competitions/"):
+        mode = str(request.query_params.get("mode") or "").strip().lower()
+        if mode in {"arena-group", "arena-daily"}:
+            return JSONResponse(
+                status_code=410,
+                content={"detail": "Daily Arena and Group Arena have been retired."},
+            )
+    return await call_next(request)
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _RAW_JWT_SECRET = str(os.getenv("JWT_SECRET") or "").strip()
 if not _RAW_JWT_SECRET or _RAW_JWT_SECRET == "change-this-in-production":
@@ -2391,6 +2410,24 @@ class CompetitionStartRequest(BaseModel):
     proctoring_session_id: int | None = None
     question_count: int | None = Field(default=None, ge=5, le=30)
     difficulty: Literal["Easy", "Medium", "Hard", "easy", "medium", "hard"] | None = None
+
+
+RETIRED_COMPETITION_MODES = frozenset({"daily", "group"})
+RETIRED_ARENA_NOTIFICATION_TYPES = frozenset({
+    "arena_daily",
+    "daily_arena_prestart",
+    "group_arena_started",
+    "group_arena_questions_ready",
+})
+
+
+def _require_enabled_competition_mode(mode: str | None) -> None:
+    """Reject competition modes that were removed from all client products."""
+    if str(mode or "").strip().lower() in RETIRED_COMPETITION_MODES:
+        raise HTTPException(
+            status_code=410,
+            detail="Daily Arena and Group Arena have been retired.",
+        )
 
 
 class CompetitionAnswerRequest(BaseModel):
@@ -15104,7 +15141,6 @@ def _build_student_payload(user: dict) -> dict:
             completed_today_by_subject.add(row_subject)
 
     schedule_notifications: list[dict[str, Any]] = []
-    daily_arena_times = _get_daily_arena_schedule_times()
     for subject_name in subjects:
         subj = _normalize_subject_label(subject_name) or str(subject_name or "").strip().title()
         if not subj:
@@ -15123,22 +15159,6 @@ def _build_student_payload(user: dict) -> dict:
                     "auto_start_intent": True,
                     "button_text": "Daily testni boshlash",
                     "button_url": f"/student/daily/process/run?subject={encoded_subject}&auto_start=1",
-                }
-            )
-        daily_start = daily_arena_times.get(subj)
-        if daily_start:
-            schedule_notifications.append(
-                {
-                    "title": "Daily Arena",
-                    "message": f"{subj} Daily Arena bugun {daily_start} da boshlanadi.",
-                    "created_at": f"{today_iso}T{daily_start}:00+05:00",
-                    "type": "arena_daily",
-                    "subject": subj,
-                    "mode": "daily",
-                    "target_screen": "arena-daily",
-                    "auto_start_intent": True,
-                    "button_text": "Daily Arena'ga o'tish",
-                    "button_url": f"/student/arena/daily?subject={encoded_subject}&arena_mode=daily&auto_start=1",
                 }
             )
     level = str(user.get("level") or "PRE-INTERMEDIATE").upper()
@@ -15435,7 +15455,6 @@ async def _daily_test_reminder_worker() -> None:
 
 def _run_daily_test_reminder_push(today_iso: str) -> None:
     students = _safe_call(get_all_students, []) or []
-    daily_arena_times = _safe_call(_get_daily_arena_schedule_times, {}) or {}
     conn = get_conn()
     cur = conn.cursor()
     sent = 0
@@ -15479,20 +15498,6 @@ def _run_daily_test_reminder_push(today_iso: str) -> None:
                             meta={"subject": subj},
                         )
                         sent += 1
-                    daily_start = daily_arena_times.get(subj)
-                    if daily_start:
-                        _payment_upsert_web_notification(
-                            cur,
-                            user_id=user_id,
-                            notification_type="arena_daily",
-                            title="Daily Arena",
-                            message=f"{subj} Daily Arena bugun {daily_start} da boshlanadi.",
-                            button_text="Daily Arena'ga o'tish",
-                            button_url=f"/student/arena/daily?subject={encoded_subject}&arena_mode=daily&auto_start=1",
-                            target_screen="arena-daily",
-                            source_key=f"arena_daily:{user_id}:{today_iso}:{subj}",
-                            meta={"subject": subj},
-                        )
                 except Exception:
                     logger.exception("daily test reminder push failed user_id=%s subject=%s", user_id, subj)
         conn.commit()
@@ -21260,6 +21265,8 @@ def _payment_notifications_for_user(user: dict) -> list[dict]:
     import re
     for row in rows:
         ntype = str(row.get("notification_type") or "payment")
+        if ntype.strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES:
+            continue
         msg = str(row.get("message") or "")
         msg = re.sub(r"To'lov qabul qilindi:\s*[\d\.]+", "To'lov qabul qilindi", msg)
         msg = re.sub(r"Qoldiq:\s*[\d\.]+\.\s*", "", msg)
@@ -21296,7 +21303,6 @@ def _student_notifications_for_user_light(user: dict) -> list[dict]:
             completed_today_by_subject.add(row_subject)
 
     items: list[dict[str, Any]] = []
-    daily_arena_times = _get_daily_arena_schedule_times()
     for subject_name in subjects:
         subj = _normalize_subject_label(subject_name) or str(subject_name or "").strip().title()
         if not subj or subj.lower() not in {"english", "russian", "ingliz tili", "rus tili"}:
@@ -21316,23 +21322,6 @@ def _student_notifications_for_user_light(user: dict) -> list[dict]:
                     "auto_start_intent": True,
                     "button_text": "Daily testni boshlash",
                     "button_url": f"/student/daily/process/run?subject={encoded_subject}&auto_start=1",
-                }
-            )
-        daily_start = daily_arena_times.get(subj)
-        if daily_start:
-            items.append(
-                {
-                    "id": f"arena_daily:{user_id}:{today_iso}:{subj}",
-                    "title": "Daily Arena",
-                    "message": f"{subj} Daily Arena bugun {daily_start} da boshlanadi.",
-                    "created_at": f"{today_iso}T{daily_start}:00+05:00",
-                    "type": "arena_daily",
-                    "subject": subj,
-                    "mode": "daily",
-                    "target_screen": "arena-daily",
-                    "auto_start_intent": True,
-                    "button_text": "Daily Arena'ga o'tish",
-                    "button_url": f"/student/arena/daily?subject={encoded_subject}&arena_mode=daily&auto_start=1",
                 }
             )
 
@@ -21393,6 +21382,8 @@ def _collect_notifications_for_user(user: dict, limit: int | None = 120) -> list
     normalized: list[dict] = []
     seen_ids: set[str] = set()
     for idx, raw in enumerate(items):
+        if str(raw.get("type") or "").strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES:
+            continue
         raw_id = str(raw.get("id") or raw.get("notification_id") or "").strip()
         if not raw_id:
             raw_id = _notification_key_for_item(raw, idx)
@@ -21464,6 +21455,7 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
             SELECT COUNT(*) AS count
             FROM web_payment_notifications n
             WHERE n.user_id=?
+              AND COALESCE(n.notification_type, '') NOT IN (?, ?, ?, ?)
               AND NOT EXISTS (
                 SELECT 1
                 FROM web_notification_reads r
@@ -21471,7 +21463,7 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
                   AND r.notification_key = ('payment_notification:' || n.id)
               )
             """,
-            (uid, uid),
+            (uid, *sorted(RETIRED_ARENA_NOTIFICATION_TYPES), uid),
         )
         unread += int((dict(cur.fetchone() or {}).get("count") or 0))
     except Exception:
@@ -26334,6 +26326,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     _require_role(user, {"student"})
     user_id = int(user.get("id") or 0)
     mode = payload.mode
+    _require_enabled_competition_mode(mode)
     is_duel = _duel_is_mode(mode)
     _require_student_learning_access(user)
     user = _require_student_face_setup_complete(user)
@@ -26755,6 +26748,9 @@ async def competition_runtime_my_active(
     if not sess:
         WEB_DUEL_PLAYER_SESSION.pop(uid, None)
         return {"active": False}
+    if str(sess.get("mode") or "").strip().lower() in RETIRED_COMPETITION_MODES:
+        WEB_DUEL_PLAYER_SESSION.pop(uid, None)
+        return {"active": False, "retired": True}
     if _competition_user_left_or_blocked(sess, uid):
         WEB_DUEL_PLAYER_SESSION.pop(uid, None)
         return {"active": False, "blocked": True, "reason": "left_or_proctoring_blocked"}
@@ -26820,6 +26816,7 @@ async def competition_runtime_history(
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
     mode_value = str(mode or "").strip()
+    _require_enabled_competition_mode(mode_value)
     valid_modes = {"daily", "group", "boss", "duel-1v1", "duel-3v3", "duel-5v5"}
     if mode_value and mode_value not in valid_modes:
         raise HTTPException(status_code=400, detail="Invalid competition mode")
@@ -26842,7 +26839,13 @@ async def competition_runtime_history(
             seen.add(sid)
             if len(items) >= int(limit):
                 break
-    return {"items": items[: int(limit)]}
+    visible_items = [
+        item
+        for item in items
+        if str(item.get("mode") or item.get("type") or "").strip().lower()
+        not in RETIRED_COMPETITION_MODES
+    ]
+    return {"items": visible_items[: int(limit)]}
 
 
 async def _competition_ensure_session_for_user(session_id: str, user: dict) -> dict[str, Any]:
@@ -26885,6 +26888,7 @@ async def competition_runtime_leave(session_id: str, authorization: str | None =
         if not sess:
             WEB_DUEL_PLAYER_SESSION.pop(uid, None)
             return {"cancelled": True, "refunded": False, "phase": "finished", "status": "finished"}
+        _require_enabled_competition_mode(str(sess.get("mode") or ""))
         phase = _competition_session_phase(sess)
         if phase in {"pending", "generating"} and not sess.get("started_at"):
             return _competition_leave_pending_session(sess, uid)
@@ -26903,6 +26907,7 @@ async def competition_runtime_status(session_id: str, authorization: str | None 
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
+    _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
         current_phase = _competition_session_phase(sess)
@@ -26961,6 +26966,7 @@ async def competition_runtime_question(
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
+    _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
         if _duel_is_mode(sess.get("mode")):
@@ -27064,6 +27070,7 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
+    _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
         if _duel_is_mode(sess.get("mode")):
@@ -27200,6 +27207,7 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
+    _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     if _competition_session_phase(sess) == "active":
         with _competition_session_advisory_lock(actual_sid):
@@ -33805,7 +33813,7 @@ async def admin_delete_course(course_id: int, authorization: str | None = Header
 
 @app.get("/admin/competitions/history")
 async def get_admin_competitions_history(
-    mode: str = Query("arena-group"),
+    mode: str = Query("arena-boss"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     authorization: str | None = Header(default=None),
@@ -33878,7 +33886,7 @@ async def get_admin_competitions_history(
 @app.get("/admin/competitions/{session_id}/results")
 async def get_admin_competition_results(
     session_id: str,
-    mode: str = Query("arena-group"),
+    mode: str = Query("arena-boss"),
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
@@ -46740,36 +46748,8 @@ async def available_battles(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_student_learning_access(user)
-    groups = _safe_call(lambda: get_user_groups(int(user.get("id") or 0)), []) or []
-    group_sessions: list[dict] = []
-    for group in groups:
-        sess = _safe_call(lambda gid=int(group.get("id") or 0): get_active_arena_group_session_by_group_id(gid), None)
-        if not sess:
-            continue
-        group_sessions.append(
-            {
-                "id": f"group-{int(sess.get('id') or 0)}",
-                "title": f"Group Arena · {group.get('name') or 'Group'}",
-                "description": "Teacher-launched group arena",
-                "opponent": "Group",
-                "reward": 20,
-                "status": str(sess.get("status") or "ready"),
-                "session_id": int(sess.get("id") or 0),
-                "group_id": int(group.get("id") or 0),
-                "group_name": str(group.get("name") or "Group"),
-                "subject": _normalize_subject_label(str(sess.get("subject") or group.get("subject") or "")),
-            }
-        )
     return {
         "items": [
-            {
-                "id": "daily-arena",
-                "title": "Daily Arena",
-                "description": "Timed daily challenge",
-                "opponent": "Global",
-                "reward": 12,
-                "status": "open",
-            },
             {
                 "id": "duel-1v1",
                 "title": "Duel 1v1",
@@ -46802,7 +46782,6 @@ async def available_battles(authorization: str | None = Header(default=None)):
                 "reward": 24,
                 "status": "open",
             },
-            *group_sessions,
         ]
     }
 
@@ -46818,21 +46797,8 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
     if level not in {"BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1"}:
         level = "PRE-INTERMEDIATE"
 
-    if battle_id.startswith("group-"):
-        try:
-            sid = int(battle_id.split("-", 1)[1])
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid group arena session id")
-        session = _safe_call(lambda: get_arena_group_session(sid), None)
-        if not session:
-            raise HTTPException(status_code=404, detail="Group arena session not found")
-        return {
-            "message": "Joined group arena",
-            "battle_id": battle_id,
-            "session_id": sid,
-            "user_id": user_id,
-            "session": session,
-        }
+    if battle_id == "daily-arena" or battle_id.startswith("group-"):
+        _require_enabled_competition_mode("daily" if battle_id == "daily-arena" else "group")
 
     if battle_id in {"duel-1v1", "duel-3v3", "duel-5v5"}:
         mode_map = {
