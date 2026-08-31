@@ -27128,6 +27128,14 @@ async def competition_runtime_question(
                 "live": _competition_live_lists(sess),
             }
         question = user_questions[min(max(0, q_index - 1), max(0, total - 1))] if total > 0 else {}
+        # The runtime enforces a separate deadline for every question via
+        # `_competition_timer_state`.  Expose that same authoritative timer
+        # to clients; previously this response returned the *whole match*
+        # deadline, so the UI could show several minutes while the server
+        # auto-skipped the current question after its 40-second limit.
+        question_timer = _competition_timer_state(
+            sess, uid, q_index, question, create=True
+        )
         global_timer = _competition_global_match_timer_state(sess, uid, user_questions)
         questions_payload = [_public_question_payload(q) for q in user_questions]
         opponents = _competition_opponent_progress(sess, uid)
@@ -27143,10 +27151,14 @@ async def competition_runtime_question(
             "question_index": q_index,
             "total_questions": total,
             "progress_percent": int(round(((q_index - 1) * 100 / max(1, total)))),
-            "time_limit_sec": global_timer["total_match_seconds"],
-            "time_remaining_sec": global_timer["global_time_remaining_sec"],
-            "deadline_at": global_timer["deadline_at"],
-            "question_started_at": global_timer["started_at"],
+            "time_limit_sec": question_timer["allowed_seconds"],
+            "time_remaining_sec": question_timer["time_remaining_sec"],
+            "deadline_at": question_timer["deadline_at"],
+            "question_started_at": question_timer["started_at"],
+            # Kept as explicit metadata for analytics/debugging without
+            # changing the question timer semantics consumed by clients.
+            "match_time_limit_sec": global_timer["total_match_seconds"],
+            "match_time_remaining_sec": global_timer["global_time_remaining_sec"],
             "question": _public_question_payload(question) if question else None,
             "questions": questions_payload,
             "opponent_progress": opponents,
