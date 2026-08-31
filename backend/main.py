@@ -7024,6 +7024,7 @@ REVIEW_REQUIRED_ALLOWED_PATH_PREFIXES = (
     "/user",
     "/notifications",
     "/app/state",
+    "/api/app-version-check",
 )
 
 
