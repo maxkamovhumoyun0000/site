@@ -17444,7 +17444,8 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   gap: 10px;
 }
 
-.landing-review-card-head > span {
+.landing-review-card-head > span,
+.landing-review-avatar {
   display: grid;
   height: 38px;
   width: 38px;
@@ -17455,6 +17456,11 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   color: #ffffff;
   font-size: 15px;
   font-weight: 950;
+}
+
+.landing-review-avatar {
+  display: block;
+  object-fit: cover;
 }
 
 .landing-review-card-head strong {

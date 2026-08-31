@@ -1780,7 +1780,13 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
   );
 }
 
-type LandingTestimonial = { quote: string; name: string; role: string; rating: number };
+type LandingTestimonial = {
+  quote: string;
+  name: string;
+  role: string;
+  rating: number;
+  avatarUrl: string;
+};
 
 function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -1816,7 +1822,15 @@ function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
         {duplicatedItems.map((testimonial, idx) => (
           <article className="landing-review-card" key={`landing-review-card-${testimonial.name}-${idx}`}>
             <div className="landing-review-card-head">
-              <span>{testimonial.name.charAt(0).toUpperCase()}</span>
+              {testimonial.avatarUrl ? (
+                <img
+                  src={testimonial.avatarUrl}
+                  alt={`${testimonial.name} profili`}
+                  className="landing-review-avatar"
+                />
+              ) : (
+                <span>{testimonial.name.charAt(0).toUpperCase()}</span>
+              )}
               <div>
                 <strong>{testimonial.name}</strong>
                 <small>{testimonial.role}</small>
@@ -1966,6 +1980,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
             name,
             role: t(locale, "landing.reviews.studentRole", "O'quvchi"),
             rating: Number(r.rating || 5),
+            avatarUrl: resolveAssetUrl(String(r.author_avatar_url || r.profile_image_url || "").trim()),
           };
         }).filter((item): item is LandingTestimonial => Boolean(item));
         

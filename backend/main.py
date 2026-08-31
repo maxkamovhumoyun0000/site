@@ -4207,7 +4207,10 @@ def _days_since_join(created_at: str | None) -> int | None:
 
 def _review_policy_for_user(user: dict) -> dict:
     user_id = int(user.get("id") or 0)
-    min_days = 30
+    # Birinchi platforma sharhi ikki oy foydalanishdan keyin so'raladi.
+    # Yuborishning o'zi talabni bajaradi; admin moderatsiyasi esa faqat
+    # reviewning saytda ko'rinishi va mukofotiga taalluqli.
+    min_days = 60
     days = _days_since_join(user.get("created_at"))
     wait_required = bool(int(user.get("review_wait_required") or 0))
 
@@ -4218,7 +4221,8 @@ def _review_policy_for_user(user: dict) -> dict:
         f"""
         SELECT
             SUM(CASE WHEN LOWER(TRIM(COALESCE(status, '')))='approved' THEN 1 ELSE 0 END) AS approved_count,
-            SUM(CASE WHEN LOWER(TRIM(COALESCE(status, '')))='pending' THEN 1 ELSE 0 END) AS pending_count
+            SUM(CASE WHEN LOWER(TRIM(COALESCE(status, '')))='pending' THEN 1 ELSE 0 END) AS pending_count,
+            COUNT(*) AS submitted_count
         FROM web_student_reviews
         WHERE user_id=?
         """,
@@ -4230,15 +4234,31 @@ def _review_policy_for_user(user: dict) -> dict:
     pending_count = int(row.get("pending_count") or 0)
     has_approved_review = approved_count > 0
     has_pending_review = pending_count > 0
+    # Rejected review ham studentning review yuborish majburiyatini bajarganini
+    # anglatadi. Uni qayta yozish xohishga ko'ra mumkin, lekin o'qishni bloklab
+    # qo'ymaydi. Shuning uchun barcha yuborilgan reviewlar soni olinadi.
+    submitted_count = int(row.get("submitted_count") or 0)
 
     can_submit = True
-    reason = ""
+    review_required = bool(days is not None and days >= min_days and submitted_count <= 0)
+    reason = (
+        "Platformadan foydalanishni davom ettirish uchun review qoldiring."
+        if review_required
+        else ""
+    )
+    joined = _parse_utc_timestamp(user.get("created_at"))
+    due_at = (joined + timedelta(days=min_days)).isoformat() if joined else None
 
     return {
         "can_submit": can_submit,
         "min_days_required": min_days,
         "wait_required": wait_required,
         "days_since_join": days,
+        "due_at": due_at,
+        "required": review_required,
+        "blocked": review_required,
+        "has_submitted_review": submitted_count > 0,
+        "submitted_reviews_count": submitted_count,
         "has_approved_review": has_approved_review,
         "has_pending_review": has_pending_review,
         "approved_reviews_count": approved_count,
@@ -6987,10 +7007,34 @@ ALLOWED_NO_GROUP_PATH_PREFIXES = (
     "/student/bookings",
     "/student/placement",
     "/student/proctoring",
+    "/student/review-status",
     "/notifications",
     "/auth",
     "/app/state",
 )
+
+# Two months after registration a student must submit one platform review.
+# The few routes below are necessary to render that gate, maintain the
+# already-required Telegram membership flow, update the app and sign out.
+REVIEW_REQUIRED_ALLOWED_PATH_PREFIXES = (
+    "/reviews",
+    "/student/review-status",
+    "/student/channel-membership",
+    "/auth",
+    "/user",
+    "/notifications",
+    "/app/state",
+)
+
+
+def _is_student_review_blocked_path(path: str) -> bool:
+    normalized = str(path or "").strip()
+    if not normalized or normalized.startswith("/admin"):
+        return False
+    for allowed_prefix in REVIEW_REQUIRED_ALLOWED_PATH_PREFIXES:
+        if normalized.startswith(allowed_prefix):
+            return False
+    return True
 
 
 def _is_student_no_group_blocked_path(path: str) -> bool:
@@ -7041,6 +7085,35 @@ async def student_no_group_access_guard(request: Request, call_next):
     return JSONResponse(status_code=403, content={"detail": "Siz hali guruhga biriktirilmagansiz"})
 
 
+@app.middleware("http")
+async def student_review_access_guard(request: Request, call_next):
+    """Make the two-month review requirement server-enforced, not UI-only."""
+    path = str(request.url.path or "").strip()
+    if not _is_student_review_blocked_path(path):
+        return await call_next(request)
+    authorization = request.headers.get("Authorization")
+    if not authorization:
+        return await call_next(request)
+    try:
+        user = _user_row_from_bearer(authorization)
+    except HTTPException:
+        return await call_next(request)
+    role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+    if role != "student":
+        return await call_next(request)
+    policy = _review_policy_for_user(user)
+    if not bool(policy.get("required")):
+        return await call_next(request)
+    return JSONResponse(
+        status_code=403,
+        content={
+            "detail": str(policy.get("reason") or "Platformadan foydalanishni davom ettirish uchun review qoldiring."),
+            "code": "review_required",
+            "review_policy": policy,
+        },
+    )
+
+
 def _require_role(user: dict, roles: set[str]) -> str:
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if role not in roles:
@@ -7066,6 +7139,12 @@ def _require_student_learning_access(user: dict) -> None:
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if role != "student":
         return
+    review_policy = _review_policy_for_user(user)
+    if bool(review_policy.get("required")):
+        raise HTTPException(
+            status_code=403,
+            detail=str(review_policy.get("reason") or "Platformadan foydalanishni davom ettirish uchun review qoldiring."),
+        )
     if not is_access_active(user):
         raise HTTPException(status_code=403, detail="Sizning kirish huquqingiz yo'q yoki guruhga biriktirilmagansiz")
     if _student_has_group_access(user):
@@ -14248,6 +14327,14 @@ def _serialize_review_row(row: dict, include_private: bool = False) -> dict:
         author_name = _display_name(user)
     else:
         author_name = "Diamond User"
+    avatar_url = _normalize_image_asset_url(
+        str(
+            (user or {}).get("profile_image_url")
+            or (user or {}).get("effective_profile_image_url")
+            or ""
+        ).strip()
+        or None
+    )
     out = {
         "id": int(row.get("id") or 0),
         "user_id": int(row.get("user_id") or 0),
@@ -14255,6 +14342,10 @@ def _serialize_review_row(row: dict, include_private: bool = False) -> dict:
         "review_text": str(row.get("review_text") or ""),
         "is_anonymous": is_anonymous,
         "author_name": author_name,
+        # Ommaviy landing review kartasida studentning aynan profil rasmi
+        # ko'rinadi; rasm bo'lmasa frontend ism bosh harfini ko'rsatadi.
+        "author_avatar_url": avatar_url,
+        "profile_image_url": avatar_url,
         "status": _normalize_review_status(row.get("status")),
         "reward_dcoin": float(row.get("reward_dcoin") or 0),
         "reward_dpoints": float(row.get("reward_dcoin") or 0),
@@ -32988,6 +33079,17 @@ async def create_student_review(payload: ReviewCreateRequest, authorization: str
         "review_id": int(row.get("id") or 0) if row else None,
         "review": _serialize_review_row(row, include_private=True) if row else None,
         "review_policy": _review_policy_for_user(user),
+    }
+
+
+@app.get("/student/review-status")
+async def student_review_status(authorization: str | None = Header(default=None)):
+    """Small gate payload used by the student app on launch and resume."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    return {
+        "review_policy": _review_policy_for_user(user),
+        "reviews": [_serialize_review_row(r, include_private=True) for r in _list_student_review_rows(int(user.get("id") or 0))],
     }
 
 
