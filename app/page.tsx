@@ -3087,6 +3087,7 @@ function rankLabel(rankValue: unknown) {
 
 function StudentLeaderboard({ data, user }: { data: GenericRow, user?: any }) {
   const tt = useWebT();
+  const [profileStudentId, setProfileStudentId] = useState<number | null>(null);
   const leaderboard = useMemo(
     () =>
       [...((data.leaderboard || []) as GenericRow[])].sort(
@@ -3119,9 +3120,11 @@ function StudentLeaderboard({ data, user }: { data: GenericRow, user?: any }) {
         {leaderboard.map((row, i) => {
           const isCurrentUser = user && row.user_id === user.id;
           return (
-          <div
+          <button
             key={row.user_id}
-            className={`flex items-center gap-3 px-4 py-3 rounded-2xl border transition-colors ${
+            type="button"
+            onClick={() => setProfileStudentId(Number(row.user_id || 0))}
+            className={`flex w-full text-left items-center gap-3 px-4 py-3 rounded-2xl border transition-colors ${
               isCurrentUser
                 ? "bg-cyan-50 dark:bg-cyan-500/10 border-cyan-300 dark:border-cyan-500/50 ring-2 ring-cyan-400 shadow-md shadow-cyan-500/20 z-10 scale-[1.01]"
                 : i === 0
@@ -3143,13 +3146,14 @@ function StudentLeaderboard({ data, user }: { data: GenericRow, user?: any }) {
                 {Number(row.dcoin_balance || 0).toFixed(1)}{" "}<span className="text-xs font-bold text-ink-500 dark:text-navy-400">D&apos;Coin</span>
               </span>
             </span>
-          </div>
+          </button>
           );
         })}
         {leaderboard.length === 0 && (
           <div className="text-center py-10 text-ink-500 font-medium">{tt("leaderboard.empty", "Hozircha reyting yo'q")}</div>
         )}
       </section>
+      {profileStudentId ? <StudentPresenceProfile userId={profileStudentId} onApiCall={(path: string, payload?: any, method?: any) => requestJson(path, { method, token: localStorage.getItem("diamond_token") || "", body: method && method !== "GET" ? payload : undefined })} onClose={() => setProfileStudentId(null)} /> : null}
     </div>
   );
 }
@@ -3166,6 +3170,7 @@ function RoleLeaderboardPanel({
   subtitle?: string;
 }) {
   const tt = useWebT();
+  const [profileStudentId, setProfileStudentId] = useState<number | null>(null);
   kicker = kicker || tt("leaderboard.kicker", "Leaderboard");
   title = title || tt("leaderboard.title", "Global Ranking");
   subtitle = subtitle || tt("leaderboard.subtitle", "D'Coin bo'yicha umumiy reyting");
@@ -3231,9 +3236,11 @@ function RoleLeaderboardPanel({
             </p>
           ) : null}
           {leaderboard.map((row: GenericRow, idx: number) => (
-            <article
+            <button
               key={`role-rank-${row.user_id || row.id || idx}`}
-              className="flex items-center gap-3 rounded-xl border border-line bg-surface-soft px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
+              type="button"
+              onClick={() => setProfileStudentId(Number(row.user_id || row.id || 0))}
+              className="flex w-full text-left items-center gap-3 rounded-xl border border-line bg-surface-soft px-3 py-2.5 dark:border-white/10 dark:bg-white/[0.03]"
             >
               <span className="w-8 shrink-0 text-sm font-black text-navy-900 dark:text-white">{rankLabel(row.rank || idx + 1)}</span>
               <span className="flex-1 min-w-0">
@@ -3242,7 +3249,7 @@ function RoleLeaderboardPanel({
               <span className="shrink-0 text-sm font-black text-cyan-500">
                 {Number(row.dcoin_balance || row.dcoin || row.balance_total || 0).toFixed(1)} D&apos;Coin
               </span>
-            </article>
+            </button>
           ))}
           {!loading && !leaderboard.length ? (
             <p className="py-6 text-center text-sm font-medium text-ink-500 dark:text-white/60">
@@ -3251,6 +3258,7 @@ function RoleLeaderboardPanel({
           ) : null}
         </div>
       </section>
+      {profileStudentId ? <StudentPresenceProfile userId={profileStudentId} onApiCall={(path: string, payload?: any, method?: any) => requestJson(path, { method, token: localStorage.getItem("diamond_token") || "", body: method && method !== "GET" ? payload : undefined })} onClose={() => setProfileStudentId(null)} /> : null}
     </div>
   );
 }
@@ -4341,6 +4349,7 @@ function StudentSupport({
 }
 import { UniversalChat } from "./ui/universal-chat";
 import { TeacherStudents } from "./ui/teacher-students";
+import { StudentPresenceProfile } from "./ui/student-presence-profile";
 function StudentDiamondvoy() {
   const [chats, setChats] = useState<GenericRow[]>([]);
   const [chatsLoaded, setChatsLoaded] = useState(false);
@@ -14652,6 +14661,7 @@ function AdminSection({
   const isLimitedAdminScope = Boolean(data.admin_scope?.is_limited_admin) && !isMainAdminScope;
   const canManageGlobalPaymentConfig = !isLimitedAdminScope;
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [profileStudentId, setProfileStudentId] = useState<number | null>(null);
   const [userDetail, setUserDetail] = useState<GenericRow | null>(null);
   const [adminAvatarPreviewUrl, setAdminAvatarPreviewUrl] = useState("");
   const [adminAvatarPreviewName, setAdminAvatarPreviewName] = useState("");
@@ -16818,6 +16828,7 @@ function AdminSection({
                   const isProtected = Number(user.login_type || 0) === 4;
                   const isAccountlessRow = Number(user.login_type || 0) === 6;
                   const isStudentRow = String(user.role || "") === "student";
+                  const canOpenProfile = isStudentRow || isAccountlessRow;
                   return (
                     <Fragment key={user.id}>
                       <tr>
@@ -16837,7 +16848,17 @@ function AdminSection({
                         </td>
                         <td>
                           <div className="flex flex-col gap-0.5 min-w-[120px]">
-                            <span className="font-semibold text-navy-900 dark:text-white text-sm leading-tight">{user.full_name || "-"}</span>
+                            {canOpenProfile ? (
+                              <button type="button" className="inline-flex items-center gap-2 font-semibold text-navy-900 dark:text-white text-sm leading-tight hover:text-cyan-500" onClick={() => setProfileStudentId(uid)}>
+                                <span className={`h-2 w-2 rounded-full ${user.is_online ? "bg-emerald-500" : "bg-ink-300 dark:bg-navy-500"}`} />
+                                {user.full_name || "-"}
+                              </button>
+                            ) : (
+                              <span className="inline-flex items-center gap-2 font-semibold text-navy-900 dark:text-white text-sm leading-tight">
+                                <span className={`h-2 w-2 rounded-full ${user.is_online ? "bg-emerald-500" : "bg-ink-300 dark:bg-navy-500"}`} />
+                                {user.full_name || "-"}
+                              </span>
+                            )}
                             {isAccountlessRow ? <span className="inline-block text-[10px] uppercase bg-orange-100 dark:bg-orange-500/15 text-orange-600 dark:text-orange-400 px-1.5 py-0.5 rounded font-bold w-fit">Akountsiz</span> : null}
                           </div>
                         </td>
@@ -16869,6 +16890,7 @@ function AdminSection({
                             >
                               {isSelected ? tt("admin.users.action.hide", "Yashirish") : tt("admin.users.action.details", "Batafsil")}
                             </button>
+                            {isStudentRow ? <button className="admin-btn-detail" type="button" onClick={() => setProfileStudentId(uid)}>Profil</button> : null}
 
                             {/* ── Protected admin ── */}
                             {isProtected ? (
@@ -17071,6 +17093,7 @@ function AdminSection({
           )}
         </div>
       </div>
+      {profileStudentId ? <StudentPresenceProfile userId={profileStudentId} onApiCall={(path: string, payload?: any, method?: any) => requestJson(path, { method, token: localStorage.getItem("diamond_token") || "", body: method && method !== "GET" ? payload : undefined })} onClose={() => setProfileStudentId(null)} /> : null}
     );
   }
 

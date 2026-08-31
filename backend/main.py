@@ -3421,6 +3421,116 @@ def _parse_utc_timestamp(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+# A session is considered online while it has sent a request recently.  The
+# mobile/web clients already refresh `web_user_sessions.last_seen_at` through
+# `_user_row_from_bearer`, so this remains accurate without a second polling
+# service or a fragile in-memory presence table.
+ONLINE_PRESENCE_WINDOW_SECONDS = 5 * 60
+
+
+def _presence_summaries_for_users(user_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
+    ids = sorted({int(uid or 0) for uid in user_ids if int(uid or 0) > 0})
+    if not ids:
+        return {}
+    result: dict[int, dict[str, Any]] = {
+        uid: {
+            "is_online": False,
+            "online": False,
+            "last_online_at": None,
+            "active_sessions": 0,
+        }
+        for uid in ids
+    }
+    now = _now_utc()
+    session_rows: list[dict[str, Any]] = []
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        try:
+            cur.execute(
+                f"""
+                SELECT user_id, last_seen_at, created_at, expires_at, revoked_at, source
+                FROM web_user_sessions
+                WHERE user_id IN ({placeholders})
+                """,
+                tuple(ids),
+            )
+            session_rows = [dict(row) for row in (cur.fetchall() or [])]
+        except Exception:
+            # Older installations may not have the web session table yet.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        try:
+            cur.execute(
+                f"""
+                SELECT id, logged_in, last_activity, last_login_at
+                FROM users
+                WHERE id IN ({placeholders})
+                """,
+                tuple(ids),
+            )
+            user_rows = [dict(row) for row in (cur.fetchall() or [])]
+        except Exception:
+            user_rows = []
+    finally:
+        conn.close()
+
+    latest: dict[int, datetime] = {}
+    for row in session_rows:
+        uid = int(row.get("user_id") or 0)
+        if uid not in result or str(row.get("revoked_at") or "").strip():
+            continue
+        seen = _parse_utc_timestamp(str(row.get("last_seen_at") or ""))
+        if seen is None:
+            seen = _parse_utc_timestamp(str(row.get("created_at") or ""))
+        if seen is None:
+            continue
+        expires = _parse_utc_timestamp(str(row.get("expires_at") or ""))
+        if expires is not None and expires <= now:
+            continue
+        if seen > latest.get(uid, datetime.min.replace(tzinfo=timezone.utc)):
+            latest[uid] = seen
+        if (now - seen).total_seconds() <= ONLINE_PRESENCE_WINDOW_SECONDS:
+            result[uid]["active_sessions"] += 1
+
+    for row in user_rows:
+        uid = int(row.get("id") or 0)
+        if uid not in result:
+            continue
+        fallback = _parse_utc_timestamp(str(row.get("last_activity") or ""))
+        login_at = _parse_utc_timestamp(str(row.get("last_login_at") or ""))
+        if login_at is not None and (fallback is None or login_at > fallback):
+            fallback = login_at
+        if fallback is not None and fallback > latest.get(uid, datetime.min.replace(tzinfo=timezone.utc)):
+            latest[uid] = fallback
+        if int(row.get("logged_in") or 0) == 1 and fallback is not None:
+            if (now - fallback).total_seconds() <= ONLINE_PRESENCE_WINDOW_SECONDS:
+                result[uid]["active_sessions"] = max(1, int(result[uid]["active_sessions"] or 0))
+
+    for uid, seen in latest.items():
+        online = (now - seen).total_seconds() <= ONLINE_PRESENCE_WINDOW_SECONDS and int(result[uid]["active_sessions"] or 0) > 0
+        result[uid].update(
+            {
+                "is_online": bool(online),
+                "online": bool(online),
+                "last_online_at": seen.isoformat(),
+            }
+        )
+    return result
+
+
+def _presence_summary_for_user(user_id: int) -> dict[str, Any]:
+    return (_presence_summaries_for_users([int(user_id or 0)]).get(int(user_id or 0)) or {
+        "is_online": False,
+        "online": False,
+        "last_online_at": None,
+        "active_sessions": 0,
+    })
+
+
 def _homework_window_anchor(homework: dict | None, submission: dict | None = None) -> datetime | None:
     # Homework lifetime policy: 7 days from assignment, then 7 days from first submission.
     submission_anchor = _parse_utc_timestamp(str((submission or {}).get("created_at") or ""))
@@ -14729,6 +14839,9 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
         reverse=True,
     )[: max(1, int(limit or 20))]
     _enrich_user_rows_with_face_profiles(ordered_rows)
+    presence_by_user = _presence_summaries_for_users(
+        int(row.get("id") or row.get("user_id") or 0) for row in ordered_rows
+    )
 
     out: list[dict] = []
     for idx, row in enumerate(ordered_rows, start=1):
@@ -14747,6 +14860,7 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
                 "profile_image_url": avatar_url,
                 "dcoin_balance": float(row.get("dcoin_balance") or 0),
                 "dpoint_balance": float(row.get("dpoint_balance") or 0),
+                **presence_by_user.get(int(row.get("id") or row.get("user_id") or 0), {}),
             }
         )
     return out
@@ -34516,8 +34630,14 @@ async def admin_users(
             bool(query),
         )
 
+    presence_by_user = _presence_summaries_for_users(int(row.get("id") or 0) for row in rows)
+    serialized_items = []
+    for row in rows:
+        item = _serialize_user_row_light(row)
+        item.update(presence_by_user.get(int(row.get("id") or 0), {}))
+        serialized_items.append(item)
     return {
-        "items": [_serialize_user_row_light(u) for u in rows],
+        "items": serialized_items,
         "total": int(total),
         "limit": int(limit),
         "offset": int(offset),
@@ -46688,7 +46808,13 @@ async def students_list(authorization: str | None = Header(default=None)):
                 if sid and sid not in seen_ids and int(student.get("login_type") or 0) in (1, 2):
                     seen_ids.add(sid)
                     rows.append(student)
-    return {"items": [_serialize_user_row(r) for r in rows]}
+    presence_by_user = _presence_summaries_for_users(int(row.get("id") or 0) for row in rows)
+    items = []
+    for row in rows:
+        item = _serialize_user_row(row)
+        item.update(presence_by_user.get(int(row.get("id") or 0), {}))
+        items.append(item)
+    return {"items": items}
 
 
 @app.get("/students/{student_id}")
@@ -46698,7 +46824,57 @@ async def get_student(student_id: int, authorization: str | None = Header(defaul
     row = _safe_call(lambda: get_user_by_id(int(student_id)), None)
     if not row:
         raise HTTPException(status_code=404, detail="Student not found")
-    return _serialize_user_row(row)
+    payload = _serialize_user_row(row)
+    payload.update(_presence_summary_for_user(int(student_id)))
+    return payload
+
+
+@app.get("/users/{user_id}/presence-profile")
+async def user_presence_profile(user_id: int, authorization: str | None = Header(default=None)):
+    """Shared profile card for ranking, teacher rosters and admin users.
+
+    The endpoint deliberately has one response shape for every client.  The
+    actor must be authenticated, while the target can be any student visible
+    in the caller's ranking/roster.  Sensitive admin-management actions remain
+    behind their existing role-specific endpoints.
+    """
+    actor = _user_row_from_bearer(authorization)
+    _require_role(actor, {"student", "teacher", "support", "admin"})
+    target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target_role = _role_from_login_type(int(target.get("login_type") or 0), str(target.get("login_id") or ""))
+    if target_role not in {"student", "accountless"}:
+        raise HTTPException(status_code=400, detail="Profile card is available for students only")
+
+    uid = int(user_id)
+    lang = _gift_locale(target.get("language")) or "uz"
+    groups = _safe_call(lambda: get_user_groups(uid), []) or []
+    tickets = _safe_call(lambda: get_user_gift_tickets(uid), []) or []
+    purchases = _safe_call(lambda: list_user_purchase_history(uid, limit=100, item_type="gift"), []) or []
+    serialized_purchases = [_serialize_student_purchase_row(row, lang=lang) for row in purchases]
+    subject_balances = _safe_call(lambda: get_user_subject_dcoins(uid), {}) or {}
+    dcoin_balance = float(_safe_call(lambda: get_dcoins(uid), 0.0) or 0.0)
+    dpoint_balance = float(_safe_call(lambda: get_dpoints(uid), 0.0) or 0.0)
+    presence = _presence_summary_for_user(uid)
+    ranking = _safe_call(lambda: get_user_rating_info(uid), {}) or {}
+    profile = _serialize_user_row(target)
+    profile.update(presence)
+    return {
+        "user": profile,
+        "presence": presence,
+        "balance": {
+            "dcoin": dcoin_balance,
+            "dpoints": dpoint_balance,
+            "by_subject": subject_balances,
+        },
+        "groups": [_serialize_group_row(group) for group in groups],
+        "gifts": serialized_purchases,
+        "purchased_gifts": serialized_purchases,
+        "tickets": tickets,
+        "ticket_count": sum(max(0, int(row.get("ticket_count") or 0)) for row in tickets),
+        "ranking": ranking,
+    }
 
 
 @app.get("/students/stats")
@@ -50612,7 +50788,8 @@ async def teacher_my_students(authorization: str | None = Header(default=None)):
         for m in members:
             uid = int(m.get("id") or 0)
             if uid > 0 and int(m.get("login_type") or 0) in (1, 2, 6) and uid not in students:
-                students[uid] = m
+                    students[uid] = m
+    presence_by_user = _presence_summaries_for_users(students.keys())
     res = []
     for uid, m in students.items():
         res.append({
@@ -50631,6 +50808,7 @@ async def teacher_my_students(authorization: str | None = Header(default=None)):
             # show a student's profile picture.
             "profile_image_url": m.get("profile_image_url"),
             "avatar_url": _first_existing_avatar_url(m.get("profile_image_url"), m.get("effective_profile_image_url")),
+            **presence_by_user.get(uid, {}),
         })
     return sorted(res, key=lambda x: (x["first_name"] or "", x["last_name"] or ""))
 

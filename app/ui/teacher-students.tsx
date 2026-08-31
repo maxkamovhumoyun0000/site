@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useWebT } from "./web-i18n";
 import { ModalPortal } from "./modal-portal";
+import { StudentPresenceProfile } from "./student-presence-profile";
 
 export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall: any }) {
   const tt = useWebT();
@@ -9,6 +10,7 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
   const [error, setError] = useState("");
   const [editingStudent, setEditingStudent] = useState<any | null>(null);
   const [saving, setSaving] = useState(false);
+  const [profileStudentId, setProfileStudentId] = useState<number | null>(null);
 
   const [resetPasswordInfo, setResetPasswordInfo] = useState<any>(null);
   const [resettingId, setResettingId] = useState<number | null>(null);
@@ -194,7 +196,12 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
             {students.map((s: any, idx: number) => (
               <tr key={s.id}>
                 <td className="text-ink-400 dark:text-navy-500 text-xs">{idx + 1}</td>
-                <td className="font-semibold">{`${s.first_name || ""} ${s.last_name || ""}`.trim() || "-"}</td>
+                <td className="font-semibold">
+                  <button type="button" className="inline-flex items-center gap-2 hover:text-cyan-500" onClick={() => setProfileStudentId(Number(s.id))}>
+                    <span className={`h-2 w-2 rounded-full ${s.is_online ? "bg-emerald-500" : "bg-ink-300 dark:bg-navy-500"}`} />
+                    {`${s.first_name || ""} ${s.last_name || ""}`.trim() || "-"}
+                  </button>
+                </td>
                 <td className="text-sm text-ink-600 dark:text-navy-300">{s.phone || "-"}</td>
                 <td>
                   <span className="chip">{s.level || "-"}</span>
@@ -202,6 +209,12 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
                 <td className="text-sm text-ink-600 dark:text-navy-300">{s.subject || "-"}</td>
                 <td>
                   <div className="button-grid inline">
+                    <button
+                      className="btn btn-soft small"
+                      onClick={() => setProfileStudentId(Number(s.id))}
+                    >
+                      Profil
+                    </button>
                     <button
                       className="btn btn-soft small"
                       onClick={() => setEditingStudent({ ...s })}
@@ -237,6 +250,10 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
           </tbody>
         </table>
       </div>
+
+      {profileStudentId ? (
+        <StudentPresenceProfile userId={profileStudentId} onApiCall={onApiCall} onClose={() => setProfileStudentId(null)} />
+      ) : null}
 
       {/* Edit Modal */}
       <ModalPortal open={Boolean(editingStudent)}>
