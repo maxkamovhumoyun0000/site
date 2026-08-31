@@ -28456,6 +28456,21 @@ def _homework_test_result_for_student(
     }
 
 
+def _homework_test_review_dpoints(test_result: dict | None) -> float:
+    """Calculate a test reward without awarding it at test completion.
+
+    Homework test answers keep the regular +2 / -3 scoring, but the value is
+    only applied when a teacher or the enabled strict AI reviewer approves
+    the homework.
+    """
+    if not test_result:
+        return 0.0
+    correct = max(0, int(test_result.get("correct_count") or 0))
+    wrong = max(0, int(test_result.get("wrong_count") or 0))
+    skipped = max(0, int(test_result.get("skipped_count") or 0))
+    return float(max(0, (correct * 2) - ((wrong + skipped) * 3)))
+
+
 def _strip_notification_html(text: str) -> str:
     """Telegram uchun yozilgan HTML teglarni (<b>, <i>, <a>...) web/push
     bildirishnomadan olib tashlaydi va asosiy entity'larni oddiy belgiga aylantiradi."""
@@ -28903,6 +28918,10 @@ async def teacher_homework_settings_post(
 async def _ai_auto_grade_submission(homework: dict, submission: dict, student_user: dict) -> bool:
     """Strict Diamondvoy review.  It only marks a submission reviewed after a
     valid component-by-component evaluation has been produced."""
+    # Defence in depth: every caller must respect the teacher's switch,
+    # including delayed content-test and VoiceRoom submission paths.
+    if not _homework_auto_grade_enabled(homework):
+        return False
     try:
         import aiohttp
 
@@ -29126,10 +29145,14 @@ faqat yuborilganini ko'rib "bajarildi" demang:
         subject = str((group or {}).get("subject") or "general")
 
         if accepted:
-            # Test homework (including library-assigned tests) carries no
-            # D'Point reward.  A non-test evidence assignment is rewarded
-            # modestly and proportionally after it truly passes review.
-            earned_dpoints = 0 if hw_kind in {"test", "both"} else round((score / 100.0) * 100.0)
+            # A homework test never changes the wallet when the student
+            # finishes it. Its score becomes a reward only after this strict
+            # review has accepted all teacher requirements.
+            earned_dpoints = (
+                _homework_test_review_dpoints(test_res)
+                if hw_kind in {"test", "both"}
+                else round((score / 100.0) * 100.0)
+            )
             status = "done"
             review_notes = f"Avtomatik tekshiruv: {score}%\n\n{feedback}"
         else:
@@ -29488,12 +29511,22 @@ async def teacher_review_homework(
     requested_delta = float(payload.dpoint_delta if payload.dpoint_delta is not None else payload.dcoin_delta or 0.0)
     group = _safe_call(lambda: get_group(group_id), None) if group_id > 0 else None
     subj = group.get("subject") if group else None
-    if str(homework.get("homework_kind") or "").lower() in {"test", "both"}:
-        dpoint_delta = 0.0
-    elif subj in ("Matematika", "Ona tili", "Tarix", "Arab tili"):
+    is_test_homework = str(homework.get("homework_kind") or "").lower() in {"test", "both"}
+    if subj in ("Matematika", "Ona tili", "Tarix", "Arab tili"):
         dpoint_delta = 0.0
     else:
         dpoint_delta = max(-500.0, min(500.0, requested_delta))
+        # Existing teacher clients submit zero as the untouched default. For
+        # a completed homework test, turn that default into the test-derived
+        # reward only at review time. A non-zero teacher value remains an
+        # explicit override.
+        if (
+            is_test_homework
+            and str(payload.status or "done").lower() == "done"
+            and abs(dpoint_delta) < 1e-9
+        ):
+            test_result = _homework_test_result_for_student(student_id, int(homework_id))
+            dpoint_delta = _homework_test_review_dpoints(test_result)
     if dpoint_delta != 0:
         try:
             add_dpoints(
@@ -29539,6 +29572,8 @@ async def teacher_ai_review_homework(
     homework = _safe_call(lambda: get_homework(int(homework_id)), None)
     if not homework:
         raise HTTPException(status_code=404, detail="Homework not found")
+    if not _homework_auto_grade_enabled(homework):
+        raise HTTPException(status_code=409, detail="AI avto-tekshiruv o'chirilgan")
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         submission = _safe_call(lambda: upsert_homework_submission(int(homework_id), int(student_id), "pending_review", "AI auto-review requested"), None)
@@ -49385,11 +49420,8 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
                 if submission:
                     _attach_homework_runtime_fields(submission)
                     await _notify_homework_submitted(homework, user, submission)
-                    teacher_id = int(homework.get("teacher_id") or 0)
-                    if teacher_id > 0:
-                        hw_settings = _safe_call(lambda: get_teacher_homework_settings(teacher_id), {}) or {}
-                        if hw_settings.get("ai_auto_grade"):
-                            await _ai_auto_grade_submission(homework, submission, user)
+                    if _homework_auto_grade_enabled(homework):
+                        await _ai_auto_grade_submission(homework, submission, user)
         except Exception:
             logger.exception("homework test auto-submit failed user_id=%s homework_id=%s", user_id, content_id)
     return {"message": "Test submitted", "result": result}

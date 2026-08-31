@@ -6544,10 +6544,14 @@ function TeacherHomeworkPanel({
   }, []);
 
   async function toggleAiAutoGrade(enabled: boolean) {
+    const previous = aiAutoGrade;
     setAiAutoGrade(enabled);
     try {
       await onApiCall("/teacher/homework/settings", { ai_auto_grade: enabled }, "POST");
-    } catch {}
+    } catch {
+      setAiAutoGrade(previous);
+      setPanelError("AI avto-tekshiruv sozlamasi saqlanmadi");
+    }
   }
 
   function addAiResultsToReview(reviewKey: string, kinds: Array<"speaking" | "writing" | "note">) {
@@ -6857,7 +6861,7 @@ function TeacherHomeworkPanel({
             </div>
             <div>
               <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>AI Avto-Tekshiruv (Strict Teacher)</h4>
-              <p style={{ margin: "2px 0 0 0", fontSize: "12px", opacity: 0.7 }}>O'quvchi yozma esse topshirganda AI avtomatik tekshirib 500 D'coin-gacha mukofot va izoh beradi</p>
+              <p style={{ margin: "2px 0 0 0", fontSize: "12px", opacity: 0.7 }}>Yoqilganda AI topshirilgan vazifani qattiqqo‘l tekshiradi va D'point hamda izohni faqat yakuniy baholashda beradi</p>
             </div>
           </div>
           <label style={{ display: "inline-flex", alignItems: "center", gap: "10px", cursor: "pointer", background: aiAutoGrade ? "rgba(99,102,241,0.15)" : "var(--surface-2, rgba(0,0,0,0.05))", padding: "8px 16px", borderRadius: "100px", border: aiAutoGrade ? "1.5px solid #6366f1" : "1px solid transparent", transition: "all 0.2s", userSelect: "none" }}>
@@ -7659,7 +7663,8 @@ function TeacherHomeworkPanel({
 	                    <button
 	                      className="btn btn-outline"
 	                      type="button"
-	                      disabled={reviewBusyNow}
+	                      disabled={reviewBusyNow || !aiAutoGrade}
+	                      title={!aiAutoGrade ? "AI avto-tekshiruv o'chirilgan" : undefined}
 	                      style={{ background: "rgba(99,102,241,0.12)", border: "1.5px solid #6366f1", color: "#6366f1", fontWeight: 700 }}
 	                      onClick={async () => {
 	                        const hwId = Number(row.id || 0);

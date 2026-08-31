@@ -2483,9 +2483,10 @@ async def ai_test_answer(
         and retry_until_correct
         and try_count >= MAX_RETRIES_PER_QUESTION
     )
-    # Teacher-assigned tests are assessment tasks, not a D'Point faucet.
-    # Public library/weekly practice keeps its smaller, retry-sensitive
-    # reward, while every homework test always returns zero D'Point.
+    # Teacher-assigned homework tests never change the wallet while a student
+    # is answering. Their score is retained here as evidence; D'points are
+    # calculated only after a teacher or the enabled strict AI reviewer gives
+    # the final homework decision.
     reward_eligible = str(attempt.get("source_type") or "") != "homework"
 
     dpoints = 0.0

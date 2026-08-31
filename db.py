@@ -21926,9 +21926,17 @@ def get_teacher_homework_settings(teacher_id: int) -> dict:
         if not row:
             return {"teacher_id": int(teacher_id), "ai_auto_grade": False}
         res = _row_to_dict(row)
+        raw_enabled = res.get("ai_auto_grade")
+        # A few older rows were written through a text-backed database
+        # connection. Python treats the string "0" as truthy, which meant
+        # disabling the switch could still leave automatic grading enabled.
+        if isinstance(raw_enabled, str):
+            ai_auto_grade = raw_enabled.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            ai_auto_grade = bool(raw_enabled)
         return {
             "teacher_id": int(teacher_id),
-            "ai_auto_grade": bool(res.get("ai_auto_grade")),
+            "ai_auto_grade": ai_auto_grade,
             "updated_at": str(res.get("updated_at") or ""),
         }
     except Exception:
