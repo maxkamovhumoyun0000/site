@@ -1035,8 +1035,9 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     if not answers:
         return None
 
-    # Alohida gapli mashqlar (11.1 kabi) raqamlanadi: "1. ... 2. ...".
-    # Uzluksiz o'qish matni (11.3 kabi) raqamlanmaydi — oqma matn bo'lib qoladi.
+    # Faqat manbaning o'zida bor raqamlar saqlanadi. Avval bu yer bir nechta
+    # bo'shliqli gapni avtomatik ``1.``, ``2.`` qilib yozar edi; natijada oddiy
+    # paragraf ham soxta alohida mashqlarga o'xshab qolardi.
     normalized_passage = _number_cloze_sentences(normalized_passage, len(answers))
 
     # So'zlar banki: AI bergan qutini (box) aynan olamiz — chalg'ituvchi so'z
@@ -1101,35 +1102,15 @@ def _normalize_reading_set(item: dict) -> dict | None:
 
 
 def _number_cloze_sentences(passage: str, gap_count: int) -> str:
-    """Alohida gapli cloze mashqlarini raqamlab, har birini yangi qatorga chiqaradi.
+    """Keep source layout intact; never manufacture exercise numbering.
 
-    11.1 kabi mashqlar (har gapda bitta bo'sh joy) -> "1. ... \n2. ...".
-    11.3 kabi uzluksiz o'qish matni (gaplar soni bo'sh joylar sonidan ancha ko'p
-    yoki matn bitta hikoya) -> tegilmaydi.
+    The AI prompt receives the page/image and preserves genuine labels.  At
+    this normalisation layer we do not have enough reliable visual evidence to
+    decide whether prose sentences are separate tasks, so adding numbers here
+    would be a data-lossy guess.
     """
-    text = str(passage or "")
-    if gap_count < 2:
-        return text
-    # Allaqachon raqamlangan bo'lsa (1. / 1) ) tegilmaydi.
-    if re.search(r"(^|\n)\s*\d+\s*[.)]\s", text):
-        return text
-
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-    if len(lines) > 1:
-        # Har qatorda bittadan gap — shunchaki raqamlaymiz.
-        if all("___" in ln for ln in lines):
-            return "\n".join(f"{i + 1}. {ln}" for i, ln in enumerate(lines))
-        return text
-
-    # Bitta uzun qator: gap chegaralari bo'yicha bo'lamiz.
-    single = lines[0] if lines else ""
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+(?=[A-ZА-ЯЁ“\"'])", single) if p.strip()]
-    gapped = [p for p in parts if "___" in p]
-    # Har gapda kamida bitta bo'sh joy bo'lsa va gaplar soni bo'sh joylar soniga
-    # yaqin bo'lsa — bu alohida gaplar to'plami (mashq), matn emas.
-    if len(gapped) >= 2 and len(gapped) == len(parts) and len(parts) >= max(2, gap_count // 2):
-        return "\n".join(f"{i + 1}. {p}" for i, p in enumerate(parts))
-    return text
+    del gap_count
+    return str(passage or "")
 
 
 def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
@@ -1140,7 +1121,6 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
     answers: list[dict] = []
     bank: list[str] = []
     instruction = None
-    idx = 0
     for q in run:
         prompt = str(q.get("prompt") or "").strip()
         ans = str(q.get("answer") or "").strip()
@@ -1148,9 +1128,9 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
             continue
         if "___" not in prompt:
             prompt = (prompt + " ___").strip() if prompt else "___"
-        idx += 1
-        # Har mashqni alohida raqamli qatorda ko'rsatamiz (chalkash bo'lmasin).
-        lines.append(f"{idx}. {prompt}")
+        # Ketma-ket gaplar faqat yangi qatorda qoladi. Raqam manbada yo'q
+        # bo'lsa, uni sun'iy yaratish mumkin emas.
+        lines.append(prompt)
         acc = q.get("accepted_answers") or []
         answers.append({"answer": ans, "accepted_answers": [str(a).strip() for a in acc if str(a).strip()]})
         if not instruction and q.get("instruction"):
@@ -1429,7 +1409,62 @@ class ScreenshotImportRequest(BaseModel):
         return seen
 
 
-def _import_system_prompt(subject: str, level: str | None, wanted: list[str], instruction_language: str) -> str:
+_NUMBERED_EXERCISE_LINE_RE = re.compile(
+    r"(?im)^\s*(?:\(?\d{1,3}\)?\s*[.)]|"
+    r"(?:exercise|task|activity|practice|mashq|topshiriq|savol|"
+    r"упражнение|задание|вопрос)\s*\d{1,3}\s*[:.)]?)\s+\S"
+)
+
+
+def _inspect_import_structure(extracted_text: str, has_vision_source: bool) -> dict[str, Any]:
+    """Return only facts that can safely constrain AI exercise splitting.
+
+    A paragraph may contain many sentences and ordinary numbers, but that is
+    not evidence that it consists of exercises 1, 2 and 3.  We therefore only
+    trust clear, line-start exercise markers from an extracted source.  For a
+    vision-only image, the model is asked to inspect the visible layout itself
+    rather than guessing from a missing OCR string.
+    """
+    source = str(extracted_text or "").strip()
+    markers = [
+        re.sub(r"\s+", " ", match.group(0)).strip()[:80]
+        for match in _NUMBERED_EXERCISE_LINE_RE.finditer(source)
+    ]
+    return {
+        "has_extractable_text": bool(source),
+        "has_explicit_numbered_exercises": bool(markers),
+        "markers": markers[:12],
+        "vision_only": bool(has_vision_source and not source),
+    }
+
+
+def _enforce_source_layout(questions: list[dict], structure: dict[str, Any]) -> list[dict]:
+    """Never let a text paragraph acquire invented exercise numbers.
+
+    The prompt does most of the semantic work.  This small deterministic guard
+    handles a common model failure mode: assigning ``group: 1/2/3`` to each
+    sentence although the uploaded DOC/PDF/TXT has no numbered tasks at all.
+    We intentionally do not constrain vision-only material here: its visible
+    numbers are unavailable to the local text extractor and must be preserved
+    when the vision model actually sees them.
+    """
+    if not questions or not structure.get("has_extractable_text"):
+        return questions
+    if structure.get("has_explicit_numbered_exercises"):
+        return questions
+    for question in questions:
+        # A group is only a source exercise label, never an AI-made sequence.
+        question["group"] = None
+    return questions
+
+
+def _import_system_prompt(
+    subject: str,
+    level: str | None,
+    wanted: list[str],
+    instruction_language: str,
+    source_structure: dict[str, Any],
+) -> str:
     kinds_help = "\n".join(
         f'- "{kind}": {meta["label_en"]}'
         + (" (teacher must upload the audio file afterwards)" if meta["needs_audio_asset"] else "")
@@ -1465,14 +1500,30 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "• Each question: distinct prompt, 4 options, correct_index. Leave audio_url empty (teacher uploads).\n"
         "• Each listening question is SEPARATE (saved individually). Do NOT group them into one object.\n"
         "• Example: a listening about a job interview → 3 questions: what job, where, what time.\n\n"
+        "=== SOURCE LAYOUT / SPLITTING RULES (highest priority after literal extraction) ===\n"
+        "• Never turn the separate sentences of a paragraph, story, dialogue, explanation,\n"
+        "  word list, table row, or reading text into invented exercises 1, 2, 3.\n"
+        "• Split into independent exercise groups ONLY when the source visibly labels them as\n"
+        "  separate tasks, such as `1.`, `2.`, `3.`, `(1)`, `(2)`, `Exercise 1`,\n"
+        "  `Task 1`, `Mashq 1`, `Topshiriq 1`, or their Russian equivalents.\n"
+        "• Preserve each visible label exactly. Only set `group` to that exact printed label;\n"
+        "  never invent a group, exercise id, or numbering. If no label is visible, omit group.\n"
+        "• A continuous text remains ONE coherent object (normally `reading_set`, `reading_open`,\n"
+        "  or one `passage_cloze` only when visible blanks exist). Do not manufacture individual\n"
+        "  writing/translation questions from its sentences. If uncertain, keep it together.\n"
+        f"• Extracted-source layout check: explicit numbered exercises = {str(bool(source_structure.get('has_explicit_numbered_exercises'))).lower()}.\n"
+        f"  Detected visible markers: {', '.join(source_structure.get('markers') or []) or 'none'}.\n"
+        "  When this check is false, the text source has no trustworthy numbered-task layout: all\n"
+        "  output groups MUST be empty and no `1./2./3.` sequence may be created. For vision-only\n"
+        "  images, inspect the visible page and apply the same rule strictly.\n\n"
         "=== PRINTED EXERCISE RULES ===\n"
         "0. Analyze page structure first. A single printed exercise (one instruction + its items,\n"
         "   e.g. 'Complete the sentences. Use a verb from the box' + 8 sentences, OR a reading\n"
         "   text with numbered gaps) = ONE cohesive task → output as ONE 'passage_cloze'.\n"
-        "   Give every question a 'group' string = the exercise number (e.g. '11.1').\n"
+        "   Add a 'group' string only when that exact exercise number is visibly printed (e.g. '11.1').\n"
         "   Only use standalone 'gap_fill' for a truly independent single gap.\n"
         "1. Convert ONLY what is LITERALLY printed. Do NOT invent exercises not on the page.\n"
-        "1b. NUMBERED exercises: keep order and numbering. For a numbered gap list sharing one\n"
+        "1b. NUMBERED exercises: keep order and numbering only when visible in the source. For a numbered gap list sharing one\n"
         "   instruction/word box → ONE 'passage_cloze' with each item on its OWN line prefixed\n"
         "   by its number ('1. get — ___\\n2. see — ___'). Continuous prose stays as flowing text.\n"
         "2. Use the question kind that matches each printed exercise exactly.\n"
@@ -1494,7 +1545,7 @@ def _import_system_prompt(subject: str, level: str | None, wanted: list[str], in
         "   • 'Complete the sentences' with WORD BANK → ONE 'passage_cloze', each sentence on its OWN line.\n"
         "   • Continuous passage with numbered gaps → ONE 'passage_cloze', flowing prose.\n"
         "   • Single-sentence gap with no shared text → 'gap_fill'.\n"
-        "   • Verb/word transformation lists → ONE 'passage_cloze', each item on its own line (e.g. '1. get — ___').\n"
+        "   • Verb/word transformation lists → ONE 'passage_cloze'; retain `1. get — ___` only if the source printed it.\n"
         "   • 'Write sentences about...' with printed starters → 'passage_cloze' with ___ at blank position.\n"
         "   • ONLY use 'write_sentence' if the student must compose a completely free-form essay.\n"
         "9. If the material is not educational, return {\"error\":\"not_educational\"}.\n\n"
@@ -1595,11 +1646,18 @@ async def library_ai_import_screenshot(
     user_prompt = str(payload.instruction or "").strip() or (
         "Digitize this coursebook material: extract its text and convert every exercise into structured questions."
     )
-    system_prompt = _import_system_prompt(payload.subject, payload.level, wanted, instruction_language)
     extracted = "\n\n".join(text_blocks).strip()
     if extracted:
         # 60k belgidan oshsa kesamiz (juda katta hujjatlarni AI baribir hazm qilmaydi).
         extracted = extracted[:60000]
+    source_structure = _inspect_import_structure(extracted, bool(vision_urls))
+    system_prompt = _import_system_prompt(
+        payload.subject,
+        payload.level,
+        wanted,
+        instruction_language,
+        source_structure,
+    )
 
     raw = ""
 
@@ -1647,10 +1705,14 @@ async def library_ai_import_screenshot(
                 )
                 if str(data.get("error") or "") == "not_educational":
                     raise HTTPException(status_code=422, detail="Fayl o'quv materiali emas")
-                questions = _normalize_questions(data.get("questions"))
+                questions = _enforce_source_layout(
+                    _normalize_questions(data.get("questions")), source_structure
+                )
                 logger.info(
-                    "library ai import normalized attempt=%s questions=%d",
-                    attempt_no + 1, len(questions)
+                    "library ai import normalized attempt=%s questions=%d numbered_source=%s",
+                    attempt_no + 1,
+                    len(questions),
+                    source_structure.get("has_explicit_numbered_exercises"),
                 )
                 if questions:
                     break  # muvaffaqiyat
@@ -1688,6 +1750,7 @@ async def library_ai_import_screenshot(
 
     # Ketma-ket mayda gap_fill savollarni yaxlit passage_cloze mashqiga birlashtiramiz
     # (AI alohida chiqarsa ham — kitobdagidek bitta yaxlit karta bo'ladi).
+    questions = _enforce_source_layout(questions, source_structure)
     questions = _propagate_group_instructions(questions)
     questions = _group_consecutive_gap_fill(questions)
     if not questions:
@@ -1707,6 +1770,10 @@ async def library_ai_import_screenshot(
         "needs_audio_upload": needs_audio,
         "kinds_used": sorted({q["kind"] for q in questions}),
         "unsupported": unsupported,
+        "source_structure": {
+            "has_explicit_numbered_exercises": source_structure.get("has_explicit_numbered_exercises"),
+            "vision_only": source_structure.get("vision_only"),
+        },
     }
 
 
@@ -1846,13 +1913,14 @@ def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], 
                 for served in rendered:
                     if len(vision_urls) < _MAX_VISION_IMAGES:
                         vision_urls.append(_abs_url(served))
-            else:
-                text = _extract_pdf_text(local)
-                if text.strip():
-                    text_blocks.append(text)
-                    logger.info("import_sources: pdf->text chars=%d url=%s", len(text), url)
-                else:
-                    unsupported.append(ext)
+            # Vision keeps page layout, while extracted text lets us enforce
+            # the no-invented-numbering rule deterministically for PDFs.
+            text = _extract_pdf_text(local)
+            if text.strip():
+                text_blocks.append(text)
+                logger.info("import_sources: pdf->text chars=%d url=%s", len(text), url)
+            elif not rendered:
+                unsupported.append(ext)
             continue
 
         # 3. Word/DOC/DOCX
