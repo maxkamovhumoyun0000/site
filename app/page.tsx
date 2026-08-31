@@ -6506,6 +6506,9 @@ function TeacherHomeworkPanel({
   const [editingHomeworkId, setEditingHomeworkId] = useState<number | null>(null);
   const [deletingHomeworkId, setDeletingHomeworkId] = useState<number | null>(null);
   const [savingHomework, setSavingHomework] = useState(false);
+  // Retained until the full homework + test save succeeds.  A delayed POST
+  // retry therefore reuses the same server idempotency key.
+  const homeworkCreateRequestKey = useRef<string | null>(null);
   const [isVoiceroom, setIsVoiceroom] = useState(false);
   const [voiceroomGroups, setVoiceroomGroups] = useState<any[]>([]);
   const [previewingPairs, setPreviewingPairs] = useState(false);
@@ -6555,6 +6558,7 @@ function TeacherHomeworkPanel({
   }
 
   function resetHomeworkForm() {
+    homeworkCreateRequestKey.current = null;
     setEditingHomeworkId(null);
     setTargetType("group");
     setStudentId(0);
@@ -7134,6 +7138,9 @@ function TeacherHomeworkPanel({
               }
               try {
                 setSavingHomework(true);
+                const requestKey = editingHomeworkId
+                  ? undefined
+                  : (homeworkCreateRequestKey.current ||= crypto.randomUUID());
                 const saveResult = await onApiCall(
                   editingHomeworkId ? `/teacher/homework/${editingHomeworkId}` : "/teacher/homework",
                   {
@@ -7152,6 +7159,7 @@ function TeacherHomeworkPanel({
                     requires_voice_message: requiresVoiceMessage,
                     is_voiceroom: isVoiceroom,
                     voiceroom_groups: isVoiceroom ? voiceroomGroups : undefined,
+                    idempotency_key: requestKey,
                   },
                   editingHomeworkId ? "PATCH" : "POST",
                   editingHomeworkId ? "Homework updated" : "Homework created",

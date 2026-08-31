@@ -2,7 +2,6 @@
 
 /**
  * Student AI test runner — yangi test turlari uchun.
- *  • Taymer YO'Q.
  *  • Har bir savol javobi darhol tekshiriladi ("Tekshirilmoqda…" holati).
  *  • Xato bo'lsa shu savolda qolinadi (retry_until_correct).
  *  • Testdan chiqib ketilsa attempt bekor bo'ladi — keyingi kirishda boshidan.
@@ -51,6 +50,7 @@ type Question = {
 type Attempt = {
   attempt_id: number;
   status: string;
+  source_type?: string;
   title?: string;
   total_questions: number;
   solved_count: number;
@@ -180,8 +180,7 @@ export function AiTestRunner({
         </div>
         {q.retry_until_correct && (
           <p className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-300">
-            {tt("aitest.mustCorrect", "To'g'ri javob bermaguningizcha keyingi savolga o'tolmaysiz.")}
-            {currentTries > 0 ? ` (${currentTries})` : ""}
+            {`Urinishlar: ${currentTries} / 5`}
           </p>
         )}
       </header>
@@ -220,7 +219,9 @@ function FinishedView({ attempt, onExit }: { attempt: Attempt; onExit: () => voi
       </p>
       <div className="mb-6 flex justify-center gap-4">
         <Stat label={tt("aitest.correct", "To'g'ri")} value={attempt.correct_count} tone="green" />
-        <Stat label={tt("aitest.dpoint", "D'point")} value={`${attempt.dpoints_delta > 0 ? "+" : ""}${attempt.dpoints_delta.toFixed(1)}`} tone={attempt.dpoints_delta >= 0 ? "green" : "red"} />
+        {attempt.source_type !== "homework" && (
+          <Stat label={tt("aitest.dpoint", "D'point")} value={`${attempt.dpoints_delta > 0 ? "+" : ""}${attempt.dpoints_delta.toFixed(1)}`} tone={attempt.dpoints_delta >= 0 ? "green" : "red"} />
+        )}
       </div>
       <button onClick={onExit} className="rounded-xl bg-cyan-600 px-6 py-3 font-black text-white">Tugatish</button>
     </div>
@@ -589,7 +590,7 @@ function AnswerInput({
     return (
       <div className="space-y-4">
         <p className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-800 dark:bg-blue-500/10 dark:text-blue-100">
-          Audioni kerak bo'lsa qayta eshiting, so'ng barcha savollarga javob bering. Taymer yo'q.
+          Audioni kerak bo'lsa qayta eshiting, so'ng barcha savollarga javob bering.
         </p>
         {subs.map((s, index) => {
           const answer = listeningSetAnswers[index] || {};

@@ -94,37 +94,37 @@ type KindMeta = {
 export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
   speak_sentence: {
     label: "Gap tuzib gapirish",
-    hint: "Studentga so'z beriladi, u mikrofonga gap aytadi. AI talaffuz + grammatikani tekshiradi.",
+    hint: "Studentga so'z beriladi, u mikrofonga gap aytadi. Talaffuz va grammatika baholanadi.",
     check: "ai", input: "audio", needsAudio: false, icon: "🎙️",
   },
   write_sentence: {
     label: "Gap tuzib yozish",
-    hint: "Studentga so'z beriladi, u gap yozadi. AI grammatikani tekshiradi.",
+    hint: "Studentga so'z beriladi, u gap yozadi. Grammatika baholanadi.",
     check: "ai", input: "text", needsAudio: false, icon: "✍️",
   },
   guided_writing: {
     label: "Mavzu bo'yicha yozma mashq",
-    hint: "Mavzu beriladi, student matn yozadi. AI grammatika va mazmunni tekshiradi.",
+    hint: "Mavzu beriladi, student matn yozadi. Grammatika va mazmun baholanadi.",
     check: "ai", input: "text", needsAudio: false, icon: "📝",
   },
   translation: {
     label: "Tarjima",
-    hint: "Gapni tarjima qilish. AI ma'no va grammatikani tekshiradi.",
+    hint: "Gapni tarjima qilish. Ma'no va grammatika baholanadi.",
     check: "ai", input: "text", needsAudio: false, icon: "🔁",
   },
   reading_open: {
     label: "Matn bo'yicha ochiq savol",
-    hint: "Matn + ochiq savol. AI javob mazmunini tekshiradi.",
+    hint: "Matn va ochiq savol. Javob mazmuni baholanadi.",
     check: "ai", input: "text", needsAudio: false, icon: "📖",
   },
   read_aloud: {
     label: "Ovoz chiqarib o'qish",
-    hint: "Student matnni o'qiydi, AI talaffuzni tekshiradi.",
+    hint: "Student matnni o'qiydi, talaffuz baholanadi.",
     check: "ai", input: "audio", needsAudio: false, icon: "🔊",
   },
   paraphrase: {
     label: "Boshqacha aytish",
-    hint: "Gapni o'z so'zlari bilan aytish/yozish. AI tekshiradi.",
+    hint: "Gapni o'z so'zlari bilan aytish yoki yozish.",
     check: "ai", input: "text", needsAudio: false, icon: "♻️",
   },
   dialogue_completion: {
@@ -159,7 +159,7 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
   },
   listening_open: {
     label: "Listening: ochiq savol",
-    hint: "Audio yuklash shart. Student audio asosida yozma javob beradi, AI tekshiradi.",
+    hint: "Audio yuklash shart. Student audio asosida yozma javob beradi.",
     check: "ai", input: "text", needsAudio: true, icon: "💭",
   },
   listening_gap: {
@@ -1348,15 +1348,6 @@ export function AiTestEditor({
                   </option>
                 ))}
               </select>
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-[11px] font-black ${
-                  meta.check === "ai"
-                    ? "bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-100"
-                    : "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-100"
-                }`}
-              >
-                {meta.check === "ai" ? "🤖 AI tekshiradi" : "⚡ Avtomatik"}
-              </span>
               <div className="ml-auto flex items-center gap-1">
                 <button type="button" onClick={() => move(index, -1)} className="rounded-lg px-2 py-1 text-sm font-black text-ink-500 hover:bg-line dark:text-navy-300 dark:hover:bg-white/10">↑</button>
                 <button type="button" onClick={() => move(index, 1)} className="rounded-lg px-2 py-1 text-sm font-black text-ink-500 hover:bg-line dark:text-navy-300 dark:hover:bg-white/10">↓</button>

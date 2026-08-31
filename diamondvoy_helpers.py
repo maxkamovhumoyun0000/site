@@ -396,6 +396,8 @@ async def diamondvoy_gemini_answer_stream(
     *,
     is_admin_context: bool = False,
     conversation: list[dict[str, str]] | None = None,
+    system_prompt_override: str | None = None,
+    temperature: float = 0.75,
 ):
     """
     Actual streaming output of the above logic via Grok/xAI.
@@ -468,6 +470,12 @@ async def diamondvoy_gemini_answer_stream(
                 "Markdown yulduzcha (*, **, ***) va # sarlavhalarsiz yoz. Qisqa bo‘limlar, kerak bo‘lsa • yoki raqamli ro‘yxat; har bir bo‘limda 1–2 emoji (masalan 📌, 💡). Har javobda paragraf tuzilishi va emojilarni almashtirib tur, bitta shablonni takrorlama."
             )
 
+    # Reuse the exact Diamondvoy/Grok generation path for tightly-scoped
+    # server jobs (for example homework grading) while allowing those jobs to
+    # supply a deterministic machine-readable instruction.
+    if system_prompt_override:
+        sys_prompt = str(system_prompt_override)
+
     history_lines: list[str] = []
     for row in (conversation or [])[-12:]:
         role = str((row or {}).get("role") or "").strip().lower()
@@ -487,7 +495,7 @@ async def diamondvoy_gemini_answer_stream(
                 user_prompt, 
                 session=session, 
                 system_content=sys_prompt, 
-                temperature=0.75
+                temperature=temperature
             ):
                 yield chunk
     except Exception:

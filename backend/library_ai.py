@@ -299,7 +299,9 @@ _KIND_SYNONYMS: dict[str, str] = {
     "conversation": "dialogue_completion",
 }
 
-MAX_RETRIES_PER_QUESTION = 6
+# Every retry is saved, but an exercise cannot trap a student indefinitely.
+# The fifth answer is the final attempt for that question.
+MAX_RETRIES_PER_QUESTION = 5
 
 
 @router.get("/test-types")
@@ -404,6 +406,7 @@ class LibraryAssignRequest(BaseModel):
     title: str | None = None
     description: str | None = None
     due_at: str | None = None
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 def _node_or_404(node_id: int) -> dict:
@@ -633,6 +636,7 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
         due_at = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
 
     created: list[dict] = []
+    newly_created: list[dict] = []
     targets: list[int | None] = student_ids or [None]
     for student_id in targets:
         try:
@@ -649,14 +653,21 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
                 # bo'lib ko'rinardi.
                 image_url=str(node.get("file_url") or "") or None,
                 homework_kind="test" if kind == "test" else "list",
+                # A multi-student assignment has one logical request but one
+                # homework row per student.  Give each row a stable child key.
+                idempotency_key=(
+                    f"{str(payload.idempotency_key).strip()}:{student_id or ('group-' + str(group_id or 0))}"
+                    if str(payload.idempotency_key or "").strip() else None
+                ),
             )
         except Exception as exc:
             logger.exception("library_assign create_homework failed for student_id=%s: %s", student_id, exc)
             homework = None
         if not homework:
             continue
+        is_replay = bool(homework.pop("_idempotent_replay", False))
         homework_id = int(homework.get("id") or 0)
-        if kind == "test" and homework_id > 0:
+        if kind == "test" and homework_id > 0 and not is_replay:
             _safe(
                 lambda hid=homework_id: dbm.save_content_test(
                     "homework",
@@ -668,6 +679,8 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
                 )
             )
         created.append(homework)
+        if not is_replay:
+            newly_created.append(homework)
     if not created:
         raise HTTPException(status_code=500, detail="Vazifa yaratilmadi")
 
@@ -675,14 +688,19 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
     try:
         from backend.main import _notify_homework_created, _homework_audience_student_ids
 
-        for hw in created:
+        for hw in newly_created:
             audience = _homework_audience_student_ids(hw)
             if audience:
                 await _notify_homework_created(hw, user, audience)
     except Exception:
         logger.exception("library assign notification failed node_id=%s", node_id)
 
-    return {"message": f"{len(created)} ta vazifa berildi", "items": created}
+    message_count = len(newly_created) if newly_created else len(created)
+    return {
+        "message": f"{message_count} ta vazifa berildi",
+        "items": created,
+        "replayed": bool(created and not newly_created),
+    }
 
 
 def _json_obj(raw: Any) -> dict:
@@ -1261,7 +1279,10 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
             f"Напишите предложение со словом «{word}»" if study_ru
             else f"Write a sentence using '{word}'"
         )
-        base["reference_answer"] = None
+        # If the teacher supplied a model sentence, retain it for feedback so
+        # a wrong vocabulary sentence can show a concrete correct version.
+        # It remains a model, not the only accepted answer.
+        base["reference_answer"] = example_sentence
     elif kind == "spelling":
         base["prompt"] = q.get("prompt") or (
             "Правильно напишите слово" if study_ru
@@ -2204,7 +2225,16 @@ def _attempt_state(attempt: dict) -> dict:
     for row in answers:
         idx = int(row.get("question_index") or 0)
         tries[idx] = max(tries.get(idx, 0), int(row.get("try_count") or 1))
-        if str(row.get("verdict") or "") == "correct":
+        kind = str((questions[idx] if 0 <= idx < len(questions) else {}).get("kind") or "")
+        meta = AI_TEST_TYPES.get(kind, {})
+        # A question is resolved by a correct answer, a no-retry question, or
+        # after the fifth recorded attempt.  All wrong attempts stay in the
+        # answer history for the teacher.
+        if (
+            str(row.get("verdict") or "") == "correct"
+            or not bool(meta.get("retry_until_correct", True))
+            or int(row.get("try_count") or 1) >= MAX_RETRIES_PER_QUESTION
+        ):
             solved.add(idx)
         parsed = _json_obj(row.get("ai_feedback_json"))
         if parsed:
@@ -2448,18 +2478,29 @@ async def ai_test_answer(
 
     try_count = int(saved.get("try_count") or 1)
     retry_until_correct = bool(meta.get("retry_until_correct", True))
+    attempts_exhausted = (
+        verdict != "correct"
+        and retry_until_correct
+        and try_count >= MAX_RETRIES_PER_QUESTION
+    )
+    # Teacher-assigned tests are assessment tasks, not a D'Point faucet.
+    # Public library/weekly practice keeps its smaller, retry-sensitive
+    # reward, while every homework test always returns zero D'Point.
+    reward_eligible = str(attempt.get("source_type") or "") != "homework"
 
     dpoints = 0.0
     if verdict == "correct":
-        dpoints = _setting("ai_test_correct_reward", 2.0)
-        if try_count > 1:
-            dpoints -= _setting("ai_test_retry_penalty", 0.5) * (try_count - 1)
+        if reward_eligible:
+            dpoints = max(0.0, _setting("ai_test_correct_reward", 2.0)
+                          - _setting("ai_test_retry_penalty", 0.5) * (try_count - 1))
         dbm.bump_ai_test_counters(int(attempt_id), correct=1, retries=max(0, try_count - 1), dpoints=dpoints)
-    elif not retry_until_correct:
-        dpoints = -abs(_setting("ai_test_skip_penalty", 2.0))
+    elif not retry_until_correct or attempts_exhausted:
+        if reward_eligible and not retry_until_correct:
+            dpoints = -abs(_setting("ai_test_skip_penalty", 2.0))
         dbm.bump_ai_test_counters(int(attempt_id), wrong=1, retries=max(0, try_count - 1), dpoints=dpoints)
     else:
-        # retry_until_correct: cheksiz urinish, jarima yo'q — faqat to'g'risini kutamiz.
+        # The failed answer itself was already saved above.  It contributes
+        # to retry history but does not award a reward.
         dbm.bump_ai_test_counters(int(attempt_id), retries=1)
 
     if abs(dpoints) > 0:
@@ -2469,7 +2510,7 @@ async def ai_test_answer(
             )
         )
 
-    moved_on = verdict == "correct" or not retry_until_correct
+    moved_on = verdict == "correct" or not retry_until_correct or attempts_exhausted
 
     fresh = _safe(lambda: dbm.get_ai_test_attempt(int(attempt_id), user_id)) or attempt
     new_state = _attempt_state(fresh)
@@ -2483,6 +2524,7 @@ async def ai_test_answer(
         "verdict": verdict,
         "moved_on": moved_on,
         "try_count": try_count,
+        "tries_left": max(0, MAX_RETRIES_PER_QUESTION - try_count) if retry_until_correct else 0,
         "feedback": feedback,
         "dpoints_delta": round(dpoints, 2),
         "attempt": new_state,
@@ -2528,11 +2570,15 @@ def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:
                 import asyncio
                 try:
                     try:
-                        from main import _ai_auto_grade_submission
+                        from main import _ai_auto_grade_submission, _homework_auto_grade_enabled
                     except ImportError:
-                        from backend.main import _ai_auto_grade_submission
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_ai_auto_grade_submission(homework, sub, user))
+                        from backend.main import _ai_auto_grade_submission, _homework_auto_grade_enabled
+                    # Finishing an AI test submits it, but it is only marked
+                    # reviewed when this teacher enabled the automatic
+                    # checker.  A submission alone must remain pending.
+                    if _homework_auto_grade_enabled(homework):
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(_ai_auto_grade_submission(homework, sub, user))
                 except Exception as e:
                     logger.warning("Failed to trigger _ai_auto_grade_submission in library_ai: %s", e)
     if source_type == "weekly_review":
@@ -2770,6 +2816,8 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
     )
     parts.append(
         f"Write every explanation field in {result_language}. Do not translate the student's own answer.\n"
+        "When is_correct is false, corrected is REQUIRED: write the complete, natural corrected/model answer, "
+        "not only an error fragment. For a word-sentence task it must use the required word correctly.\n"
         "Return ONLY valid JSON, no markdown:\n"
         '{"is_correct":true,'
         '"grammar_ok":true,"pronunciation_ok":true,"level_ok":true,'
@@ -2817,7 +2865,10 @@ async def _check_with_ai(
     raw = ""
     try:
         async with aiohttp.ClientSession() as session:
-            for model in get_grok_model_candidates()[:2]:
+            # Exercise checks are short and must feel immediate.  Use the
+            # primary Diamond/Grok model once with a compact response rather
+            # than making students wait for a second long fallback attempt.
+            for model in get_grok_model_candidates()[:1]:
                 body = {
                     "model": model,
                     "messages": [
@@ -2825,14 +2876,14 @@ async def _check_with_ai(
                         {"role": "user", "content": prompt},
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 1200,
+                    "max_tokens": 650,
                 }
                 _xai_apply_payload_tuning(body, model=model, stream=False)
                 async with session.post(
                     XAI_ENDPOINT,
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json=body,
-                    timeout=aiohttp.ClientTimeout(total=60),
+                    timeout=aiohttp.ClientTimeout(total=25),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
@@ -2847,6 +2898,14 @@ async def _check_with_ai(
     if not parsed:
         raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
     verdict = "correct" if bool(parsed.get("is_correct")) else "wrong"
+    if verdict == "wrong" and not str(parsed.get("corrected") or "").strip():
+        # A teacher-provided example is the reliable fallback if the model
+        # forgot the field.  The normal prompt above requires a bespoke
+        # correction for open-ended sentences.
+        fallback = str(question.get("reference_answer") or question.get("example_sentence") or "").strip()
+        if fallback:
+            parsed["corrected"] = fallback
+        parsed["feedback"] = str(parsed.get("feedback") or "Xato joylarini tuzatib, gapni qayta yozing.")
     parsed["transcript"] = answer if spoken else None
     parsed["was_spoken"] = spoken
     return verdict, parsed

@@ -22054,7 +22054,21 @@ def ensure_homework_schema():
                     ("requires_file", "BOOLEAN DEFAULT FALSE"),
                     ("requires_essay", "BOOLEAN DEFAULT FALSE"),
                     ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
+                    # A client-generated key makes POST retries safe.  It is
+                    # deliberately nullable so existing and manually-created
+                    # homework rows are unaffected.
+                    ("idempotency_key", "TEXT"),
                 ],
+            )
+            # Both SQLite and Postgres support a partial unique index.  Old
+            # rows have a NULL key, while a repeated mobile/web request
+            # returns the original homework instead of a duplicate.
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_web_homeworks_teacher_request_key
+                ON web_homeworks(teacher_id, idempotency_key)
+                WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''
+                """
             )
             conn.commit()
         finally:
@@ -22077,21 +22091,36 @@ def create_homework(
     requires_essay: bool = False,
     is_voiceroom: bool = False,
     voiceroom_groups: list[dict] | None = None,
+    idempotency_key: str | None = None,
 ) -> dict | None:
     ensure_homework_schema()
     normalized_kind = str(homework_kind or "both").strip().lower()
     if normalized_kind not in {"list", "test", "both"}:
         normalized_kind = "both"
+    request_key = str(idempotency_key or "").strip()[:160] or None
     conn = get_conn()
     cur = conn.cursor()
     homework_id = 0
     try:
+        # Fast path for a mobile retry after a timeout.  The unique index is
+        # still the source of truth for concurrent requests.
+        if request_key:
+            cur.execute(
+                "SELECT id FROM web_homeworks WHERE teacher_id=? AND idempotency_key=? LIMIT 1",
+                (int(teacher_id), request_key),
+            )
+            existing = _row_to_dict(cur.fetchone())
+            if existing:
+                previous = get_homework(int(existing.get("id") or 0))
+                if previous:
+                    previous["_idempotent_replay"] = True
+                return previous
         cur.execute(
             """
             INSERT INTO web_homeworks(
-                teacher_id, student_id, group_id, target_type, homework_kind, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, status
+                teacher_id, student_id, group_id, target_type, homework_kind, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, idempotency_key, status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
             """,
             (
                 int(teacher_id),
@@ -22108,6 +22137,7 @@ def create_homework(
                 bool(requires_file),
                 bool(requires_essay),
                 bool(is_voiceroom),
+                request_key,
             ),
         )
         homework_id = int(getattr(cur, "lastrowid", 0) or 0)
@@ -22132,8 +22162,29 @@ def create_homework(
                         """,
                         (homework_id, s1, s2, s3, room_id)
                     )
-
         conn.commit()
+    except Exception:
+        # A concurrent insert with this key is not an error for callers — it
+        # is the same creation request replayed.  Roll back before querying,
+        # because Postgres marks the transaction failed after a unique clash.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if request_key:
+            try:
+                cur.execute(
+                    "SELECT id FROM web_homeworks WHERE teacher_id=? AND idempotency_key=? LIMIT 1",
+                    (int(teacher_id), request_key),
+                )
+                existing = _row_to_dict(cur.fetchone())
+                previous = get_homework(int(existing.get("id") or 0)) if existing else None
+                if previous:
+                    previous["_idempotent_replay"] = True
+                    return previous
+            except Exception:
+                pass
+        raise
     finally:
         conn.close()
     return get_homework(homework_id) if homework_id > 0 else None

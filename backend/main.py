@@ -2109,6 +2109,9 @@ class HomeworkCreateRequest(BaseModel):
     voiceroom_groups: list[dict] | None = None
     dcoin_effect: float = Field(default=0.0, ge=-500.0, le=500.0)
     dpoint_effect: float | None = Field(default=None, ge=-500.0, le=500.0)
+    # Reusing this key after a timeout/double tap must return the original
+    # homework, not create a second assignment.
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 class HomeworkSubmitRequest(BaseModel):
@@ -28761,15 +28764,19 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
             requires_essay=payload.requires_essay or False,
             is_voiceroom=payload.is_voiceroom or False,
             voiceroom_groups=voiceroom_groups,
+            idempotency_key=payload.idempotency_key,
         )
     except Exception as exc:
         logger.exception("teacher.homework.create failed teacher_id=%s student_id=%s group_id=%s", teacher_id, student_id, group_id)
         raise HTTPException(status_code=500, detail=f"Could not create homework: {str(exc)[:220]}") from exc
     if not created:
         raise HTTPException(status_code=422, detail="Could not create homework")
+    is_replay = bool(created.pop("_idempotent_replay", False))
     try:
         _attach_homework_runtime_fields(created)
-        await _notify_homework_created(created, user, _homework_audience_student_ids(created))
+        # Do not send a second push/Telegram notification for a retry.
+        if not is_replay:
+            await _notify_homework_created(created, user, _homework_audience_student_ids(created))
     except Exception:
         logger.exception("teacher.homework.create notification failed homework_id=%s", int(created.get("id") or 0))
     return {
@@ -28779,6 +28786,7 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
         "audience_count": int(audience_count),
         "group_id": group_id if group_id > 0 else None,
         "student_id": student_id if student_id > 0 else None,
+        "replayed": is_replay,
     }
 
 
@@ -28884,17 +28892,10 @@ async def teacher_homework_settings_post(
     return upsert_teacher_homework_settings(teacher_id, payload.ai_auto_grade)
 
 
-async def _ai_auto_grade_submission(homework: dict, submission: dict, student_user: dict):
-    """Automatically grades a student homework submission using AI on behalf of the teacher with strict comprehensive evaluation of all components (essay, test, voice message, proof images, voiceroom) and awards up to 500 D'points."""
+async def _ai_auto_grade_submission(homework: dict, submission: dict, student_user: dict) -> bool:
+    """Strict Diamondvoy review.  It only marks a submission reviewed after a
+    valid component-by-component evaluation has been produced."""
     try:
-        from ai_generator import (
-            XAI_ENDPOINT,
-            GEMINI_ENDPOINT,
-            _get_xai_api_key,
-            _get_gemini_api_key,
-            _xai_apply_payload_tuning,
-            get_grok_model_candidates,
-        )
         import aiohttp
 
         homework_id = int(homework.get("id") or 0)
@@ -28917,11 +28918,13 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
 
         # 1. Test natijalarini tekshirish
         test_info = "(Test topshirig'i mavjud emas)"
-        test_res = _safe_call(lambda: get_content_test_result(student_id, "homework", homework_id), None)
+        # AI homework tests use ai_test_attempts, whereas classic tests use
+        # web_content_test_attempts.  Read both through one common shape.
+        test_res = _homework_test_result_for_student(student_id, homework_id)
         if test_res:
-            score_pct = int(test_res.get("score_percent") or 0)
             correct_cnt = int(test_res.get("correct_count") or 0)
             total_cnt = int(test_res.get("total_questions") or 0)
+            score_pct = int(test_res.get("score_percent") or (round(correct_cnt * 100 / total_cnt) if total_cnt else 0))
             test_info = f"Test ishlangan: {score_pct}% ball ({correct_cnt}/{total_cnt} to'g'ri topshirildi)"
         elif "test" in hw_kind:
             test_info = "⚠️ Test topshirig'i mavjud, lekin o'quvchi hali birorta savolga javob bermagan (0%)"
@@ -28954,6 +28957,47 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
             except Exception:
                 voiceroom_info = "Voiceroom holatini aniqlab bo'lmadi"
 
+        # Voice is evaluated from its transcript, not merely from the fact
+        # that an audio URL was attached.  A transcription failure is made
+        # explicit to the strict reviewer instead of silently accepting it.
+        voice_transcript = "(Ovozli javob yo'q)"
+        if voice_url:
+            try:
+                from backend.library_ai import _transcribe
+
+                voice_transcript = await _transcribe(
+                    voice_url, _student_subject(student_user), None
+                ) or "(Ovoz eshitilmadi yoki transkript olinmadi)"
+            except Exception:
+                voice_transcript = "(Ovoz transkript qilinmadi — talab bajarilgan deb hisoblamang)"
+
+        # Attached proof images are inspected with the same Grok/Diamondvoy
+        # vision path.  Their summary is fed to the final requirements
+        # evaluator; a file's mere presence is never treated as proof.
+        image_evidence = "(Rasm/fayl yuborilmagan)"
+        if proof_images:
+            from ai_generator import _xai_generate_text_stream_with_images
+
+            image_urls = []
+            base_url = str(WEBAPP_URL or "").rstrip("/")
+            for item in proof_images[:3]:
+                raw = str(item or "").strip()
+                if raw:
+                    image_urls.append(raw if raw.startswith(("http://", "https://")) else f"{base_url}{raw}")
+            if image_urls and base_url:
+                try:
+                    vision_chunks: list[str] = []
+                    async with aiohttp.ClientSession() as session:
+                        async for chunk in _xai_generate_text_stream_with_images(
+                            "These are a student's homework proof images. Briefly state only what is visibly completed, what is unreadable, and whether it appears related to the teacher task. Do not assume completion.",
+                            image_urls,
+                            session=session,
+                        ):
+                            vision_chunks.append(str(chunk))
+                    image_evidence = "".join(vision_chunks).strip()[:3000] or "(Rasm mazmuni aniqlanmadi)"
+                except Exception:
+                    image_evidence = "(Rasm bor, ammo mazmuni aniqlanmadi — uni to'liq bajarilgan deb hisoblamang)"
+
         prompt = f"""Siz o'qituvchining nihoyatda qattiqqol, talabchan va xolis AI inspektorisiz (Ultra-Strict AI Grader & Plagiarism Detector). O'qituvchining o'rniga o'quvchi topshirgan barcha uyga vazifa komponentlarini (esse/yozma matn, rasm dalillar, ovozli xabar, test natijalari, voiceroom) SHAFQATSIZ XOLISLIK VA SINCHKOV TEKSHIRING.
 
 O'QITUVCHI TARAFIYIDAN BERILGAN TOPSHIRIQ VA KO'RSATMALAR:
@@ -28974,6 +29018,11 @@ O'QUVCHINING TOPSHIRGAN JAVOBI VA FAOLIYATI:
 
 3. Ovozli xabar (Voice message):
 {"Ha (ovozli xabar yuborildi)" if voice_url else ("⚠️ MAJBURIY Ovozli xabar yuborilmadi!" if req_voice else "Yuborilmadi")}
+Ovoz transkripti:
+{voice_transcript}
+
+Rasm/fayllardan ko'rilgan dalil:
+{image_evidence}
 
 4. Test natijasi:
 {test_info}
@@ -28981,141 +29030,110 @@ O'QUVCHINING TOPSHIRGAN JAVOBI VA FAOLIYATI:
 5. Voiceroom (juftlik so'zlashuv muloqoti):
 {voiceroom_info}
 
-QATTIQQOL BAHOLASH VA AI DETEKTORI QOIDALARI:
+QATTIQQOL BAHOLASH QOIDALARI:
 1. MAZMUN VA TOPSHIRIQ KO'RSATMASIGA MOSLIK (CRITICAL): O'quvchi yozgan matnni ({note}) o'qituvchining vazifa ko'rsatmasi ({description}) va mavzusiga ({title}) TAQQOSLANG!
    - Agar o'quvchi shunchaki ma'nosiz harflar ("asdf", "qqq", "123"), "bajarildi", "ok", "hello" kabi yuzaki o'ta qisqa (<10 so'z) matn, yoki topshiriq mavzusiga umuman aloqasiz matn yuborgan bo'lsa:
-     "score": 0..20, "accepted": false, "is_ai_generated": false, "feedback": "⚠️ Topshiriq matni o'qituvchi bergan ko'rsatmaga javob bermaydi yoki ma'nosiz. Qayta bajaring!"
+     "score": 0..20, "accepted": false, "feedback": "Topshiriq matni o'qituvchi bergan ko'rsatmaga javob bermaydi yoki ma'nosiz. Qayta bajaring!"
 2. MAJBURITY TALABLAR YETISHMASLIGI: Agar majburiy rasm, majburiy voice yoki majburiy esse yuborilmagan bo'lsa, "score": 0..40, "accepted": false.
-3. AI MATN DETEKSIYASI (AI PLAGIARISM): Yozilgan esse/matnni diqqat bilan tahlil qiling. Agar matn AI (ChatGPT, Claude, Gemini) tomonidan yozilgan deb topilsa (sun'iy mukammallik, umumiy aylanma jumlalar, shablon uslubi):
-   - "is_ai_generated": true, "score": 0, "accepted": false, "feedback": "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima balansingizdan olindi va vazifa rad etildi."
-4. BAHOLASH SHKALASI:
+3. BAHOLASH SHKALASI:
    - 90–100%: Mukammal, to'liq va original javob.
    - 60–89%: Qabul qilinadi (accepted: true), lekin kamchiliklari uchun ball mos ravishda pasaytirilgan.
    - 0–59%: QAYTA ISHLASH KERAK (accepted: false). Rad etiladi va ball berilmaydi!
 
-FAQAT SHU JSON FORMATIDA JAVOB BERING:
+FAQAT SHU JSON FORMATIDA JAVOB BERING. Har bir talabni alohida tekshiring;
+faqat yuborilganini ko'rib "bajarildi" demang:
 {{
   "score": 85,
   "accepted": true,
-  "is_ai_generated": false,
-  "feedback": "Vazifa to'liq va original tarzda bajarilgan."
+  "feedback": "Qisqa umumiy xulosa",
+  "requirements": [
+    {{"requirement":"...", "met":true, "evidence":"...", "feedback":"..."}}
+  ],
+  "missing_requirements": ["..."],
+  "corrections": ["..."],
+  "test_assessment": "..."
 }}
 """
 
-        score = 0
-        accepted = False
-        is_ai_generated = False
-        feedback = "Vazifa tekshirildi."
-        ai_evaluated = False
+        # Grade through Diamondvoy's production model path.  If this call
+        # fails or returns malformed JSON, leave the submission pending for
+        # the teacher instead of falsely recording it as reviewed.
+        from diamondvoy_helpers import diamondvoy_gemini_answer_stream
 
-        # Try xAI Grok API first
-        api_key = _safe_call(lambda: _get_xai_api_key(), None)
-        if api_key:
-            try:
-                model_candidates = get_grok_model_candidates()
-                model = model_candidates[0] if model_candidates else "grok-3"
-                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.15,
-                    "response_format": {"type": "json_object"},
-                }
-                _xai_apply_payload_tuning(payload, model=model, stream=False)
-                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-                    async with session.post(XAI_ENDPOINT, json=payload, headers=headers) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "")
-                            parsed = _safe_json_loads(text, {})
-                            if isinstance(parsed, dict) and "score" in parsed:
-                                is_ai_generated = bool(parsed.get("is_ai_generated"))
-                                if is_ai_generated:
-                                    score = 0
-                                    accepted = False
-                                    feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima olindi va vazifa rad etildi.").strip()
-                                else:
-                                    score = max(0, min(100, int(parsed.get("score") or 0)))
-                                    accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 60))
-                                    feedback = str(parsed.get("feedback") or feedback).strip()
-                                ai_evaluated = True
-            except Exception as e:
-                logger.warning("xAI auto-grade attempt failed, trying fallback: %s", e)
+        strict_system = (
+            "You are Diamondvoy's strict homework evaluator. Return only valid JSON, no markdown. "
+            "Judge each teacher requirement independently from the supplied evidence. "
+            "Never accept an assignment merely because it was submitted. "
+            "Missing mandatory evidence, an unfinished required test, nonsense, or an answer unrelated to the teacher instruction must make accepted=false. "
+            "Do not make speculative AI-authorship accusations or apply penalties. "
+            "All human-facing feedback must be in Uzbek."
+        )
+        chunks: list[str] = []
+        async for chunk in diamondvoy_gemini_answer_stream(
+            prompt,
+            [str((_safe_call(lambda: get_group(int(homework.get("group_id") or 0)), {}) or {}).get("subject") or "English")],
+            lang="uz",
+            is_admin_context=True,
+            system_prompt_override=strict_system,
+            temperature=0.1,
+        ):
+            chunks.append(str(chunk))
+        parsed = _safe_json_loads("".join(chunks), {})
+        if not isinstance(parsed, dict) or "score" not in parsed:
+            raise RuntimeError("Diamondvoy homework grader returned invalid result")
 
-        # Fallback to Gemini API if xAI wasn't successful
-        if not ai_evaluated:
-            gemini_key = _safe_call(lambda: _get_gemini_api_key(), None)
-            if gemini_key:
-                try:
-                    url = f"{GEMINI_ENDPOINT}?key={gemini_key}"
-                    g_payload = {
-                        "contents": [{"parts": [{"text": prompt + "\nRespond with valid JSON object strictly."}]}],
-                        "generationConfig": {"temperature": 0.15, "responseMimeType": "application/json"}
-                    }
-                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=25)) as session:
-                        async with session.post(url, json=g_payload) as resp:
-                            if resp.status == 200:
-                                g_data = await resp.json()
-                                g_text = (g_data.get("candidates") or [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                                parsed = _safe_json_loads(g_text, {})
-                                if isinstance(parsed, dict) and "score" in parsed:
-                                    is_ai_generated = bool(parsed.get("is_ai_generated"))
-                                    if is_ai_generated:
-                                        score = 0
-                                        accepted = False
-                                        feedback = str(parsed.get("feedback") or "⚠️ DIQQAT: Yozilgan matn AI (ChatGPT) tomonidan tayyorlangani aniqlandi! Qoidabuzarlik uchun 100 D'point jarima olindi va vazifa rad etildi.").strip()
-                                    else:
-                                        score = max(0, min(100, int(parsed.get("score") or 0)))
-                                        accepted = bool(parsed.get("accepted") if "accepted" in parsed else (score >= 60))
-                                        feedback = str(parsed.get("feedback") or feedback).strip()
-                                    ai_evaluated = True
-                except Exception as e:
-                    logger.warning("Gemini auto-grade attempt failed: %s", e)
+        score = max(0, min(100, int(float(parsed.get("score") or 0))))
+        accepted = bool(parsed.get("accepted")) and score >= 60
+        feedback = str(parsed.get("feedback") or "Vazifa talablari tekshirildi.").strip()
+        missing_requirements = [str(item).strip() for item in (parsed.get("missing_requirements") or []) if str(item).strip()]
+        corrections = [str(item).strip() for item in (parsed.get("corrections") or []) if str(item).strip()]
 
-        # If both AI APIs were unavailable or failed, calculate deterministic score based on student submissions
-        if not ai_evaluated:
-            penalties = 0
-            note_clean = str(note or "").strip()
-            words_count = len(note_clean.split()) if note_clean else 0
+        # Hard evidence checks are deterministic: a model cannot overlook a
+        # teacher-selected required component.
+        hard_missing: list[str] = []
+        if req_essay and len(note.split()) < 3:
+            hard_missing.append("Yozma javob/esse yuborilmagan")
+        if req_file and not proof_images:
+            hard_missing.append("Majburiy rasm yoki fayl dalili yuborilmagan")
+        if req_voice and not voice_url:
+            hard_missing.append("Majburiy ovozli xabar yuborilmagan")
+        if "test" in hw_kind and not test_res:
+            hard_missing.append("Majburiy test yakunlanmagan")
+        if is_voiceroom and "muvaffaqiyatli" not in voiceroom_info.lower():
+            hard_missing.append("VoiceRoom vazifasi yakunlanmagan")
+        if hard_missing:
+            accepted = False
+            score = min(score, 40)
+            missing_requirements = list(dict.fromkeys([*missing_requirements, *hard_missing]))
 
-            if req_essay:
-                if not note_clean or words_count < 5:
-                    penalties += 70
-                elif words_count < 15:
-                    penalties += 40
-            elif note_clean and words_count < 3 and not proof_images and not voice_url:
-                penalties += 50
-
-            if req_file and not proof_images:
-                penalties += 40
-            if req_voice and not voice_url:
-                penalties += 40
-            if is_voiceroom and "bajarilgan" not in voiceroom_info:
-                penalties += 40
-
-            score = max(0, 100 - penalties)
-            accepted = (score >= 60)
-            if accepted:
-                feedback = f"Topshiriq talablari bajarildi ({score}% ball)."
-            else:
-                feedback = f"Topshiriq ko'rsatmasi yoki majburiy talablar yetarlicha bajarilmagan ({score}% ball). Qayta ishlang!"
+        requirement_rows = parsed.get("requirements") if isinstance(parsed.get("requirements"), list) else []
+        requirements_text = "\n".join(
+            f"• {str(row.get('requirement') or 'Talab')}: {'bajarilgan' if row.get('met') else 'bajarilmagan'}"
+            f" — {str(row.get('feedback') or row.get('evidence') or '').strip()}"
+            for row in requirement_rows if isinstance(row, dict)
+        ).strip()
 
         group_id = int(homework.get("group_id") or 0)
         group = _safe_call(lambda: get_group(group_id), None) if group_id else None
         subject = str((group or {}).get("subject") or "general")
 
-        if is_ai_generated:
-            earned_dpoints = -100
-            status = "not_done"
-            review_notes = f"⚠️ AI Matn Aniqlandi (Jarima: -100 D'point):\n\n{feedback}"
-        elif accepted:
-            earned_dpoints = round((score / 100.0) * 500.0)
+        if accepted:
+            # Test homework (including library-assigned tests) carries no
+            # D'Point reward.  A non-test evidence assignment is rewarded
+            # modestly and proportionally after it truly passes review.
+            earned_dpoints = 0 if hw_kind in {"test", "both"} else round((score / 100.0) * 100.0)
             status = "done"
-            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (+{earned_dpoints} D'point).\n\n{feedback}"
+            review_notes = f"Avtomatik tekshiruv: {score}%\n\n{feedback}"
         else:
             earned_dpoints = 0
             status = "not_done"
-            review_notes = f"🤖 AI O'qituvchi Tekshiruvi: {score}% ball (Qayta ishlash kerak).\n\n{feedback}"
+            review_notes = f"Avtomatik tekshiruv: {score}% · qayta ishlash kerak\n\n{feedback}"
+        if requirements_text:
+            review_notes += f"\n\nTalablar bo'yicha:\n{requirements_text}"
+        if missing_requirements:
+            review_notes += "\n\nYetishmaydi:\n" + "\n".join(f"• {item}" for item in missing_requirements)
+        if corrections:
+            review_notes += "\n\nTuzatishlar:\n" + "\n".join(f"• {item}" for item in corrections)
 
         review_homework_submission(
             homework_id=homework_id,
@@ -29130,24 +29148,7 @@ FAQAT SHU JSON FORMATIDA JAVOB BERING:
         submission["dpoints_delta"] = earned_dpoints
         submission["dcoin_delta"] = earned_dpoints
 
-        if is_ai_generated:
-            # Deduct -100 D'points directly from student balance
-            add_dpoints(student_id, -100.0, subject, change_type="homework_ai_penalty")
-            try:
-                conn = get_conn()
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO diamond_history (user_id, amount, reason, created_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                    """,
-                    (student_id, -100.0, f"AI Matn Jarimasi: '{title}' (-100 D'point)"),
-                )
-                conn.commit()
-                conn.close()
-            except Exception:
-                pass
-        elif accepted and earned_dpoints > 0:
+        if accepted and earned_dpoints > 0:
             add_dpoints(student_id, float(earned_dpoints), subject, change_type="homework_ai")
             try:
                 conn = get_conn()
@@ -29165,17 +29166,26 @@ FAQAT SHU JSON FORMATIDA JAVOB BERING:
                 pass
 
         try:
-            if is_ai_generated:
-                msg = f"⚠️ DIQQAT: '{title}' vazifasida AI matn aniqlandi!\nBalansingizdan -100 D'point jarima ayirildi va vazifa rad etildi."
-            else:
-                status_text = "Bajarildi ✅" if accepted else "Qayta ishlash kerak ⚠️"
-                msg = f"🤖 Uyga vazifangiz O'qituvchi AI tomonidan tekshirildi!\nNatija: {score}% ({status_text})\nMukofot: {earned_dpoints} D'point"
+            status_text = "Bajarildi ✅" if accepted else "Qayta ishlash kerak ⚠️"
+            msg = f"Uyga vazifangiz tekshirildi.\nNatija: {score}% ({status_text})"
+            if earned_dpoints:
+                msg += f"\nMukofot: {earned_dpoints} D'point"
             await _send_push_notification(student_id, "Uyga vazifa tekshirildi", msg, data={"type": "homework", "homework_id": homework_id})
         except Exception:
             pass
+        return True
 
     except Exception:
         logger.exception("AI auto-grade submission failed homework_id=%s student_id=%s", homework.get("id"), student_user.get("id"))
+        return False
+
+
+def _homework_auto_grade_enabled(homework: dict | None) -> bool:
+    """The teacher's switch is authoritative; submitting alone never means
+    that a homework was checked."""
+    teacher_id = int((homework or {}).get("teacher_id") or 0)
+    settings = _safe_call(lambda: get_teacher_homework_settings(teacher_id), {}) or {}
+    return bool(settings.get("ai_auto_grade"))
 
 
 @app.get("/teacher/homework")
@@ -29363,7 +29373,7 @@ async def student_submit_voiceroom_homework(
         conn.commit()
 
         homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-        if homework:
+        if homework and _homework_auto_grade_enabled(homework):
             for sid in students:
                 sub = _safe_call(lambda s_id=sid: get_homework_submission(int(homework_id), s_id), None)
                 stu_u = _safe_call(lambda s_id=sid: get_user_by_id(s_id), None) or {"id": sid}
@@ -29418,11 +29428,10 @@ async def student_submit_homework(
         raise HTTPException(status_code=422, detail="Could not submit homework")
     _attach_homework_runtime_fields(submission)
     
-    # Automatically grade submission with Strict Teacher AI Assistant
-    try:
+    # Submission stays pending unless this teacher explicitly enabled the
+    # automatic checker.  This prevents the old "submitted = checked" state.
+    if _homework_auto_grade_enabled(homework):
         await _ai_auto_grade_submission(homework, submission, user)
-    except Exception as e:
-        logger.exception("AI auto grade failed for submission homework_id=%s user_id=%s: %s", homework_id, user_id, e)
 
     try:
         await _notify_homework_submitted(homework, user, submission)
@@ -29471,7 +29480,9 @@ async def teacher_review_homework(
     requested_delta = float(payload.dpoint_delta if payload.dpoint_delta is not None else payload.dcoin_delta or 0.0)
     group = _safe_call(lambda: get_group(group_id), None) if group_id > 0 else None
     subj = group.get("subject") if group else None
-    if subj in ("Matematika", "Ona tili", "Tarix", "Arab tili"):
+    if str(homework.get("homework_kind") or "").lower() in {"test", "both"}:
+        dpoint_delta = 0.0
+    elif subj in ("Matematika", "Ona tili", "Tarix", "Arab tili"):
         dpoint_delta = 0.0
     else:
         dpoint_delta = max(-500.0, min(500.0, requested_delta))
@@ -29526,7 +29537,8 @@ async def teacher_ai_review_homework(
         if not submission:
             raise HTTPException(status_code=404, detail="Submission not found")
     student_user = _safe_call(lambda: get_user_by_id(int(student_id)), None) or {"id": int(student_id)}
-    await _ai_auto_grade_submission(homework, submission, student_user)
+    if not await _ai_auto_grade_submission(homework, submission, student_user):
+        raise HTTPException(status_code=503, detail="AI tekshiruvini yakunlab bo'lmadi. Qayta urinib ko'ring.")
     updated_sub = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None) or submission
     _attach_homework_runtime_fields(updated_sub)
     return {"message": "AI review completed", "submission": updated_sub}
@@ -51099,6 +51111,7 @@ class MaterialSendRequest(BaseModel):
     group_id: int | None = None
     student_id: int | None = None
     due_at: str | None = None
+    idempotency_key: str | None = Field(default=None, max_length=160)
 
 
 @app.post("/teacher/materials/{material_id}/send")
@@ -51147,10 +51160,16 @@ async def teacher_send_material(
             homework_kind="list",
             requires_file=False,
             requires_voice_message=False,
+            idempotency_key=payload.idempotency_key,
         )
-        if hw:
+        replayed = bool((hw or {}).pop("_idempotent_replay", False))
+        if hw and not replayed:
             increment_material_download(int(material_id))
-        return {"message": "Material homework sifatida yuborildi", "homework": hw}
+        return {
+            "message": "Material homework sifatida yuborildi",
+            "homework": hw,
+            "replayed": replayed,
+        }
     except Exception as exc:
         logger.exception("teacher.material.send failed material_id=%s: %s", material_id, exc)
         raise HTTPException(status_code=500, detail="Yuborib bo'lmadi")

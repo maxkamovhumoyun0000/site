@@ -619,16 +619,19 @@ function AssignModal({
   const [description, setDescription] = useState(String(node.description || ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const assignmentRequestKey = useRef<string | null>(null);
 
   const assign = async () => {
     if (!groupId) { setError("Guruh tanlang"); return; }
     if (!due) { setError("Deadline kuni va vaqtini tanlang"); return; }
     setBusy(true);
+    const requestKey = assignmentRequestKey.current ||= crypto.randomUUID();
     const res = await onApiCall(`/teacher/library/${node.id}/assign`, {
       group_id: groupId,
       due_at: new Date(due).toISOString(),
       title: title.trim() || node.title,
       description: description.trim() || null,
+      idempotency_key: requestKey,
     }, "POST");
     setBusy(false);
     if (res) onDone();
