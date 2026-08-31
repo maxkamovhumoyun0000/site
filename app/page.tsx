@@ -17092,8 +17092,8 @@ function AdminSection({
             </div>
           )}
         </div>
+        {profileStudentId ? <StudentPresenceProfile userId={profileStudentId} onApiCall={(path: string, payload?: any, method?: any) => requestJson(path, { method, token: localStorage.getItem("diamond_token") || "", body: method && method !== "GET" ? payload : undefined })} onClose={() => setProfileStudentId(null)} /> : null}
       </div>
-      {profileStudentId ? <StudentPresenceProfile userId={profileStudentId} onApiCall={(path: string, payload?: any, method?: any) => requestJson(path, { method, token: localStorage.getItem("diamond_token") || "", body: method && method !== "GET" ? payload : undefined })} onClose={() => setProfileStudentId(null)} /> : null}
     );
   }
 
