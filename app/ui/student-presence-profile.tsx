@@ -28,6 +28,7 @@ export function StudentPresenceProfile({
 }) {
   const [data, setData] = useState<any | null>(null);
   const [error, setError] = useState("");
+  const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     onApiCall(`/users/${userId}/presence-profile`, undefined, "GET")
@@ -47,14 +48,15 @@ export function StudentPresenceProfile({
 
   return (
     <ModalPortal open>
+      <>
       <div className="overlay-modal-backdrop" onClick={onClose}>
         <article className="overlay-modal-card max-w-xl" onClick={(event) => event.stopPropagation()}>
           <div className="row-between gap-3">
             <div className="flex items-center gap-3 min-w-0">
-              <div className="relative shrink-0">
+              <button type="button" className="relative shrink-0 rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-400" onClick={() => avatar && setAvatarPreviewOpen(true)} disabled={!avatar} aria-label={`${name} profil rasmi`}>
                 {avatar ? <img src={avatar} alt={name} className="h-16 w-16 rounded-full object-cover border-2 border-cyan-400/50" /> : <div className="h-16 w-16 rounded-full bg-cyan-500/15 text-cyan-500 flex items-center justify-center text-xl font-black">{name.slice(0, 1).toUpperCase()}</div>}
                 <span className={`absolute bottom-0 right-0 h-4 w-4 rounded-full border-2 border-white dark:border-navy-900 ${online ? "bg-emerald-500" : "bg-ink-300 dark:bg-navy-500"}`} />
-              </div>
+              </button>
               <div className="min-w-0">
                 <h3 className="truncate">{name}</h3>
                 <p className={`text-sm font-semibold ${online ? "text-emerald-500" : "text-ink-500 dark:text-navy-300"}`}>{online ? "Hozir online" : `Oxirgi online: ${when(presence.last_online_at || user.last_online_at)}`}</p>
@@ -69,10 +71,26 @@ export function StudentPresenceProfile({
               {[["D’Coin", balance.dcoin], ["D’Point", balance.dpoints], ["Ticket", data.ticket_count || 0]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 p-3 text-center"><strong className="block text-cyan-500">{Number(value || 0).toFixed(1)}</strong><span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">{label}</span></div>)}
             </div>
             <section><h4 className="font-black mb-2">O‘qiyotgan guruhlari</h4>{groups.length ? groups.map((group: any) => <div key={group.id || group.name} className="rounded-lg bg-surface-soft dark:bg-white/5 px-3 py-2 text-sm font-semibold mb-1">👥 {group.name || "-"}{group.subject ? ` · ${group.subject}` : ""}</div>) : <p className="text-sm text-ink-500">Guruh ma’lumoti yo‘q</p>}</section>
-            <section><h4 className="font-black mb-2">Sotib olgan sovg‘alari</h4>{gifts.length ? gifts.slice(0, 10).map((gift: any, idx: number) => <div key={gift.id || idx} className="rounded-lg bg-surface-soft dark:bg-white/5 px-3 py-2 text-sm font-semibold mb-1">🎁 {gift.item_title || gift.gift?.title || "Sovg‘a"}</div>) : <p className="text-sm text-ink-500">Hali sovg‘a olmagan</p>}</section>
+            <section><h4 className="font-black mb-2">Sotib olgan sovg‘alari</h4>{gifts.length ? <div className="grid grid-cols-1 gap-2">{gifts.slice(0, 10).map((gift: any, idx: number) => {
+              const image = assetUrl(gift.gift?.image_url || gift.gift_image_url);
+              const title = gift.item_title || gift.gift?.title || "Sovg‘a";
+              return <div key={gift.id || idx} className="flex items-center gap-3 rounded-xl bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 px-2.5 py-2 text-sm font-semibold">
+                {image ? <img src={image} alt={title} className="h-11 w-11 shrink-0 rounded-lg object-cover border border-line dark:border-white/10" /> : <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-xl">🎁</span>}
+                <span className="min-w-0 truncate">{title}</span>
+              </div>;
+            })}</div> : <p className="text-sm text-ink-500">Hali sovg‘a olmagan</p>}</section>
           </div> : null}
         </article>
       </div>
+      <ModalPortal open={avatarPreviewOpen && Boolean(avatar)}>
+        <div className="overlay-modal-backdrop" onClick={() => setAvatarPreviewOpen(false)}>
+          <div className="profile-image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <img src={avatar} alt={name} className="profile-image-preview-img" />
+            <button type="button" className="modal-icon-close" onClick={() => setAvatarPreviewOpen(false)} aria-label="Yopish">×</button>
+          </div>
+        </div>
+      </ModalPortal>
+      </>
     </ModalPortal>
   );
 }
