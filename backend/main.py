@@ -17536,13 +17536,23 @@ async def check_app_version(
     if app_name == "teacher":
         min_ver = str(settings.get("min_teacher_version") or "1.0.0")
         min_build = int(settings.get("min_teacher_build") or 1)
-        store_url = str(settings.get("teacher_app_store_url") if plat == "ios" else settings.get("teacher_play_store_url"))
+        store_url = str(
+            (settings.get("teacher_app_store_url") if plat == "ios" else settings.get("teacher_play_store_url"))
+            or ""
+        ).strip()
     else:
         min_ver = str(settings.get("min_student_version") or "1.0.0")
         min_build = int(settings.get("min_student_build") or 1)
-        store_url = str(settings.get("student_app_store_url") if plat == "ios" else settings.get("student_play_store_url"))
+        store_url = str(
+            (settings.get("student_app_store_url") if plat == "ios" else settings.get("student_play_store_url"))
+            or ""
+        ).strip()
 
-    force = _is_app_version_below(current_version, min_ver, build_number, min_build)
+    # A required update is only safe once the corresponding store listing is
+    # configured. Without it the app would be blocked with no update path.
+    force = bool(store_url) and _is_app_version_below(
+        current_version, min_ver, build_number, min_build
+    )
 
     return {
         "force_update": force,
@@ -17958,6 +17968,37 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
         return {"items": sessions}
     finally:
         conn.close()
+
+@app.delete("/user/account")
+async def delete_my_account(authorization: str | None = Header(default=None)):
+    """Permanently delete the signed-in person's account and personal data.
+
+    This is deliberately self-service: it is available from both mobile
+    profile screens and does not require support contact.  Administrator
+    accounts remain protected and must be handled through the administrative
+    security process instead.
+    """
+    user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    role = _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+    if role == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator accounts cannot be deleted from the mobile app",
+        )
+
+    if not hard_delete_user_profile(user_id):
+        raise HTTPException(status_code=500, detail="Account deletion failed")
+    _delete_owned_user_uploads(user_id)
+    _clear_auth_caches_for_user(user_id)
+    _invalidate_student_overview_cache(user_id)
+    logger.info("user.account_deleted user_id=%s role=%s", user_id, role)
+    return {"success": True, "message": "Account and personal data deleted"}
+
 
 @app.delete("/user/sessions/{session_id}")
 async def delete_user_session(session_id: str, authorization: str | None = Header(default=None)):
@@ -33778,6 +33819,44 @@ def _delete_replaced_profile_upload(url: str | None, user_id: int) -> None:
         file_path.unlink()
     except Exception:
         logger.warning("Could not remove replaced profile avatar for user_id=%s", user_id, exc_info=True)
+
+
+def _delete_owned_user_uploads(user_id: int) -> None:
+    """Remove local files whose ownership is encoded in their upload name.
+
+    These names are generated exclusively by the profile, homework, face
+    proctoring and chat upload endpoints.  The strict directory and filename
+    checks prevent an account deletion from ever traversing outside its
+    designated upload locations.
+    """
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return
+    owned_prefixes = (
+        (PROFILE_UPLOAD_DIR, f"profile_{uid}_"),
+        (HOMEWORK_UPLOAD_DIR, f"homework_{uid}_"),
+        (HOMEWORK_UPLOAD_DIR, f"homework_voice_{uid}_"),
+        (HOMEWORK_UPLOAD_DIR, f"homework_file_{uid}_"),
+        (PROCTORING_UPLOAD_DIR, f"face_{uid}_"),
+        (CHAT_UPLOAD_DIR, f"chat_{uid}_"),
+    )
+    for upload_dir, prefix in owned_prefixes:
+        try:
+            resolved_dir = upload_dir.resolve()
+            for candidate in resolved_dir.iterdir():
+                if not candidate.is_file() or not candidate.name.startswith(prefix):
+                    continue
+                resolved_file = candidate.resolve()
+                if resolved_file.parent != resolved_dir:
+                    continue
+                resolved_file.unlink()
+        except Exception:
+            logger.warning(
+                "Could not remove owned uploads for deleted user_id=%s prefix=%s",
+                uid,
+                prefix,
+                exc_info=True,
+            )
 
 
 @app.post("/user/profile/avatar")

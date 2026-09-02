@@ -221,11 +221,11 @@ export default function AdminUserbot({ apiFetch }: AdminUserbotProps = {}) {
     min_student_version: "1.0.0",
     min_student_build: 1,
     student_play_store_url: "https://play.google.com/store/apps/details?id=com.diamond.students",
-    student_app_store_url: "https://apps.apple.com/app/id6742398571",
+    student_app_store_url: "",
     min_teacher_version: "1.0.0",
     min_teacher_build: 1,
     teacher_play_store_url: "https://play.google.com/store/apps/details?id=com.diamond.teachers",
-    teacher_app_store_url: "https://apps.apple.com/app/id6742398571",
+    teacher_app_store_url: "",
   });
   const [savingVersion, setSavingVersion] = useState(false);
 

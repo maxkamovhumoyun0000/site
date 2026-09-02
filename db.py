@@ -10376,6 +10376,18 @@ def hard_delete_user_profile(user_id: int) -> bool:
             except Exception:
                 logger.exception("hard_delete_user_profile: broad cleanup scan failed uid=%s", uid)
 
+            # Reviews are public-facing user content and intentionally sit
+            # outside the broad cleanup above.  A person who uses the
+            # self-service account-deletion control must not leave their
+            # name, photo or review text behind on the public site.
+            try:
+                cur.execute("DELETE FROM web_student_reviews WHERE user_id=?", (uid,))
+            except Exception:
+                # Older installations may not have created the optional web
+                # review table yet.  Do not prevent deletion of the account
+                # itself in that case.
+                pass
+
             # Final hard delete user row.
             cur.execute("DELETE FROM users WHERE id=?", (uid,))
             changed = int(cur.rowcount or 0) > 0
@@ -24993,11 +25005,11 @@ def ensure_app_version_settings_schema():
                         min_student_version TEXT DEFAULT '1.0.0',
                         min_student_build INTEGER DEFAULT 1,
                         student_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.students',
-                        student_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        student_app_store_url TEXT DEFAULT '',
                         min_teacher_version TEXT DEFAULT '1.0.0',
                         min_teacher_build INTEGER DEFAULT 1,
                         teacher_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.teachers',
-                        teacher_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        teacher_app_store_url TEXT DEFAULT '',
                         updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                     )
                     """
@@ -25010,11 +25022,11 @@ def ensure_app_version_settings_schema():
                         min_student_version TEXT DEFAULT '1.0.0',
                         min_student_build INTEGER DEFAULT 1,
                         student_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.students',
-                        student_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        student_app_store_url TEXT DEFAULT '',
                         min_teacher_version TEXT DEFAULT '1.0.0',
                         min_teacher_build INTEGER DEFAULT 1,
                         teacher_play_store_url TEXT DEFAULT 'https://play.google.com/store/apps/details?id=com.diamond.teachers',
-                        teacher_app_store_url TEXT DEFAULT 'https://apps.apple.com/app/id6742398571',
+                        teacher_app_store_url TEXT DEFAULT '',
                         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                     """
@@ -25049,16 +25061,25 @@ def get_app_version_settings() -> dict:
                 conn.commit()
                 cur.execute("SELECT * FROM app_version_settings WHERE id=1 LIMIT 1")
                 row = cur.fetchone()
-        return _row_to_dict(row) if row else {
+        settings = _row_to_dict(row) if row else {
             "min_student_version": "1.0.0",
             "min_student_build": 1,
             "student_play_store_url": "https://play.google.com/store/apps/details?id=com.diamond.students",
-            "student_app_store_url": "https://apps.apple.com/app/id6742398571",
+            "student_app_store_url": "",
             "min_teacher_version": "1.0.0",
             "min_teacher_build": 1,
             "teacher_play_store_url": "https://play.google.com/store/apps/details?id=com.diamond.teachers",
-            "teacher_app_store_url": "https://apps.apple.com/app/id6742398571",
+            "teacher_app_store_url": "",
         }
+        # The previous template used an unrelated third-party App Store ID.
+        # Never direct a forced update to another developer's app. The admin
+        # must enter the unique listing URL for each Diamond app after its
+        # App Store Connect record is created.
+        legacy_invalid_url = "https://apps.apple.com/app/id6742398571"
+        for key in ("student_app_store_url", "teacher_app_store_url"):
+            if str(settings.get(key) or "").strip().rstrip("/") == legacy_invalid_url:
+                settings[key] = ""
+        return settings
     finally:
         conn.close()
 
