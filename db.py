@@ -10376,18 +10376,6 @@ def hard_delete_user_profile(user_id: int) -> bool:
             except Exception:
                 logger.exception("hard_delete_user_profile: broad cleanup scan failed uid=%s", uid)
 
-            # Reviews are public-facing user content and intentionally sit
-            # outside the broad cleanup above.  A person who uses the
-            # self-service account-deletion control must not leave their
-            # name, photo or review text behind on the public site.
-            try:
-                cur.execute("DELETE FROM web_student_reviews WHERE user_id=?", (uid,))
-            except Exception:
-                # Older installations may not have created the optional web
-                # review table yet.  Do not prevent deletion of the account
-                # itself in that case.
-                pass
-
             # Final hard delete user row.
             cur.execute("DELETE FROM users WHERE id=?", (uid,))
             changed = int(cur.rowcount or 0) > 0

@@ -17973,10 +17973,8 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
 async def delete_my_account(authorization: str | None = Header(default=None)):
     """Permanently delete the signed-in person's account and personal data.
 
-    This is deliberately self-service: it is available from both mobile
-    profile screens and does not require support contact.  Administrator
-    accounts remain protected and must be handled through the administrative
-    security process instead.
+    This control is restricted to teacher/support staff. Student accounts are
+    administered by the education service and cannot delete themselves.
     """
     user = _user_row_from_bearer(authorization)
     user_id = int(user.get("id") or 0)
@@ -17985,10 +17983,10 @@ async def delete_my_account(authorization: str | None = Header(default=None)):
     role = _role_from_login_type(
         int(user.get("login_type") or 0), str(user.get("login_id") or "")
     )
-    if role == "admin":
+    if role not in {"teacher", "support"}:
         raise HTTPException(
             status_code=403,
-            detail="Administrator accounts cannot be deleted from the mobile app",
+            detail="Student accounts cannot be deleted from the mobile app",
         )
 
     if not hard_delete_user_profile(user_id):
