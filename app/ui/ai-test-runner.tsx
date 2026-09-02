@@ -19,7 +19,14 @@ type Kind =
   | "listening_order" | "listening_set" | "spelling"
   | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze" | "reading_set";
 
-type SubQuestion = { type: string; prompt: string; options?: string[]; tokens?: string[] };
+type SubQuestion = {
+  type: string;
+  prompt: string;
+  options?: string[];
+  tokens?: string[];
+  left_items?: string[];
+  right_items?: string[];
+};
 
 type Question = {
   kind: Kind;
@@ -287,9 +294,7 @@ function QuestionCard({
 
       {/* So'z — speak/write/spelling/word_practice */}
       {question.word && (
-        <div className="mb-3 inline-block rounded-xl bg-cyan-50 px-4 py-2 text-xl font-black text-cyan-800 dark:bg-cyan-500/15 dark:text-cyan-100">
-          {question.word}
-        </div>
+        <MarkableWords words={[question.word]} tone="strong" />
       )}
 
       {/* Spelling: ta'rif/hint */}
@@ -319,6 +324,13 @@ function QuestionCard({
       )}
       {question.instruction && (
         <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>
+      )}
+
+      {question.example_sentence && (
+        <MarkableWords
+          label="Misol so'zlar — belgilash uchun bosing"
+          words={question.example_sentence.split(/\s+/).filter(Boolean)}
+        />
       )}
 
       {/* Guided writing: minimal so'z ko'rsatgichi */}
@@ -374,6 +386,45 @@ function QuestionCard({
   );
 }
 
+/** Student uchun misol so'zlarining kichik, qaytariladigan belgilash paneli. */
+function MarkableWords({
+  words,
+  label,
+  tone = "normal",
+}: {
+  words: string[];
+  label?: string;
+  tone?: "normal" | "strong";
+}) {
+  const [marked, setMarked] = useState<Set<number>>(() => new Set());
+  return (
+    <div className={`mb-3 rounded-xl px-3 py-2 ${tone === "strong" ? "inline-flex bg-cyan-50 dark:bg-cyan-500/15" : "bg-surface-soft dark:bg-white/5"}`}>
+      <div>
+        {label && <p className="mb-1 text-[11px] font-black uppercase tracking-wide text-ink-400 dark:text-navy-400">{label}</p>}
+        <div className="flex flex-wrap gap-x-2 gap-y-1">
+          {words.map((word, index) => {
+            const isMarked = marked.has(index);
+            return (
+              <button
+                key={`${word}-${index}`}
+                type="button"
+                onClick={() => setMarked((previous) => {
+                  const next = new Set(previous);
+                  isMarked ? next.delete(index) : next.add(index);
+                  return next;
+                })}
+                className={`${tone === "strong" ? "text-xl font-black text-cyan-800 dark:text-cyan-100" : "text-sm font-semibold text-ink-600 dark:text-navy-200"} transition-opacity ${isMarked ? "opacity-40 line-through decoration-2" : ""}`}
+              >
+                {word}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnswerInput({
   question, attemptId, checking, onSubmit, retrying,
 }: {
@@ -395,7 +446,10 @@ function AnswerInput({
     choice_index?: number;
     answer_text?: string;
     order?: string[];
+    pairs?: Record<string, string>;
   }>>({});
+  const [usedWordBank, setUsedWordBank] = useState<Set<number>>(() => new Set());
+  const [wordBankAssignments, setWordBankAssignments] = useState<Record<number, number>>({});
 
   const disabled = checking;
   // Guided writing: live word count
@@ -437,7 +491,22 @@ function AnswerInput({
                       {si < rowGaps && (
                         <input
                           value={filled[gi]}
-                          onChange={(e) => setBlank(gi, e.target.value)}
+                          onChange={(e) => {
+                            setBlank(gi, e.target.value);
+                            const bankIndex = wordBankAssignments[gi];
+                            if (bankIndex !== undefined) {
+                              setWordBankAssignments((prev) => {
+                                const next = { ...prev };
+                                delete next[gi];
+                                return next;
+                              });
+                              setUsedWordBank((prev) => {
+                                const next = new Set(prev);
+                                next.delete(bankIndex);
+                                return next;
+                              });
+                            }
+                          }}
                           className="mx-1 inline-block w-24 rounded-md border-b-2 border-cyan-400 bg-white px-1.5 py-0 text-center align-baseline text-base font-bold leading-tight text-navy-900 outline-none focus:border-cyan-600 dark:bg-navy-950 dark:text-white"
                           placeholder={`${gi + 1}`}
                         />
@@ -451,19 +520,36 @@ function AnswerInput({
         </div>
         {(question.word_bank || []).length > 0 && (
           <div className="flex flex-wrap gap-2">
-            {(question.word_bank || []).map((w, i) => (
-              <button
+            {(question.word_bank || []).map((w, i) => {
+              const marked = usedWordBank.has(i);
+              return <button
                 key={`${w}-${i}`}
                 type="button"
                 onClick={() => {
+                  if (marked) {
+                    const blankIndex = Object.entries(wordBankAssignments).find(([, value]) => value === i)?.[0];
+                    if (blankIndex !== undefined) setBlank(Number(blankIndex), "");
+                    setWordBankAssignments((prev) => {
+                      const next = { ...prev };
+                      if (blankIndex !== undefined) delete next[Number(blankIndex)];
+                      return next;
+                    });
+                    setUsedWordBank((prev) => {
+                      const next = new Set(prev); next.delete(i); return next;
+                    });
+                    return;
+                  }
                   const idx = filled.findIndex((x) => !x.trim());
-                  if (idx >= 0) setBlank(idx, w);
+                  if (idx < 0) return;
+                  setBlank(idx, w);
+                  setWordBankAssignments((prev) => ({ ...prev, [idx]: i }));
+                  setUsedWordBank((prev) => new Set(prev).add(i));
                 }}
-                className="rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-bold text-navy-900 hover:bg-cyan-50 dark:border-white/10 dark:bg-white/10 dark:text-white dark:hover:bg-cyan-500/15"
+                className={`rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-bold text-navy-900 transition dark:border-white/10 dark:bg-white/10 dark:text-white ${marked ? "opacity-40 line-through decoration-2" : "hover:bg-cyan-50 dark:hover:bg-cyan-500/15"}`}
               >
                 {w}
-              </button>
-            ))}
+              </button>;
+            })}
           </div>
         )}
         <button
@@ -574,12 +660,13 @@ function AnswerInput({
   // bir xil, bosqichma-bosqich ishlatadi.
   if (question.input === "listening_set") {
     const subs = question.sub_questions || [];
-    const setSub = (index: number, next: { choice_index?: number; answer_text?: string; order?: string[] }) =>
+    const setSub = (index: number, next: { choice_index?: number; answer_text?: string; order?: string[]; pairs?: Record<string, string> }) =>
       setListeningSetAnswers((prev) => ({ ...prev, [index]: { ...prev[index], ...next } }));
     const isFilled = (s: SubQuestion, index: number) => {
       const answer = listeningSetAnswers[index] || {};
       if (s.type === "mcq" || s.type === "tf") return answer.choice_index !== undefined;
       if (s.type === "order") return (answer.order || []).length > 0;
+      if (s.type === "matching") return (s.left_items || []).every((left) => Boolean(answer.pairs?.[left]));
       return Boolean(answer.answer_text?.trim());
     };
     const submitSet = () => {
@@ -640,7 +727,24 @@ function AnswerInput({
                   </div>
                 </div>
               )}
-              {!(["mcq", "tf", "order"] as string[]).includes(s.type) && (
+              {s.type === "matching" && (
+                <div className="space-y-2">
+                  {(s.left_items || []).map((left) => (
+                    <label key={left} className="flex items-center gap-3 text-sm font-bold text-navy-900 dark:text-white">
+                      <span className="min-w-0 flex-1">{left}</span>
+                      <select
+                        value={answer.pairs?.[left] || ""}
+                        onChange={(event) => setSub(index, { pairs: { ...(answer.pairs || {}), [left]: event.target.value } })}
+                        className="min-w-0 flex-1 rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm font-bold outline-none dark:border-white/10 dark:bg-navy-950 dark:text-white"
+                      >
+                        <option value="">Mosini tanlang</option>
+                        {(s.right_items || []).map((right) => <option key={right} value={right}>{right}</option>)}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              )}
+              {!(["mcq", "tf", "order", "matching"] as string[]).includes(s.type) && (
                 <input
                   value={answer.answer_text || ""}
                   onChange={(e) => setSub(index, { answer_text: e.target.value })}

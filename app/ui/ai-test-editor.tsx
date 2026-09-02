@@ -73,6 +73,7 @@ export type AiTestQuestion = {
     accepted_answers?: string[];
     tokens?: string[];
     reference_answer?: string;
+    pairs?: { left: string; right: string }[];
   }[];
   needs_audio_upload?: boolean;
   // Kengaytirilgan maydonlar
@@ -335,6 +336,8 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
         if (!String(sub.prompt || "").trim()) return `${n}-mashqning ${subIndex + 1}-savoli bo'sh.`;
         if (sub.type === "mcq" && (sub.options || []).filter((x) => String(x).trim()).length < 2) return `${n}-mashqning ${subIndex + 1}-savolida kamida 2 ta variant kerak.`;
         if (["gap", "dictation", "short", "order"].includes(String(sub.type || "")) && !String(sub.answer || "").trim()) return `${n}-mashqning ${subIndex + 1}-savolida to'g'ri javob bo'lishi kerak.`;
+        if (sub.type === "open" && !String(sub.reference_answer || sub.answer || "").trim()) return `${n}-mashqning ${subIndex + 1}-ochiq savoli uchun namuna javob kerak.`;
+        if (sub.type === "matching" && (sub.pairs || []).filter((pair) => String(pair.left || "").trim() && String(pair.right || "").trim()).length < 2) return `${n}-mashqning ${subIndex + 1}-juftlash savolida kamida 2 ta to'liq juftlik kerak.`;
       }
       continue;
     }
@@ -806,13 +809,15 @@ function ListeningSetCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion
             const options = sub.options || ["", ""];
             const needsChoice = type === "mcq";
             const needsAnswer = ["short", "gap", "dictation", "order"].includes(type);
+            const pairs = sub.pairs || [{ left: "", right: "" }, { left: "", right: "" }];
             return <div key={index} className="rounded-xl border border-line p-3 dark:border-white/10">
-              <div className="mb-2 flex gap-2"><strong className="pt-2 text-sm text-ink-500">{index + 1}.</strong><select value={type} onChange={(e) => patchSub(index, { ...sub, type: e.target.value, options: e.target.value === "mcq" ? options : undefined, correct_index: 0, answer: "", tokens: [] })} className="flex-1 rounded-lg border border-line bg-surface-soft px-2 py-1 text-sm font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white"><option value="mcq">Tanlov</option><option value="tf">True / False / Not Given</option><option value="short">Qisqa javob</option><option value="gap">Bo'sh joy</option><option value="dictation">Diktant</option><option value="order">So'zlar tartibi</option><option value="open">Ochiq javob</option></select><button type="button" onClick={() => patch({ sub_questions: subs.filter((_, i) => i !== index) })} className="px-2 text-red-500">✕</button></div>
+              <div className="mb-2 flex gap-2"><strong className="pt-2 text-sm text-ink-500">{index + 1}.</strong><select value={type} onChange={(e) => patchSub(index, { ...sub, type: e.target.value, options: e.target.value === "mcq" ? options : undefined, correct_index: 0, answer: "", tokens: [], pairs: e.target.value === "matching" ? [{ left: "", right: "" }, { left: "", right: "" }] : undefined, reference_answer: "" })} className="flex-1 rounded-lg border border-line bg-surface-soft px-2 py-1 text-sm font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white"><option value="mcq">Tanlov</option><option value="tf">True / False / Not Given</option><option value="short">Qisqa javob</option><option value="gap">Bo'sh joy</option><option value="dictation">Diktant</option><option value="order">So'zlar tartibi</option><option value="matching">Juftlab moslashtirish</option><option value="open">Ochiq javob (AI)</option></select><button type="button" onClick={() => patch({ sub_questions: subs.filter((_, i) => i !== index) })} className="px-2 text-red-500">✕</button></div>
               <input value={String(sub.prompt || "")} onChange={(e) => patchSub(index, { ...sub, prompt: e.target.value })} className={`${INPUT_CLS} mb-2`} placeholder="Savol matni" />
               {needsChoice && <div className="space-y-1">{options.map((option, optionIndex) => <div key={optionIndex} className="flex gap-2"><input type="radio" checked={Number(sub.correct_index ?? 0) === optionIndex} onChange={() => patchSub(index, { ...sub, correct_index: optionIndex })} className="accent-cyan-500" /><input value={option} onChange={(e) => { const nextOptions = [...options]; nextOptions[optionIndex] = e.target.value; patchSub(index, { ...sub, options: nextOptions }); }} className={INPUT_CLS} placeholder={`${optionIndex + 1}-variant`} /></div>)}</div>}
               {type === "tf" && <select value={String(sub.correct_index ?? 0)} onChange={(e) => patchSub(index, { ...sub, correct_index: Number(e.target.value) })} className={INPUT_CLS}><option value="0">True</option><option value="1">False</option><option value="2">Not Given</option></select>}
               {needsAnswer && <input value={String(sub.answer || "")} onChange={(e) => patchSub(index, { ...sub, answer: e.target.value, tokens: type === "order" ? e.target.value.replace(/[.,!?;:]/g, "").split(/\s+/).filter(Boolean) : sub.tokens })} className={INPUT_CLS} placeholder={type === "order" ? "To'g'ri gap" : "To'g'ri javob"} />}
-              {type === "open" && <input value={String(sub.reference_answer || "")} onChange={(e) => patchSub(index, { ...sub, reference_answer: e.target.value })} className={INPUT_CLS} placeholder="Namuna javob (ixtiyoriy)" />}
+              {type === "matching" && <div className="space-y-2">{pairs.map((pair, pairIndex) => <div key={pairIndex} className="flex gap-2"><input value={pair.left} onChange={(e) => { const next = [...pairs]; next[pairIndex] = { ...next[pairIndex], left: e.target.value }; patchSub(index, { ...sub, pairs: next }); }} className={INPUT_CLS} placeholder="Chap tomon" /><span className="pt-2 font-black text-ink-400">→</span><input value={pair.right} onChange={(e) => { const next = [...pairs]; next[pairIndex] = { ...next[pairIndex], right: e.target.value }; patchSub(index, { ...sub, pairs: next }); }} className={INPUT_CLS} placeholder="O'ng tomon" />{pairs.length > 2 && <button type="button" onClick={() => patchSub(index, { ...sub, pairs: pairs.filter((_, i) => i !== pairIndex) })} className="text-red-500">✕</button>}</div>)}<button type="button" onClick={() => patchSub(index, { ...sub, pairs: [...pairs, { left: "", right: "" }] })} className="text-xs font-black text-cyan-700 dark:text-cyan-200">+ Juftlik</button></div>}
+              {type === "open" && <input value={String(sub.reference_answer || "")} onChange={(e) => patchSub(index, { ...sub, reference_answer: e.target.value })} className={INPUT_CLS} placeholder="Namuna javob (AI tekshirishi uchun majburiy)" />}
             </div>;
           })}
         </div>

@@ -117,7 +117,7 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "label_ru": "Аудирование",
         "label_en": "Listening",
         "check": "auto", "input": "choice", "needs_audio_asset": True,
-        "retry_until_correct": False,
+        "retry_until_correct": True,
     },
     "dictation": {
         "label_uz": "Diktant (tinglab yozish)",
@@ -131,7 +131,7 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "label_ru": "Верно/Неверно/Не сказано (аудирование)",
         "label_en": "True/False/Not Given (listening)",
         "check": "auto", "input": "choice", "needs_audio_asset": True,
-        "retry_until_correct": False,
+        "retry_until_correct": True,
     },
     "listening_dictation": {
         "label_uz": "Diktant — audiodni yozib ol",
@@ -166,7 +166,10 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "label_ru": "Listening Set (1 аудио + несколько вопросов)",
         "label_en": "Listening Set (shared audio + multi-question)",
         "check": "auto", "input": "listening_set", "needs_audio_asset": True,
-        "retry_until_correct": False,
+        # Bitta audio ostida bir nechta savol bo'lsa ham student xato joyini
+        # tuzatib qayta yubora olishi kerak. Bu barcha kutubxona turlaridagi
+        # 5 urinish qoidasiga mos keladi.
+        "retry_until_correct": True,
     },
     "spelling": {
         "label_uz": "So'zni to'g'ri yozish",
@@ -180,7 +183,7 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "label_ru": "Соотнести пары",
         "label_en": "Matching",
         "check": "auto", "input": "pairs", "needs_audio_asset": False,
-        "retry_until_correct": False,
+        "retry_until_correct": True,
     },
     "scrambled_sentence": {
         "label_uz": "So'zlarni tartibga solish",
@@ -760,6 +763,13 @@ def _normalize_questions(raw: Any) -> list[dict]:
             "audio_url": str(item.get("audio_url") or "").strip() or None,
             "level": str(item.get("level") or "").strip() or None,
             "topic": str(item.get("topic") or "").strip() or None,
+            # So'z mashqi va qo'lda yaratilgan AI mashqlari uchun model gap
+            # hamda tarjimalar umumiy qatlamda yo'qolib qolmasin.
+            "example_sentence": str(item.get("example_sentence") or item.get("example") or "").strip() or None,
+            "translation_uz": str(item.get("translation_uz") or "").strip() or None,
+            "translation_ru": str(item.get("translation_ru") or "").strip() or None,
+            "translation": str(item.get("translation") or "").strip() or None,
+            "meaning": str(item.get("meaning") or item.get("definition") or "").strip() or None,
             # Bir mashq blokiga tegishli savollarni birlashtirish uchun (AI beradi).
             "group": str(item.get("group") or item.get("exercise_id") or item.get("group_id") or "").strip() or None,
             # ── Kengaytirilgan maydonlar ─────────────────────────────────────
@@ -777,7 +787,15 @@ def _normalize_questions(raw: Any) -> list[dict]:
             except Exception:
                 pass
 
-        if not question["prompt"] and not question["word"] and kind != "passage_cloze":
+        # `reading_set` faqat passage bilan, `listening_set` esa faqat audio
+        # hamda sub-savollar bilan ham to'liq mashq hisoblanadi. Avval shu
+        # qatordagi umumiy tekshiruv ularni jimgina tashlab yuborar edi.
+        if (
+            not question["prompt"]
+            and not question["word"]
+            and not question["passage"]
+            and kind not in {"passage_cloze", "reading_set", "listening_set"}
+        ):
             continue
         if meta["needs_audio_asset"] and not question["audio_url"]:
             # Audio yuklanmagan listening/diktant savoli studentga ko'rsatilmaydi
@@ -868,53 +886,10 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     if isinstance(distractors, list) else []
                 )
             elif kind == "listening_set":
-                # Normalize sub_questions
+                # Bitta audio ichida MCQ, T/F/NG, diktant, tartiblash, juftlash
+                # va AI baholaydigan ochiq savol aralash kelishi mumkin.
                 raw_subs = item.get("sub_questions") or item.get("questions") or []
-                norm_subs = []
-                for s in raw_subs:
-                    if not isinstance(s, dict):
-                        continue
-                    sub_type = str(s.get("type") or "mcq").strip().lower()
-                    sub: dict[str, Any] = {
-                        "type": sub_type,
-                        "prompt": str(s.get("prompt") or s.get("question") or "").strip(),
-                    }
-                    if not sub["prompt"]:
-                        continue
-                    if sub_type in ("mcq",):
-                        opts = [str(o).strip() for o in (s.get("options") or []) if str(o).strip()]
-                        if len(opts) < 2:
-                            continue
-                        sub["options"] = opts[:4]
-                        try:
-                            sub["correct_index"] = max(0, min(len(opts)-1, int(s.get("correct_index") or 0)))
-                        except Exception:
-                            sub["correct_index"] = 0
-                    elif sub_type == "tf":
-                        sub["options"] = ["True", "False", "Not Given"]
-                        raw_c = s.get("correct") or s.get("correct_index") or "True"
-                        if isinstance(raw_c, int):
-                            sub["correct_index"] = max(0, min(2, raw_c))
-                        else:
-                            mp = {"true": 0, "false": 1, "not given": 2, "ng": 2, "not_given": 2}
-                            sub["correct_index"] = mp.get(str(raw_c).strip().lower(), 0)
-                    elif sub_type in ("gap", "dictation", "short"):
-                        ans = str(s.get("answer") or "").strip()
-                        if not ans:
-                            continue
-                        sub["answer"] = ans
-                        acc = s.get("accepted_answers")
-                        sub["accepted_answers"] = [str(a).strip() for a in acc if str(a).strip()] if isinstance(acc, list) else []
-                    elif sub_type == "order":
-                        ans = str(s.get("answer") or "").strip()
-                        if not ans:
-                            continue
-                        sub["answer"] = ans
-                        toks = s.get("tokens")
-                        sub["tokens"] = [str(t).strip() for t in toks if str(t).strip()] if isinstance(toks, list) and toks else ans.replace(".","").split()
-                    elif sub_type == "open":
-                        sub["reference_answer"] = str(s.get("reference_answer") or s.get("answer") or "").strip() or None
-                    norm_subs.append(sub)
+                norm_subs = _normalize_listening_set_sub_questions(raw_subs)
                 if not norm_subs:
                     continue
                 question["sub_questions"] = norm_subs
@@ -1064,6 +1039,81 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
 
 #: reading_set ichidagi savol turlari.
 READING_SUBTYPES = {"true_false_ng", "choice", "gap", "short", "synonym", "who_said"}
+
+_LISTENING_SET_TYPE_ALIASES = {
+    "multiple_choice": "mcq", "choice": "mcq", "multiple-choice": "mcq",
+    "true_false": "tf", "true_false_ng": "tf", "tfng": "tf",
+    "fill_gap": "gap", "gap_fill": "gap", "short_answer": "short",
+    "reorder": "order", "word_order": "order", "match": "matching",
+    "pairs": "matching", "open_answer": "open", "writing": "open",
+}
+
+
+def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
+    """Shared-audio savollarini qat'iy, ammo eski formatlarga mos saqlaydi."""
+    if not isinstance(raw_subs, list):
+        return []
+    normalized: list[dict] = []
+    for raw in raw_subs:
+        if not isinstance(raw, dict):
+            continue
+        sub_type = str(raw.get("type") or raw.get("subtype") or "mcq").strip().lower()
+        sub_type = _LISTENING_SET_TYPE_ALIASES.get(sub_type, sub_type)
+        if sub_type not in {"mcq", "tf", "gap", "dictation", "short", "order", "matching", "open"}:
+            continue
+        prompt = str(raw.get("prompt") or raw.get("question") or "").strip()
+        if not prompt:
+            continue
+        sub: dict[str, Any] = {"type": sub_type, "prompt": prompt}
+        if sub_type == "mcq":
+            options = [str(x).strip() for x in (raw.get("options") or []) if str(x).strip()]
+            if len(options) < 2 or len({x.casefold() for x in options}) != len(options):
+                continue
+            sub["options"] = options[:6]
+            try:
+                sub["correct_index"] = max(0, min(len(sub["options"]) - 1, int(raw.get("correct_index") or 0)))
+            except Exception:
+                sub["correct_index"] = 0
+        elif sub_type == "tf":
+            sub["options"] = ["True", "False", "Not Given"]
+            raw_correct = raw.get("correct") if raw.get("correct") is not None else raw.get("correct_index")
+            if isinstance(raw_correct, int):
+                sub["correct_index"] = max(0, min(2, raw_correct))
+            else:
+                values = {"true": 0, "false": 1, "not given": 2, "not_given": 2, "ng": 2}
+                sub["correct_index"] = values.get(str(raw_correct or "True").strip().lower(), 0)
+        elif sub_type in {"gap", "dictation", "short"}:
+            answer = str(raw.get("answer") or raw.get("reference_answer") or "").strip()
+            if not answer:
+                continue
+            sub["answer"] = answer
+            accepted = raw.get("accepted_answers") or raw.get("accepted") or []
+            sub["accepted_answers"] = [str(x).strip() for x in accepted if str(x).strip()] if isinstance(accepted, list) else []
+        elif sub_type == "order":
+            answer = str(raw.get("answer") or "").strip()
+            if not answer:
+                continue
+            sub["answer"] = answer
+            tokens = raw.get("tokens")
+            sub["tokens"] = [str(x).strip() for x in tokens if str(x).strip()] if isinstance(tokens, list) and tokens else answer.replace(".", "").split()
+        elif sub_type == "matching":
+            pairs = []
+            for pair in raw.get("pairs") or []:
+                if not isinstance(pair, dict):
+                    continue
+                left, right = str(pair.get("left") or "").strip(), str(pair.get("right") or "").strip()
+                if left and right:
+                    pairs.append({"left": left, "right": right})
+            if len(pairs) < 2:
+                continue
+            sub["pairs"] = pairs
+        else:  # open — reference is needed for a strict, explainable AI check.
+            reference = str(raw.get("reference_answer") or raw.get("answer") or "").strip()
+            if not reference:
+                continue
+            sub["reference_answer"] = reference
+        normalized.append(sub)
+    return normalized
 
 
 def _normalize_reading_set(item: dict) -> dict | None:
@@ -1332,6 +1382,10 @@ def _question_for_student(question: dict) -> dict:
                 tokens = list(s.get("tokens") or [])
                 random.shuffle(tokens)
                 item["tokens"] = tokens
+            elif str(s.get("type") or "") == "matching":
+                pairs = s.get("pairs") or []
+                item["left_items"] = [p.get("left") for p in pairs if p.get("left")]
+                item["right_items"] = sorted([p.get("right") for p in pairs if p.get("right")])
             sub_questions.append(item)
         out["sub_questions"] = sub_questions
     elif kind == "matching":
@@ -1356,6 +1410,9 @@ def _question_for_student(question: dict) -> dict:
                 "type": s.get("type"),
                 "prompt": s.get("prompt"),
                 "options": list(s.get("options") or []),
+                "tokens": list(s.get("tokens") or []),
+                "left_items": [p.get("left") for p in (s.get("pairs") or []) if p.get("left")],
+                "right_items": sorted([p.get("right") for p in (s.get("pairs") or []) if p.get("right")]),
             }
             for s in (question.get("sub_questions") or [])
         ]
@@ -1496,10 +1553,11 @@ def _import_system_prompt(
         "  3. ALL answers MUST be verifiable directly from the text — no inference.\n"
         "  4. Do this even if the original material has NO printed questions for the text.\n\n"
         "=== LISTENING RULES ===\n"
-        "• For each listening exercise in the material, generate 3–5 separate 'listening' question objects.\n"
-        "• Each question: distinct prompt, 4 options, correct_index. Leave audio_url empty (teacher uploads).\n"
-        "• Each listening question is SEPARATE (saved individually). Do NOT group them into one object.\n"
-        "• Example: a listening about a job interview → 3 questions: what job, where, what time.\n\n"
+        "• One printed/listening source = ONE `listening_set` object. It has ONE audio_url (leave empty so teacher uploads once)\n"
+        "  and 3–5 `sub_questions`. Never duplicate the audio into separate objects.\n"
+        "• Mix the types that actually fit the source: mcq, tf, gap, dictation, short, order, matching, open.\n"
+        "• `open` requires reference_answer; `matching` requires pairs; mcq requires options + correct_index.\n"
+        "• Keep a single audio exercise together even when it contains several question formats.\n\n"
         "=== SOURCE LAYOUT / SPLITTING RULES (highest priority after literal extraction) ===\n"
         "• Never turn the separate sentences of a paragraph, story, dialogue, explanation,\n"
         "  word list, table row, or reading text into invented exercises 1, 2, 3.\n"
@@ -1536,7 +1594,7 @@ def _import_system_prompt(
         "4e. For 'translation' add 'direction': 'EN→UZ', 'EN→RU', 'UZ→EN', 'RU→EN', 'RU→UZ', or 'UZ→RU'.\n"
         "4f. For 'guided_writing' add 'word_count': minimum number of words (integer, e.g. 30).\n"
         "4g. For 'dictation' add 'hint': a brief topic hint shown to the student (e.g. 'Weather forecast').\n"
-        "5. Listening exercises: produce separate question objects, leave audio_url empty.\n"
+        "5. Listening exercises: produce ONE listening_set per audio source, leave audio_url empty.\n"
         "6. For 'read_aloud': passage field MUST contain the full text to read aloud. Required.\n"
         "7. For 'dialogue_completion': passage field MUST contain the full dialogue. Required.\n"
         "8. LANGUAGE OF INSTRUCTIONS: copy the book's own wording verbatim. English coursebook → English.\n"
@@ -1565,8 +1623,7 @@ def _import_system_prompt(
         '"accepted_answers":["goes"],"instruction":"Complete the sentence."},\n'
         '    {"kind":"translation","prompt":"She has been living here for years.","answer":"U bu yerda yillar davomida yashayapti.","direction":"EN→UZ"},\n'
         '    {"kind":"guided_writing","prompt":"Write about your favourite holiday.","word_count":40},\n'
-        '    {"kind":"listening","prompt":"What is the woman\'s job?","options":["Teacher","Doctor","Engineer","Chef"],"correct_index":0},\n'
-        '    {"kind":"listening","prompt":"Where does she work?","options":["School","Hospital","Office","Shop"],"correct_index":0},\n'
+        '    {"kind":"listening_set","prompt":"Listen and answer all questions.","audio_url":"","sub_questions":[{"type":"mcq","prompt":"What is the woman\'s job?","options":["Teacher","Doctor","Engineer","Chef"],"correct_index":0},{"type":"tf","prompt":"She works on Saturday.","correct_index":1},{"type":"short","prompt":"Where does she work?","answer":"School"}]},\n'
         '    {"kind":"dictation","prompt":"Write exactly what you hear.","hint":"Weather forecast","answer":"It was cold and rainy yesterday."},\n'
         '    {"kind":"read_aloud","passage":"The quick brown fox jumps over the lazy dog."},\n'
         '    {"kind":"dialogue_completion","passage":"A: Hello! How are you?\\nB: ___ [student fills here]\\nA: Great!","prompt":"Complete B\'s response."},\n'
@@ -2526,7 +2583,16 @@ async def ai_test_answer(
     meta = AI_TEST_TYPES.get(kind, {})
     subject = _student_subject(user)
 
-    if meta.get("check") == "auto":
+    if kind == "listening_set" and any(
+        str(s.get("type") or "") == "open" for s in (question.get("sub_questions") or [])
+    ):
+        # `listening_set` avtomatik tur hisoblanadi, ammo uning ichidagi
+        # ochiq savolni server solishtira olmaydi. Uni aynan shu yerda AIga
+        # yuborish kerak; avval bunday sub-savol jimgina to'g'ri deb ketardi.
+        verdict, feedback = await _check_listening_set_with_ai(
+            question, payload, subject, x_language
+        )
+    elif meta.get("check") == "auto":
         verdict, feedback = _check_auto(question, payload)
     else:
         verdict, feedback = await _check_with_ai(question, payload, subject, x_language)
@@ -2670,6 +2736,79 @@ def _norm_text(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _check_listening_set_sub_answer(sub: dict, given_item: dict) -> tuple[bool, dict]:
+    """Bitta shared-audio sub-savolini tekshiradi; javob hech qachon default tanlanmaydi."""
+    sub_type = str(sub.get("type") or "mcq")
+    if sub_type in {"mcq", "tf"}:
+        chosen = given_item.get("choice_index")
+        correct = int(sub.get("correct_index") or 0)
+        if chosen is None:
+            return False, {"reason": "Javob tanlanmadi"}
+        try:
+            ok = int(chosen) == correct
+        except (TypeError, ValueError):
+            ok = False
+        options = sub.get("options") or []
+        return ok, {
+            "correct_answer": options[correct] if not ok and 0 <= correct < len(options) else None
+        }
+    if sub_type in {"gap", "dictation", "short"}:
+        expected = {_norm_text(sub.get("answer")), *[_norm_text(x) for x in (sub.get("accepted_answers") or [])]}
+        expected.discard("")
+        given = _norm_text(given_item.get("answer_text"))
+        return given in expected, {"reason": "Javob bo'sh" if not given else None}
+    if sub_type == "order":
+        expected = _norm_text(sub.get("answer"))
+        given = _norm_text(" ".join(given_item.get("order") or []) or given_item.get("answer_text"))
+        return bool(given and given == expected), {"hint": "So'zlar tartibini qayta ko'ring" if given != expected else None}
+    if sub_type == "matching":
+        expected = {str(p.get("left")): str(p.get("right")) for p in (sub.get("pairs") or [])}
+        received = given_item.get("pairs") or {}
+        received = {str(k): str(v) for k, v in received.items()} if isinstance(received, dict) else {}
+        wrong = [left for left, right in expected.items() if _norm_text(received.get(left)) != _norm_text(right)]
+        return not wrong, {"wrong_items": wrong, "wrong_count": len(wrong)}
+    # `open` is intentionally handled by _check_listening_set_with_ai.
+    return False, {"reason": "Ochiq savol AI baholashini kutmoqda"}
+
+
+async def _check_listening_set_with_ai(
+    question: dict, payload: AiTestAnswerRequest, subject: str, x_language: str | None
+) -> tuple[str, dict]:
+    """Aralash listening set: auto turlar + faqat open turlari uchun AI tekshiruvi."""
+    wrong_positions: list[int] = []
+    details: list[dict] = []
+    answers = payload.sub_answers or []
+    for index, sub in enumerate(question.get("sub_questions") or []):
+        given = answers[index] if index < len(answers) and isinstance(answers[index], dict) else {}
+        if str(sub.get("type") or "") == "open":
+            virtual_question = {
+                "kind": "listening_open",
+                "prompt": str(sub.get("prompt") or ""),
+                "reference_answer": str(sub.get("reference_answer") or ""),
+                "instruction": question.get("instruction"),
+                "audio_url": question.get("audio_url"),
+            }
+            virtual_payload = AiTestAnswerRequest(
+                question_index=payload.question_index,
+                answer_text=str(given.get("answer_text") or ""),
+            )
+            verdict, detail = await _check_with_ai(virtual_question, virtual_payload, subject, x_language)
+            ok = verdict == "correct"
+        else:
+            ok, detail = _check_listening_set_sub_answer(sub, given)
+        details.append({"position": index + 1, "verdict": "correct" if ok else "wrong", "feedback": detail})
+        if not ok:
+            wrong_positions.append(index + 1)
+    if not wrong_positions:
+        return "correct", {"sub_feedback": details}
+    return "wrong", {
+        "wrong_positions": wrong_positions,
+        "wrong_count": len(wrong_positions),
+        "hint": f"{len(wrong_positions)} ta savolni qayta ko'ring",
+        "sub_feedback": details,
+    }
+
+
 def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict]:
     kind = str(question.get("kind") or "")
     if kind == "listening":
@@ -2712,36 +2851,23 @@ def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict
             "hint": "So'zlar tartibini qayta ko'ring" if given != expected else None,
         }
     if kind == "listening_set":
-        # Har bir sub_question alohida tekshiriladi
         subs = question.get("sub_questions") or []
         sub_ans = payload.sub_answers or []
         wrong_positions = []
+        details = []
         for i, s in enumerate(subs):
-            sub_type = str(s.get("type") or "mcq")
-            given_item = sub_ans[i] if i < len(sub_ans) else {}
-            if sub_type in ("mcq", "tf"):
-                correct_idx = int(s.get("correct_index") or 0)
-                chosen_idx = given_item.get("choice_index")
-                if chosen_idx is None or int(chosen_idx) != correct_idx:
-                    wrong_positions.append(i + 1)
-            elif sub_type in ("gap", "dictation", "short"):
-                expected_set = {_norm_text(s.get("answer")), *[_norm_text(x) for x in (s.get("accepted_answers") or [])]}
-                expected_set = {e for e in expected_set if e}
-                given_text = _norm_text(given_item.get("answer_text") or "")
-                if given_text not in expected_set:
-                    wrong_positions.append(i + 1)
-            elif sub_type == "order":
-                expected_ans = _norm_text(s.get("answer") or "")
-                order_given = " ".join(given_item.get("order") or [])
-                if _norm_text(order_given) != expected_ans:
-                    wrong_positions.append(i + 1)
-            # open type: skip auto check (will be AI checked separately)
+            given_item = sub_ans[i] if i < len(sub_ans) and isinstance(sub_ans[i], dict) else {}
+            ok, detail = _check_listening_set_sub_answer(s, given_item)
+            details.append({"position": i + 1, "verdict": "correct" if ok else "wrong", "feedback": detail})
+            if not ok:
+                wrong_positions.append(i + 1)
         if not wrong_positions:
-            return "correct", {}
+            return "correct", {"sub_feedback": details}
         return "wrong", {
             "wrong_positions": wrong_positions,
             "wrong_count": len(wrong_positions),
             "hint": f"{len(wrong_positions)} ta savol noto'g'ri",
+            "sub_feedback": details,
         }
     if kind == "matching":
         pairs = {str(p.get("left")): str(p.get("right")) for p in (question.get("pairs") or [])}
