@@ -40,6 +40,7 @@ def main() -> int:
     password = required_env("SCREENSHOT_DEMO_PASSWORD")
     first_name = (os.getenv("SCREENSHOT_DEMO_FIRST_NAME") or "Xumoyun").strip()
     last_name = (os.getenv("SCREENSHOT_DEMO_LAST_NAME") or "Maxkamov").strip()
+    login_alias = (os.getenv("SCREENSHOT_DEMO_LOGIN_ALIAS") or "").strip() or None
     login_type = int((os.getenv("SCREENSHOT_DEMO_LOGIN_TYPE") or "1").strip())
     if login_type not in {1, 2, 3, 4}:
         raise RuntimeError("SCREENSHOT_DEMO_LOGIN_TYPE must be 1, 2, 3, or 4")
@@ -58,21 +59,22 @@ def main() -> int:
                 UPDATE users
                 SET password=?, first_name=?, last_name=?, subject='English',
                     login_type=?, blocked=0, access_enabled=1, active=1,
-                    screenshot_demo=1, failed_logins=0
+                    screenshot_demo=1, screenshot_demo_alias=?, failed_logins=0
                 WHERE id=?
                 """,
-                (password_hash, first_name, last_name, login_type, user_id),
+                (password_hash, first_name, last_name, login_type, login_alias, user_id),
             )
         else:
             cur.execute(
                 """
                 INSERT INTO users
                     (login_id, password, first_name, last_name, subject,
-                     login_type, blocked, access_enabled, active, screenshot_demo)
-                VALUES (?, ?, ?, ?, 'English', ?, 0, 1, 1, 1)
+                     login_type, blocked, access_enabled, active, screenshot_demo,
+                     screenshot_demo_alias)
+                VALUES (?, ?, ?, ?, 'English', ?, 0, 1, 1, 1, ?)
                 RETURNING id
                 """,
-                (login_id, password_hash, first_name, last_name, login_type),
+                (login_id, password_hash, first_name, last_name, login_type, login_alias),
             )
             row = cur.fetchone()
             user_id = int(row["id"])

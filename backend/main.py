@@ -170,6 +170,7 @@ from db import (
     get_group_arena_teacher_snapshot,
     get_group_level_for_subject,
     get_group_users,
+    get_screenshot_demo_user_by_alias,
     list_ready_arena_group_sessions,
     get_present_students_for_group_date,
     get_or_create_direct_chat_thread,
@@ -1355,6 +1356,7 @@ class LoginRequest(BaseModel):
     telegram_id: int | None = None
     init_data: str | None = None
     sync_bot_session: bool = True
+    client_app: str | None = None
 
 
 class TelegramLoginRequest(BaseModel):
@@ -17392,7 +17394,16 @@ async def login(request: LoginRequest, req: Request):
             detail="Too many login attempts. Please try again later.",
             headers={"Retry-After": str(LOGIN_THROTTLE_WINDOW_SEC)},
         )
-    user = get_user_by_login_id(request.login_id)
+    client_app = str(request.client_app or "").strip().lower()
+    # A screenshot demo can present the same login text in the Student and
+    # Teacher apps while the database safely keeps their roles separate.
+    # Only the Teacher app is allowed to resolve the teacher-only alias.
+    user = (
+        get_screenshot_demo_user_by_alias(request.login_id, (3, 4))
+        if client_app == "teacher"
+        else None
+    )
+    user = user or get_user_by_login_id(request.login_id)
     if not user:
         record_login_failure(login_key)
         if ip_key:

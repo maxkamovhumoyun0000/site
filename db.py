@@ -420,7 +420,8 @@ def _init_postgres_db():
                 session_started TEXT,
                 logout_time TEXT,
                 active INTEGER DEFAULT 1,
-                screenshot_demo INTEGER DEFAULT 0
+                screenshot_demo INTEGER DEFAULT 0,
+                screenshot_demo_alias TEXT
             )
         """)
         
@@ -9050,7 +9051,13 @@ def ensure_screenshot_demo_schema() -> None:
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS screenshot_demo INTEGER NOT NULL DEFAULT 0"
         )
         cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS screenshot_demo_alias TEXT"
+        )
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_users_screenshot_demo ON users(screenshot_demo)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_screenshot_demo_alias ON users(screenshot_demo_alias)"
         )
         conn.commit()
     except Exception:
@@ -9080,6 +9087,32 @@ def is_screenshot_demo_user(user_id: int) -> bool:
     except Exception:
         logger.exception("is_screenshot_demo_user failed for user_id=%s", user_id)
         return False
+    finally:
+        conn.close()
+
+
+def get_screenshot_demo_user_by_alias(alias: str, login_types: tuple[int, ...]) -> dict | None:
+    """Resolve a display-only demo login alias for one explicitly allowed role."""
+    normalized_alias = str(alias or "").strip().upper()
+    allowed = tuple(int(value) for value in login_types if int(value) > 0)
+    if not normalized_alias or not allowed:
+        return None
+    placeholders = ",".join("?" for _ in allowed)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT * FROM users
+            WHERE COALESCE(screenshot_demo, 0)=1
+              AND UPPER(COALESCE(screenshot_demo_alias, ''))=?
+              AND login_type IN ({placeholders})
+            LIMIT 1
+            """,
+            (normalized_alias, *allowed),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
