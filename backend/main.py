@@ -17817,22 +17817,45 @@ def _student_channel_membership_config() -> tuple[bool, str, str, str]:
 async def _student_channel_membership_status(user: dict) -> dict:
     """Check the current server-side Telegram membership for one student.
 
-    This is deliberately fail-closed when the configured bot cannot verify a
-    membership, so leaving the channel is picked up by the next app poll.
+    The response distinguishes a confirmed missing membership from a
+    temporary Telegram/network verification failure.  Mobile clients can keep
+    checking failures in the background, while still requiring a re-join as
+    soon as Telegram explicitly reports that the user left the channel.
     """
+    # Screenshot-only users are a server-authorized, non-production App Store
+    # review/demo path.  They must never depend on an external Telegram bot.
+    if bool(int(user.get("screenshot_demo") or 0)):
+        return {
+            "required": False,
+            "linked": True,
+            "subscribed": True,
+            "verified": True,
+            "verification_state": "screenshot_demo",
+            "channel_url": "",
+            "bot_url": "",
+        }
+
     required, channel_id, channel_url, bot_token = _student_channel_membership_config()
     telegram_id = str(user.get("telegram_id") or "").strip()
     result = {
         "required": required,
         "linked": bool(telegram_id),
         "subscribed": not required,
+        "verified": not required,
+        "verification_state": "not_required" if not required else "unverified",
         "channel_url": channel_url,
         "bot_url": f"https://t.me/{STUDENT_BOT_USERNAME}" if STUDENT_BOT_USERNAME else "",
     }
     if not required:
         return result
-    if not telegram_id or not bot_token:
+    if not telegram_id:
         result["subscribed"] = False
+        result["verified"] = True
+        result["verification_state"] = "unlinked"
+        return result
+    if not bot_token:
+        result["subscribed"] = False
+        result["verification_state"] = "unavailable"
         return result
 
     try:
@@ -17843,14 +17866,22 @@ async def _student_channel_membership_status(user: dict) -> dict:
             async with session.get(url, params=params) as resp:
                 data = await resp.json(content_type=None)
         status = str((data or {}).get("result", {}).get("status") or "").lower()
-        result["subscribed"] = bool((data or {}).get("ok")) and status in {
+        is_verified = bool((data or {}).get("ok"))
+        result["verified"] = is_verified
+        result["subscribed"] = is_verified and status in {
             "member",
             "administrator",
             "creator",
             "owner",
         }
+        result["verification_state"] = (
+            "member" if result["subscribed"] else (status or "not_member")
+        ) if is_verified else "unavailable"
     except Exception:
+        # Do not report an outage as a confirmed channel departure.
         result["subscribed"] = False
+        result["verified"] = False
+        result["verification_state"] = "unavailable"
     return result
 
 
