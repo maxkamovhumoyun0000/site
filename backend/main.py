@@ -114,6 +114,7 @@ from db import (
     enable_access,
     ensure_diamondvoy_chat_schema,
     ensure_media_assets_schema,
+    ensure_screenshot_demo_schema,
     ensure_student_channel_link_schema,
     ensure_universal_chat_schema,
     ensure_userbot_schema,
@@ -289,6 +290,7 @@ from db import (
     set_attendance_effect,
     set_arena_group_session_expected_players,
     set_pending_approval,
+    set_screenshot_demo_wallet,
     set_standard_admin_account_credentials,
     student_has_active_upcoming_booking,
     set_support_booking_attendance,
@@ -1332,6 +1334,7 @@ class User(UserBase):
     public_offer_agreed: bool = False
     instagram_url: str | None = None
     telegram_url: str | None = None
+    screenshot_demo: bool = False
     created_at: datetime
 
     class Config:
@@ -6198,6 +6201,7 @@ def _build_user_payload(u: dict) -> User:
         str(u.get("proctoring_block_reason") or ""),
         str(u.get("parent_phone") or ""),
         int(u.get("public_offer_agreed") or 0),
+        int(u.get("screenshot_demo") or 0),
     )
     now_ts = time.time()
     cached_payload = _USER_PAYLOAD_CACHE.get(cache_key)
@@ -6240,6 +6244,7 @@ def _build_user_payload(u: dict) -> User:
         public_offer_agreed=bool(int(user_row.get("public_offer_agreed") or 0)),
         instagram_url=str(user_row.get("instagram_url") or "").strip() or None,
         telegram_url=str(user_row.get("telegram_url") or "").strip() or None,
+        screenshot_demo=bool(int(user_row.get("screenshot_demo") or 0)),
         created_at=_now_utc(),
     )
     if user_id > 0:
@@ -17412,7 +17417,7 @@ async def login(request: LoginRequest, req: Request):
         raise HTTPException(status_code=403, detail="Account is blocked")
 
     # Invalidate student OTP immediately upon successful verification
-    if int(user.get("login_type") or 0) in (1, 2):
+    if int(user.get("login_type") or 0) in (1, 2) and not bool(int(user.get("screenshot_demo") or 0)):
         new_pw = generate_password(16)
         try:
             reset_user_password(int(user["id"]), new_pw)
@@ -28183,6 +28188,33 @@ async def student_wallet(authorization: str | None = Header(default=None)):
         "dcoin": float(_safe_call(lambda: get_dcoins(user_id), 0.0) or 0.0),
         "dpoints": float(_safe_call(lambda: get_dpoints(user_id), 0.0) or 0.0),
     }
+
+
+@app.post("/student/screenshot-demo/randomize")
+async def randomize_screenshot_demo_wallet(authorization: str | None = Header(default=None)):
+    """Refresh non-production-looking balances for the one flagged demo user.
+
+    There are deliberately no body parameters: an authenticated account can
+    never name another user or choose its own amount.  Normal students receive
+    the same forbidden response even if they discover this route.
+    """
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    ensure_screenshot_demo_schema()
+    if not bool(int(user.get("screenshot_demo") or 0)):
+        raise HTTPException(status_code=403, detail="Screenshot demo account is required")
+    user_id = int(user.get("id") or 0)
+    dcoin = float(random.randrange(1750, 7201, 25))
+    dpoints = float(random.randrange(2400, 9801, 25))
+    try:
+        balance = set_screenshot_demo_wallet(user_id, dcoin=dcoin, dpoints=dpoints)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Screenshot demo account is required") from exc
+    except Exception as exc:
+        logger.exception("Could not randomize screenshot demo wallet user_id=%s", user_id)
+        raise HTTPException(status_code=503, detail="Could not update demo balance") from exc
+    _invalidate_student_overview_cache(user_id)
+    return {"ok": True, **balance}
 
 
 @app.get("/student/gifts/purchases")

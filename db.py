@@ -419,7 +419,8 @@ def _init_postgres_db():
                 last_activity TEXT,
                 session_started TEXT,
                 logout_time TEXT,
-                active INTEGER DEFAULT 1
+                active INTEGER DEFAULT 1,
+                screenshot_demo INTEGER DEFAULT 0
             )
         """)
         
@@ -1002,6 +1003,10 @@ def _bootstrap_postgres_after_base_tables() -> None:
     print("[STARTUP][DB] ensure_user_subject_schema()")
     ensure_user_subject_schema()
     print("[STARTUP][DB] ensure_user_subject_schema() done")
+
+    print("[STARTUP][DB] ensure_screenshot_demo_schema()")
+    ensure_screenshot_demo_schema()
+    print("[STARTUP][DB] ensure_screenshot_demo_schema() done")
 
     print("[STARTUP][DB] ensure_dcoin_schema_migrations()")
     ensure_dcoin_schema_migrations()
@@ -1608,6 +1613,7 @@ def init_db():
     ensure_vocab_seed_pool_schema()
     ensure_dpoints_schema()
     ensure_subject_dcoin_schema()
+    ensure_screenshot_demo_schema()
     ensure_dcoin_schema_migrations()
     ensure_duel_matchmaking_schema()
     ensure_arena_extras_schema()
@@ -9028,6 +9034,114 @@ def ensure_arena_questions_schema() -> None:
         conn.close()
 
 
+def ensure_screenshot_demo_schema() -> None:
+    """Add the strictly server-controlled flag used by screenshot demo users.
+
+    The flag is deliberately stored on the user row rather than inferred from
+    a login name.  That makes the access check resilient to future credential
+    changes and lets every public ranking exclude demo-only balances.
+    """
+    if not _is_postgres_enabled():
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS screenshot_demo INTEGER NOT NULL DEFAULT 0"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_users_screenshot_demo ON users(screenshot_demo)"
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("ensure_screenshot_demo_schema failed")
+        raise
+    finally:
+        conn.close()
+
+
+def is_screenshot_demo_user(user_id: int) -> bool:
+    """Return whether a user has the server-side screenshot-demo permission."""
+    if int(user_id or 0) <= 0:
+        return False
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT COALESCE(screenshot_demo, 0) AS screenshot_demo FROM users WHERE id=?",
+            (int(user_id),),
+        )
+        row = cur.fetchone() or {}
+        return bool(int(row.get("screenshot_demo") or 0))
+    except Exception:
+        logger.exception("is_screenshot_demo_user failed for user_id=%s", user_id)
+        return False
+    finally:
+        conn.close()
+
+
+def set_screenshot_demo_wallet(user_id: int, dcoin: float, dpoints: float) -> dict[str, float]:
+    """Atomically set display balances for an explicitly flagged demo user.
+
+    This never accepts a caller-selected account: the API authenticates the
+    caller first and invokes this function only after checking its flag.  The
+    D'coin anchor makes D'coin and D'point independently useful in screenshots
+    while keeping the normal wallet accounting formula intact.
+    """
+    uid = int(user_id or 0)
+    if uid <= 0:
+        raise ValueError("A valid user ID is required")
+    dcoin_value = max(0.0, round(float(dcoin or 0), 2))
+    dpoints_value = max(0.0, round(float(dpoints or 0), 2))
+    with DB_WRITE_LOCK:
+        ensure_dpoints_schema()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT COALESCE(screenshot_demo, 0) AS screenshot_demo FROM users WHERE id=?",
+                (uid,),
+            )
+            user = cur.fetchone() or {}
+            if not bool(int(user.get("screenshot_demo") or 0)):
+                raise PermissionError("Screenshot demo account is required")
+            if not _ensure_user_dpoints_ready(cur, context="set_screenshot_demo_wallet"):
+                raise RuntimeError("Wallet storage is unavailable")
+            _ensure_user_dpoints_row(cur, uid)
+            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            cur.execute(
+                """
+                UPDATE user_dpoints
+                SET dpoints=?, dcoin_floor=0, dcoin_anchor_value=?,
+                    dcoin_anchor_dpoints=?, updated_at=?
+                WHERE user_id=?
+                """,
+                (dpoints_value, dcoin_value, dpoints_value, now, uid),
+            )
+            cur.execute(
+                """
+                INSERT INTO diamond_history
+                    (user_id, dcoin_change, dpoints_change, subject, created_at, change_type)
+                VALUES (?, 0, 0, 'SCREENSHOT_DEMO', ?, 'screenshot_demo_balance')
+                """,
+                (uid, now),
+            )
+            conn.commit()
+            return {"dcoin": dcoin_value, "dpoints": dpoints_value}
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
 def ensure_user_subject_schema() -> None:
     """
     Ensure `user_subject` exists and is seeded from `users.subject`.
@@ -13566,7 +13680,9 @@ def get_leaderboard_global(limit=10, offset=0):
             SELECT u.id, u.first_name, u.last_name, u.profile_image_url, COALESCE(ud.dpoints, 0) as dpoints
             FROM users u
             LEFT JOIN user_dpoints ud ON ud.user_id = u.id
-            WHERE u.access_enabled=1 AND u.login_type IN (1,2)
+            WHERE u.access_enabled=1
+              AND u.login_type IN (1,2)
+              AND COALESCE(u.screenshot_demo, 0)=0
             """
         )
         rows = []
@@ -13613,7 +13729,9 @@ def get_leaderboard_by_group(group_id, limit=10, offset=0):
             SELECT u.id, u.first_name, u.last_name, u.profile_image_url, COALESCE(ud.dpoints, 0) as dpoints
             FROM users u
             LEFT JOIN user_dpoints ud ON ud.user_id = u.id
-            WHERE u.group_id=? AND u.login_type IN (1,2)
+            WHERE u.group_id=?
+              AND u.login_type IN (1,2)
+              AND COALESCE(u.screenshot_demo, 0)=0
             """,
             (group_id,),
         )
