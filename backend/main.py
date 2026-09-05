@@ -4322,6 +4322,26 @@ def _days_since_join(created_at: str | None) -> int | None:
 
 
 def _review_policy_for_user(user: dict) -> dict:
+    # The App Store/screenshot demo is server-authorized and must remain
+    # navigable even after its illustrative account age exceeds two months.
+    # Regular users cannot set this flag through the API.
+    if bool(int(user.get("screenshot_demo") or 0)):
+        return {
+            "can_submit": True,
+            "min_days_required": 60,
+            "wait_required": False,
+            "days_since_join": _days_since_join(user.get("created_at")),
+            "due_at": None,
+            "required": False,
+            "blocked": False,
+            "has_submitted_review": False,
+            "submitted_reviews_count": 0,
+            "has_approved_review": False,
+            "has_pending_review": False,
+            "approved_reviews_count": 0,
+            "pending_reviews_count": 0,
+            "reason": "",
+        }
     user_id = int(user.get("id") or 0)
     # Birinchi platforma sharhi ikki oy foydalanishdan keyin so'raladi.
     # Yuborishning o'zi talabni bajaradi; admin moderatsiyasi esa faqat
@@ -7197,7 +7217,7 @@ async def student_no_group_access_guard(request: Request, call_next):
     except HTTPException:
         return await call_next(request)
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    if role != "student":
+    if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
         return await call_next(request)
     if _student_has_group_access_cached(int(user.get("id") or 0)):
         return await call_next(request)
@@ -7218,7 +7238,7 @@ async def student_review_access_guard(request: Request, call_next):
     except HTTPException:
         return await call_next(request)
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    if role != "student":
+    if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
         return await call_next(request)
     policy = _review_policy_for_user(user)
     if not bool(policy.get("required")):
@@ -7246,6 +7266,8 @@ def _require_book_upload_access(user: dict) -> str:
 
 
 def _student_has_group_access(user: dict) -> bool:
+    if bool(int(user.get("screenshot_demo") or 0)):
+        return True
     user_id = int(user.get("id") or 0)
     if user_id <= 0:
         return False
@@ -7256,7 +7278,7 @@ def _student_has_group_access(user: dict) -> bool:
 def _require_student_learning_access(user: dict) -> None:
     """Copy bot access gating so students cannot engage with tests/arenas/duels etc without active access (enabled + not expired + group)."""
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    if role != "student":
+    if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
         return
     review_policy = _review_policy_for_user(user)
     if bool(review_policy.get("required")):

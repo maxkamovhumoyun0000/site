@@ -109,7 +109,12 @@ def _find_demo_users() -> tuple[int, int]:
             SELECT id FROM users
             WHERE COALESCE(screenshot_demo, 0)=1
               AND COALESCE(login_type, 0) IN (1, 2)
-            ORDER BY id
+              -- Fixture students are intentionally locked.  Only the active
+              -- screenshot-login is eligible to receive the demo group.
+              AND COALESCE(blocked, 0)=0
+              AND COALESCE(access_enabled, 0)=1
+              AND COALESCE(active, 0)=1
+            ORDER BY id DESC
             LIMIT 1
             """
         )
@@ -119,7 +124,10 @@ def _find_demo_users() -> tuple[int, int]:
             SELECT id FROM users
             WHERE COALESCE(screenshot_demo, 0)=1
               AND COALESCE(login_type, 0) IN (3, 4)
-            ORDER BY id
+              AND COALESCE(blocked, 0)=0
+              AND COALESCE(access_enabled, 0)=1
+              AND COALESCE(active, 0)=1
+            ORDER BY id DESC
             LIMIT 1
             """
         )

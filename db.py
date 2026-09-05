@@ -11023,6 +11023,11 @@ def disable_access(user_id):
 def is_access_active(user):
     if not user or not user.get('access_enabled'):
         return False
+    # The single server-authorized screenshot demo is intentionally usable
+    # without a production group assignment.  Its flag is never client
+    # supplied and locked fixture accounts still fail the access check above.
+    if bool(int(user.get("screenshot_demo") or 0)):
+        return int(user.get("blocked") or 0) != 1
     try:
         login_type = int(user.get("login_type") or 0)
     except Exception:
