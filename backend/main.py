@@ -18050,6 +18050,14 @@ async def delete_my_account(authorization: str | None = Header(default=None)):
     user_id = int(user.get("id") or 0)
     if user_id <= 0:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    # App Store screenshot/demo users are server-authorized fixtures. They
+    # must remain reproducible for review and can never be removed through a
+    # client request, even if a future app version exposes the deletion route.
+    if bool(int(user.get("screenshot_demo") or 0)):
+        raise HTTPException(
+            status_code=403,
+            detail="Screenshot demo accounts cannot be deleted",
+        )
     role = _role_from_login_type(
         int(user.get("login_type") or 0), str(user.get("login_id") or "")
     )
