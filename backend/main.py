@@ -172,6 +172,7 @@ from db import (
     get_group_level_for_subject,
     get_group_users,
     get_screenshot_demo_user_by_alias,
+    is_screenshot_demo_user,
     list_ready_arena_group_sessions,
     get_present_students_for_group_date,
     get_or_create_direct_chat_thread,
@@ -4325,7 +4326,10 @@ def _review_policy_for_user(user: dict) -> dict:
     # The App Store/screenshot demo is server-authorized and must remain
     # navigable even after its illustrative account age exceeds two months.
     # Regular users cannot set this flag through the API.
-    if bool(int(user.get("screenshot_demo") or 0)):
+    # Re-read the flag from storage instead of trusting an auth cache. Demo
+    # fixtures can be provisioned or restored while this process is running,
+    # and a stale token/cache entry must never turn that protection off.
+    if bool(int(user.get("screenshot_demo") or 0)) or is_screenshot_demo_user(user_id):
         return {
             "can_submit": True,
             "min_days_required": 60,
