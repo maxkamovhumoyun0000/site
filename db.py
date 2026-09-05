@@ -10382,9 +10382,14 @@ def unblock_user(user_id):
             conn.close()
 
 
-def hard_delete_user_profile(user_id: int) -> bool:
-    """Hard-delete user and operational relations from DB."""
-    logger.info("db.hard_delete_user_profile(user_id=%s)", user_id)
+def hard_delete_user_profile(user_id: int, *, preserve_groups: bool = False) -> bool:
+    """Hard-delete an account and its personal/runtime relations.
+
+    When a teacher initiates deletion from the app, their classroom shells may
+    remain without an owner so enrolled students are not orphaned. Personal
+    records belonging to the deleted account still follow the normal cleanup.
+    """
+    logger.info("db.hard_delete_user_profile(user_id=%s, preserve_groups=%s)", user_id, preserve_groups)
     ensure_support_lessons_schema()
     ensure_admin_student_shares_schema()
     ensure_temporary_group_assignments_schema()
@@ -10420,27 +10425,29 @@ def hard_delete_user_profile(user_id: int) -> bool:
                 # Remove all share rows for this student (runtime relation cleanup).
                 cur.execute("DELETE FROM admin_student_shares WHERE student_id=?", (uid,))
 
-            # Teacher relations + delete teacher-owned groups.
+            # Teacher relations. Do not strand enrolled students merely
+            # because a teacher invokes the self-service privacy control.
             if is_teacher:
                 cur.execute("SELECT id FROM groups WHERE teacher_id=?", (uid,))
                 teacher_group_ids = [int((dict(r) if isinstance(r, dict) else {"id": r[0]}).get("id")) for r in (cur.fetchall() or [])]
-                for gid in teacher_group_ids:
-                    cur.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (gid,))
-                    cur.execute("DELETE FROM user_groups WHERE group_id=?", (gid,))
-                    for tbl in ("attendance", "attendance_sessions", "monthly_payments", "overdue_penalty_log"):
+                if not preserve_groups:
+                    for gid in teacher_group_ids:
+                        cur.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (gid,))
+                        cur.execute("DELETE FROM user_groups WHERE group_id=?", (gid,))
+                        for tbl in ("attendance", "attendance_sessions", "monthly_payments", "overdue_penalty_log"):
+                            try:
+                                cur.execute(f"DELETE FROM {tbl} WHERE group_id=?", (gid,))
+                            except Exception:
+                                pass
                         try:
-                            cur.execute(f"DELETE FROM {tbl} WHERE group_id=?", (gid,))
+                            cur.execute("DELETE FROM temporary_group_assignments WHERE group_id=?", (gid,))
                         except Exception:
                             pass
-                    try:
-                        cur.execute("DELETE FROM temporary_group_assignments WHERE group_id=?", (gid,))
-                    except Exception:
-                        pass
-                    try:
-                        cur.execute("DELETE FROM arena_group_sessions WHERE group_id=?", (gid,))
-                    except Exception:
-                        pass
-                    cur.execute("DELETE FROM groups WHERE id=?", (gid,))
+                        try:
+                            cur.execute("DELETE FROM arena_group_sessions WHERE group_id=?", (gid,))
+                        except Exception:
+                            pass
+                        cur.execute("DELETE FROM groups WHERE id=?", (gid,))
                 cur.execute("DELETE FROM user_groups WHERE user_id=?", (uid,))
                 # If assigned as teacher elsewhere, unlink.
                 cur.execute("UPDATE groups SET teacher_id=NULL WHERE teacher_id=?", (uid,))
@@ -10514,7 +10521,7 @@ def hard_delete_user_profile(user_id: int) -> bool:
                     column_name = (dict(r) if isinstance(r, dict) else {"column_name": r[1]}).get("column_name")
                     if not table_name or not column_name:
                         continue
-                    if table_name in ("users", "groups", "web_student_reviews"):
+                    if table_name in ("users", "groups"):
                         continue
                     try:
                         cur.execute(f"DELETE FROM {table_name} WHERE {column_name}=?", (uid,))
@@ -10522,6 +10529,32 @@ def hard_delete_user_profile(user_id: int) -> bool:
                         continue
             except Exception:
                 logger.exception("hard_delete_user_profile: broad cleanup scan failed uid=%s", uid)
+
+            # Reviews must not survive after the author uses account deletion:
+            # the public review card otherwise retains their name/avatar.
+            try:
+                cur.execute("DELETE FROM web_student_reviews WHERE user_id=?", (uid,))
+            except Exception:
+                pass
+            # Community-safety rows are created lazily by the API; clean them
+            # if the feature has already been used, without making deletion
+            # depend on the tables existing on an older deployment.
+            for query in (
+                "DELETE FROM web_user_blocks WHERE user_id=? OR blocked_user_id=?",
+                "DELETE FROM web_safety_reports WHERE user_id=? OR target_user_id=?",
+            ):
+                try:
+                    cur.execute(query, (uid, uid))
+                except Exception:
+                    pass
+            try:
+                cur.execute(
+                    "DELETE FROM web_video_comments WHERE id IN (SELECT comment_id FROM web_comment_authors WHERE author_user_id=?)",
+                    (uid,),
+                )
+                cur.execute("DELETE FROM web_comment_authors WHERE author_user_id=?", (uid,))
+            except Exception:
+                pass
 
             # Final hard delete user row.
             cur.execute("DELETE FROM users WHERE id=?", (uid,))

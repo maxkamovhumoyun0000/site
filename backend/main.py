@@ -44,6 +44,7 @@ from passlib.context import CryptContext
 from pydantic import BaseModel, Field
 
 import push_notifications
+from backend.community_safety import SafetyStore, validate_public_text
 import userbot_manager
 from userbot_manager import (
     send_userbot_otp_code,
@@ -14437,7 +14438,7 @@ def _serialize_booking_rows(rows: list[dict] | tuple[dict, ...] | None) -> list[
 
 def _serialize_review_row(row: dict, include_private: bool = False) -> dict:
     user = _safe_call(lambda: get_user_by_id(int(row.get("user_id") or 0)), None)
-    is_anonymous = False
+    is_anonymous = bool(row.get("is_anonymous"))
     cached_name = row.get("author_name")
     if cached_name and str(cached_name).strip():
         author_name = str(cached_name).strip()
@@ -18020,8 +18021,8 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
 async def delete_my_account(authorization: str | None = Header(default=None)):
     """Permanently delete the signed-in person's account and personal data.
 
-    This control is restricted to teacher/support staff. Student accounts are
-    administered by the education service and cannot delete themselves.
+    Students and staff can delete their account. Classroom groups are retained
+    and unassigned when a teacher deletes their personal account.
     """
     user = _user_row_from_bearer(authorization)
     user_id = int(user.get("id") or 0)
@@ -18030,13 +18031,14 @@ async def delete_my_account(authorization: str | None = Header(default=None)):
     role = _role_from_login_type(
         int(user.get("login_type") or 0), str(user.get("login_id") or "")
     )
-    if role not in {"teacher", "support"}:
+    if role not in {"student", "teacher", "support"}:
         raise HTTPException(
             status_code=403,
-            detail="Student accounts cannot be deleted from the mobile app",
+            detail="This account cannot use self-service deletion",
         )
 
-    if not hard_delete_user_profile(user_id):
+    community_safety.ensure_schema()
+    if not hard_delete_user_profile(user_id, preserve_groups=True):
         raise HTTPException(status_code=500, detail="Account deletion failed")
     _delete_owned_user_uploads(user_id)
     _clear_auth_caches_for_user(user_id)
@@ -20819,6 +20821,114 @@ async def admin_update_diamondvoy_settings(
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     return {"settings": _diamondvoy_set_settings(payload, int(user.get("id") or 0))}
+
+
+community_safety = SafetyStore(get_conn)
+
+
+class SafetyReportRequest(BaseModel):
+    target_type: Literal["video_comment", "voice_user", "ai_response", "user", "video"]
+    target_id: str = Field(min_length=1, max_length=120)
+    reason: Literal["harassment", "inappropriate", "spam", "privacy", "other"]
+    details: str = Field(default="", max_length=2000)
+    snapshot: str = Field(default="", max_length=4000)
+
+
+class SafetyResolveRequest(BaseModel):
+    action: Literal["dismiss", "remove_content", "suspend_user"]
+
+
+@app.get("/user/safety/blocks")
+async def safety_blocks(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    return {"items": community_safety.list_blocks(int(user["id"]))}
+
+
+@app.post("/user/safety/blocks/{target_id}")
+async def safety_block_user(target_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    try:
+        community_safety.block(int(user["id"]), target_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    return {"success": True}
+
+
+@app.delete("/user/safety/blocks/{target_id}")
+async def safety_unblock_user(target_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    community_safety.unblock(int(user["id"]), target_id)
+    return {"success": True}
+
+
+@app.post("/user/safety/reports")
+async def safety_report(payload: SafetyReportRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    uid = int(user["id"])
+    target_user_id = None
+    snapshot = "User-provided context (not independently verified):\n" + payload.snapshot
+    if payload.target_type in {"video_comment", "user", "voice_user", "video"}:
+        if not payload.target_id.isdigit() or int(payload.target_id) <= 0:
+            raise HTTPException(400, "Invalid target")
+        with community_safety.transaction() as cur:
+            if payload.target_type == "video_comment":
+                cur.execute("""SELECT c.*, a.author_user_id FROM web_video_comments c
+                    LEFT JOIN web_comment_authors a ON a.comment_id=c.id WHERE c.id=?""", (int(payload.target_id),))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(404, "Comment not found")
+                target_user_id = row["author_user_id"]
+                snapshot = f"Video {row['video_id']}; comment {row['id']}:\n{row['comment_text']}"
+            elif payload.target_type in {"user", "voice_user"}:
+                cur.execute("SELECT id FROM users WHERE id=?", (int(payload.target_id),))
+                if not cur.fetchone():
+                    raise HTTPException(404, "User not found")
+                target_user_id = int(payload.target_id)
+            else:
+                cur.execute("SELECT id FROM videos WHERE id=? AND is_published=1", (int(payload.target_id),))
+                if not cur.fetchone():
+                    raise HTTPException(404, "Video not found")
+    if target_user_id == uid:
+        raise HTTPException(400, "You cannot report yourself")
+    try:
+        report_id, created = community_safety.report(uid, payload.target_type, payload.target_id, target_user_id, payload.reason, payload.details, snapshot)
+    except ValueError as exc:
+        raise HTTPException(429, str(exc))
+    if created:
+        # Surface the ticket in the existing admin Feedback inbox, as well as
+        # the durable moderation queue. A notification outage must not lose it.
+        try:
+            await feedback_send_user_message(ChatFeedbackCreateRequest(
+                message=f"[SAFETY REPORT {report_id}]\nTarget: {payload.target_type}/{payload.target_id}\nAuthor ID: {target_user_id or 'unknown'}\nReason: {payload.reason}\n{payload.details}\n{snapshot[:2000]}",
+                is_anonymous=False,
+            ), authorization)
+        except Exception:
+            logger.exception("Safety report persisted; admin inbox delivery failed report_id=%s", report_id)
+    return {"success": True, "report_id": report_id}
+
+
+@app.get("/admin/safety/reports")
+async def safety_report_queue(authorization: str | None = Header(default=None)):
+    _require_role(_user_row_from_bearer(authorization), {"admin"})
+    with community_safety.transaction() as cur:
+        cur.execute("SELECT * FROM web_safety_reports ORDER BY created_at DESC LIMIT 250")
+        return {"items": [dict(r) for r in cur.fetchall()]}
+
+
+@app.post("/admin/safety/reports/{report_id}/resolve")
+async def safety_resolve_report(report_id: str, payload: SafetyResolveRequest, authorization: str | None = Header(default=None)):
+    _require_role(_user_row_from_bearer(authorization), {"admin"})
+    try:
+        report = community_safety.resolve(report_id, payload.action)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    if payload.action == "suspend_user" and report.get("target_user_id"):
+        _clear_auth_caches_for_user(int(report["target_user_id"]))
+    return {"success": True}
 
 
 @app.get("/feedback/thread")
@@ -33073,65 +33183,84 @@ async def record_public_video_like(video_id: int, action: str = Query("like")):
 
 
 class PublicVideoCommentRequest(BaseModel):
+    # Kept optional for backwards-compatible request parsing. The author is
+    # always derived from the authenticated account below, never client input.
     author_name: str | None = None
     comment_text: str
     parent_id: int | None = None
 
 @app.get("/public/videos/{video_id}/comments")
-async def get_public_video_comments(video_id: int):
-    conn = get_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT id, parent_id, like_count, dislike_count, author_name, comment_text, created_at FROM web_video_comments WHERE video_id = ? ORDER BY created_at DESC",
-            (int(video_id),)
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-        return {"items": rows}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+async def get_public_video_comments(
+    video_id: int,
+    authorization: str | None = Header(default=None),
+):
+    viewer_id = 0
+    if authorization:
+        viewer_id = int(_user_row_from_bearer(authorization).get("id") or 0)
+    rows = community_safety.video_comments(int(video_id), viewer_id)
+    return {"items": [
+        {
+            "id": int(row["id"]),
+            "parent_id": row.get("parent_id"),
+            "like_count": int(row.get("like_count") or 0),
+            "dislike_count": int(row.get("dislike_count") or 0),
+            "author_name": str(row.get("author_name") or "Diamond User"),
+            "author_user_id": int(row.get("author_user_id") or 0),
+            "comment_text": str(row.get("comment_text") or ""),
+            "created_at": row.get("created_at"),
+        }
+        for row in rows
+    ]}
 
 @app.post("/public/videos/{video_id}/comments")
 async def post_public_video_comment(
     video_id: int, 
     req: PublicVideoCommentRequest,
-    authorization: str | None = Header(default=None)
+    authorization: str | None = Header(default=None),
 ):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    community_safety.ensure_schema()
     conn = get_conn()
     try:
         cur = conn.cursor()
-        
-        name = "Anonim"
-        if authorization:
-            user = _user_row_from_bearer(authorization)
-            if user:
-                first = str(user.get("first_name") or "").strip()
-                last = str(user.get("last_name") or "").strip()
-                if first or last:
-                    name = f"{first} {last}".strip()
-                else:
-                    name = str(user.get("role") or "").capitalize()
-        
-        if req.author_name and req.author_name.strip():
-            # Only use req.author_name if explicitly provided (e.g. legacy clients)
-            name = req.author_name.strip()
-            
-        text = req.comment_text.strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="Comment text is required")
-            
         cur.execute(
-            "INSERT INTO web_video_comments (video_id, author_name, comment_text, parent_id) VALUES (?, ?, ?, ?)",
-            (int(video_id), name, text, req.parent_id)
+            "SELECT id FROM videos WHERE id=? AND is_published=1",
+            (int(video_id),),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Video not found")
+        
+        name = "Diamond User"
+        first = str(user.get("first_name") or "").strip()
+        last = str(user.get("last_name") or "").strip()
+        if first or last:
+            name = f"{first} {last}".strip()
+        
+        try:
+            text = validate_public_text(req.comment_text)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+            
+        if req.parent_id:
+            cur.execute("SELECT id FROM web_video_comments WHERE id=? AND video_id=?", (int(req.parent_id), int(video_id)))
+            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail="Reply target not found")
+        cur.execute(
+            "INSERT INTO web_video_comments (video_id, author_name, comment_text, parent_id) VALUES (?, ?, ?, ?) RETURNING id",
+            (int(video_id), name, text, req.parent_id),
+        )
+        created = cur.fetchone()
+        comment_id = int(created["id"] if isinstance(created, dict) else created[0])
+        cur.execute(
+            "INSERT INTO web_comment_authors (comment_id, author_user_id) VALUES (?, ?) ON CONFLICT(comment_id) DO NOTHING",
+            (comment_id, int(user.get("id") or 0)),
         )
         conn.commit()
         asyncio.create_task(_notify_video_comment(int(video_id), text, name))
         return {"success": True}
+    except HTTPException:
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
@@ -48471,43 +48600,19 @@ async def user_get_video_detail(video_id: int, authorization: str | None = Heade
                 break
     _mark_liked_videos_for_user(cur, related_rows, user_id)
 
-    cur.execute(
-
-
-        "SELECT id, parent_id, like_count, dislike_count, author_name, comment_text, created_at "
-
-
-        "FROM web_video_comments WHERE video_id = ? ORDER BY created_at DESC",
-
-
-        (int(video_id),)
-
-
-    )
-
-
-    comments = []
-
-
-    for cr in cur.fetchall() or []:
-
-
-        comments.append({
-
-
+    comments = [
+        {
             "id": int(cr["id"]),
-
-
-            "user_name": str(cr["author_name"]),
-
-
-            "content": str(cr["comment_text"]),
-
-
-            "created_at": _as_iso_timestamp(cr["created_at"])
-
-
-        })
+            "parent_id": cr.get("parent_id"),
+            "user_name": str(cr.get("author_name") or "Diamond User"),
+            "author_user_id": int(cr.get("author_user_id") or 0),
+            "content": str(cr.get("comment_text") or ""),
+            "like_count": int(cr.get("like_count") or 0),
+            "dislike_count": int(cr.get("dislike_count") or 0),
+            "created_at": _as_iso_timestamp(cr.get("created_at")),
+        }
+        for cr in community_safety.video_comments(int(video_id), user_id)
+    ]
 
 
     item_serialized = _serialize_video_row(video_dict, dict(progress_row) if progress_row else None, viewer_user_id=user_id)
@@ -50425,6 +50530,21 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     if _REDIS_CLIENT.sismember("voice_room_banned_users", str(my_user_id)) and my_role != "admin":
                         await _send({"type": "error", "message": "Siz ovozli xonalardan chetlashtirilgansiz."})
                         continue
+                    # A block must apply beyond the screen where it was made:
+                    # do not let mutually blocked users enter the same live
+                    # voice room on a subsequent join.
+                    blocked_ids = community_safety.blocked_ids(my_user_id)
+                    if blocked_ids:
+                        existing_peer_ids = set()
+                        for existing_peer in _REDIS_CLIENT.smembers(f"voice_room_peers_{room_id}") or set():
+                            peer_data = _REDIS_CLIENT.hgetall(f"voice_room_peer_info_{existing_peer}") or {}
+                            try:
+                                existing_peer_ids.add(int(peer_data.get("user_id") or 0))
+                            except (TypeError, ValueError):
+                                pass
+                        if existing_peer_ids.intersection(blocked_ids):
+                            await _send({"type": "error", "message": "Bloklangan foydalanuvchi ushbu xonada. Qo'shila olmaysiz."})
+                            continue
                         
                     # Verify DB
                     conn = get_conn()
@@ -50599,6 +50719,11 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         replyToAuthor = msg.get("replyToAuthor")
                         replyToText = msg.get("replyToText")
                         if text:
+                            try:
+                                text = validate_public_text(text)
+                            except ValueError as exc:
+                                await _send({"type": "error", "message": str(exc)})
+                                continue
                             # Check if game is active and text matches
                             game_raw = _REDIS_CLIENT.hgetall(f"voice_room_game_{current_room_id}")
                             if game_raw and game_raw.get("active") == "1":
