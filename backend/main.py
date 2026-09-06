@@ -4329,6 +4329,7 @@ def _review_policy_for_user(user: dict) -> dict:
     # Re-read the flag from storage instead of trusting an auth cache. Demo
     # fixtures can be provisioned or restored while this process is running,
     # and a stale token/cache entry must never turn that protection off.
+    user_id = int(user.get("id") or 0)
     if bool(int(user.get("screenshot_demo") or 0)) or is_screenshot_demo_user(user_id):
         return {
             "can_submit": True,
@@ -4346,7 +4347,6 @@ def _review_policy_for_user(user: dict) -> dict:
             "pending_reviews_count": 0,
             "reason": "",
         }
-    user_id = int(user.get("id") or 0)
     # Birinchi platforma sharhi ikki oy foydalanishdan keyin so'raladi.
     # Yuborishning o'zi talabni bajaradi; admin moderatsiyasi esa faqat
     # reviewning saytda ko'rinishi va mukofotiga taalluqli.
