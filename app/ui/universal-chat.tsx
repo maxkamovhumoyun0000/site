@@ -125,6 +125,13 @@ type CommunityChatAuthor = {
   subject?: string | null;
 };
 
+type CommunityChatAttachment = {
+  file_name: string;
+  url: string;
+  mime_type?: string | null;
+  size_bytes?: number;
+};
+
 type CommunityChatMessage = {
   id: number;
   text: string;
@@ -139,6 +146,7 @@ type CommunityChatMessage = {
     author?: CommunityChatAuthor | null;
     created_at?: string | null;
   } | null;
+  attachments?: CommunityChatAttachment[];
 };
 
 type UploadPreview = {
@@ -1280,6 +1288,8 @@ export function UniversalChat({
   const [communityReply, setCommunityReply] = useState<CommunityChatMessage | null>(null);
   const [communityActionId, setCommunityActionId] = useState<number | null>(null);
   const [communityProfile, setCommunityProfile] = useState<CommunityChatAuthor | null>(null);
+  const [communityAttachments, setCommunityAttachments] = useState<CommunityChatAttachment[]>([]);
+  const [communityUploading, setCommunityUploading] = useState(false);
   const [feedbackDetail, setFeedbackDetail] = useState<FeedbackDetail | null>(null);
   const [adminThreads, setAdminThreads] = useState<FeedbackThreadSummary[]>([]);
   const [activeFeedbackThreadId, setActiveFeedbackThreadId] = useState<number | null>(null);
@@ -1304,6 +1314,7 @@ export function UniversalChat({
   const [visibleTimeId, setVisibleTimeId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const communityFileInputRef = useRef<HTMLInputElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const chatsLoadingRef = useRef(false);
   const chatsLoadedRef = useRef(false);
@@ -1318,6 +1329,7 @@ export function UniversalChat({
   const chatLongPressTimerRef = useRef<number | null>(null);
   const longPressedChatRef = useRef<number | null>(null);
   const msgLongPressTimerRef = useRef<number | null>(null);
+  const communityLastMessageIdRef = useRef(0);
   const activeChat = useMemo(() => aiChats.find((chat) => chat.id === activeChatId) || null, [aiChats, activeChatId]);
 
   const scrollToBottom = useCallback((force = false) => {
@@ -1386,24 +1398,57 @@ export function UniversalChat({
   );
 
   const loadCommunityMessages = useCallback(async () => {
-    setLoadingBody((current) => current || communityMessages.length === 0);
+    setLoadingBody((current) => current || communityLastMessageIdRef.current === 0);
     try {
       const payload = await apiFetch("/community-chat?limit=180");
       const rows = Array.isArray(payload?.items) ? payload.items : [];
-      setCommunityMessages(rows as CommunityChatMessage[]);
+      const nextMessages = rows as CommunityChatMessage[];
+      const latestId = nextMessages.reduce((latest, item) => Math.max(latest, Number(item?.id || 0)), 0);
+      const receivedNewMessage = latestId > communityLastMessageIdRef.current;
+      communityLastMessageIdRef.current = latestId;
+      setCommunityMessages(nextMessages);
       setCommunityThreadId(Number(payload?.thread?.id || 0) || null);
       setError("");
-      scrollToBottom(false);
+      if (receivedNewMessage) window.requestAnimationFrame(() => scrollToBottom(false));
     } catch (err) {
-      setError(parseError(err, "Umumiy chatni yuklab bo'lmadi."));
+      setError(parseError(err, tt("chat.community.errorLoad", "Umumiy chatni yuklab bo'lmadi.")));
     } finally {
       setLoadingBody(false);
     }
-  }, [apiFetch, communityMessages.length, scrollToBottom]);
+  }, [apiFetch, scrollToBottom, tt]);
+
+  async function handleCommunityFiles(files: FileList | null) {
+    const selected = Array.from(files || []);
+    if (!selected.length || communityUploading) return;
+    if (communityAttachments.length + selected.length > 5) {
+      setError(tt("chat.community.maxFiles", "Bir xabarda 5 tagacha fayl yuborish mumkin."));
+      return;
+    }
+    setCommunityUploading(true);
+    setError("");
+    try {
+      const uploaded: CommunityChatAttachment[] = [];
+      for (const file of selected) {
+        if (file.size > 20 * 1024 * 1024) throw new Error(tt("chat.community.fileSize", "Fayl 20 MB dan katta bo'lmasligi kerak."));
+        const form = new FormData();
+        form.append("file", file);
+        const payload = await apiFetch("/community-chat/upload", { method: "POST", body: form });
+        const attachment = payload?.attachment as CommunityChatAttachment | undefined;
+        if (!attachment?.url) throw new Error(tt("chat.community.uploadError", "Fayl yuklanmadi. Qayta urinib ko'ring."));
+        uploaded.push(attachment);
+      }
+      setCommunityAttachments((previous) => [...previous, ...uploaded].slice(0, 5));
+    } catch (err) {
+      setError(parseError(err, tt("chat.community.uploadError", "Fayl yuklanmadi. Qayta urinib ko'ring.")));
+    } finally {
+      setCommunityUploading(false);
+      if (communityFileInputRef.current) communityFileInputRef.current.value = "";
+    }
+  }
 
   async function sendCommunityMessage() {
     const text = communityInput.trim();
-    if (!text || sending) return;
+    if ((!text && communityAttachments.length === 0) || sending || communityUploading) return;
     setSending(true);
     try {
       const payload = await apiFetch("/community-chat/messages", {
@@ -1412,6 +1457,7 @@ export function UniversalChat({
           message: text,
           reply_to_message_id: communityReply?.id || undefined,
           client_message_id: `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          attachments: communityAttachments.map((attachment) => ({ url: attachment.url })),
         },
       });
       const created = payload?.item as CommunityChatMessage | undefined;
@@ -1422,6 +1468,7 @@ export function UniversalChat({
       }
       setCommunityInput("");
       setCommunityReply(null);
+      setCommunityAttachments([]);
       setError("");
       scrollToBottom(true);
     } catch (err) {
@@ -1433,15 +1480,20 @@ export function UniversalChat({
 
   async function deleteCommunityMessage(message: CommunityChatMessage, scope: "me" | "everyone") {
     try {
-      await apiFetch(`/community-chat/messages/${message.id}?scope=${scope}`, { method: "DELETE" });
-      setCommunityActionId(null);
       if (scope === "me") {
+        // Delete for me: local only, no API needed — just hide it
         setCommunityMessages((previous) => previous.filter((item) => item.id !== message.id));
+        setCommunityActionId(null);
       } else {
-        setCommunityMessages((previous) => previous.map((item) => item.id === message.id ? { ...item, is_deleted: true, text: "Xabar o‘chirildi" } : item));
+        // Delete for everyone: API call, then mark as deleted (show placeholder)
+        await apiFetch(`/community-chat/messages/${message.id}?scope=${scope}`, { method: "DELETE" });
+        setCommunityMessages((previous) =>
+          previous.map((item) => (item.id === message.id ? { ...item, is_deleted: true, text: "" } : item)),
+        );
+        setCommunityActionId(null);
       }
     } catch (err) {
-      setError(parseError(err, "Xabar o'chirilmadi."));
+      setError(parseError(err, tt("chat.community.deleteError", "Xabar o'chirilmadi.")));
     }
   }
 
@@ -1523,7 +1575,7 @@ export function UniversalChat({
   useEffect(() => {
     if (activePane !== "community") return;
     loadCommunityMessages().catch(() => null);
-    const timer = window.setInterval(() => loadCommunityMessages().catch(() => null), 8000);
+    const timer = window.setInterval(() => loadCommunityMessages().catch(() => null), 3000);
     return () => window.clearInterval(timer);
   }, [activePane, loadCommunityMessages]);
 
@@ -2268,11 +2320,11 @@ export function UniversalChat({
           <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-violet-500 text-lg font-black text-white">#</div>
           <div className="min-w-0">
-            <h3 className="font-black text-navy-900 dark:text-white truncate">Umumiy chat</h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300">Diamond Education hamjamiyati</p>
+            <h3 className="font-black text-navy-900 dark:text-white truncate">{tt("chat.community.title", "Umumiy chat")}</h3>
+            <p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.community.subtitle", "Diamond Education hamjamiyati")}</p>
           </div>
         </div>
-        <button type="button" onClick={() => loadCommunityMessages().catch(() => null)} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white">↻</button>
+        <button type="button" aria-label={tt("chat.community.refresh", "Yangilash")} onClick={() => loadCommunityMessages().catch(() => null)} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white">↻</button>
       </div>
 
       <div ref={communityScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
@@ -2281,63 +2333,88 @@ export function UniversalChat({
         ) : communityMessages.length === 0 ? (
           <div className="h-full grid place-items-center text-center px-6 text-ink-500 dark:text-navy-300">
             <div>
-              <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-violet-100 text-2xl text-violet-700 dark:bg-violet-500/15 dark:text-violet-200">#</div>
-              <p className="font-black text-navy-900 dark:text-white">Hamjamiyatdagi birinchi xabarni yozing</p>
-              <p className="mt-1 text-sm">Xabarni bosib reply qiling, profil rasmi orqali foydalanuvchini ko‘ring.</p>
+              <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-[#1429F2]/10 text-2xl text-[#1429F2] dark:bg-[#1429F2]/20 dark:text-blue-200">#</div>
+              <p className="font-black text-navy-900 dark:text-white">{tt("chat.community.emptyTitle", "Hamjamiyatdagi birinchi xabarni yozing")}</p>
+              <p className="mt-1 text-sm">{tt("chat.community.emptyBody", "Xabarni bosib javob bering, profil rasmi orqali foydalanuvchini ko'ring.")}</p>
             </div>
           </div>
         ) : (
           communityMessages.map((message) => {
             const mine = Boolean(message.is_mine);
             const avatar = String(message.author?.avatar_url || message.author?.profile_image_url || "");
+
+            if (message.is_deleted) {
+              return (
+                <div key={message.id} className={cx("flex gap-2 sm:gap-3", mine ? "justify-end" : "justify-start")}>
+                  {!mine && (
+                    <div className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-line bg-[#1429F2]/10 text-xs font-black text-[#1429F2] dark:border-white/15 dark:bg-[#1429F2]/20 dark:text-blue-200">
+                      {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : message.author.full_name.slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+                  <div className={cx("max-w-[88%] sm:max-w-[72%]", mine ? "items-end flex flex-col" : "items-start")}>
+                    <div className="inline-flex items-center gap-2 rounded-2xl border border-dashed border-line bg-surface-soft px-4 py-2.5 text-xs text-ink-400 dark:border-white/10 dark:bg-white/5 dark:text-navy-300 italic">
+                      <span>🗑</span>
+                      <span>{tt("chat.community.deleted", "Xabar o'chirildi")}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <div key={message.id} className={cx("flex gap-2 sm:gap-3", mine ? "justify-end" : "justify-start")}>
                 {!mine && (
                   <button
                     type="button"
                     onClick={() => setCommunityProfile(message.author)}
-                    className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-line bg-violet-100 text-xs font-black text-violet-700 dark:border-white/15 dark:bg-violet-500/15 dark:text-violet-200"
-                    title={`${message.author.full_name} profili`}
+                    className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-line bg-[#1429F2]/10 text-xs font-black text-[#1429F2] dark:border-white/15 dark:bg-[#1429F2]/20 dark:text-blue-200"
+                    title={tt("chat.community.openProfile", "Profilni ochish")}
                   >
                     {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : message.author.full_name.slice(0, 1).toUpperCase()}
                   </button>
                 )}
                 <div className={cx("max-w-[88%] sm:max-w-[72%]", mine ? "items-end" : "items-start")}>
-                  {!mine && <button type="button" onClick={() => setCommunityProfile(message.author)} className="mb-1 text-left text-xs font-black text-violet-700 dark:text-violet-200">{message.author.full_name} <span className="font-medium text-ink-500 dark:text-navy-300">· {message.author.role}</span></button>}
+                  {!mine && <button type="button" onClick={() => setCommunityProfile(message.author)} className="mb-1 text-left text-xs font-black text-[#1429F2] dark:text-blue-200">{message.author.full_name} <span className="font-medium text-ink-500 dark:text-navy-300">· {message.author.role}</span></button>}
                   <button
                     type="button"
                     onClick={() => setCommunityActionId((active) => active === message.id ? null : message.id)}
-                    className={cx("block w-full rounded-2xl border px-4 py-3 text-left", mine ? "border-cyan-500 bg-cyan-500 text-white" : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white", message.is_deleted && "italic opacity-70")}
+                    className={cx("block w-full rounded-2xl border px-4 py-3 text-left", mine ? "border-[#1429F2] bg-[#1429F2] text-white" : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white")}
                   >
                     {message.reply_to && (
-                      <div className={cx("mb-2 border-l-2 pl-2 text-xs", mine ? "border-white/70 text-white/80" : "border-violet-400 text-ink-500 dark:text-navy-300")}>
-                        <p className="font-bold">{message.reply_to.author?.full_name || "Xabar"}</p>
+                      <div className={cx("mb-2 border-l-2 pl-2 text-xs", mine ? "border-white/70 text-white/80" : "border-[#1429F2] text-ink-500 dark:text-navy-300")}>
+                        <p className="font-bold">{message.reply_to.author?.full_name || tt("chat.community.message", "Xabar")}</p>
                         <p className="line-clamp-2">{message.reply_to.snippet}</p>
                       </div>
                     )}
-                    <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</p>
+                    {message.text !== "📎" && <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</p>}
+                    {(message.attachments || []).length > 0 && (
+                      <div className="mt-2 grid gap-2">
+                        {(message.attachments || []).map((attachment, index) => {
+                          const isImage = String(attachment.mime_type || "").startsWith("image/");
+                          return isImage ? (
+                            <button key={`${attachment.url}-${index}`} type="button" onClick={() => setPreviewMedia({ type: "image", src: apiUrl(attachment.url), title: attachment.file_name || tt("chat.image", "Rasm") })} className="overflow-hidden rounded-xl border border-white/25 text-left">
+                              <img src={apiUrl(attachment.url)} alt={attachment.file_name || ""} className="max-h-64 w-full object-cover" />
+                            </button>
+                          ) : (
+                            <a key={`${attachment.url}-${index}`} href={apiUrl(attachment.url)} target="_blank" rel="noreferrer" className={cx("flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-bold", mine ? "border-white/35 bg-white/10 text-white" : "border-[#1429F2]/20 bg-[#1429F2]/5 text-[#1429F2] dark:text-blue-200")}>
+                              <span>📎</span><span className="min-w-0 truncate">{attachment.file_name || tt("chat.community.file", "Fayl")}</span>
+                            </a>
+                          );
+                        })}
+                      </div>
+                    )}
                     <p className={cx("mt-2 text-[11px]", mine ? "text-white/75" : "text-ink-500 dark:text-navy-300")}>{formatWhen(message.created_at)}</p>
                   </button>
                   {communityActionId === message.id && !message.is_deleted && (
-                    <div className={cx("mt-1 flex flex-wrap gap-1 rounded-xl border p-1 shadow-premium", mine ? "border-cyan-200 bg-white dark:border-white/10 dark:bg-navy-900" : "border-line bg-white dark:border-white/10 dark:bg-navy-900")}>
-                      <button type="button" onClick={() => { setCommunityReply(message); setCommunityActionId(null); }} className="rounded-lg px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-50 dark:text-violet-200 dark:hover:bg-violet-500/15">↩ Reply</button>
+                    <div className={cx("mt-1 flex flex-wrap gap-1 rounded-xl border p-1 shadow-premium", mine ? "border-blue-200 bg-white dark:border-white/10 dark:bg-navy-900" : "border-line bg-white dark:border-white/10 dark:bg-navy-900")}>
+                      <button type="button" onClick={() => { setCommunityReply(message); setCommunityActionId(null); }} className="rounded-lg px-3 py-2 text-xs font-bold text-[#1429F2] hover:bg-blue-50 dark:text-blue-200 dark:hover:bg-blue-500/15">↩ {tt("chat.community.reply", "Javob berish")}</button>
                       {mine && <>
-                        <button type="button" onClick={() => deleteCommunityMessage(message, "me").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-ink-700 hover:bg-slate-50 dark:text-white dark:hover:bg-white/10">Faqat menda</button>
-                        <button type="button" onClick={() => deleteCommunityMessage(message, "everyone").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 dark:text-rose-200 dark:hover:bg-rose-500/15">Hammadan o‘chirish</button>
+                        <button type="button" onClick={() => deleteCommunityMessage(message, "me").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-ink-700 hover:bg-slate-50 dark:text-white dark:hover:bg-white/10">{tt("chat.community.deleteForMe", "Faqat menda")}</button>
+                        <button type="button" onClick={() => deleteCommunityMessage(message, "everyone").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 dark:text-rose-200 dark:hover:bg-rose-500/15">{tt("chat.community.deleteForEveryone", "Hammadan o'chirish")}</button>
                       </>}
                     </div>
                   )}
                 </div>
-                {mine && (
-                  <button
-                    type="button"
-                    onClick={() => setCommunityProfile(message.author)}
-                    className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-cyan-200 bg-cyan-50 text-xs font-black text-cyan-700 dark:border-cyan-400/30 dark:bg-cyan-500/15 dark:text-cyan-200"
-                    title="Profil"
-                  >
-                    {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : message.author.full_name.slice(0, 1).toUpperCase()}
-                  </button>
-                )}
               </div>
             );
           })
@@ -2346,14 +2423,26 @@ export function UniversalChat({
 
       <form onSubmit={(event) => { event.preventDefault(); sendCommunityMessage().catch(() => null); }} className="border-t border-line dark:border-white/10 bg-white dark:bg-navy-950 px-3 sm:px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)]">
         {communityReply && (
-          <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900 dark:border-violet-400/30 dark:bg-violet-500/15 dark:text-violet-100">
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-[#1429F2]/25 bg-[#1429F2]/5 px-3 py-2 text-xs text-[#1429F2] dark:border-blue-400/30 dark:bg-blue-500/15 dark:text-blue-100">
             <span className="truncate">↩ {communityReply.author.full_name}: {communityReply.text}</span>
             <button type="button" onClick={() => setCommunityReply(null)} className="font-black">×</button>
           </div>
         )}
+        {communityAttachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {communityAttachments.map((attachment, index) => (
+              <div key={`${attachment.url}-${index}`} className="flex max-w-full items-center gap-2 rounded-xl border border-[#1429F2]/20 bg-[#1429F2]/5 px-3 py-2 text-xs font-bold text-[#1429F2] dark:text-blue-200">
+                <span>📎</span><span className="max-w-44 truncate">{attachment.file_name || tt("chat.community.file", "Fayl")}</span>
+                <button type="button" aria-label={tt("common.delete", "O'chirish")} onClick={() => setCommunityAttachments((items) => items.filter((_, itemIndex) => itemIndex !== index))} className="text-base leading-none">×</button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
-          <textarea value={communityInput} onChange={(event) => setCommunityInput(event.target.value)} rows={1} placeholder="Hamjamiyatga xabar yozing..." className="flex-1 max-h-32 resize-none rounded-xl border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-violet-400" />
-          <button type="submit" disabled={sending || !communityInput.trim() || !communityThreadId} className="h-11 px-4 rounded-xl bg-violet-500 text-sm font-bold text-white disabled:opacity-50">{sending ? "..." : tt("chat.send", "Yuborish")}</button>
+          <input ref={communityFileInputRef} type="file" multiple className="hidden" accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,audio/mpeg,audio/mp4,audio/wav,video/mp4,video/quicktime" onChange={(event) => handleCommunityFiles(event.target.files).catch(() => null)} />
+          <button type="button" aria-label={tt("chat.community.attach", "Fayl biriktirish")} onClick={() => communityFileInputRef.current?.click()} disabled={communityUploading || communityAttachments.length >= 5} className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-[#1429F2]/30 text-[#1429F2] disabled:opacity-50 dark:text-blue-200">{communityUploading ? "…" : "📎"}</button>
+          <textarea value={communityInput} onChange={(event) => setCommunityInput(event.target.value)} rows={1} placeholder={tt("chat.community.placeholder", "Hamjamiyatga xabar yozing...")} className="flex-1 max-h-32 resize-none rounded-xl border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-[#1429F2]" />
+          <button type="submit" disabled={sending || communityUploading || (!communityInput.trim() && communityAttachments.length === 0) || !communityThreadId} className="h-11 px-4 rounded-xl bg-[#1429F2] text-sm font-bold text-white disabled:opacity-50">{sending ? "..." : tt("chat.send", "Yuborish")}</button>
         </div>
       </form>
     </section>

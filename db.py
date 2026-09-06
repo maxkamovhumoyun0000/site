@@ -15710,7 +15710,9 @@ def add_chat_message(
             )
             existing = cur.fetchone()
             if existing:
-                return dict(existing)
+                replay = dict(existing)
+                replay["_idempotent_replay"] = True
+                return replay
         cur.execute(
             """
             INSERT INTO chat_messages (thread_id, sender_id, sender_role, message_text, reply_to_message_id, client_message_id)
@@ -15750,7 +15752,10 @@ def add_chat_message(
             (message_id,),
         )
         row = cur.fetchone()
-        return dict(row) if row else None
+        created = dict(row) if row else None
+        if created is not None:
+            created["_idempotent_replay"] = False
+        return created
     except Exception:
         try:
             conn.rollback()

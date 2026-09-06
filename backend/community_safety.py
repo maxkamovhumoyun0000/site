@@ -21,7 +21,23 @@ def validate_public_text(text: str) -> str:
     normalized = re.sub(r"\s+", " ", normalized)
     # Baseline text filtering, not a replacement for human moderation. The
     # operations team can extend phrases without shipping another mobile app.
-    phrases = ["kill yourself", "i will kill you", "я тебя убью", "иди сдохни"]
+    # Keep phrases, rather than loose word stems, so ordinary educational text
+    # is not accidentally moderated. The list covers common Uzbek, Russian and
+    # English insults/threats that are unsuitable for a centre-wide chat.
+    phrases = [
+        # English
+        "fuck", "fucking", "motherfucker", "shit", "bitch", "asshole", "bastard",
+        "dickhead", "cunt", "nigger", "kill yourself", "i will kill you",
+        "i'll kill you", "go die", "go to hell",
+        # Russian
+        "блядь", "блять", "сука", "пизда", "пиздец", "хуй", "хуесос", "ебать",
+        "ебаный", "мудак", "долбоеб", "долбоёб", "иди сдохни", "я тебя убью",
+        "убью тебя", "пошел на хуй", "пошёл на хуй",
+        # Uzbek (straight and typographic-apostrophe variants)
+        "onangni sikay", "onangni sikaman", "onangni sik", "seni sikaman",
+        "sikaman", "haromzoda", "haromi", "o'ldiraman", "o‘ldiraman",
+        "seni o'ldiraman", "seni o‘ldiraman", "o'lib ket", "o‘lib ket",
+    ]
     phrases += [p.strip().casefold() for p in os.getenv("COMMUNITY_BLOCKED_PHRASES", "").split("|") if p.strip()]
     if any(re.search(r"(?<!\w)" + re.escape(p) + r"(?!\w)", normalized) for p in phrases):
         raise ValueError("Haqorat yoki tahdidli matnni yuborib bo'lmaydi.")

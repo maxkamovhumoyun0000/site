@@ -2296,6 +2296,18 @@ class ChatSendMessageRequest(BaseModel):
     client_message_id: str | None = Field(default=None, min_length=3, max_length=120)
 
 
+class CommunityChatAttachmentRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=1400)
+
+
+class CommunityChatMessageRequest(BaseModel):
+    # An attachment may be sent without a textual caption.
+    message: str = Field(default="", max_length=4000)
+    reply_to_message_id: int | None = Field(default=None, ge=1)
+    client_message_id: str | None = Field(default=None, min_length=3, max_length=120)
+    attachments: list[CommunityChatAttachmentRequest] = Field(default_factory=list, max_length=5)
+
+
 class ChatReadRequest(BaseModel):
     last_message_id: int | None = Field(default=None, ge=1)
 
@@ -10740,6 +10752,62 @@ async def _upload_chat_image_file(file: UploadFile, user_id: int) -> str:
     return _chat_media_url(filename)
 
 
+async def _upload_community_attachment_file(file: UploadFile, user_id: int) -> dict[str, Any]:
+    """Store an allowed community-chat image, document, audio or video file."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File could not be uploaded")
+    if len(raw) > COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large (maximum 20 MB)")
+    original_name = Path(str(file.filename or "file")).name
+    ext = Path(original_name).suffix.lower()
+    expected_mime = COMMUNITY_CHAT_ATTACHMENT_MIME_BY_EXT.get(ext)
+    if not expected_mime:
+        raise HTTPException(status_code=422, detail="This file type is not supported")
+    received_mime = str(file.content_type or "").split(";", 1)[0].strip().lower()
+    if received_mime and received_mime not in {expected_mime, "application/octet-stream", "image/jpg"}:
+        raise HTTPException(status_code=422, detail="The file type does not match its extension")
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(original_name).stem).strip("_")[:50] or "file"
+    filename = f"community_{int(user_id)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}_{safe_stem}{ext}"
+    (CHAT_UPLOAD_DIR / filename).write_bytes(raw)
+    return {
+        "file_name": original_name[:180],
+        "url": _chat_media_url(filename),
+        "mime_type": expected_mime,
+        "size_bytes": len(raw),
+    }
+
+
+def _validate_community_chat_attachments(attachments: list[CommunityChatAttachmentRequest]) -> list[dict[str, Any]]:
+    if len(attachments) > 5:
+        raise HTTPException(status_code=422, detail="At most 5 attachments can be sent")
+    clean: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for attachment in attachments:
+        raw_url = str(attachment.url or "").strip()
+        parsed = urlparse(raw_url)
+        filename = Path(parsed.path).name
+        signature = (parse_qs(parsed.query or "").get("sig") or [""])[0]
+        if not filename or filename in seen or signature != _chat_media_signature(filename):
+            raise HTTPException(status_code=422, detail="Attachment validation failed")
+        path = CHAT_UPLOAD_DIR / filename
+        ext = path.suffix.lower()
+        mime_type = COMMUNITY_CHAT_ATTACHMENT_MIME_BY_EXT.get(ext)
+        if not mime_type or not path.exists() or not path.is_file():
+            raise HTTPException(status_code=422, detail="Attachment is unavailable")
+        size_bytes = int(path.stat().st_size)
+        if size_bytes <= 0 or size_bytes > COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Attachment is too large")
+        seen.add(filename)
+        clean.append({
+            "file_name": filename.split("_", 4)[-1][:180] or filename,
+            "url": _chat_media_url(filename),
+            "mime_type": mime_type,
+            "size_bytes": size_bytes,
+        })
+    return clean
+
+
 def _normalize_feedback_status(value: str | None) -> str:
     raw = str(value or "").strip()
     low = raw.lower()
@@ -16571,6 +16639,18 @@ def _ensure_student_diamondvoy_default_chat(user_id: int) -> int:
 
 _COMMUNITY_CHAT_DIRECT_KEY = "diamond_education_community_v1"
 _COMMUNITY_CHAT_TITLE = "Diamond Education umumiy chat"
+COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
+COMMUNITY_CHAT_ATTACHMENT_MIME_BY_EXT = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
+    ".gif": "image/gif", ".pdf": "application/pdf", ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+    ".wav": "audio/wav", ".mp4": "video/mp4", ".mov": "video/quicktime",
+}
 
 
 def _ensure_community_chat_schema() -> None:
@@ -16607,6 +16687,23 @@ def _ensure_community_chat_schema() -> None:
             )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_community_chat_deletions_user ON community_chat_message_deletions(user_id, message_id)"
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS community_chat_attachments (
+                    message_id BIGINT NOT NULL,
+                    position INTEGER NOT NULL,
+                    file_name TEXT NOT NULL,
+                    storage_url TEXT NOT NULL,
+                    mime_type TEXT NOT NULL,
+                    size_bytes BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (message_id, position)
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_community_chat_attachments_message ON community_chat_attachments(message_id, position)"
             )
             conn.commit()
             _community_chat_schema_ready = True
@@ -16719,6 +16816,39 @@ def _community_chat_author_payload(user_id: int, cache: dict[int, dict[str, Any]
     return payload
 
 
+def _community_chat_attachment_rows(message_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    """Return stored, server-validated attachment metadata for messages."""
+    ids = [int(mid) for mid in message_ids if int(mid or 0) > 0]
+    if not ids:
+        return {}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        cur.execute(
+            f"""
+            SELECT message_id, position, file_name, storage_url, mime_type, size_bytes
+            FROM community_chat_attachments
+            WHERE message_id IN ({placeholders})
+            ORDER BY message_id ASC, position ASC
+            """,
+            tuple(ids),
+        )
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in cur.fetchall() or []:
+            item = dict(row)
+            message_id = int(item.get("message_id") or 0)
+            grouped.setdefault(message_id, []).append({
+                "file_name": str(item.get("file_name") or "file"),
+                "url": str(item.get("storage_url") or ""),
+                "mime_type": str(item.get("mime_type") or "application/octet-stream"),
+                "size_bytes": int(item.get("size_bytes") or 0),
+            })
+        return grouped
+    finally:
+        conn.close()
+
+
 def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 0, limit: int = 120) -> list[dict[str, Any]]:
     _ensure_community_chat_schema()
     lim = max(1, min(300, int(limit or 120)))
@@ -16734,8 +16864,7 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 
                 rm.sender_role AS reply_sender_role,
                 rm.message_text AS reply_message_text,
                 rm.created_at AS reply_created_at,
-                CASE WHEN reply_all_deleted.message_id IS NULL THEN 0 ELSE 1 END AS reply_deleted_for_everyone,
-                CASE WHEN all_deleted.message_id IS NULL THEN 0 ELSE 1 END AS deleted_for_everyone
+                CASE WHEN reply_all_deleted.message_id IS NULL THEN 0 ELSE 1 END AS reply_deleted_for_everyone
             FROM chat_messages m
             LEFT JOIN chat_messages rm ON rm.id=m.reply_to_message_id
             LEFT JOIN community_chat_message_deletions reply_all_deleted
@@ -16745,6 +16874,7 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 
             LEFT JOIN community_chat_message_deletions hidden_for_viewer
                 ON hidden_for_viewer.message_id=m.id AND hidden_for_viewer.user_id=?
             WHERE m.thread_id=? AND m.id>? AND hidden_for_viewer.message_id IS NULL
+              AND all_deleted.message_id IS NULL
             ORDER BY m.id ASC
             LIMIT ?
             """,
@@ -16754,16 +16884,16 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 
     finally:
         conn.close()
 
+    attachments_by_message = _community_chat_attachment_rows([int(row.get("id") or 0) for row in rows])
     authors: dict[int, dict[str, Any]] = {}
     payload: list[dict[str, Any]] = []
     for row in rows:
         sender_id = int(row.get("sender_id") or 0)
         reply_id = int(row.get("reply_to_message_id") or 0)
         reply_sender_id = int(row.get("reply_sender_id") or 0)
-        deleted = bool(int(row.get("deleted_for_everyone") or 0))
-        text = "Xabar o‘chirildi" if deleted else str(row.get("message_text") or "").strip()
+        text = str(row.get("message_text") or "").strip()
         reply_payload = None
-        if reply_id > 0:
+        if reply_id > 0 and reply_sender_id > 0:
             reply_deleted = bool(int(row.get("reply_deleted_for_everyone") or 0))
             reply_text = "Xabar o‘chirildi" if reply_deleted else str(row.get("reply_message_text") or "").strip()
             reply_payload = {
@@ -16779,10 +16909,11 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 
                 "text": text,
                 "created_at": _as_iso_timestamp(row.get("created_at")),
                 "is_mine": sender_id == int(viewer_id),
-                "is_deleted": deleted,
+                "is_deleted": False,
                 "sender_role": str(row.get("sender_role") or ""),
                 "author": _community_chat_author_payload(sender_id, authors),
                 "reply_to": reply_payload,
+                "attachments": attachments_by_message.get(int(row.get("id") or 0), []),
             }
         )
     return payload
@@ -19532,9 +19663,65 @@ async def community_chat_messages(
     }
 
 
+@app.post("/community-chat/upload")
+async def community_chat_upload_attachment(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Upload a temporary attachment that can be included in one chat post."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    attachment = await _upload_community_attachment_file(file, int(user.get("id") or 0))
+    return {"attachment": attachment}
+
+
+def _send_community_chat_push(thread_id: int, sender: dict[str, Any], message_id: int, body: str) -> None:
+    """Fan out a best-effort mobile push without delaying the chat response."""
+    sender_id = int(sender.get("id") or 0)
+    if sender_id <= 0:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id FROM users
+            WHERE id<>? AND COALESCE(screenshot_demo, 0)=0 AND COALESCE(blocked, 0)=0
+            """,
+            (sender_id,),
+        )
+        recipient_ids = [int(dict(row).get("id") or 0) for row in cur.fetchall() or []]
+    except Exception:
+        logger.exception("community chat recipients lookup failed sender_id=%s", sender_id)
+        return
+    finally:
+        conn.close()
+    recipient_ids = [uid for uid in recipient_ids if uid > 0]
+    if not recipient_ids:
+        return
+    preview = str(body or "").strip()
+    if preview == "📎" or not preview:
+        preview = "📎 Rasm yoki fayl yubordi"
+    preview = preview.replace("\n", " ")[:140]
+    title = f"{_display_name(sender)} · Umumiy chat"
+    threading.Thread(
+        target=push_notifications.send_push_to_users,
+        args=(recipient_ids, title, preview),
+        kwargs={
+            "data": {
+                "target_screen": "community_chat",
+                "notification_type": "community_chat",
+                "thread_id": str(int(thread_id)),
+                "message_id": str(int(message_id)),
+            }
+        },
+        daemon=True,
+    ).start()
+
+
 @app.post("/community-chat/messages")
 async def community_chat_send_message(
-    payload: ChatSendMessageRequest,
+    payload: CommunityChatMessageRequest,
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
@@ -19544,6 +19731,18 @@ async def community_chat_send_message(
     thread = _community_chat_thread_for_user(user, role)
     thread_id = int(thread.get("id") or 0)
     user_id = int(user.get("id") or 0)
+    attachments = _validate_community_chat_attachments(payload.attachments)
+    raw_text = str(payload.message or "").strip()
+    if raw_text:
+        try:
+            message_text = validate_public_text(raw_text)
+        except ValueError as exc:
+            # The text is never persisted. Do not echo the prohibited phrase.
+            raise HTTPException(status_code=422, detail="Taqiqlangan so‘z yoki ibora sabab xabar yuborilmadi.") from exc
+    else:
+        message_text = ""
+    if not message_text and not attachments:
+        raise HTTPException(status_code=422, detail="Xabar yoki kamida bitta fayl yuboring.")
     reply_id = int(payload.reply_to_message_id or 0)
     if reply_id > 0:
         conn = get_conn()
@@ -19558,13 +19757,46 @@ async def community_chat_send_message(
         thread_id,
         user_id,
         role,
-        payload.message,
+        message_text or "📎",
         reply_to_message_id=reply_id or None,
         client_message_id=payload.client_message_id,
     )
     if not created:
         raise HTTPException(status_code=500, detail="Message could not be saved")
     message_id = int(created.get("id") or 0)
+    is_replay = bool(created.get("_idempotent_replay"))
+    if attachments and not is_replay:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            for position, attachment in enumerate(attachments, start=1):
+                cur.execute(
+                    """
+                    INSERT INTO community_chat_attachments
+                    (message_id, position, file_name, storage_url, mime_type, size_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        position,
+                        attachment["file_name"],
+                        attachment["url"],
+                        attachment["mime_type"],
+                        attachment["size_bytes"],
+                    ),
+                )
+            conn.commit()
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.exception("community chat attachment save failed message_id=%s", message_id)
+            raise HTTPException(status_code=500, detail="Attachment could not be saved") from exc
+        finally:
+            conn.close()
+    if not is_replay:
+        _send_community_chat_push(thread_id, user, message_id, message_text or "📎")
     items = _community_chat_messages(thread_id, user_id, after_id=max(0, message_id - 1), limit=1)
     return {"item": items[0] if items else None}
 
@@ -19595,7 +19827,21 @@ async def community_chat_delete_message(
             raise HTTPException(status_code=404, detail="Message not found")
         if normalized_scope == "everyone" and int(message.get("sender_id") or 0) != user_id and role != "admin":
             raise HTTPException(status_code=403, detail="Only the sender or an admin can remove this message for everyone")
-        delete_user_id = 0 if normalized_scope == "everyone" else user_id
+        if normalized_scope == "everyone":
+            # "Delete for everyone" must remove the message completely. Keep
+            # only per-user hides in the deletion table; an old global marker
+            # is also removed for consistency with previously stored records.
+            cur.execute(
+                "UPDATE chat_messages SET reply_to_message_id=NULL WHERE thread_id=? AND reply_to_message_id=?",
+                (thread_id, int(message_id)),
+            )
+            cur.execute("DELETE FROM community_chat_attachments WHERE message_id=?", (int(message_id),))
+            cur.execute("DELETE FROM community_chat_message_deletions WHERE message_id=?", (int(message_id),))
+            cur.execute("DELETE FROM chat_messages WHERE id=? AND thread_id=?", (int(message_id), thread_id))
+            conn.commit()
+            return {"ok": True, "scope": normalized_scope, "message_id": int(message_id), "hard_deleted": True}
+
+        delete_user_id = user_id
         try:
             cur.execute(
                 """
