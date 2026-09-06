@@ -847,6 +847,8 @@ _web_tables_ensured = False
 _web_tables_ensure_lock = threading.Lock()
 _final_chat_schema_ready = False
 _final_chat_schema_lock = threading.Lock()
+_community_chat_schema_ready = False
+_community_chat_schema_lock = threading.Lock()
 _DIAMONDVOY_HOMEWORK_WIZARDS: dict[str, dict] = {}
 
 
@@ -10270,6 +10272,10 @@ def _ensure_final_chat_schema(force: bool = False) -> None:
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chats ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chats ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chats ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMP")
+        # One permanent Diamondvoy conversation is now used per account.
+        # Older one-off chats remain in the database for auditability, but
+        # are no longer exposed in any client history list.
+        _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chats ADD COLUMN IF NOT EXISTS persistent INTEGER DEFAULT 0")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chat_messages ADD COLUMN IF NOT EXISTS client_message_id TEXT")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_settings ADD COLUMN IF NOT EXISTS voice_room_price DOUBLE PRECISION DEFAULT 50.0")
 
@@ -10757,7 +10763,14 @@ def _final_chat_cleanup_if_due(*, force: bool = False) -> int:
     cur = conn.cursor()
     try:
         cutoff = datetime.utcnow() - timedelta(days=DIAMONDVOY_RETENTION_DAYS)
-        cur.execute("SELECT id FROM diamondvoy_chats WHERE (expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP) OR updated_at < ?", (cutoff,))
+        cur.execute(
+            """
+            SELECT id FROM diamondvoy_chats
+            WHERE COALESCE(persistent, 0)=0
+              AND ((expires_at IS NOT NULL AND expires_at < CURRENT_TIMESTAMP) OR updated_at < ?)
+            """,
+            (cutoff,),
+        )
         chat_ids = [int((dict(r) if not isinstance(r, dict) else r).get("id") or 0) for r in (cur.fetchall() or [])]
         chat_ids = [cid for cid in chat_ids if cid > 0]
         for cid in chat_ids[:500]:
@@ -10952,8 +10965,10 @@ def _diamondvoy_serialize_message_final(row: dict, attachments_map: dict[int, li
 
 def _diamondvoy_serialize_chat_final(row: dict) -> dict:
     payload = _diamondvoy_serialize_chat_row(row)
-    payload["title"] = str(row.get("title") or "").strip() or "Yangi chat"
+    persistent = bool(int(row.get("persistent") or 0))
+    payload["title"] = "Diamondvoy" if persistent else (str(row.get("title") or "").strip() or "Yangi chat")
     payload["chat_type"] = "diamondvoy"
+    payload["persistent"] = persistent
     payload["expires_at"] = row.get("expires_at")
     payload["pinned_at"] = row.get("pinned_at")
     payload["pinned"] = bool(row.get("pinned_at"))
@@ -10996,6 +11011,98 @@ def _diamondvoy_create_chat_for_user(user_id: int, title: str | None = None) -> 
         conn.close()
 
 
+def _diamondvoy_get_or_create_persistent_chat(user_id: int) -> dict:
+    """Return the account's single durable Diamondvoy conversation.
+
+    This deliberately never reuses an old title/history chat. The new product
+    experience is clean from the first open while legacy records remain intact
+    for auditability.
+    """
+    _ensure_final_chat_schema()
+    uid = int(user_id or 0)
+    if uid <= 0:
+        raise HTTPException(status_code=401, detail="Invalid user")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT c.id, c.user_id, c.title, c.created_at, c.updated_at,
+                   c.expires_at, c.deleted_at, c.pinned_at, c.persistent,
+                   (
+                       SELECT m.content FROM diamondvoy_chat_messages m
+                       WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1
+                   ) AS last_message_preview
+            FROM diamondvoy_chats c
+            WHERE c.user_id=? AND COALESCE(c.persistent, 0)=1
+            ORDER BY c.id ASC
+            LIMIT 1
+            """,
+            (uid,),
+        )
+        existing = dict(cur.fetchone() or {})
+        if existing:
+            if existing.get("deleted_at"):
+                cur.execute(
+                    "UPDATE diamondvoy_chats SET deleted_at=NULL, expires_at=NULL, title='Diamondvoy' WHERE id=?",
+                    (int(existing.get("id") or 0),),
+                )
+                conn.commit()
+                existing["deleted_at"] = None
+            return existing
+    finally:
+        conn.close()
+
+    created = _diamondvoy_create_chat_for_user(uid, "Diamondvoy")
+    chat_id = int(created.get("id") or 0)
+    if chat_id <= 0:
+        raise HTTPException(status_code=500, detail="Could not create Diamondvoy chat")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # A race between two first opens is harmless: one record becomes the
+        # permanent chat and any other record stays an invisible legacy chat.
+        cur.execute(
+            """
+            UPDATE diamondvoy_chats
+            SET persistent=1, title='Diamondvoy', expires_at=NULL,
+                deleted_at=NULL, pinned_at=NULL
+            WHERE id=? AND user_id=?
+              AND NOT EXISTS (
+                  SELECT 1 FROM diamondvoy_chats
+                  WHERE user_id=? AND COALESCE(persistent, 0)=1
+              )
+            """,
+            (chat_id, uid, uid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Read again because another simultaneous request may have won the race.
+    _clear_user_media_caches(uid)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT c.id, c.user_id, c.title, c.created_at, c.updated_at,
+                   c.expires_at, c.deleted_at, c.pinned_at, c.persistent,
+                   (SELECT m.content FROM diamondvoy_chat_messages m WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message_preview
+            FROM diamondvoy_chats c
+            WHERE c.user_id=? AND COALESCE(c.persistent, 0)=1
+            ORDER BY c.id ASC LIMIT 1
+            """,
+            (uid,),
+        )
+        resolved = dict(cur.fetchone() or {})
+    finally:
+        conn.close()
+    if not resolved:
+        raise HTTPException(status_code=500, detail="Could not initialize Diamondvoy chat")
+    return resolved
+
+
 def _diamondvoy_get_chat_for_user_final(chat_id: int, user_id: int) -> dict:
     _ensure_final_chat_schema()
     conn = get_conn()
@@ -11003,7 +11110,7 @@ def _diamondvoy_get_chat_for_user_final(chat_id: int, user_id: int) -> dict:
     try:
         cur.execute(
             """
-            SELECT id, user_id, title, created_at, updated_at, expires_at, deleted_at, pinned_at
+            SELECT id, user_id, title, created_at, updated_at, expires_at, deleted_at, pinned_at, persistent
             FROM diamondvoy_chats
             WHERE id=?
             LIMIT 1
@@ -11020,7 +11127,7 @@ def _diamondvoy_get_chat_for_user_final(chat_id: int, user_id: int) -> dict:
     if row.get("deleted_at"):
         raise HTTPException(status_code=410, detail="Bu chat muddati tugagan.")
     expires = _parse_utc_timestamp(str(row.get("expires_at") or "")) if row.get("expires_at") else None
-    if expires and _now_utc() > expires:
+    if not bool(int(row.get("persistent") or 0)) and expires and _now_utc() > expires:
         _safe_call(lambda: delete_diamondvoy_chat_for_user(int(user_id), int(chat_id)), False)
         raise HTTPException(status_code=410, detail="Bu chat muddati tugagan.")
     return row
@@ -11032,47 +11139,10 @@ def _diamondvoy_list_chats_final(user_id: int, limit: int = 30) -> list[dict]:
     if isinstance(cached, list):
         return cached
     _final_chat_cleanup_if_due()
-    _ensure_final_chat_schema()
-    lim = max(1, min(60, int(limit or 30)))
-    cutoff = datetime.utcnow() - timedelta(days=DIAMONDVOY_RETENTION_DAYS)
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT
-                c.id,
-                c.user_id,
-                COALESCE(NULLIF(c.title, ''), 'Yangi chat') AS title,
-                c.created_at,
-                c.updated_at,
-                c.expires_at,
-                c.pinned_at,
-                (
-                    SELECT m.content
-                    FROM diamondvoy_chat_messages m
-                    WHERE m.chat_id = c.id
-                    ORDER BY m.id DESC
-                    LIMIT 1
-                ) AS last_message_preview
-            FROM diamondvoy_chats c
-            WHERE c.user_id=?
-              AND (c.deleted_at IS NULL)
-              AND (c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)
-              AND c.updated_at >= ?
-            ORDER BY
-                CASE WHEN c.pinned_at IS NULL THEN 0 ELSE 1 END DESC,
-                c.pinned_at DESC,
-                c.updated_at DESC,
-                c.id DESC
-            LIMIT ?
-            """,
-            (int(user_id), cutoff, lim),
-        )
-        rows = [dict(r) for r in (cur.fetchall() or [])]
-        return _short_cache_set(_DIAMONDVOY_CHAT_LIST_CACHE, cache_key, rows, ttl_seconds=6.0, max_items=4096)
-    finally:
-        conn.close()
+    # All roles now use exactly one continuing Diamondvoy chat. Clients never
+    # receive (or render) the old per-topic chat history.
+    rows = [_diamondvoy_get_or_create_persistent_chat(int(user_id))]
+    return _short_cache_set(_DIAMONDVOY_CHAT_LIST_CACHE, cache_key, rows, ttl_seconds=6.0, max_items=4096)
 
 
 def _diamondvoy_list_messages_final(chat_id: int, limit: int = 120) -> list[dict]:
@@ -11142,7 +11212,9 @@ def _diamondvoy_set_chat_pin_final(chat_id: int, user_id: int, pinned: bool) -> 
 
 
 def _diamondvoy_soft_delete_chat_final(chat_id: int, user_id: int) -> None:
-    _diamondvoy_get_chat_for_user_final(int(chat_id), int(user_id))
+    chat = _diamondvoy_get_chat_for_user_final(int(chat_id), int(user_id))
+    if bool(int(chat.get("persistent") or 0)):
+        raise HTTPException(status_code=400, detail="Diamondvoy asosiy suhbati o‘chirib bo‘lmaydi")
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -16493,11 +16565,227 @@ def _chat_hub_participants_for_role(
 
 
 def _ensure_student_diamondvoy_default_chat(user_id: int) -> int:
-    rows = _safe_call(lambda: list_diamondvoy_chats_for_user(int(user_id), limit=1), []) or []
-    if rows:
-        return int(rows[0].get("id") or 0)
-    created = _safe_call(lambda: create_diamondvoy_chat(int(user_id), None), None)
-    return int((created or {}).get("id") or 0)
+    row = _safe_call(lambda: _diamondvoy_get_or_create_persistent_chat(int(user_id)), None) or {}
+    return int(row.get("id") or 0)
+
+
+_COMMUNITY_CHAT_DIRECT_KEY = "diamond_education_community_v1"
+_COMMUNITY_CHAT_TITLE = "Diamond Education umumiy chat"
+
+
+def _ensure_community_chat_schema() -> None:
+    """Schema used for per-user hides and global message removals.
+
+    The existing universal `chat_threads`/`chat_messages` tables already have
+    reply support. A separate, compact deletion table gives us Telegram-like
+    “only for me” and “for everyone” behaviour without deleting audit data or
+    breaking reply references.
+    """
+    global _community_chat_schema_ready
+    if _community_chat_schema_ready:
+        return
+    if not _community_chat_schema_lock.acquire(blocking=False):
+        return
+    try:
+        if _community_chat_schema_ready:
+            return
+        ensure_universal_chat_schema()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS community_chat_message_deletions (
+                    message_id BIGINT NOT NULL,
+                    user_id BIGINT NOT NULL DEFAULT 0,
+                    deleted_by BIGINT NOT NULL,
+                    scope TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (message_id, user_id)
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_community_chat_deletions_user ON community_chat_message_deletions(user_id, message_id)"
+            )
+            conn.commit()
+            _community_chat_schema_ready = True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+    finally:
+        _community_chat_schema_lock.release()
+
+
+def _community_chat_thread_for_user(user: dict, role: str) -> dict:
+    """Find/create the single center-wide community thread and enroll viewer."""
+    _ensure_community_chat_schema()
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        raise HTTPException(status_code=401, detail="Invalid user")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, thread_type, direct_key, group_id, title, created_by, created_at, updated_at
+            FROM chat_threads
+            WHERE direct_key=? AND thread_type='community'
+            LIMIT 1
+            """,
+            (_COMMUNITY_CHAT_DIRECT_KEY,),
+        )
+        row = dict(cur.fetchone() or {})
+        thread_id = int(row.get("id") or 0)
+        if thread_id <= 0:
+            cur.execute(
+                """
+                INSERT INTO chat_threads(thread_type, direct_key, title, created_by, updated_at)
+                VALUES ('community', ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (_COMMUNITY_CHAT_DIRECT_KEY, _COMMUNITY_CHAT_TITLE, user_id),
+            )
+            thread_id = int(getattr(cur, "lastrowid", 0) or 0)
+            if thread_id <= 0:
+                cur.execute("SELECT currval(pg_get_serial_sequence('chat_threads', 'id')) AS id")
+                thread_id = int(dict(cur.fetchone() or {}).get("id") or 0)
+        try:
+            cur.execute(
+                """
+                INSERT INTO chat_participants(thread_id, user_id, role_snapshot, active, joined_at)
+                VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+                ON CONFLICT(thread_id, user_id)
+                DO UPDATE SET active=1, role_snapshot=EXCLUDED.role_snapshot
+                """,
+                (thread_id, user_id, str(role or "")),
+            )
+        except Exception:
+            # Legacy SQLite installations may have a different conflict
+            # constraint. The PostgreSQL production path takes the branch
+            # above, while this keeps a safe fallback for local data files.
+            cur.execute(
+                "SELECT id FROM chat_participants WHERE thread_id=? AND user_id=? LIMIT 1",
+                (thread_id, user_id),
+            )
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE chat_participants SET active=1, role_snapshot=? WHERE thread_id=? AND user_id=?",
+                    (str(role or ""), thread_id, user_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO chat_participants(thread_id, user_id, role_snapshot, active, joined_at) VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)",
+                    (thread_id, user_id, str(role or "")),
+                )
+        conn.commit()
+        cur.execute(
+            """
+            SELECT id, thread_type, direct_key, group_id, title, created_by, created_at, updated_at
+            FROM chat_threads WHERE id=? LIMIT 1
+            """,
+            (thread_id,),
+        )
+        return dict(cur.fetchone() or {})
+    finally:
+        conn.close()
+
+
+def _community_chat_author_payload(user_id: int, cache: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    uid = int(user_id or 0)
+    cached = cache.get(uid)
+    if cached is not None:
+        return cached
+    row = _safe_call(lambda: get_user_by_id(uid), None) or {}
+    role = _role_from_login_type(int(row.get("login_type") or 1), str(row.get("login_id") or ""))
+    avatar_url = _first_existing_avatar_url(
+        row.get("profile_image_url"),
+        row.get("effective_profile_image_url"),
+    )
+    payload = {
+        "id": uid,
+        "full_name": _display_name(row),
+        "role": role,
+        "avatar_url": avatar_url,
+        "profile_image_url": avatar_url,
+        "level": str(row.get("level") or "").strip() or None,
+        "subject": str(row.get("subject") or "").strip() or None,
+    }
+    cache[uid] = payload
+    return payload
+
+
+def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 0, limit: int = 120) -> list[dict[str, Any]]:
+    _ensure_community_chat_schema()
+    lim = max(1, min(300, int(limit or 120)))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                m.id, m.thread_id, m.sender_id, m.sender_role, m.message_text,
+                m.reply_to_message_id, m.client_message_id, m.created_at,
+                rm.sender_id AS reply_sender_id,
+                rm.sender_role AS reply_sender_role,
+                rm.message_text AS reply_message_text,
+                rm.created_at AS reply_created_at,
+                CASE WHEN reply_all_deleted.message_id IS NULL THEN 0 ELSE 1 END AS reply_deleted_for_everyone,
+                CASE WHEN all_deleted.message_id IS NULL THEN 0 ELSE 1 END AS deleted_for_everyone
+            FROM chat_messages m
+            LEFT JOIN chat_messages rm ON rm.id=m.reply_to_message_id
+            LEFT JOIN community_chat_message_deletions reply_all_deleted
+                ON reply_all_deleted.message_id=rm.id AND reply_all_deleted.user_id=0
+            LEFT JOIN community_chat_message_deletions all_deleted
+                ON all_deleted.message_id=m.id AND all_deleted.user_id=0
+            LEFT JOIN community_chat_message_deletions hidden_for_viewer
+                ON hidden_for_viewer.message_id=m.id AND hidden_for_viewer.user_id=?
+            WHERE m.thread_id=? AND m.id>? AND hidden_for_viewer.message_id IS NULL
+            ORDER BY m.id ASC
+            LIMIT ?
+            """,
+            (int(viewer_id), int(thread_id), max(0, int(after_id or 0)), lim),
+        )
+        rows = [dict(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+    authors: dict[int, dict[str, Any]] = {}
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        sender_id = int(row.get("sender_id") or 0)
+        reply_id = int(row.get("reply_to_message_id") or 0)
+        reply_sender_id = int(row.get("reply_sender_id") or 0)
+        deleted = bool(int(row.get("deleted_for_everyone") or 0))
+        text = "Xabar o‘chirildi" if deleted else str(row.get("message_text") or "").strip()
+        reply_payload = None
+        if reply_id > 0:
+            reply_deleted = bool(int(row.get("reply_deleted_for_everyone") or 0))
+            reply_text = "Xabar o‘chirildi" if reply_deleted else str(row.get("reply_message_text") or "").strip()
+            reply_payload = {
+                "id": reply_id,
+                "snippet": reply_text[:160] + ("…" if len(reply_text) > 160 else ""),
+                "author": _community_chat_author_payload(reply_sender_id, authors) if reply_sender_id else None,
+                "created_at": _as_iso_timestamp(row.get("reply_created_at")),
+            }
+        payload.append(
+            {
+                "id": int(row.get("id") or 0),
+                "thread_id": int(row.get("thread_id") or thread_id),
+                "text": text,
+                "created_at": _as_iso_timestamp(row.get("created_at")),
+                "is_mine": sender_id == int(viewer_id),
+                "is_deleted": deleted,
+                "sender_role": str(row.get("sender_role") or ""),
+                "author": _community_chat_author_payload(sender_id, authors),
+                "reply_to": reply_payload,
+            }
+        )
+    return payload
 
 
 async def _consume_sse_done_payload(stream_response: StreamingResponse) -> dict:
@@ -19167,22 +19455,8 @@ async def chats_contacts(authorization: str | None = Header(default=None)):
 
     items: list[dict[str, Any]] = []
 
-    # Diamondvoy chat for all roles
-    ai_rows = _safe_call(lambda: list_diamondvoy_chats_for_user(int(user_id), limit=1), []) or []
-    ai_chat = ai_rows[0] if ai_rows else None
-    if not ai_chat:
-        ai_chat_id = _ensure_student_diamondvoy_default_chat(int(user_id))
-        if ai_chat_id > 0:
-            ai_chat = _safe_call(lambda cid=ai_chat_id: get_diamondvoy_chat_for_user(int(user_id), int(cid)), None)
-        if not ai_chat:
-            # Hard fallback to guarantee Diamondvoy presence in contacts.
-            created_chat = _safe_call(lambda: create_diamondvoy_chat(int(user_id), "Diamondvoy"), None) or {}
-            created_id = int(created_chat.get("id") or 0)
-            if created_id > 0:
-                ai_chat = _safe_call(
-                    lambda cid=created_id: get_diamondvoy_chat_for_user(int(user_id), int(cid)),
-                    None,
-                ) or created_chat
+    # Diamondvoy is a single durable conversation for every role.
+    ai_chat = _safe_call(lambda: _diamondvoy_get_or_create_persistent_chat(int(user_id)), None)
     if ai_chat:
         ai_chat_id = int(ai_chat.get("id") or 0)
         if ai_chat_id > 0:
@@ -19228,6 +19502,134 @@ async def chat_thread_messages(
         status_code=410,
         detail="Role-to-role chat disabled. Please use Diamondvoy or Taklif & Shikoyat.",
     )
+
+
+@app.get("/community-chat")
+async def community_chat_messages(
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=120, ge=1, le=300),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
+        raise HTTPException(status_code=403, detail="Student access is blocked")
+    thread = _community_chat_thread_for_user(user, role)
+    user_id = int(user.get("id") or 0)
+    items = _community_chat_messages(
+        int(thread.get("id") or 0),
+        user_id,
+        after_id=after_id,
+        limit=limit,
+    )
+    return {
+        "thread": {
+            "id": int(thread.get("id") or 0),
+            "title": _COMMUNITY_CHAT_TITLE,
+            "subtitle": "Diamond Education hamjamiyati",
+        },
+        "items": items,
+    }
+
+
+@app.post("/community-chat/messages")
+async def community_chat_send_message(
+    payload: ChatSendMessageRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
+        raise HTTPException(status_code=403, detail="Student access is blocked")
+    thread = _community_chat_thread_for_user(user, role)
+    thread_id = int(thread.get("id") or 0)
+    user_id = int(user.get("id") or 0)
+    reply_id = int(payload.reply_to_message_id or 0)
+    if reply_id > 0:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT id FROM chat_messages WHERE id=? AND thread_id=? LIMIT 1", (reply_id, thread_id))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Reply message not found")
+        finally:
+            conn.close()
+    created = add_chat_message(
+        thread_id,
+        user_id,
+        role,
+        payload.message,
+        reply_to_message_id=reply_id or None,
+        client_message_id=payload.client_message_id,
+    )
+    if not created:
+        raise HTTPException(status_code=500, detail="Message could not be saved")
+    message_id = int(created.get("id") or 0)
+    items = _community_chat_messages(thread_id, user_id, after_id=max(0, message_id - 1), limit=1)
+    return {"item": items[0] if items else None}
+
+
+@app.delete("/community-chat/messages/{message_id}")
+async def community_chat_delete_message(
+    message_id: int,
+    scope: str = Query(default="me"),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    normalized_scope = str(scope or "me").strip().lower()
+    if normalized_scope not in {"me", "everyone"}:
+        raise HTTPException(status_code=422, detail="Unknown delete scope")
+    thread = _community_chat_thread_for_user(user, role)
+    thread_id = int(thread.get("id") or 0)
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, sender_id FROM chat_messages WHERE id=? AND thread_id=? LIMIT 1",
+            (int(message_id), thread_id),
+        )
+        message = dict(cur.fetchone() or {})
+        if not message:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if normalized_scope == "everyone" and int(message.get("sender_id") or 0) != user_id and role != "admin":
+            raise HTTPException(status_code=403, detail="Only the sender or an admin can remove this message for everyone")
+        delete_user_id = 0 if normalized_scope == "everyone" else user_id
+        try:
+            cur.execute(
+                """
+                INSERT INTO community_chat_message_deletions(message_id, user_id, deleted_by, scope, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(message_id, user_id)
+                DO UPDATE SET deleted_by=EXCLUDED.deleted_by, scope=EXCLUDED.scope, created_at=CURRENT_TIMESTAMP
+                """,
+                (int(message_id), delete_user_id, user_id, normalized_scope),
+            )
+        except Exception:
+            # Conservative compatibility fallback for legacy SQLite files.
+            conn.rollback()
+            cur.execute(
+                "DELETE FROM community_chat_message_deletions WHERE message_id=? AND user_id=?",
+                (int(message_id), delete_user_id),
+            )
+            cur.execute(
+                "INSERT INTO community_chat_message_deletions(message_id, user_id, deleted_by, scope, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (int(message_id), delete_user_id, user_id, normalized_scope),
+            )
+        conn.commit()
+        return {"ok": True, "scope": normalized_scope, "message_id": int(message_id)}
+    except HTTPException:
+        raise
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("community chat delete failed message_id=%s user_id=%s", message_id, user_id)
+        raise HTTPException(status_code=500, detail="Message could not be deleted")
+    finally:
+        conn.close()
 
 
 @app.post("/chats/{thread_id}/messages")
@@ -19744,7 +20146,9 @@ async def final_diamondvoy_create_chat(
     started_at = time.perf_counter()
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
-    row = _diamondvoy_create_chat_for_user(int(user.get("id") or 0), (payload.title if payload else None) or "Yangi chat")
+    # Kept for older app builds: even their “new chat” button resolves to the
+    # one permanent Diamondvoy conversation.
+    row = _diamondvoy_get_or_create_persistent_chat(int(user.get("id") or 0))
     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
     if elapsed_ms > 500:
         logger.info("perf final_chat.diamondvoy.create ms=%.2f", elapsed_ms)
@@ -21297,7 +21701,8 @@ async def student_diamondvoy_create_chat(
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
     user_id = int(user.get("id") or 0)
-    created = _diamondvoy_create_chat_for_user(user_id, payload.title or "Yangi chat")
+    # The student-route legacy POST is intentionally idempotent now.
+    created = _diamondvoy_get_or_create_persistent_chat(user_id)
     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
     if elapsed_ms > 500:
         logger.info("perf diamondvoy.chats.create total_ms=%.2f user_id=%s", elapsed_ms, user_id)

@@ -39,7 +39,7 @@ const MAX_IMAGES = 3;
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-type ActivePane = "diamondvoy" | "feedback" | null;
+type ActivePane = "diamondvoy" | "community" | "feedback" | null;
 
 type ChatAttachment = {
   id?: number;
@@ -113,6 +113,32 @@ type FeedbackThreadSummary = {
   status: string;
   last_message_preview?: string | null;
   updated_at?: string | null;
+};
+
+type CommunityChatAuthor = {
+  id: number;
+  full_name: string;
+  role: string;
+  avatar_url?: string | null;
+  profile_image_url?: string | null;
+  level?: string | null;
+  subject?: string | null;
+};
+
+type CommunityChatMessage = {
+  id: number;
+  text: string;
+  created_at?: string | null;
+  is_mine: boolean;
+  is_deleted: boolean;
+  sender_role?: string;
+  author: CommunityChatAuthor;
+  reply_to?: {
+    id: number;
+    snippet: string;
+    author?: CommunityChatAuthor | null;
+    created_at?: string | null;
+  } | null;
 };
 
 type UploadPreview = {
@@ -1248,6 +1274,12 @@ export function UniversalChat({
   const [aiChats, setAiChats] = useState<DiamondvoyChat[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [aiMessages, setAiMessages] = useState<DiamondvoyMessage[]>([]);
+  const [communityMessages, setCommunityMessages] = useState<CommunityChatMessage[]>([]);
+  const [communityThreadId, setCommunityThreadId] = useState<number | null>(null);
+  const [communityInput, setCommunityInput] = useState("");
+  const [communityReply, setCommunityReply] = useState<CommunityChatMessage | null>(null);
+  const [communityActionId, setCommunityActionId] = useState<number | null>(null);
+  const [communityProfile, setCommunityProfile] = useState<CommunityChatAuthor | null>(null);
   const [feedbackDetail, setFeedbackDetail] = useState<FeedbackDetail | null>(null);
   const [adminThreads, setAdminThreads] = useState<FeedbackThreadSummary[]>([]);
   const [activeFeedbackThreadId, setActiveFeedbackThreadId] = useState<number | null>(null);
@@ -1279,6 +1311,7 @@ export function UniversalChat({
   const messagesLoadSeqRef = useRef(0);
   const messageCacheRef = useRef<Map<number, DiamondvoyMessage[]>>(new Map());
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
+  const communityScrollRef = useRef<HTMLDivElement | null>(null);
   const feedbackScrollRef = useRef<HTMLDivElement | null>(null);
   const adminScrollRef = useRef<HTMLDivElement | null>(null);
   const pinnedToBottomRef = useRef(true);
@@ -1291,6 +1324,8 @@ export function UniversalChat({
     const node =
       activePane === "diamondvoy"
         ? aiScrollRef.current
+        : activePane === "community"
+          ? communityScrollRef.current
         : activePane === "feedback" && isAdmin
           ? adminScrollRef.current
           : feedbackScrollRef.current;
@@ -1349,6 +1384,66 @@ export function UniversalChat({
     },
     [apiFetch, scrollToBottom, tt],
   );
+
+  const loadCommunityMessages = useCallback(async () => {
+    setLoadingBody((current) => current || communityMessages.length === 0);
+    try {
+      const payload = await apiFetch("/community-chat?limit=180");
+      const rows = Array.isArray(payload?.items) ? payload.items : [];
+      setCommunityMessages(rows as CommunityChatMessage[]);
+      setCommunityThreadId(Number(payload?.thread?.id || 0) || null);
+      setError("");
+      scrollToBottom(false);
+    } catch (err) {
+      setError(parseError(err, "Umumiy chatni yuklab bo'lmadi."));
+    } finally {
+      setLoadingBody(false);
+    }
+  }, [apiFetch, communityMessages.length, scrollToBottom]);
+
+  async function sendCommunityMessage() {
+    const text = communityInput.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      const payload = await apiFetch("/community-chat/messages", {
+        method: "POST",
+        body: {
+          message: text,
+          reply_to_message_id: communityReply?.id || undefined,
+          client_message_id: `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        },
+      });
+      const created = payload?.item as CommunityChatMessage | undefined;
+      if (created?.id) {
+        setCommunityMessages((previous) => [...previous.filter((item) => item.id !== created.id), created]);
+      } else {
+        await loadCommunityMessages();
+      }
+      setCommunityInput("");
+      setCommunityReply(null);
+      setError("");
+      scrollToBottom(true);
+    } catch (err) {
+      setError(parseError(err, "Xabar yuborilmadi."));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function deleteCommunityMessage(message: CommunityChatMessage, scope: "me" | "everyone") {
+    try {
+      await apiFetch(`/community-chat/messages/${message.id}?scope=${scope}`, { method: "DELETE" });
+      setCommunityActionId(null);
+      if (scope === "me") {
+        setCommunityMessages((previous) => previous.filter((item) => item.id !== message.id));
+      } else {
+        setCommunityMessages((previous) => previous.map((item) => item.id === message.id ? { ...item, is_deleted: true, text: "Xabar o‘chirildi" } : item));
+      }
+    } catch (err) {
+      setError(parseError(err, "Xabar o'chirilmadi."));
+    }
+  }
 
   const loadOwnFeedback = useCallback(async () => {
     setLoadingBody(true);
@@ -1426,6 +1521,13 @@ export function UniversalChat({
   }, [activeChatId, activePane, loadAiMessages]);
 
   useEffect(() => {
+    if (activePane !== "community") return;
+    loadCommunityMessages().catch(() => null);
+    const timer = window.setInterval(() => loadCommunityMessages().catch(() => null), 8000);
+    return () => window.clearInterval(timer);
+  }, [activePane, loadCommunityMessages]);
+
+  useEffect(() => {
     if (activePane !== "feedback") return;
     if (isAdmin) {
       loadAdminThreads().catch(() => null);
@@ -1444,7 +1546,7 @@ export function UniversalChat({
 
   useEffect(() => {
     scrollToBottom(false);
-  }, [aiMessages, feedbackDetail?.messages, adminFeedbackDetail?.messages, scrollToBottom]);
+  }, [aiMessages, communityMessages, feedbackDetail?.messages, adminFeedbackDetail?.messages, scrollToBottom]);
 
   function openDiamondvoy(chatId: number) {
     setChatActionId(null);
@@ -1829,19 +1931,11 @@ export function UniversalChat({
 
   const Sidebar = (
     <aside className={cx("universal-chat-sidebar w-full lg:w-[330px] lg:border-r border-line dark:border-white/10 bg-surface-soft dark:bg-navy-900/70 flex flex-col min-h-0", mobileShowingList ? "flex" : "hidden lg:flex")}>
-      <div className="px-4 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-2">
+      <div className="px-4 py-3 border-b border-line dark:border-white/10">
         <div>
           <h2 className="text-lg font-black text-navy-900 dark:text-white">{tt("section.chats", "Chats")}</h2>
-          <p className="text-[11px] text-ink-500 dark:text-navy-300">Diamondvoy · Taklif & Shikoyat</p>
+          <p className="text-[11px] text-ink-500 dark:text-navy-300">Diamondvoy · Umumiy chat · Taklif & Shikoyat</p>
         </div>
-        <button
-          type="button"
-          onClick={() => createDiamondvoyChat().catch(() => null)}
-          disabled={loadingList || creatingChat}
-          className="px-3 py-2 rounded-lg bg-cyan-500 text-white text-xs font-bold hover:bg-cyan-600 disabled:opacity-60"
-        >
-          + {tt("chat.new", "Yangi chat")}
-        </button>
       </div>
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         <button
@@ -1863,6 +1957,30 @@ export function UniversalChat({
           <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{isAdmin ? tt("chat.feedback.adminReview", "Admin review") : tt("chat.feedback.subtitle", "Anonim yoki anonimmas xabar yuborish")}</p>
         </button>
 
+        <button
+          type="button"
+          onClick={() => {
+            setActivePane("community");
+            setActiveChatId(null);
+            setCommunityActionId(null);
+            setError("");
+          }}
+          className={cx(
+            "w-full text-left rounded-lg border px-3 py-3 transition",
+            activePane === "community"
+              ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
+              : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white">#</span>
+            <div className="min-w-0">
+              <p className="font-black text-sm text-navy-900 dark:text-white">Umumiy chat</p>
+              <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">Barcha o‘quvchi, o‘qituvchi va administratorlar</p>
+            </div>
+          </div>
+        </button>
+
         <div className="pt-2">
           <div className="px-1 pb-2 text-[11px] font-bold uppercase text-ink-500 dark:text-navy-300">Diamondvoy</div>
           {aiChats.length === 0 ? (
@@ -1875,21 +1993,7 @@ export function UniversalChat({
                 <div key={chat.id} className="relative">
                   <button
                     type="button"
-                    onPointerDown={() => startChatLongPress(chat.id)}
-                    onPointerUp={clearChatLongPressTimer}
-                    onPointerLeave={clearChatLongPressTimer}
-                    onPointerCancel={clearChatLongPressTimer}
-                    onContextMenu={(event) => {
-                      event.preventDefault();
-                      setChatActionId(chat.id);
-                    }}
-                    onClick={() => {
-                      if (longPressedChatRef.current === chat.id) {
-                        longPressedChatRef.current = null;
-                        return;
-                      }
-                      openDiamondvoy(chat.id);
-                    }}
+                    onClick={() => openDiamondvoy(chat.id)}
                     className={cx(
                       "w-full text-left rounded-lg border px-3 py-3 transition",
                       activePane === "diamondvoy" && activeChatId === chat.id
@@ -1904,24 +2008,6 @@ export function UniversalChat({
                     <p className="text-xs text-ink-600 dark:text-navy-300 mt-1 line-clamp-2">{chat.last_message_preview || tt("chat.new", "Yangi chat")}</p>
                     <p className="text-[11px] text-ink-400 dark:text-navy-400 mt-2">{formatWhen(chat.updated_at || chat.created_at)}</p>
                   </button>
-                  {chatActionId === chat.id ? (
-                    <div className="mt-1 grid grid-cols-2 gap-1 rounded-lg border border-line dark:border-white/10 bg-white dark:bg-navy-950 p-1 shadow-premium">
-                      <button
-                        type="button"
-                        onClick={() => toggleDiamondvoyPin(chat).catch(() => null)}
-                        className="rounded-md px-2 py-2 text-xs font-bold text-navy-900 hover:bg-surface-soft dark:text-white dark:hover:bg-white/10"
-                      >
-                        {chat.pinned_at || chat.pinned ? tt("chat.unpin", "Qadashni olib tashlash") : tt("chat.pin", "Qadash")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteDiamondvoyChat(chat).catch(() => null)}
-                        className="rounded-md px-2 py-2 text-xs font-bold text-red-600 hover:bg-red-50 dark:text-red-200 dark:hover:bg-red-500/15"
-                      >
-                        {tt("common.delete", "O'chirish")}
-                      </button>
-                    </div>
-                  ) : null}
                 </div>
               ))}
             </div>
@@ -2007,7 +2093,7 @@ export function UniversalChat({
           <DiamondvoyAvatar onPreview={setPreviewMedia} thinkingLabel={tt("chat.ai.thinking", "Diamondvoy o'ylayapti")} profileLabel={tt("chat.ai.title", "Diamondvoy")} />
           <div className="min-w-0">
             <h3 className="font-black text-navy-900 dark:text-white truncate">{activeChat?.title === "Yangi chat" ? tt("chat.new", "Yangi chat") : activeChat?.title || "Diamondvoy"}</h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.retention", "7 kun saqlanadi")}</p>
+            <p className="text-xs text-ink-500 dark:text-navy-300">Doimiy shaxsiy yordamchi</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -2032,9 +2118,7 @@ export function UniversalChat({
       >
         {!activeChatId ? (
           <div className="h-full grid place-items-center text-center text-ink-500 dark:text-navy-300">
-            <button type="button" onClick={() => createDiamondvoyChat().catch(() => null)} className="px-4 py-3 rounded-lg bg-cyan-500 text-white font-bold">
-              + {tt("chat.new", "Yangi chat")}
-            </button>
+            Diamondvoy suhbatini chap paneldan oching.
           </div>
         ) : loadingBody && aiMessages.length === 0 ? (
           <div className="text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</div>
@@ -2172,6 +2256,104 @@ export function UniversalChat({
           <button type="submit" disabled={sending || uploading || (!input.trim() && images.length === 0)} className="px-4 h-11 rounded-lg bg-cyan-500 text-white font-bold disabled:opacity-50">
             {sending ? "..." : tt("chat.send", "Yuborish")}
           </button>
+        </div>
+      </form>
+    </section>
+  );
+
+  const CommunityPane = (
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "community" ? "flex" : "hidden")}>
+      <div className="px-3 sm:px-5 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-violet-500 text-lg font-black text-white">#</div>
+          <div className="min-w-0">
+            <h3 className="font-black text-navy-900 dark:text-white truncate">Umumiy chat</h3>
+            <p className="text-xs text-ink-500 dark:text-navy-300">Diamond Education hamjamiyati</p>
+          </div>
+        </div>
+        <button type="button" onClick={() => loadCommunityMessages().catch(() => null)} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white">↻</button>
+      </div>
+
+      <div ref={communityScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
+        {loadingBody && communityMessages.length === 0 ? (
+          <div className="text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</div>
+        ) : communityMessages.length === 0 ? (
+          <div className="h-full grid place-items-center text-center px-6 text-ink-500 dark:text-navy-300">
+            <div>
+              <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-violet-100 text-2xl text-violet-700 dark:bg-violet-500/15 dark:text-violet-200">#</div>
+              <p className="font-black text-navy-900 dark:text-white">Hamjamiyatdagi birinchi xabarni yozing</p>
+              <p className="mt-1 text-sm">Xabarni bosib reply qiling, profil rasmi orqali foydalanuvchini ko‘ring.</p>
+            </div>
+          </div>
+        ) : (
+          communityMessages.map((message) => {
+            const mine = Boolean(message.is_mine);
+            const avatar = String(message.author?.avatar_url || message.author?.profile_image_url || "");
+            return (
+              <div key={message.id} className={cx("flex gap-2 sm:gap-3", mine ? "justify-end" : "justify-start")}>
+                {!mine && (
+                  <button
+                    type="button"
+                    onClick={() => setCommunityProfile(message.author)}
+                    className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-line bg-violet-100 text-xs font-black text-violet-700 dark:border-white/15 dark:bg-violet-500/15 dark:text-violet-200"
+                    title={`${message.author.full_name} profili`}
+                  >
+                    {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : message.author.full_name.slice(0, 1).toUpperCase()}
+                  </button>
+                )}
+                <div className={cx("max-w-[88%] sm:max-w-[72%]", mine ? "items-end" : "items-start")}>
+                  {!mine && <button type="button" onClick={() => setCommunityProfile(message.author)} className="mb-1 text-left text-xs font-black text-violet-700 dark:text-violet-200">{message.author.full_name} <span className="font-medium text-ink-500 dark:text-navy-300">· {message.author.role}</span></button>}
+                  <button
+                    type="button"
+                    onClick={() => setCommunityActionId((active) => active === message.id ? null : message.id)}
+                    className={cx("block w-full rounded-2xl border px-4 py-3 text-left", mine ? "border-cyan-500 bg-cyan-500 text-white" : "border-line bg-surface-soft text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white", message.is_deleted && "italic opacity-70")}
+                  >
+                    {message.reply_to && (
+                      <div className={cx("mb-2 border-l-2 pl-2 text-xs", mine ? "border-white/70 text-white/80" : "border-violet-400 text-ink-500 dark:text-navy-300")}>
+                        <p className="font-bold">{message.reply_to.author?.full_name || "Xabar"}</p>
+                        <p className="line-clamp-2">{message.reply_to.snippet}</p>
+                      </div>
+                    )}
+                    <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.text}</p>
+                    <p className={cx("mt-2 text-[11px]", mine ? "text-white/75" : "text-ink-500 dark:text-navy-300")}>{formatWhen(message.created_at)}</p>
+                  </button>
+                  {communityActionId === message.id && !message.is_deleted && (
+                    <div className={cx("mt-1 flex flex-wrap gap-1 rounded-xl border p-1 shadow-premium", mine ? "border-cyan-200 bg-white dark:border-white/10 dark:bg-navy-900" : "border-line bg-white dark:border-white/10 dark:bg-navy-900")}>
+                      <button type="button" onClick={() => { setCommunityReply(message); setCommunityActionId(null); }} className="rounded-lg px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-50 dark:text-violet-200 dark:hover:bg-violet-500/15">↩ Reply</button>
+                      {mine && <>
+                        <button type="button" onClick={() => deleteCommunityMessage(message, "me").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-ink-700 hover:bg-slate-50 dark:text-white dark:hover:bg-white/10">Faqat menda</button>
+                        <button type="button" onClick={() => deleteCommunityMessage(message, "everyone").catch(() => null)} className="rounded-lg px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 dark:text-rose-200 dark:hover:bg-rose-500/15">Hammadan o‘chirish</button>
+                      </>}
+                    </div>
+                  )}
+                </div>
+                {mine && (
+                  <button
+                    type="button"
+                    onClick={() => setCommunityProfile(message.author)}
+                    className="mt-1 h-9 w-9 shrink-0 overflow-hidden rounded-xl border border-cyan-200 bg-cyan-50 text-xs font-black text-cyan-700 dark:border-cyan-400/30 dark:bg-cyan-500/15 dark:text-cyan-200"
+                    title="Profil"
+                  >
+                    {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : message.author.full_name.slice(0, 1).toUpperCase()}
+                  </button>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <form onSubmit={(event) => { event.preventDefault(); sendCommunityMessage().catch(() => null); }} className="border-t border-line dark:border-white/10 bg-white dark:bg-navy-950 px-3 sm:px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)]">
+        {communityReply && (
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-xs text-violet-900 dark:border-violet-400/30 dark:bg-violet-500/15 dark:text-violet-100">
+            <span className="truncate">↩ {communityReply.author.full_name}: {communityReply.text}</span>
+            <button type="button" onClick={() => setCommunityReply(null)} className="font-black">×</button>
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <textarea value={communityInput} onChange={(event) => setCommunityInput(event.target.value)} rows={1} placeholder="Hamjamiyatga xabar yozing..." className="flex-1 max-h-32 resize-none rounded-xl border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-violet-400" />
+          <button type="submit" disabled={sending || !communityInput.trim() || !communityThreadId} className="h-11 px-4 rounded-xl bg-violet-500 text-sm font-bold text-white disabled:opacity-50">{sending ? "..." : tt("chat.send", "Yuborish")}</button>
         </div>
       </form>
     </section>
@@ -2343,9 +2525,31 @@ export function UniversalChat({
     <div className="universal-chat-root fixed inset-0 z-[60] flex bg-white dark:bg-navy-950 text-navy-900 dark:text-white overflow-hidden" style={{ height: "var(--tg-viewport-height, 100dvh)" }}>
       {Sidebar}
       {DiamondvoyPane}
+      {CommunityPane}
       {UserFeedbackPane}
       {AdminFeedbackPane}
-      {!activePane && <div className="hidden sm:grid flex-1 place-items-center text-center text-ink-500 dark:text-navy-300">{tt("chat.choosePane", "Diamondvoy yoki Taklif & Shikoyat tanlang")}</div>}
+      {!activePane && <div className="hidden sm:grid flex-1 place-items-center text-center text-ink-500 dark:text-navy-300">Diamondvoy, umumiy chat yoki Taklif & Shikoyatni tanlang</div>}
+      {communityProfile && (() => {
+        const avatar = String(communityProfile.avatar_url || communityProfile.profile_image_url || "");
+        return (
+          <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-navy-950/65 p-3 backdrop-blur-sm" onClick={() => setCommunityProfile(null)}>
+            <section className="w-full max-w-sm rounded-2xl border border-line bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-navy-900" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-start gap-4">
+                <button type="button" onClick={() => avatar && setPreviewMedia({ type: "image", src: apiUrl(avatar), title: communityProfile.full_name })} className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border border-violet-200 bg-violet-100 text-xl font-black text-violet-700 dark:border-violet-400/30 dark:bg-violet-500/15 dark:text-violet-200">
+                  {avatar ? <img src={apiUrl(avatar)} alt="" className="h-full w-full object-cover" /> : communityProfile.full_name.slice(0, 1).toUpperCase()}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-lg font-black text-navy-900 dark:text-white">{communityProfile.full_name}</p>
+                  <p className="mt-1 text-sm font-bold text-violet-700 dark:text-violet-200">{communityProfile.role}</p>
+                  {(communityProfile.level || communityProfile.subject) && <p className="mt-2 text-sm text-ink-600 dark:text-navy-300">{[communityProfile.level, communityProfile.subject].filter(Boolean).join(" · ")}</p>}
+                </div>
+                <button type="button" onClick={() => setCommunityProfile(null)} className="rounded-lg px-2 py-1 text-lg text-ink-500 hover:bg-surface-soft dark:text-navy-300 dark:hover:bg-white/10">×</button>
+              </div>
+              <p className="mt-4 text-xs text-ink-500 dark:text-navy-300">Profil rasmini kattalashtirish uchun rasmga bosing.</p>
+            </section>
+          </div>
+        );
+      })()}
       {previewMedia && (
         <div
           className="fixed inset-0 z-[90] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"

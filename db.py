@@ -14676,9 +14676,10 @@ def ensure_diamondvoy_chat_schema() -> None:
                 CREATE TABLE IF NOT EXISTS diamondvoy_chats (
                     id BIGSERIAL PRIMARY KEY,
                     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                persistent INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
@@ -14708,10 +14709,11 @@ def ensure_diamondvoy_chat_schema() -> None:
                 CREATE TABLE IF NOT EXISTS diamondvoy_chats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER NOT NULL,
-                    title TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(user_id) REFERENCES users(id)
+                title TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                persistent INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id)
                 )
                 """
             )
@@ -14736,6 +14738,14 @@ def ensure_diamondvoy_chat_schema() -> None:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_diamondvoy_chat_messages_chat_id_desc ON diamondvoy_chat_messages(chat_id, id DESC)"
             )
+        # Existing installations predate the single permanent-chat model.
+        # Keep their history intact while adding the marker required by the
+        # new cleanup and retrieval rules (works on PostgreSQL and SQLite).
+        _ensure_table_columns(
+            cur,
+            "diamondvoy_chats",
+            [("persistent", "INTEGER NOT NULL DEFAULT 0")],
+        )
         conn.commit()
         _mark_schema_ready("diamondvoy_chat")
     except Exception:
@@ -16180,8 +16190,9 @@ def delete_diamondvoy_chats_older_than_hours(hours: int = 168) -> int:
             WHERE chat_id IN (
                 SELECT c.id FROM diamondvoy_chats c
                 JOIN users u ON u.id = c.user_id
-                WHERE (u.login_type != 3 AND c.updated_at < ?)
-                   OR (u.login_type = 3 AND c.updated_at < ?)
+                WHERE COALESCE(c.persistent, 0)=0
+                  AND ((u.login_type != 3 AND c.updated_at < ?)
+                    OR (u.login_type = 3 AND c.updated_at < ?))
             )
             """,
             (cutoff_student, cutoff_teacher),
@@ -16192,8 +16203,9 @@ def delete_diamondvoy_chats_older_than_hours(hours: int = 168) -> int:
             WHERE id IN (
                 SELECT c.id FROM diamondvoy_chats c
                 JOIN users u ON u.id = c.user_id
-                WHERE (u.login_type != 3 AND c.updated_at < ?)
-                   OR (u.login_type = 3 AND c.updated_at < ?)
+                WHERE COALESCE(c.persistent, 0)=0
+                  AND ((u.login_type != 3 AND c.updated_at < ?)
+                    OR (u.login_type = 3 AND c.updated_at < ?))
             )
             """, 
             (cutoff_student, cutoff_teacher)
