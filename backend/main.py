@@ -34857,7 +34857,9 @@ async def admin_users(
     role_filter = str(role or "").strip().lower()
     normalized_subject = _normalize_subject_label(subject)
     query = str(q or "").strip().lower()
-    where_clauses: list[str] = ["1=1"]
+    # Screenshot fixtures are authentication-only accounts used for App Review.
+    # They must never leak into staff/admin search, pagination totals or lists.
+    where_clauses: list[str] = ["COALESCE(u.screenshot_demo, 0)=0"]
     params: list[Any] = []
 
     if query:
@@ -35460,7 +35462,10 @@ async def admin_search_users(q: str = Query(default=""), authorization: str | No
     _require_role(user, {"admin"})
     _ensure_admin_perf_indexes()
     query = (q or "").strip().lower()
-    where_sql: list[str] = ["u.login_type IN (1,2,6)"]
+    where_sql: list[str] = [
+        "u.login_type IN (1,2,6)",
+        "COALESCE(u.screenshot_demo, 0)=0",
+    ]
     params: list[Any] = []
     if query:
         where_sql.append(
@@ -35504,7 +35509,10 @@ async def admin_search_teachers(
     _require_role(user, {"admin"})
     _ensure_admin_perf_indexes()
     query = (q or "").strip().lower()
-    where_sql: list[str] = ["u.login_type IN (3,5)"]
+    where_sql: list[str] = [
+        "u.login_type IN (3,5)",
+        "COALESCE(u.screenshot_demo, 0)=0",
+    ]
     params: list[Any] = []
     if query:
         where_sql.append(
@@ -35569,7 +35577,7 @@ async def admin_user_detail(user_id: int, authorization: str | None = Header(def
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
-    if not target:
+    if not target or bool(int(target.get("screenshot_demo") or 0)):
         raise HTTPException(status_code=404, detail="User not found")
     if not str(target.get("profile_image_url") or "").strip():
         face_profile = _safe_call(lambda: get_active_face_profile(int(user_id)), None) or {}
@@ -47179,7 +47187,7 @@ async def get_student(student_id: int, authorization: str | None = Header(defaul
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin", "teacher", "support", "student"})
     row = _safe_call(lambda: get_user_by_id(int(student_id)), None)
-    if not row:
+    if not row or bool(int(row.get("screenshot_demo") or 0)):
         raise HTTPException(status_code=404, detail="Student not found")
     payload = _serialize_user_row(row)
     payload.update(_presence_summary_for_user(int(student_id)))
@@ -47198,7 +47206,7 @@ async def user_presence_profile(user_id: int, authorization: str | None = Header
     actor = _user_row_from_bearer(authorization)
     _require_role(actor, {"student", "teacher", "support", "admin"})
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
-    if not target:
+    if not target or bool(int(target.get("screenshot_demo") or 0)):
         raise HTTPException(status_code=404, detail="User not found")
     target_role = _role_from_login_type(int(target.get("login_type") or 0), str(target.get("login_id") or ""))
     if target_role not in {"student", "accountless"}:

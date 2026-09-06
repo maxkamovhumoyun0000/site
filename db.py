@@ -11233,9 +11233,12 @@ def get_user_by_name_search(name: str, limit: int = 20) -> list[dict]:
     cur.execute(
         """
         SELECT * FROM users
-        WHERE LOWER(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) LIKE ?
-           OR LOWER(COALESCE(first_name, '')) LIKE ?
-           OR LOWER(COALESCE(last_name, '')) LIKE ?
+        WHERE COALESCE(screenshot_demo, 0)=0
+          AND (
+            LOWER(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) LIKE ?
+            OR LOWER(COALESCE(first_name, '')) LIKE ?
+            OR LOWER(COALESCE(last_name, '')) LIKE ?
+          )
         ORDER BY id DESC
         LIMIT ?
         """,
@@ -11264,6 +11267,7 @@ def search_student_users_for_group_pick(query: str, limit: int = 500) -> list[di
         """
         SELECT * FROM users
         WHERE login_type IN (1, 2, 6)
+          AND COALESCE(screenshot_demo, 0)=0
           AND (
             LOWER(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')) LIKE ?
             OR LOWER(COALESCE(first_name, '')) LIKE ?
@@ -11484,9 +11488,12 @@ def get_test_count():
 
 
 def get_all_users():
+    """Return production users only; App Review fixtures never enter lists."""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users ORDER BY created_at DESC")
+    cur.execute(
+        "SELECT * FROM users WHERE COALESCE(screenshot_demo, 0)=0 ORDER BY created_at DESC"
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -11496,7 +11503,9 @@ def get_all_teachers():
     """Get all users with login_type=3 (teachers)"""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE login_type=3 ORDER BY created_at DESC")
+    cur.execute(
+        "SELECT * FROM users WHERE login_type=3 AND COALESCE(screenshot_demo, 0)=0 ORDER BY created_at DESC"
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -11506,7 +11515,9 @@ def get_all_students():
     """Get all users with login_type=2 (students)"""
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE login_type=2 ORDER BY created_at DESC")
+    cur.execute(
+        "SELECT * FROM users WHERE login_type=2 AND COALESCE(screenshot_demo, 0)=0 ORDER BY created_at DESC"
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -11538,11 +11549,24 @@ def get_recent_results(limit: int = 15):
 
     if has_max_score:
         cur.execute(
-            "SELECT * FROM test_results WHERE max_score=? ORDER BY created_at DESC LIMIT ?",
+            """
+            SELECT tr.* FROM test_results tr
+            JOIN users u ON u.id=tr.user_id
+            WHERE tr.max_score=? AND COALESCE(u.screenshot_demo, 0)=0
+            ORDER BY tr.created_at DESC LIMIT ?
+            """,
             (500, lim),
         )
     else:
-        cur.execute("SELECT * FROM test_results ORDER BY created_at DESC LIMIT ?", (lim,))
+        cur.execute(
+            """
+            SELECT tr.* FROM test_results tr
+            JOIN users u ON u.id=tr.user_id
+            WHERE COALESCE(u.screenshot_demo, 0)=0
+            ORDER BY tr.created_at DESC LIMIT ?
+            """,
+            (lim,),
+        )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -11550,7 +11574,13 @@ def get_recent_results(limit: int = 15):
 def get_recent_users():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users ORDER BY created_at DESC LIMIT 50")
+    cur.execute(
+        """
+        SELECT * FROM users
+        WHERE COALESCE(screenshot_demo, 0)=0
+        ORDER BY created_at DESC LIMIT 50
+        """
+    )
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
     return rows
@@ -12753,6 +12783,7 @@ def get_group_users(group_id):
         FROM user_groups ug
         JOIN users u ON ug.user_id = u.id
         WHERE ug.group_id = ?
+          AND COALESCE(u.screenshot_demo, 0)=0
           AND (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT)) = '')
         ORDER BY u.first_name, u.last_name
         """,
@@ -12761,6 +12792,7 @@ def get_group_users(group_id):
         FROM user_groups ug
         JOIN users u ON ug.user_id = u.id
         WHERE ug.group_id = ?
+          AND COALESCE(u.screenshot_demo, 0)=0
         ORDER BY u.first_name, u.last_name
         """,
     )
@@ -13876,6 +13908,7 @@ def get_subject_dcoin_history_rows(subject: str, owner_admin_id: int | None = No
                 FROM diamond_history dh
                 JOIN users u ON u.id = dh.user_id
                 WHERE u.login_type IN (1, 2)
+                  AND COALESCE(u.screenshot_demo, 0)=0
                   AND (
                     u.owner_admin_id = ?
                     OR u.id IN (
@@ -13903,6 +13936,7 @@ def get_subject_dcoin_history_rows(subject: str, owner_admin_id: int | None = No
                 FROM diamond_history dh
                 JOIN users u ON u.id = dh.user_id
                 WHERE u.login_type IN (1, 2)
+                  AND COALESCE(u.screenshot_demo, 0)=0
                 ORDER BY dh.created_at DESC
                 """
             )
@@ -13928,6 +13962,7 @@ def get_teacher_students_count(teacher_id):
         FROM users u
         JOIN groups g ON u.group_id = g.id
         WHERE g.teacher_id = ? AND u.login_type IN (1,2)
+          AND COALESCE(u.screenshot_demo, 0)=0
     """, (teacher_id,))
     row = cur.fetchone()
     conn.close()
@@ -13942,8 +13977,10 @@ def get_teacher_total_students(teacher_id: int) -> int:
         SELECT COUNT(DISTINCT ug.user_id) as total_students
         FROM user_groups ug
         JOIN groups g ON ug.group_id = g.id
+        JOIN users u ON u.id = ug.user_id
         WHERE g.teacher_id = ? 
           AND g.active = 1
+          AND COALESCE(u.screenshot_demo, 0)=0
     """, (teacher_id,))
     row = cur.fetchone()
     conn.close()
@@ -14045,7 +14082,8 @@ def get_user_groups_with_counts(user_id):
         SELECT 
             g.id, g.name, g.level, 
             (SELECT COUNT(*) FROM users u2 
-             WHERE u2.group_id = g.id AND u2.login_type IN (1,2)) as student_count
+             WHERE u2.group_id = g.id AND u2.login_type IN (1,2)
+               AND COALESCE(u2.screenshot_demo, 0)=0) as student_count
         FROM groups g
         JOIN users u ON u.group_id = g.id
         WHERE u.id = ?
@@ -14116,6 +14154,7 @@ def get_rating_leaderboard(user_id, period, subject: str | None = None):
             JOIN diamond_history dh ON u.id = dh.user_id
             WHERE DATE(dh.created_at) = CURRENT_DATE
             AND u.login_type IN (1, 2)
+            AND COALESCE(u.screenshot_demo, 0)=0
             GROUP BY u.id
             ORDER BY score DESC
             LIMIT 10
@@ -14130,6 +14169,7 @@ def get_rating_leaderboard(user_id, period, subject: str | None = None):
             JOIN diamond_history dh ON u.id = dh.user_id
             WHERE dh.created_at >= (CURRENT_TIMESTAMP - INTERVAL '7 days')
             AND u.login_type IN (1, 2)
+            AND COALESCE(u.screenshot_demo, 0)=0
             GROUP BY u.id
             ORDER BY score DESC
             LIMIT 10
@@ -14144,6 +14184,7 @@ def get_rating_leaderboard(user_id, period, subject: str | None = None):
             JOIN diamond_history dh ON u.id = dh.user_id
             WHERE dh.created_at >= (CURRENT_TIMESTAMP - INTERVAL '30 days')
             AND u.login_type IN (1, 2)
+            AND COALESCE(u.screenshot_demo, 0)=0
             GROUP BY u.id
             ORDER BY score DESC
             LIMIT 10
@@ -23665,7 +23706,8 @@ def get_teacher_kpi_leaderboard(limit: int = 50) -> list[dict]:
             SELECT k.*, u.first_name, u.last_name, u.profile_image_url,
                    ROW_NUMBER() OVER (ORDER BY k.kpi_score DESC) AS rank_pos
             FROM teacher_kpi_cache k
-            LEFT JOIN users u ON u.id = k.teacher_id
+            JOIN users u ON u.id = k.teacher_id
+            WHERE COALESCE(u.screenshot_demo, 0)=0
             ORDER BY k.kpi_score DESC
             LIMIT ?
             """,
@@ -23681,7 +23723,8 @@ def get_teacher_kpi_leaderboard(limit: int = 50) -> list[dict]:
                 """
                 SELECT k.*, u.first_name, u.last_name, u.profile_image_url
                 FROM teacher_kpi_cache k
-                LEFT JOIN users u ON u.id = k.teacher_id
+                JOIN users u ON u.id = k.teacher_id
+                WHERE COALESCE(u.screenshot_demo, 0)=0
                 ORDER BY k.kpi_score DESC
                 LIMIT ?
                 """,
