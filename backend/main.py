@@ -51077,6 +51077,50 @@ class VoiceRoomCreateRequest(BaseModel):
     subject: str
     tags: list[str] | None = None
 
+
+def _delete_voice_room_permanently(room_id: str | int) -> None:
+    """Remove a finished public voice room and all of its transient state.
+
+    Public voice rooms are live events, not an archive.  Removing the
+    database row as soon as the host ends/leaves means a later room always
+    starts as a genuinely new session and old room names cannot reappear in
+    any client lobby.
+    """
+    rid = str(room_id or "").strip()
+    if not rid:
+        return
+    for key in (
+        f"voice_room_info_{rid}",
+        f"voice_room_stage_{rid}",
+        f"voice_room_peers_{rid}",
+        f"voice_room_admins_{rid}",
+        f"voice_room_cohosts_{rid}",
+        f"voice_room_hidden_{rid}",
+        f"voice_room_game_{rid}",
+        f"voice_room_gifters_{rid}",
+    ):
+        try:
+            _REDIS_CLIENT.delete(key)
+        except Exception:
+            pass
+    try:
+        _REDIS_CLIENT.srem("active_voice_rooms", rid)
+    except Exception:
+        pass
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM web_voiceroom_sessions WHERE room_id=%s", (rid,))
+        cur.execute("DELETE FROM web_voicerooms WHERE id=%s", (rid,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Failed to remove closed voice room id=%s", rid)
+    finally:
+        conn.close()
+
+
 @app.post("/voice-rooms/create")
 async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -51089,10 +51133,25 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
     conn = get_conn()
     cur = conn.cursor()
     try:
-        # Check if already has a room for this subject
-        cur.execute("SELECT id FROM web_voicerooms WHERE owner_id=%s AND subject=%s", (user_id, payload.subject))
-        if cur.fetchone():
-            raise HTTPException(status_code=400, detail="Sizda bu fandan allaqachon xona mavjud.")
+        # There is one public community room at a time.  If a host has
+        # already opened it, send this caller into that live room instead of
+        # creating a second parallel room.
+        active_ids = []
+        for key in _REDIS_CLIENT.keys("voice_room_info_*") or []:
+            room_id = str(key).replace("voice_room_info_", "")
+            info = _REDIS_CLIENT.hgetall(key) or {}
+            if room_id and info and str(info.get("is_homework") or "") != "1":
+                active_ids.append(room_id)
+        if active_ids:
+            return {"success": True, "room_id": active_ids[0], "reused": True}
+
+        # Old rooms are not a history feature.  A room that was created but
+        # never joined is stale too, so clear it before creating the next
+        # fresh event.  Homework rooms use a separate table and are untouched.
+        cur.execute(
+            "DELETE FROM web_voiceroom_sessions WHERE room_id IN (SELECT id FROM web_voicerooms)"
+        )
+        cur.execute("DELETE FROM web_voicerooms")
             
         # Deduct Dcoin if student
         if role == "student":
@@ -51174,13 +51233,12 @@ async def delete_voice_room(room_id: int, authorization: str | None = Header(def
     
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM web_voicerooms WHERE id=%s AND owner_id=%s RETURNING id", (room_id, user_id))
+    cur.execute("SELECT id FROM web_voicerooms WHERE id=%s AND owner_id=%s", (room_id, user_id))
     deleted = cur.fetchone()
-    conn.commit()
     conn.close()
-    
     if not deleted:
         raise HTTPException(status_code=404, detail="Xona topilmadi yoki sizga tegishli emas")
+    _delete_voice_room_permanently(room_id)
     return {"success": True}
 
 @app.get("/voice-rooms/active")
@@ -51226,7 +51284,9 @@ async def get_active_voice_rooms(authorization: str | None = Header(default=None
         except Exception:
             pass
             
-    return {"rooms": rooms}
+    # Public voice rooms intentionally have a single live slot.
+    rooms.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+    return {"rooms": rooms[:1]}
 
 def _voice_room_notify_text(lang: str, subject: str, name: str, owner: str) -> str:
     if lang == "ru":
@@ -51651,12 +51711,8 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 elif action == "force_close_room":
                     if my_role == "admin" and current_room_id:
                         await _broadcast_room(current_room_id, {"type": "room_closed"})
-                        _REDIS_CLIENT.delete(f"voice_room_info_{current_room_id}")
-                        _REDIS_CLIENT.delete(f"voice_room_stage_{current_room_id}")
-                        _REDIS_CLIENT.delete(f"voice_room_peers_{current_room_id}")
-                        _REDIS_CLIENT.delete(f"voice_room_admins_{current_room_id}")
-                        _REDIS_CLIENT.delete(f"voice_room_cohosts_{current_room_id}")
-                        _REDIS_CLIENT.delete(f"voice_room_hidden_{current_room_id}")
+                        _delete_voice_room_permanently(current_room_id)
+                        current_room_id = None
                         
                 elif action == "transfer_host":
                     target_id = msg.get("target_id")
@@ -51765,18 +51821,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
                         if info.get("host_id") == my_ws_id or my_role == "admin":
                             await _broadcast_room(current_room_id, {"type": "room_closed"})
-                            session_id = info.get("session_id")
-                            if session_id:
-                                conn3 = get_conn()
-                                cur3 = conn3.cursor()
-                                cur3.execute("UPDATE web_voiceroom_sessions SET end_time = CURRENT_TIMESTAMP WHERE id = %s", (session_id,))
-                                conn3.commit()
-                                conn3.close()
-                                
-                            _REDIS_CLIENT.delete(f"voice_room_info_{current_room_id}")
-                            _REDIS_CLIENT.delete(f"voice_room_stage_{current_room_id}")
-                            _REDIS_CLIENT.delete(f"voice_room_peers_{current_room_id}")
-                            _REDIS_CLIENT.srem("active_voice_rooms", current_room_id)
+                            _delete_voice_room_permanently(current_room_id)
                             
                         current_room_id = None
                         await _send({"type": "left_room"})
@@ -51792,20 +51837,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         if info.get("host_id") == my_ws_id:
                             # Host left, close room
                             await _broadcast_room(current_room_id, {"type": "room_closed"})
-                            
-                            # End session in DB
-                            session_id = info.get("session_id")
-                            if session_id:
-                                conn3 = get_conn()
-                                cur3 = conn3.cursor()
-                                cur3.execute("UPDATE web_voiceroom_sessions SET end_time = CURRENT_TIMESTAMP WHERE id = %s", (session_id,))
-                                conn3.commit()
-                                conn3.close()
-                                
-                            _REDIS_CLIENT.delete(f"voice_room_info_{current_room_id}")
-                            _REDIS_CLIENT.delete(f"voice_room_stage_{current_room_id}")
-                            _REDIS_CLIENT.delete(f"voice_room_peers_{current_room_id}")
-                            _REDIS_CLIENT.srem("active_voice_rooms", current_room_id)
+                            _delete_voice_room_permanently(current_room_id)
                         else:
                             await _send_room_state(current_room_id)
                             
@@ -51839,20 +51871,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
             if info and info.get("host_id") == my_ws_id:
                 for p in peers:
                     _REDIS_CLIENT.rpush(f"webrtc_signal_{p}", json.dumps({"type": "room_closed"}))
-                    
-                # End session in DB
-                session_id = info.get("session_id")
-                if session_id:
-                    conn3 = get_conn()
-                    cur3 = conn3.cursor()
-                    cur3.execute("UPDATE web_voiceroom_sessions SET end_time = CURRENT_TIMESTAMP WHERE id = %s", (session_id,))
-                    conn3.commit()
-                    conn3.close()
-                    
-                _REDIS_CLIENT.delete(f"voice_room_info_{current_room_id}")
-                _REDIS_CLIENT.delete(f"voice_room_stage_{current_room_id}")
-                _REDIS_CLIENT.delete(f"voice_room_peers_{current_room_id}")
-                _REDIS_CLIENT.srem("active_voice_rooms", current_room_id)
+                _delete_voice_room_permanently(current_room_id)
             else:
                 # Update room state for others
                 asyncio.create_task(_send_room_state(current_room_id))
