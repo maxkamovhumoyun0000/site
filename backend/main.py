@@ -849,6 +849,7 @@ _final_chat_schema_ready = False
 _final_chat_schema_lock = threading.Lock()
 _community_chat_schema_ready = False
 _community_chat_schema_lock = threading.Lock()
+_community_chat_cleanup_last_run_monotonic = 0.0
 _DIAMONDVOY_HOMEWORK_WIZARDS: dict[str, dict] = {}
 
 
@@ -11207,10 +11208,49 @@ def _diamondvoy_list_chats_final(user_id: int, limit: int = 30) -> list[dict]:
     if isinstance(cached, list):
         return cached
     _final_chat_cleanup_if_due()
-    # All roles now use exactly one continuing Diamondvoy chat. Clients never
-    # receive (or render) the old per-topic chat history.
-    rows = [_diamondvoy_get_or_create_persistent_chat(int(user_id))]
+    # A Diamondvoy session is temporary. The fresh-session route replaces it
+    # on every new entry, so no prior dialogue is exposed as a history list.
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, user_id, title, created_at, updated_at, expires_at,
+                   deleted_at, pinned_at, persistent,
+                   (SELECT m.content FROM diamondvoy_chat_messages m
+                    WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message_preview
+            FROM diamondvoy_chats c
+            WHERE c.user_id=? AND c.deleted_at IS NULL
+              AND COALESCE(c.persistent, 0)=0
+            ORDER BY c.id DESC LIMIT 1
+            """,
+            (int(user_id),),
+        )
+        latest = dict(cur.fetchone() or {})
+    finally:
+        conn.close()
+    rows = [latest] if latest else [_diamondvoy_create_chat_for_user(int(user_id), "Yangi chat")]
     return _short_cache_set(_DIAMONDVOY_CHAT_LIST_CACHE, cache_key, rows, ttl_seconds=6.0, max_items=4096)
+
+
+def _diamondvoy_start_fresh_session_final(user_id: int) -> dict:
+    """Discard all prior sessions for a user and return one blank chat."""
+    _ensure_final_chat_schema()
+    uid = int(user_id or 0)
+    if uid <= 0:
+        raise HTTPException(status_code=401, detail="Invalid user")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE diamondvoy_chats SET deleted_at=CURRENT_TIMESTAMP, pinned_at=NULL WHERE user_id=? AND deleted_at IS NULL",
+            (uid,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _clear_user_media_caches(uid)
+    return _diamondvoy_create_chat_for_user(uid, "Yangi chat")
 
 
 def _diamondvoy_list_messages_final(chat_id: int, limit: int = 120) -> list[dict]:
@@ -11740,15 +11780,10 @@ def _diamondvoy_cached_answer_for_style(answer: str, lang: str, style_hint: str)
     low_style = style_hint.lower()
     if "brevity=short" in low_style and len(clean) > 1600:
         clean = clean[:1550].rsplit(" ", 1)[0].strip() + "..."
-    if (lang or "uz").startswith("ru"):
-        prefix = "Похоже, мы уже разбирали это. Коротко адаптирую: "
-    elif (lang or "uz").startswith("en"):
-        prefix = "We covered something similar before. Adapted answer: "
-    else:
-        prefix = "Buni oldin ham ko'rib chiqqanmiz. Moslab aytsam: "
-    if clean.lower().startswith(prefix.lower()[:12]):
-        return clean
-    return f"{prefix}{clean}"
+    # A cache must be invisible to the user. In particular, do not reveal
+    # that a related question was previously asked; answer it naturally in
+    # the detected language just as a newly generated answer would.
+    return clean
 
 
 async def _diamondvoy_allowed_for_role(user: dict, role: str, text: str, has_images: bool) -> bool:
@@ -16792,6 +16827,67 @@ def _community_chat_thread_for_user(user: dict, role: str) -> dict:
         conn.close()
 
 
+def _community_chat_cleanup_expired_messages_if_due(*, force: bool = False) -> int:
+    """Permanently remove community posts (and their media) after seven days.
+
+    Running this on the server applies the same retention rule to the web app,
+    iOS and Android rather than merely hiding old messages in one client.
+    """
+    global _community_chat_cleanup_last_run_monotonic
+    now_mono = time.monotonic()
+    if not force and now_mono - _community_chat_cleanup_last_run_monotonic < 600:
+        return 0
+    _community_chat_cleanup_last_run_monotonic = now_mono
+    _ensure_community_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    removed = 0
+    try:
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        cur.execute(
+            """
+            SELECT m.id FROM chat_messages m
+            JOIN chat_threads t ON t.id=m.thread_id
+            WHERE t.thread_type='community' AND m.created_at < ?
+            LIMIT 1000
+            """,
+            (cutoff,),
+        )
+        message_ids = [int(dict(row).get("id") or 0) for row in cur.fetchall() or []]
+        for message_id in [item for item in message_ids if item > 0]:
+            cur.execute(
+                "SELECT storage_url FROM community_chat_attachments WHERE message_id=?",
+                (message_id,),
+            )
+            attachment_urls = [
+                str(dict(row).get("storage_url") or "")
+                for row in cur.fetchall() or []
+            ]
+            cur.execute("DELETE FROM community_chat_attachments WHERE message_id=?", (message_id,))
+            cur.execute("DELETE FROM community_chat_message_deletions WHERE message_id=?", (message_id,))
+            cur.execute("UPDATE chat_messages SET reply_to_message_id=NULL WHERE reply_to_message_id=?", (message_id,))
+            cur.execute("DELETE FROM chat_messages WHERE id=?", (message_id,))
+            removed += int(getattr(cur, "rowcount", 0) or 0)
+            for raw_url in attachment_urls:
+                filename = Path(urlparse(raw_url).path).name
+                path = CHAT_UPLOAD_DIR / filename
+                try:
+                    if filename and path.is_file():
+                        path.unlink()
+                except OSError:
+                    logger.warning("community attachment cleanup failed path=%s", path)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("community chat seven-day cleanup failed")
+    finally:
+        conn.close()
+    return removed
+
+
 def _community_chat_author_payload(user_id: int, cache: dict[int, dict[str, Any]]) -> dict[str, Any]:
     uid = int(user_id or 0)
     cached = cache.get(uid)
@@ -19645,6 +19741,7 @@ async def community_chat_messages(
     role = _require_role(user, {"student", "teacher", "admin", "support"})
     if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
         raise HTTPException(status_code=403, detail="Student access is blocked")
+    _community_chat_cleanup_expired_messages_if_due()
     thread = _community_chat_thread_for_user(user, role)
     user_id = int(user.get("id") or 0)
     items = _community_chat_messages(
@@ -19728,6 +19825,7 @@ async def community_chat_send_message(
     role = _require_role(user, {"student", "teacher", "admin", "support"})
     if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
         raise HTTPException(status_code=403, detail="Student access is blocked")
+    _community_chat_cleanup_expired_messages_if_due()
     thread = _community_chat_thread_for_user(user, role)
     thread_id = int(thread.get("id") or 0)
     user_id = int(user.get("id") or 0)
@@ -20398,6 +20496,16 @@ async def final_diamondvoy_create_chat(
     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
     if elapsed_ms > 500:
         logger.info("perf final_chat.diamondvoy.create ms=%.2f", elapsed_ms)
+    return {"chat": _diamondvoy_serialize_chat_final(row)}
+
+
+@app.post("/chats/diamondvoy/fresh-session")
+async def final_diamondvoy_fresh_session(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    row = _diamondvoy_start_fresh_session_final(int(user.get("id") or 0))
     return {"chat": _diamondvoy_serialize_chat_final(row)}
 
 
@@ -21952,6 +22060,16 @@ async def student_diamondvoy_create_chat(
     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
     if elapsed_ms > 500:
         logger.info("perf diamondvoy.chats.create total_ms=%.2f user_id=%s", elapsed_ms, user_id)
+    return {"chat": _diamondvoy_serialize_chat_final(created)}
+
+
+@app.post("/student/diamondvoy/chats/fresh-session")
+async def student_diamondvoy_fresh_session(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    created = _diamondvoy_start_fresh_session_final(int(user.get("id") or 0))
     return {"chat": _diamondvoy_serialize_chat_final(created)}
 
 

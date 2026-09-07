@@ -2324,7 +2324,6 @@ export function UniversalChat({
             <p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.community.subtitle", "Diamond Education hamjamiyati")}</p>
           </div>
         </div>
-        <button type="button" aria-label={tt("chat.community.refresh", "Yangilash")} onClick={() => loadCommunityMessages().catch(() => null)} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white">↻</button>
       </div>
 
       <div ref={communityScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
