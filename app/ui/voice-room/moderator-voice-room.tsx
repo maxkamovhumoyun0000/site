@@ -102,11 +102,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
   };
 
   const handleCreateRoom = async () => {
-    if (!createName.trim()) {
-      setErrorMsg(t("voiceroom.roomName") + "!");
-      return;
-    }
-    await createRoom(createName, createSubject, createTags);
+    await createRoom();
     setShowCreateModal(false);
     setCreateName("");
     setCreateTags([]);
@@ -290,7 +286,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
 
               {/* FAB for Create Room */}
               <button 
-                onClick={() => setShowCreateModal(true)}
+                onClick={handleCreateRoom}
                 className="fixed bottom-24 right-6 w-14 h-14 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.3)] flex items-center justify-center transition-transform hover:scale-105 active:scale-95 z-30"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>

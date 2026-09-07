@@ -82,7 +82,7 @@ export interface GlobalVoiceRoomContextValue {
   reactions: Reaction[];
   raisedHands: RaisedHand[];
   speakingPeers: string[];
-  createRoom: (name: string, subject: string, tags?: string[]) => Promise<void>;
+  createRoom: () => Promise<void>;
   joinRoom: (roomId: string) => void;
   deleteRoom: (roomId: string) => Promise<void>;
   requestStage: () => void;
@@ -156,6 +156,10 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
   // WebRTC
   const wsRef = useRef<WebSocket | null>(null);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const iceServersRef = useRef<RTCIceServer[]>([
+    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  ]);
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
   
@@ -199,6 +203,22 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
       }
     } catch (e) {
       console.error(e);
+    }
+  }, []);
+
+  const fetchIceServers = useCallback(async () => {
+    try {
+      const token = getToken();
+      const res = await fetch("/api/voice-rooms/ice-config", {
+        headers: token ? { "Authorization": `Bearer ${token}` } : {},
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.ice_servers) && data.ice_servers.length) {
+        iceServersRef.current = data.ice_servers;
+      }
+    } catch (error) {
+      // Direct STUN remains available if a configuration request fails.
+      console.warn("Voice Room ICE configuration unavailable", error);
     }
   }, []);
 
@@ -252,6 +272,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
   const cleanupWebRTC = () => {
     pcsRef.current.forEach(pc => pc.close());
     pcsRef.current.clear();
+    pendingIceRef.current.clear();
     
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -395,7 +416,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
               const connectTo = [...(msg.stage_peers || []), ...(msg.hidden_speakers || [])];
               connectTo.forEach(pid => {
                 if (pid !== myIdRef.current) {
-                  setupWebRTC(pid, true);
+                  setupWebRTC(pid, myIdRef.current.localeCompare(pid) < 0);
                 }
               });
             }
@@ -411,10 +432,20 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
              const connectTo = [...(msg.stage_peers || []), ...(msg.hidden_speakers || [])];
              connectTo.forEach((peerId: string) => {
                 if (peerId !== myIdRef.current && !pcsRef.current.has(peerId)) {
-                   setupWebRTC(peerId, true);
+                   setupWebRTC(peerId, myIdRef.current.localeCompare(peerId) < 0);
                 }
              });
           }
+          // Both web and mobile create a peer connection for every visible
+          // stage peer, but only this stable side sends the first offer.  It
+          // prevents offer glare while still covering a host that was already
+          // on stage when a new listener joined.
+          const peersToConnect = [...(msg.stage_peers || []), ...(msg.hidden_speakers || [])];
+          peersToConnect.forEach((peerId: string) => {
+            if (peerId !== myIdRef.current && !pcsRef.current.has(peerId)) {
+              setupWebRTC(peerId, myIdRef.current.localeCompare(peerId) < 0);
+            }
+          });
         } else if (msg.type === "chat_message") {
           setChatMessages(prev => [...prev, {
             id: Math.random().toString(),
@@ -510,14 +541,13 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
       audioElementsRef.current.delete(peerId);
     }
     analysersRef.current.delete(peerId);
+    pendingIceRef.current.delete(peerId);
   };
 
   const setupWebRTC = async (peerId: string, isInitiator: boolean) => {
     if (pcsRef.current.has(peerId)) return;
 
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
+    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
     pcsRef.current.set(peerId, pc);
 
     if (localStreamRef.current) {
@@ -634,6 +664,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
 
     if (data.type === "offer") {
       await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      await flushPendingIce(fromId, pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       wsRef.current?.send(JSON.stringify({
@@ -643,12 +674,27 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
       }));
     } else if (data.type === "answer") {
       await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      await flushPendingIce(fromId, pc);
     } else if (data.type === "candidate") {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      if (!pc.remoteDescription) {
+        const queued = pendingIceRef.current.get(fromId) || [];
+        queued.push(data.candidate);
+        pendingIceRef.current.set(fromId, queued);
+      } else {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      }
     }
   };
 
-  const createRoom = async (name: string, subject: string, tags?: string[]) => {
+  const flushPendingIce = async (peerId: string, pc: RTCPeerConnection) => {
+    const candidates = pendingIceRef.current.get(peerId) || [];
+    pendingIceRef.current.delete(peerId);
+    for (const candidate of candidates) {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  };
+
+  const createRoom = async () => {
     setErrorMsg("");
     // Unlock AudioContext on user gesture
     if (!audioContextRef.current) {
@@ -666,13 +712,14 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
           "Content-Type": "application/json",
           ...(token ? { "Authorization": `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({ name, subject, tags: tags || [] })
+        body: JSON.stringify({})
       });
       const data = await res.json();
       if (!res.ok) {
         setErrorMsg(data.detail || t("common.error") || "Xatolik yuz berdi");
       } else {
         await fetchRooms();
+        await fetchIceServers();
         connectWebSocket(data.room_id);
       }
     } catch (e) {
@@ -682,7 +729,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     }
   };
 
-  const joinRoom = (roomId: string) => {
+  const joinRoom = async (roomId: string) => {
     setErrorMsg("");
     // Unlock AudioContext on user gesture
     if (!audioContextRef.current) {
@@ -693,6 +740,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     }
     
     setRoomState(null);
+    await fetchIceServers();
     connectWebSocket(roomId);
   };
 

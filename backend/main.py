@@ -51073,9 +51073,46 @@ async def _notify_voice_room_waiting(subject: str) -> None:
         logger.error(f"Voice room broadcast failed: {e}")
 
 class VoiceRoomCreateRequest(BaseModel):
-    name: str
-    subject: str
+    # Community voice rooms are intentionally not categorized.  Keeping
+    # defaults also lets older app builds create/join the same shared room.
+    name: str | None = None
+    subject: str | None = None
     tags: list[str] | None = None
+
+
+@app.get("/voice-rooms/ice-config")
+async def get_voice_room_ice_config(authorization: str | None = Header(default=None)):
+    """Return short-lived TURN credentials without ever exposing its secret.
+
+    STUN alone cannot connect many mobile-to-browser calls when either side
+    is behind carrier NAT.  coturn validates the HMAC credentials generated
+    here and relays audio only when a direct peer connection is impossible.
+    """
+    user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    servers: list[dict[str, Any]] = [
+        {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
+    ]
+    secret = os.getenv("VOICE_ROOM_TURN_SECRET", "").strip()
+    host = os.getenv("VOICE_ROOM_TURN_HOST", "").strip()
+    if secret and host:
+        expiry = int(time.time()) + 3600
+        username = f"{expiry}:{user_id}"
+        credential = base64.b64encode(
+            hmac.new(secret.encode("utf-8"), username.encode("utf-8"), hashlib.sha1).digest()
+        ).decode("ascii")
+        servers.append({
+            "urls": [
+                f"turn:{host}:3478?transport=udp",
+                f"turn:{host}:3478?transport=tcp",
+            ],
+            "username": username,
+            "credential": credential,
+        })
+    return {"ice_servers": servers}
 
 
 def _delete_voice_room_permanently(room_id: str | int) -> None:
@@ -51158,15 +51195,16 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
             settings = _get_runtime_settings()
             price = float(settings.get("voice_room_price", 50.0))
             if price > 0:
-                success = try_consume_dcoins(user_id, price, f"Voice room: {payload.name}", change_type="voice_room_create")
+                success = try_consume_dcoins(user_id, price, "Community voice room", change_type="voice_room_create")
                 if not success:
                     raise HTTPException(status_code=400, detail="Hisobingizda yetarli Dcoin yo'q")
                     
         # Create room
-        tags_json = json.dumps(payload.tags) if payload.tags else None
+        room_name = "Diamond Education Voice Room"
+        room_subject = "community"
         cur.execute(
             "INSERT INTO web_voicerooms (name, subject, owner_id, tags) VALUES (%s, %s, %s, %s) RETURNING id",
-            (payload.name, payload.subject, user_id, tags_json)
+            (room_name, room_subject, user_id, None)
         )
         room_id = cur.fetchone()["id"]
         conn.commit()
