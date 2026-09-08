@@ -22695,6 +22695,36 @@ export default function DiamondEducationApp() {
     userRef.current = user;
   }, [user]);
 
+  // A stored browser token must not leave a person permanently "online".
+  // Keep the server presence fresh only while this tab is visible; hidden,
+  // closed, or offline tabs stop sending heartbeats and naturally expire.
+  useEffect(() => {
+    if (typeof window === "undefined" || !user?.id) return;
+    let disposed = false;
+    const heartbeat = () => {
+      if (disposed || document.visibilityState === "hidden") return;
+      const token = localStorage.getItem("diamond_token");
+      if (!token) return;
+      requestJson("/auth/presence/heartbeat", {
+        method: "POST",
+        token,
+        timeoutMs: 10000,
+        retries: 0,
+      }).catch(() => null);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") heartbeat();
+    };
+    heartbeat();
+    const timer = window.setInterval(heartbeat, 40000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [user?.id]);
+
   useEffect(() => {
     if (!user || roleFromUser(user) !== "student" || !isTelegramMode) {
       setIsTelegramSubscribed(true);

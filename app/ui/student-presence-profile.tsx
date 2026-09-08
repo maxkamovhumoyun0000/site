@@ -40,7 +40,11 @@ export function StudentPresenceProfile({
   const user = data?.user || {};
   const presence = data?.presence || {};
   const balance = data?.balance || {};
-  const online = Boolean(presence.is_online || user.is_online);
+  // The profile request returns a live server presence calculation.  The
+  // student-list row can be older, so it must only be used as a fallback.
+  const online = typeof presence.is_online === "boolean"
+    ? presence.is_online
+    : Boolean(user.is_online);
   const groups = Array.isArray(data?.groups) ? data.groups : [];
   const gifts = Array.isArray(data?.purchased_gifts) ? data.purchased_gifts : [];
   const name = String(user.full_name || "Student");

@@ -3443,11 +3443,11 @@ def _parse_utc_timestamp(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-# A session is considered online while it has sent a request recently.  The
-# mobile/web clients already refresh `web_user_sessions.last_seen_at` through
-# `_user_row_from_bearer`, so this remains accurate without a second polling
-# service or a fragile in-memory presence table.
-ONLINE_PRESENCE_WINDOW_SECONDS = 5 * 60
+# A session is considered online only while its foreground client has checked
+# in recently.  The short window makes a force-closed/backgrounded app switch
+# to offline promptly, while the explicit mobile/web heartbeat keeps an open
+# app online even when the user is reading a static screen.
+ONLINE_PRESENCE_WINDOW_SECONDS = 90
 
 
 def _presence_summaries_for_users(user_ids: Iterable[int]) -> dict[int, dict[str, Any]]:
@@ -6499,13 +6499,13 @@ def _issue_web_session(user: dict, device_id: str | None, source: str = "web", t
     return session_id, ttl_hours
 
 
-def _touch_web_session(session_id: str) -> None:
+def _touch_web_session(session_id: str, *, force: bool = False) -> None:
     sid = str(session_id or "").strip()
     if not sid:
         return
     now_ts = time.time()
     last_touch = float(_WEB_SESSION_TOUCH_CACHE.get(sid) or 0.0)
-    if now_ts - last_touch < 60.0:
+    if not force and now_ts - last_touch < 60.0:
         return
     _WEB_SESSION_TOUCH_CACHE[sid] = now_ts
     if len(_WEB_SESSION_TOUCH_CACHE) > 10000:
@@ -18340,6 +18340,29 @@ async def logout(authorization: str | None = Header(default=None)):
     _revoke_web_sessions(user_id, keep_session_id=None, reason="logout")
     _sync_bot_logout_state(user_id)
     return {"message": "Logged out successfully"}
+
+
+@app.post("/auth/presence/heartbeat")
+async def presence_heartbeat(authorization: str | None = Header(default=None)):
+    """Record activity from a foreground web/mobile client.
+
+    Presence is intentionally derived from the authenticated session rather
+    than a mutable client-provided online flag.  A paused, killed, or offline
+    app stops sending this heartbeat and naturally becomes offline after the
+    presence window; logout still revokes the session immediately.
+    """
+    user = _user_row_from_bearer(authorization)
+    payload = _decode_bearer_payload(authorization)
+    session_id = str(payload.get("sid") or "").strip()
+    if session_id:
+        # Heartbeats need an actual write on every foreground interval rather
+        # than the normal request coalescing used for busy API screens.
+        _touch_web_session(session_id, force=True)
+    return {
+        "is_online": True,
+        "last_online_at": _now_utc().isoformat(),
+        "user_id": int(user.get("id") or 0),
+    }
 
 
 @app.get("/auth/me", response_model=User)
