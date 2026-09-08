@@ -6229,6 +6229,16 @@ def _build_user_payload(u: dict) -> User:
     lt = int(u.get("login_type") or 1)
     user_id = int(u.get("id") or 0)
     role = _role_from_login_type(lt, str(u.get("login_id") or ""))
+    # Teacher and Student screenshot-demo records intentionally have separate
+    # internal login IDs so they retain their distinct roles.  The approved
+    # review credential is an alias shared by both apps, and that is the only
+    # login identifier that should be exposed in mobile/web profile payloads.
+    is_screenshot_demo = bool(int(u.get("screenshot_demo") or 0))
+    public_login_id = (
+        str(u.get("screenshot_demo_alias") or "").strip()
+        if is_screenshot_demo
+        else ""
+    ) or str(u.get("login_id") or "").strip()
     cache_key = (
         user_id,
         lt,
@@ -6266,7 +6276,7 @@ def _build_user_payload(u: dict) -> User:
         id=str(u.get("id")),
         full_name=_display_name(u),
         role=role,
-        login_id=u.get("login_id"),
+        login_id=public_login_id,
         login_type=lt,
         phone=u.get("phone"),
         parent_phone=u.get("parent_phone"),
@@ -6286,7 +6296,7 @@ def _build_user_payload(u: dict) -> User:
         public_offer_agreed=bool(int(user_row.get("public_offer_agreed") or 0)),
         instagram_url=str(user_row.get("instagram_url") or "").strip() or None,
         telegram_url=str(user_row.get("telegram_url") or "").strip() or None,
-        screenshot_demo=bool(int(user_row.get("screenshot_demo") or 0)),
+        screenshot_demo=is_screenshot_demo,
         created_at=_now_utc(),
     )
     if user_id > 0:
