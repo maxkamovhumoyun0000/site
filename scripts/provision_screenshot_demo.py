@@ -38,8 +38,11 @@ def required_env(name: str) -> str:
 def main() -> int:
     login_id = required_env("SCREENSHOT_DEMO_LOGIN")
     password = required_env("SCREENSHOT_DEMO_PASSWORD")
-    first_name = (os.getenv("SCREENSHOT_DEMO_FIRST_NAME") or "Xumoyun").strip()
-    last_name = (os.getenv("SCREENSHOT_DEMO_LAST_NAME") or "Maxkamov").strip()
+    # These are safe display defaults only. The login and password must still
+    # be explicitly supplied through the environment so credentials never end
+    # up in the repository.
+    first_name = (os.getenv("SCREENSHOT_DEMO_FIRST_NAME") or "Jon").strip()
+    last_name = (os.getenv("SCREENSHOT_DEMO_LAST_NAME") or "Doe").strip()
     login_alias = (os.getenv("SCREENSHOT_DEMO_LOGIN_ALIAS") or "").strip() or None
     login_type = int((os.getenv("SCREENSHOT_DEMO_LOGIN_TYPE") or "1").strip())
     if login_type not in {1, 2, 3, 4}:
