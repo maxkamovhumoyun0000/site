@@ -5000,6 +5000,7 @@ function StudentGifts() {
   const [wallet, setWallet] = useState(0);
   const [walletRefreshing, setWalletRefreshing] = useState(false);
   const [chestCost, setChestCost] = useState(1000);
+  const [diamondvoyLimit, setDiamondvoyLimit] = useState<GenericRow | null>(null);
   const [giftPage, setGiftPage] = useState(1);
   const [giftHasMore, setGiftHasMore] = useState(false);
   const [giftTotal, setGiftTotal] = useState(0);
@@ -5193,7 +5194,7 @@ function StudentGifts() {
     setError("");
     try {
       const offset = (Math.max(1, page) - 1) * giftPageSize;
-      const payload = await requestJson<{ items: GenericRow[]; wallet_dcoin: number; chest_cost_dcoin: number; has_more?: boolean; total?: number }>(
+      const payload = await requestJson<{ items: GenericRow[]; wallet_dcoin: number; chest_cost_dcoin: number; diamondvoy_limit?: GenericRow; has_more?: boolean; total?: number }>(
         `/student/gifts?limit=${giftPageSize}&offset=${offset}`,
         { token },
       );
@@ -5202,6 +5203,7 @@ function StudentGifts() {
       setGiftTotal(Number(payload.total || 0));
       applyWallet(Number(payload.wallet_dcoin || 0));
       setChestCost(Number(payload.chest_cost_dcoin || 1000));
+      setDiamondvoyLimit(payload.diamondvoy_limit || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load gifts");
     } finally {
@@ -5362,7 +5364,7 @@ function StudentGifts() {
     setError("");
     setMessage("");
     try {
-      const payload = await requestJson<{ item: GenericRow; wallet_dcoin: number; payment_discount?: GenericRow | null }>(
+      const payload = await requestJson<{ item: GenericRow; wallet_dcoin: number; payment_discount?: GenericRow | null; diamondvoy_limit_boost?: GenericRow | null; diamondvoy_limit?: GenericRow }>(
         `/student/gifts/${Number(item.id || 0)}/purchase`,
         { method: "POST", token },
       );
@@ -5380,11 +5382,18 @@ function StudentGifts() {
         : "";
       
       const itemName = payload.item?.title || item.title || tt("gifts.gift", "Sovga");
+      const boost = payload.diamondvoy_limit_boost;
+      const boostMessage = boost?.bonus_messages
+        ? tt("gifts.diamondvoyBoostPurchased", `DiamondVoy uchun +${Number(boost.bonus_messages)} ta xabar bonusi faollashtirildi.`)
+        : "";
       setMessage(
-        discountMessage
-          ? `${itemName} ${tt("gifts.purchased", "sotib olindi")}. ${discountMessage}`
-          : `${itemName} ${tt("gifts.purchased", "sotib olindi")}.`
+        [
+          `${itemName} ${tt("gifts.purchased", "sotib olindi")}.`,
+          discountMessage,
+          boostMessage,
+        ].filter(Boolean).join(" ")
       );
+      setDiamondvoyLimit(payload.diamondvoy_limit || null);
       setSelected(null);
       await load(giftPage);
       setGiftHistoryLoaded(false);
@@ -5522,6 +5531,27 @@ function StudentGifts() {
           <span style={{ fontSize: "14px", fontWeight: 700, opacity: 0.9 }}>{tt("gifts.myGifts", "Mening sovg'alarim")}</span>
         </button>
       </section>
+      {diamondvoyLimit ? (
+        <section className="panel-card" style={{ marginBottom: "24px" }}>
+          <div className="row-between gap-3">
+            <div>
+              <h3>{tt("gifts.diamondvoyLimitTitle", "DiamondVoy xabar limiti")}</h3>
+              <p className="text-sm text-ink-500 dark:text-navy-300">
+                {tt("gifts.diamondvoyLimitDesc", "24 soatlik limit sovga bonuslari bilan avtomatik oshadi.")}
+              </p>
+            </div>
+            <strong className="chip success">
+              {Number(diamondvoyLimit.remaining || 0)} / {Number(diamondvoyLimit.total_limit || 0)} {tt("gifts.messagesRemaining", "xabar qoldi")}
+            </strong>
+          </div>
+          {Number(diamondvoyLimit.bonus_messages || 0) > 0 ? (
+            <p className="text-sm mt-3">
+              {tt("gifts.activeDiamondvoyBonus", "Faol sovga bonusi")}: +{Number(diamondvoyLimit.bonus_messages || 0)}
+              {diamondvoyLimit.boost_expires_at ? ` · ${tt("gifts.bonusUntil", "amal qiladi")}: ${new Date(String(diamondvoyLimit.boost_expires_at)).toLocaleString()}` : ""}
+            </p>
+          ) : null}
+        </section>
+      ) : null}
       <section className="grid gifts-two-col">
         {loading ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("common.loading", "Loading...")}</article> : null}
         {!loading && !items.length ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("gifts.noGiftsYet", "Sovgalar hali qo'shilmagan.")}</article> : null}
@@ -5553,6 +5583,12 @@ function StudentGifts() {
                     <div className="row-between" style={{ fontSize: "14px" }}>
                       <span style={{ opacity: 0.7 }}>{tt("gifts.monthlyDiscount", "Oylik chegirma")}</span>
                       <strong>{Number(item.payment_discount_percent || 0)}%</strong>
+                    </div>
+                  ) : null}
+                  {item.is_diamondvoy_limit_boost ? (
+                    <div className="row-between" style={{ fontSize: "14px" }}>
+                      <span style={{ opacity: 0.7 }}>{tt("gifts.diamondvoyBoost", "DiamondVoy bonusi")}</span>
+                      <strong>+{Number(item.diamondvoy_bonus_messages || 0)} · {Number(item.diamondvoy_boost_days || 1)} {tt("gifts.days", "kun")}</strong>
                     </div>
                   ) : null}
                   
@@ -5618,6 +5654,9 @@ function StudentGifts() {
             {selected.is_payment_discount ? (
               <div className="kv"><span>{tt("gifts.monthlyDiscount", "Oylik to'lov chegirmasi")}</span><strong>{Number(selected.payment_discount_percent || 0)}%</strong></div>
             ) : null}
+            {selected.is_diamondvoy_limit_boost ? (
+              <div className="kv"><span>{tt("gifts.diamondvoyBoost", "DiamondVoy bonusi")}</span><strong>+{Number(selected.diamondvoy_bonus_messages || 0)} {tt("gifts.messages", "xabar")} · {Number(selected.diamondvoy_boost_days || 1)} {tt("gifts.days", "kun")}</strong></div>
+            ) : null}
             <button
               className="btn btn-primary"
               style={{ width: "100%", marginTop: "16px", padding: "14px", fontSize: "16px" }}
@@ -5657,6 +5696,9 @@ function StudentGifts() {
             ) : null}
             {selectedPurchase.meta?.awarded_tickets ? (
               <div className="kv"><span>Ticket</span><strong>+{Number(selectedPurchase.meta.awarded_tickets || 0)}</strong></div>
+            ) : null}
+            {selectedPurchase.gift?.is_diamondvoy_limit_boost || selectedPurchase.meta?.is_diamondvoy_limit_boost ? (
+              <div className="kv"><span>{tt("gifts.diamondvoyBoost", "DiamondVoy bonusi")}</span><strong>+{Number(selectedPurchase.gift?.diamondvoy_bonus_messages || selectedPurchase.meta?.diamondvoy_bonus_messages || 0)} {tt("gifts.messages", "xabar")}</strong></div>
             ) : null}
             <button onClick={() => setSelectedPurchase(null)} className="modal-icon-close">✕</button>
           </article>
@@ -8454,6 +8496,9 @@ function AdminGiftsPanel({
   const [editingGiftId, setEditingGiftId] = useState<number | null>(null);
   const [isPaymentDiscount, setIsPaymentDiscount] = useState(false);
   const [paymentDiscountPercent, setPaymentDiscountPercent] = useState(10);
+  const [isDiamondvoyLimitBoost, setIsDiamondvoyLimitBoost] = useState(false);
+  const [diamondvoyBonusMessages, setDiamondvoyBonusMessages] = useState(5);
+  const [diamondvoyBoostDays, setDiamondvoyBoostDays] = useState(1);
   const [loading, setLoading] = useState(false);
   const [deletingGiftId, setDeletingGiftId] = useState<number | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -8473,6 +8518,9 @@ function AdminGiftsPanel({
     setImageUrl("");
     setIsPaymentDiscount(false);
     setPaymentDiscountPercent(10);
+    setIsDiamondvoyLimitBoost(false);
+    setDiamondvoyBonusMessages(5);
+    setDiamondvoyBoostDays(1);
     setEditingGiftId(null);
   }
 
@@ -8499,6 +8547,9 @@ function AdminGiftsPanel({
     setImageUrl(String(row.image_url || ""));
     setIsPaymentDiscount(Boolean(row.is_payment_discount));
     setPaymentDiscountPercent(Number(row.payment_discount_percent || 10));
+    setIsDiamondvoyLimitBoost(Boolean(row.is_diamondvoy_limit_boost));
+    setDiamondvoyBonusMessages(Math.max(1, Number(row.diamondvoy_bonus_messages || 5)));
+    setDiamondvoyBoostDays(Math.max(1, Number(row.diamondvoy_boost_days || 1)));
     setCreateOpen(true);
   }
 
@@ -8619,7 +8670,7 @@ function AdminGiftsPanel({
               ))}
             </div>
             <label className="gift-discount-toggle">
-              <input type="checkbox" checked={isPaymentDiscount} onChange={(event) => setIsPaymentDiscount(event.target.checked)} />
+              <input type="checkbox" checked={isPaymentDiscount} onChange={(event) => { setIsPaymentDiscount(event.target.checked); if (event.target.checked) setIsDiamondvoyLimitBoost(false); }} />
               <span>
                 <strong>{tt("admin.gifts.paymentDiscount", "Oylik to'lov chegirmasi")}</strong>
                 <small>{tt("admin.gifts.paymentDiscountHint", "Student sovgani sotib olsa, chegirma bir oyga avtomatik qo'llanadi.")}</small>
@@ -8636,6 +8687,25 @@ function AdminGiftsPanel({
                   onChange={(event) => setPaymentDiscountPercent(Number(event.target.value || 0))}
                 />
               </label>
+            ) : null}
+            <label className="gift-discount-toggle">
+              <input type="checkbox" checked={isDiamondvoyLimitBoost} onChange={(event) => { setIsDiamondvoyLimitBoost(event.target.checked); if (event.target.checked) setIsPaymentDiscount(false); }} />
+              <span>
+                <strong>{tt("admin.gifts.diamondvoyBoost", "DiamondVoy xabar limiti bonusi")}</strong>
+                <small>{tt("admin.gifts.diamondvoyBoostHint", "Sotib olinganda talabaga vaqtinchalik qo'shimcha xabarlar beradi.")}</small>
+              </span>
+            </label>
+            {isDiamondvoyLimitBoost ? (
+              <div className="grid grid-2">
+                <label>
+                  {tt("admin.gifts.diamondvoyMessages", "Qo'shimcha xabarlar")}
+                  <input type="number" min={1} max={100} value={diamondvoyBonusMessages} onChange={(event) => setDiamondvoyBonusMessages(Number(event.target.value || 0))} />
+                </label>
+                <label>
+                  {tt("admin.gifts.diamondvoyDays", "Amal qilish vaqti (kun)")}
+                  <input type="number" min={1} max={30} value={diamondvoyBoostDays} onChange={(event) => setDiamondvoyBoostDays(Number(event.target.value || 1))} />
+                </label>
+              </div>
             ) : null}
             <div className="button-grid inline">
               <button className="btn btn-soft" type="button" onClick={() => { resetGiftForm(); setCreateOpen(false); }}>{tt("common.cancel", "Bekor qilish")}</button>
@@ -8668,6 +8738,9 @@ function AdminGiftsPanel({
 	                    ...(editingGiftId ? {} : { active: true }),
 	                    is_payment_discount: isPaymentDiscount,
 	                    payment_discount_percent: isPaymentDiscount ? paymentDiscountPercent : 0,
+	                    is_diamondvoy_limit_boost: isDiamondvoyLimitBoost,
+	                    diamondvoy_bonus_messages: isDiamondvoyLimitBoost ? diamondvoyBonusMessages : 0,
+	                    diamondvoy_boost_days: diamondvoyBoostDays,
 	                  };
 	                  await onAdminCall(
 	                    editingGiftId ? `/admin/gifts/${editingGiftId}` : "/admin/gifts",
@@ -8715,6 +8788,10 @@ function AdminGiftsPanel({
                 <div className="kv">
                   <span>{tt("admin.gifts.paymentDiscountShort", "Chegirma")}</span>
                   <strong>{row.is_payment_discount ? `${Number(row.payment_discount_percent || 0)}%` : "-"}</strong>
+                </div>
+                <div className="kv">
+                  <span>{tt("admin.gifts.diamondvoyBoostShort", "DiamondVoy")}</span>
+                  <strong>{row.is_diamondvoy_limit_boost ? `+${Number(row.diamondvoy_bonus_messages || 0)} / ${Number(row.diamondvoy_boost_days || 1)} ${tt("gifts.days", "kun")}` : "-"}</strong>
                 </div>
               </div>
               <div className="button-grid inline">

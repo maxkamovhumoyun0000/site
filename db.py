@@ -19922,6 +19922,9 @@ def ensure_gifts_schema() -> None:
                 ("active", "INTEGER DEFAULT 1"),
                 ("is_payment_discount", "INTEGER DEFAULT 0"),
                 ("payment_discount_percent", "DOUBLE PRECISION DEFAULT 0"),
+                ("is_diamondvoy_limit_boost", "INTEGER DEFAULT 0"),
+                ("diamondvoy_bonus_messages", "INTEGER DEFAULT 0"),
+                ("diamondvoy_boost_hours", "INTEGER DEFAULT 24"),
                 ("created_by", "BIGINT"),
                 ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
@@ -20049,6 +20052,46 @@ def ensure_gifts_schema() -> None:
                 ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
             ],
         )
+        _execute_ddl_candidates(
+            cur,
+            [
+                """
+                CREATE TABLE IF NOT EXISTS web_diamondvoy_limit_boosts (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    gift_id BIGINT NOT NULL,
+                    purchase_history_id BIGINT,
+                    bonus_messages INTEGER NOT NULL DEFAULT 0,
+                    starts_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS web_diamondvoy_limit_boosts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    gift_id INTEGER NOT NULL,
+                    purchase_history_id INTEGER,
+                    bonus_messages INTEGER NOT NULL DEFAULT 0,
+                    starts_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+            ],
+        )
+        _ensure_table_columns(
+            cur,
+            "web_diamondvoy_limit_boosts",
+            [
+                ("purchase_history_id", "BIGINT"),
+                ("bonus_messages", "INTEGER NOT NULL DEFAULT 0"),
+                ("starts_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                ("expires_at", "TIMESTAMP"),
+                ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ],
+        )
         try:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_web_gifts_active ON web_gifts(active)")
         except Exception:
@@ -20071,6 +20114,10 @@ def ensure_gifts_schema() -> None:
             pass
         try:
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_gift_payment_discount_source_key ON web_gift_payment_discounts(source_key)")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_diamondvoy_limit_boosts_user_expiry ON web_diamondvoy_limit_boosts(user_id, expires_at)")
         except Exception:
             pass
         conn.commit()
@@ -20216,6 +20263,9 @@ def list_latest_purchase_history(limit: int = 500) -> list[dict]:
                 g.required_tickets AS gift_required_tickets,
                 g.is_payment_discount AS gift_is_payment_discount,
                 g.payment_discount_percent AS gift_payment_discount_percent,
+                g.is_diamondvoy_limit_boost AS gift_is_diamondvoy_limit_boost,
+                g.diamondvoy_bonus_messages AS gift_diamondvoy_bonus_messages,
+                g.diamondvoy_boost_hours AS gift_diamondvoy_boost_hours,
                 u.first_name,
                 u.last_name,
                 u.login_id,
@@ -20265,7 +20315,10 @@ def list_user_purchase_history(user_id: int, limit: int = 100, item_type: str | 
                 g.price_dcoin AS gift_price_dcoin,
                 g.required_tickets AS gift_required_tickets,
                 g.is_payment_discount AS gift_is_payment_discount,
-                g.payment_discount_percent AS gift_payment_discount_percent
+                g.payment_discount_percent AS gift_payment_discount_percent,
+                g.is_diamondvoy_limit_boost AS gift_is_diamondvoy_limit_boost,
+                g.diamondvoy_bonus_messages AS gift_diamondvoy_bonus_messages,
+                g.diamondvoy_boost_hours AS gift_diamondvoy_boost_hours
             FROM web_purchase_history p
             LEFT JOIN web_gifts g
               ON g.id = p.item_id
@@ -21490,6 +21543,9 @@ def create_gift(
     created_by: int | None = None,
     is_payment_discount: bool = False,
     payment_discount_percent: float = 0.0,
+    is_diamondvoy_limit_boost: bool = False,
+    diamondvoy_bonus_messages: int = 0,
+    diamondvoy_boost_hours: int = 24,
 ) -> dict | None:
     ensure_gifts_schema()
     conn = get_conn()
@@ -21502,9 +21558,10 @@ def create_gift(
                 title, title_uz, title_ru, title_en,
                 description, description_uz, description_ru, description_en,
                 image_url, price_dcoin, required_tickets, probability_weight,
-                active, created_by, is_payment_discount, payment_discount_percent
+                active, created_by, is_payment_discount, payment_discount_percent,
+                is_diamondvoy_limit_boost, diamondvoy_bonus_messages, diamondvoy_boost_hours
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(title or "").strip(),
@@ -21523,6 +21580,9 @@ def create_gift(
                 int(created_by or 0) if created_by else None,
                 1 if is_payment_discount else 0,
                 max(0.0, min(100.0, float(payment_discount_percent or 0.0))) if is_payment_discount else 0.0,
+                1 if is_diamondvoy_limit_boost else 0,
+                max(0, min(100, int(diamondvoy_bonus_messages or 0))) if is_diamondvoy_limit_boost else 0,
+                max(1, min(720, int(diamondvoy_boost_hours or 24))),
             ),
         )
         gift_id = int(getattr(cur, "lastrowid", 0) or 0)
@@ -21554,6 +21614,9 @@ def update_gift(
     active: bool | None = None,
     is_payment_discount: bool | None = None,
     payment_discount_percent: float | None = None,
+    is_diamondvoy_limit_boost: bool | None = None,
+    diamondvoy_bonus_messages: int | None = None,
+    diamondvoy_boost_hours: int | None = None,
 ) -> bool:
     ensure_gifts_schema()
     updates: list[str] = ["updated_at=CURRENT_TIMESTAMP"]
@@ -21606,6 +21669,18 @@ def update_gift(
     if payment_discount_percent is not None:
         updates.append("payment_discount_percent=?")
         params.append(max(0.0, min(100.0, float(payment_discount_percent or 0.0))))
+    if is_diamondvoy_limit_boost is not None:
+        updates.append("is_diamondvoy_limit_boost=?")
+        params.append(1 if is_diamondvoy_limit_boost else 0)
+        if not is_diamondvoy_limit_boost and diamondvoy_bonus_messages is None:
+            updates.append("diamondvoy_bonus_messages=?")
+            params.append(0)
+    if diamondvoy_bonus_messages is not None:
+        updates.append("diamondvoy_bonus_messages=?")
+        params.append(max(0, min(100, int(diamondvoy_bonus_messages or 0))))
+    if diamondvoy_boost_hours is not None:
+        updates.append("diamondvoy_boost_hours=?")
+        params.append(max(1, min(720, int(diamondvoy_boost_hours or 24))))
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -21777,6 +21852,35 @@ def get_active_gift_payment_discount(user_id: int, ym: str) -> dict | None:
         conn.close()
 
 
+def get_diamondvoy_limit_boost_summary(user_id: int) -> dict[str, Any]:
+    """Return all currently-active DiamondVoy message-limit bonuses for a student."""
+    ensure_gifts_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN COALESCE(bonus_messages, 0) > 0 THEN bonus_messages ELSE 0 END), 0) AS bonus_messages,
+                COUNT(*) AS active_boosts,
+                MAX(expires_at) AS expires_at
+            FROM web_diamondvoy_limit_boosts
+            WHERE user_id=?
+              AND expires_at IS NOT NULL
+              AND expires_at > CURRENT_TIMESTAMP
+            """,
+            (int(user_id),),
+        )
+        row = _row_to_dict(cur.fetchone()) or {}
+        return {
+            "bonus_messages": max(0, min(500, int(row.get("bonus_messages") or 0))),
+            "active_boosts": max(0, int(row.get("active_boosts") or 0)),
+            "expires_at": row.get("expires_at"),
+        }
+    finally:
+        conn.close()
+
+
 def expire_other_gift_payment_discounts(user_id: int, ym: str, keep_id: int | None = None) -> int:
     ensure_gifts_schema()
     conn = get_conn()
@@ -21931,6 +22035,13 @@ def purchase_gift_with_tickets_atomic(
             if not gift or int(gift.get("active") or 0) != 1:
                 return {"ok": False, "reason": "gift_not_found"}
 
+            is_diamondvoy_limit_boost = bool(int(gift.get("is_diamondvoy_limit_boost") or 0) == 1)
+            diamondvoy_bonus_messages = (
+                max(0, min(100, int(gift.get("diamondvoy_bonus_messages") or 0)))
+                if is_diamondvoy_limit_boost
+                else 0
+            )
+            diamondvoy_boost_hours = max(1, min(720, int(gift.get("diamondvoy_boost_hours") or 24)))
             required_tickets = max(1, int(gift.get("required_tickets") or 1))
             price = max(0.0, float(gift.get("price_dcoin") or 0.0))
             cur.execute(
@@ -22004,6 +22115,9 @@ def purchase_gift_with_tickets_atomic(
                             "tickets_after": int(remaining_tickets),
                             "is_payment_discount": bool(int(gift.get("is_payment_discount") or 0) == 1),
                             "payment_discount_percent": max(0.0, min(100.0, float(gift.get("payment_discount_percent") or 0.0))),
+                            "is_diamondvoy_limit_boost": is_diamondvoy_limit_boost,
+                            "diamondvoy_bonus_messages": diamondvoy_bonus_messages,
+                            "diamondvoy_boost_hours": diamondvoy_boost_hours,
                         },
                         ensure_ascii=False,
                     ),
@@ -22014,6 +22128,31 @@ def purchase_gift_with_tickets_atomic(
                 cur.execute("SELECT id FROM web_purchase_history WHERE user_id=? ORDER BY id DESC LIMIT 1", (int(user_id),))
                 purchase_row = _row_to_dict(cur.fetchone())
                 purchase_id = int((purchase_row or {}).get("id") or 0)
+            diamondvoy_limit_boost: dict[str, Any] | None = None
+            if is_diamondvoy_limit_boost and diamondvoy_bonus_messages > 0:
+                expires_at = datetime.utcnow() + timedelta(hours=diamondvoy_boost_hours)
+                cur.execute(
+                    """
+                    INSERT INTO web_diamondvoy_limit_boosts(
+                        user_id, gift_id, purchase_history_id, bonus_messages,
+                        starts_at, expires_at, created_at
+                    )
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        int(user_id),
+                        int(gift_id),
+                        int(purchase_id) if purchase_id > 0 else None,
+                        int(diamondvoy_bonus_messages),
+                        expires_at.strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                diamondvoy_limit_boost = {
+                    "bonus_messages": int(diamondvoy_bonus_messages),
+                    "boost_hours": int(diamondvoy_boost_hours),
+                    "boost_days": max(1, (int(diamondvoy_boost_hours) + 23) // 24),
+                    "expires_at": expires_at.isoformat(),
+                }
             cur.execute(
                 """
                 SELECT t.user_id, t.gift_id, t.ticket_count, t.updated_at,
@@ -22034,6 +22173,7 @@ def purchase_gift_with_tickets_atomic(
                 "ticket": updated_ticket,
                 "balance_before": float(balance_before),
                 "balance_after": float(balance_after),
+                "diamondvoy_limit_boost": diamondvoy_limit_boost,
             }
         except Exception as exc:
             try:

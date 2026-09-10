@@ -333,6 +333,7 @@ from db import (
     record_gift_payment_discount,
     get_active_gift_payment_discount,
     expire_other_gift_payment_discounts,
+    get_diamondvoy_limit_boost_summary,
     purchase_book_with_dcoins,
     transfer_dcoins_atomic,
     get_content_test,
@@ -2091,6 +2092,9 @@ class GiftCreateRequest(BaseModel):
     active: bool = True
     is_payment_discount: bool = False
     payment_discount_percent: float = Field(default=0.0, ge=0.0, le=100.0)
+    is_diamondvoy_limit_boost: bool = False
+    diamondvoy_bonus_messages: int = Field(default=5, ge=0, le=100)
+    diamondvoy_boost_days: int = Field(default=1, ge=1, le=30)
 
 
 class GiftUpdateRequest(BaseModel):
@@ -2109,6 +2113,9 @@ class GiftUpdateRequest(BaseModel):
     active: bool | None = None
     is_payment_discount: bool | None = None
     payment_discount_percent: float | None = Field(default=None, ge=0.0, le=100.0)
+    is_diamondvoy_limit_boost: bool | None = None
+    diamondvoy_bonus_messages: int | None = Field(default=None, ge=0, le=100)
+    diamondvoy_boost_days: int | None = Field(default=None, ge=1, le=30)
 
 
 class ChestOpenRequest(BaseModel):
@@ -8889,6 +8896,10 @@ def _serialize_gift_row(row: dict, ticket_count: int = 0, lang: str | None = Non
         "active": bool(int(row.get("active") or 0) == 1),
         "is_payment_discount": bool(int(row.get("is_payment_discount") or 0) == 1),
         "payment_discount_percent": max(0.0, min(100.0, float(row.get("payment_discount_percent") or 0.0))),
+        "is_diamondvoy_limit_boost": bool(int(row.get("is_diamondvoy_limit_boost") or 0) == 1),
+        "diamondvoy_bonus_messages": max(0, min(100, int(row.get("diamondvoy_bonus_messages") or 0))),
+        "diamondvoy_boost_hours": max(1, min(720, int(row.get("diamondvoy_boost_hours") or 24))),
+        "diamondvoy_boost_days": max(1, min(30, (int(row.get("diamondvoy_boost_hours") or 24) + 23) // 24)),
         "ticket_count": max(0, int(ticket_count or 0)),
     }
 
@@ -8945,6 +8956,10 @@ def _serialize_student_purchase_row(row: dict[str, Any], lang: str | None = None
             "required_tickets": max(1, int(row.get("gift_required_tickets") or meta.get("required_tickets") or 1)),
             "is_payment_discount": bool(int(row.get("gift_is_payment_discount") or meta.get("is_payment_discount") or 0) == 1),
             "payment_discount_percent": max(0.0, min(100.0, float(row.get("gift_payment_discount_percent") or meta.get("payment_discount_percent") or 0.0))),
+            "is_diamondvoy_limit_boost": bool(int(row.get("gift_is_diamondvoy_limit_boost") or meta.get("is_diamondvoy_limit_boost") or 0) == 1),
+            "diamondvoy_bonus_messages": max(0, min(100, int(row.get("gift_diamondvoy_bonus_messages") or meta.get("diamondvoy_bonus_messages") or 0))),
+            "diamondvoy_boost_hours": max(1, min(720, int(row.get("gift_diamondvoy_boost_hours") or meta.get("diamondvoy_boost_hours") or 24))),
+            "diamondvoy_boost_days": max(1, min(30, (int(row.get("gift_diamondvoy_boost_hours") or meta.get("diamondvoy_boost_hours") or 24) + 23) // 24)),
         } if item_type in {"gift", "chest"} else None,
     }
 
@@ -10892,6 +10907,42 @@ def _diamondvoy_settings_payload() -> dict[str, Any]:
         conn.close()
 
 
+def _diamondvoy_limit_status(user_id: int) -> dict[str, Any]:
+    """Current rolling-24-hour DiamondVoy allowance, including purchased boosts."""
+    settings = _diamondvoy_settings_payload()
+    now = _now_utc()
+    used = 0
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT window_start, free_count_used FROM diamondvoy_usage WHERE user_id=? LIMIT 1",
+            (int(user_id),),
+        )
+        row = dict(cur.fetchone() or {})
+        window_start = _parse_utc_timestamp(str(row.get("window_start") or "")) if row.get("window_start") else None
+        if window_start is not None and now - window_start < timedelta(hours=24):
+            used = max(0, int(row.get("free_count_used") or 0))
+    except Exception:
+        used = 0
+    finally:
+        conn.close()
+    boost = _safe_call(lambda: get_diamondvoy_limit_boost_summary(int(user_id)), {}) or {}
+    base_limit = max(0, int(settings.get("free_limit") or 3))
+    bonus_messages = max(0, int(boost.get("bonus_messages") or 0))
+    total_limit = base_limit + bonus_messages
+    return {
+        "base_limit": base_limit,
+        "bonus_messages": bonus_messages,
+        "total_limit": total_limit,
+        "used": used,
+        "remaining": max(0, total_limit - used),
+        "active_boosts": max(0, int(boost.get("active_boosts") or 0)),
+        "boost_expires_at": boost.get("expires_at"),
+        "window_hours": 24,
+    }
+
+
 def _diamondvoy_set_settings(payload: DiamondvoySettingsRequest, admin_id: int) -> dict[str, Any]:
     _ensure_final_chat_schema()
     conn = get_conn()
@@ -11389,8 +11440,12 @@ def _diamondvoy_apply_usage(user: dict, role: str, *, has_images: bool, has_text
     finally:
         conn.close()
 
-    # Limitni qat'iy tekshirish
-    current_limit = int(settings.get("free_limit") or 3)
+    # Har bir faol sovga bonusi asosiy rolling-24-hour limitga qo'shiladi.
+    # Entitlement DB orqali olinadi, shuning uchun client bu qiymatni soxtalashtira olmaydi.
+    boost = _safe_call(lambda: get_diamondvoy_limit_boost_summary(user_id), {}) or {}
+    base_limit = max(0, int(settings.get("free_limit") or 3))
+    bonus_messages = max(0, int(boost.get("bonus_messages") or 0))
+    current_limit = base_limit + bonus_messages
     if free_used >= current_limit:
         raise HTTPException(status_code=403, detail=f"DiamondVoy uchun kunlik {current_limit} ta so'rov limitingiz tugadi.")
 
@@ -11437,7 +11492,18 @@ def _diamondvoy_apply_usage(user: dict, role: str, *, has_images: bool, has_text
             pass
     finally:
         conn.close()
-    return {"charged": charge_amount > 0, "amount": charge_amount, "free_used": bool(should_increment_free)}
+    used_after = free_used + (1 if should_increment_free else 0)
+    return {
+        "charged": charge_amount > 0,
+        "amount": charge_amount,
+        "free_used": bool(should_increment_free),
+        "base_limit": base_limit,
+        "bonus_messages": bonus_messages,
+        "total_limit": current_limit,
+        "used": used_after,
+        "remaining": max(0, current_limit - used_after),
+        "boost_expires_at": boost.get("expires_at"),
+    }
 
 
 _DIAMONDVOY_MEMORY_STOPWORDS = {
@@ -29155,6 +29221,7 @@ async def student_gifts(
         "wallet_dcoin": float(_safe_call(lambda: get_dcoins(user_id), 0.0) or 0.0),
         "chest_cost_dcoin": 1000.0,
         "probability_options": GIFT_PROBABILITY_OPTIONS,
+        "diamondvoy_limit": _diamondvoy_limit_status(user_id),
     }
 
 
@@ -29359,6 +29426,8 @@ async def student_purchase_gift(gift_id: int, authorization: str | None = Header
         "wallet_dcoin": float(result.get("balance_after") or 0.0),
         "ticket_count": ticket_count,
         "payment_discount": payment_discount,
+        "diamondvoy_limit_boost": result.get("diamondvoy_limit_boost"),
+        "diamondvoy_limit": _diamondvoy_limit_status(user_id),
     }
 
 
@@ -29430,6 +29499,9 @@ async def admin_latest_purchases(
                     "required_tickets": max(1, int(row.get("gift_required_tickets") or 1)),
                     "is_payment_discount": bool(int(row.get("gift_is_payment_discount") or 0) == 1),
                     "payment_discount_percent": max(0.0, min(100.0, float(row.get("gift_payment_discount_percent") or 0.0))),
+                    "is_diamondvoy_limit_boost": bool(int(row.get("gift_is_diamondvoy_limit_boost") or 0) == 1),
+                    "diamondvoy_bonus_messages": max(0, min(100, int(row.get("gift_diamondvoy_bonus_messages") or 0))),
+                    "diamondvoy_boost_days": max(1, min(30, (int(row.get("gift_diamondvoy_boost_hours") or 24) + 23) // 24)),
                 } if item_type in {"gift", "chest"} else None,
                 "created_at": created_at,
                 "created_date": created_at[:10] if created_at else None,
@@ -29449,6 +29521,10 @@ async def admin_create_gift(payload: GiftCreateRequest, authorization: str | Non
         raise HTTPException(status_code=400, detail="Probability must be from fixed options list")
     if bool(payload.is_payment_discount) and float(payload.payment_discount_percent or 0.0) <= 0:
         raise HTTPException(status_code=400, detail="Payment discount percent is required")
+    if bool(payload.is_diamondvoy_limit_boost) and int(payload.diamondvoy_bonus_messages or 0) <= 0:
+        raise HTTPException(status_code=400, detail="DiamondVoy bonus message count is required")
+    if bool(payload.is_payment_discount) and bool(payload.is_diamondvoy_limit_boost):
+        raise HTTPException(status_code=400, detail="A gift can have only one digital benefit type")
     try:
         created = create_gift(
             title=payload.title,
@@ -29467,6 +29543,9 @@ async def admin_create_gift(payload: GiftCreateRequest, authorization: str | Non
             created_by=int(user.get("id") or 0),
             is_payment_discount=bool(payload.is_payment_discount),
             payment_discount_percent=float(payload.payment_discount_percent or 0.0),
+            is_diamondvoy_limit_boost=bool(payload.is_diamondvoy_limit_boost),
+            diamondvoy_bonus_messages=int(payload.diamondvoy_bonus_messages or 0),
+            diamondvoy_boost_hours=int(payload.diamondvoy_boost_days or 1) * 24,
         )
     except Exception as exc:
         logger.exception("admin.gifts.create failed admin_id=%s title=%s", int(user.get("id") or 0), payload.title)
@@ -29484,6 +29563,28 @@ async def admin_update_gift(gift_id: int, payload: GiftUpdateRequest, authorizat
         raise HTTPException(status_code=400, detail="Probability must be from fixed options list")
     if payload.is_payment_discount is True and float(payload.payment_discount_percent or 0.0) <= 0:
         raise HTTPException(status_code=400, detail="Payment discount percent is required")
+    current = _safe_call(lambda: get_gift(int(gift_id)), None)
+    if not current:
+        raise HTTPException(status_code=404, detail="Gift not found")
+    effective_payment_discount = bool(
+        payload.is_payment_discount
+        if payload.is_payment_discount is not None
+        else int(current.get("is_payment_discount") or 0) == 1
+    )
+    effective_diamondvoy_boost = bool(
+        payload.is_diamondvoy_limit_boost
+        if payload.is_diamondvoy_limit_boost is not None
+        else int(current.get("is_diamondvoy_limit_boost") or 0) == 1
+    )
+    effective_bonus_messages = int(
+        payload.diamondvoy_bonus_messages
+        if payload.diamondvoy_bonus_messages is not None
+        else current.get("diamondvoy_bonus_messages") or 0
+    )
+    if effective_diamondvoy_boost and effective_bonus_messages <= 0:
+        raise HTTPException(status_code=400, detail="DiamondVoy bonus message count is required")
+    if effective_payment_discount and effective_diamondvoy_boost:
+        raise HTTPException(status_code=400, detail="A gift can have only one digital benefit type")
     try:
         ok = update_gift(
             int(gift_id),
@@ -29502,6 +29603,9 @@ async def admin_update_gift(gift_id: int, payload: GiftUpdateRequest, authorizat
             active=payload.active,
             is_payment_discount=payload.is_payment_discount,
             payment_discount_percent=payload.payment_discount_percent,
+            is_diamondvoy_limit_boost=payload.is_diamondvoy_limit_boost,
+            diamondvoy_bonus_messages=payload.diamondvoy_bonus_messages,
+            diamondvoy_boost_hours=(int(payload.diamondvoy_boost_days) * 24) if payload.diamondvoy_boost_days is not None else None,
         )
     except Exception as exc:
         logger.exception("admin.gifts.update failed admin_id=%s gift_id=%s", int(user.get("id") or 0), gift_id)
