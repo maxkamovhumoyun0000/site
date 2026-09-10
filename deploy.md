@@ -192,7 +192,7 @@ git checkout -- .
 
 1. Faqat kod sync qilindi.
 2. `data/`, upload/media, `.env`, `.venv`, `node_modules`, `.next` tegilmadi.
-3. Backup olinmadi.
+3. Database backup olindi va fayl hajmi tekshirildi.
 4. Python compile OK.
 5. `npm run build` OK.
 6. Servislar restart qilindi.
