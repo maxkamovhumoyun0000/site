@@ -17,8 +17,57 @@ type DashboardSidebarProps = {
   notificationCount?: number;
 };
 
-function iconForSection(section: string) {
-  return section.charAt(0).toUpperCase() || "N";
+/// Compact, language-independent navigation glyphs.  The old first-letter
+/// approach was ambiguous after switching the interface language and made
+/// the desktop site look different from the mobile apps.
+export function sectionIconGlyph(section: string) {
+  const glyphs: Record<string, string> = {
+    home: "⌂",
+    users: "♙",
+    groups: "◉",
+    "family-groups": "♧",
+    payments: "₴",
+    purchases: "▣",
+    homework: "✓",
+    attendance: "◷",
+    holidays: "☀",
+    "admin-callbacks": "↗",
+    videos: "▶",
+    books: "▤",
+    grammar: "Aa",
+    vocabulary: "⌁",
+    courses: "▱",
+    gifts: "✦",
+    reviews: "★",
+    leaderboard: "♛",
+    generator: "✧",
+    results: "◫",
+    "competitions-history": "◴",
+    broadcasts: "⌁",
+    surveys: "☷",
+    "domain-email": "✉",
+    "dpoint-settings": "D",
+    sms: "▰",
+    chats: "◌",
+    notifications: "!",
+    profile: "●",
+    "daily-test": "✓",
+    gamified: "✦",
+    arena: "◈",
+    dcoin: "D",
+    support: "?",
+    notes: "✎",
+    bookings: "◷",
+    calendar: "□",
+    schedule: "≡",
+    hours: "◔",
+    filial: "⌖",
+    bonus: "+",
+    settings: "⚙",
+    performance: "↗",
+    tests: "✓",
+  };
+  return glyphs[section] || "•";
 }
 
 function SidebarDiamondWordmark({
@@ -161,7 +210,7 @@ export function DashboardSidebar({
             style={{ "--item-delay": `${index * 28}ms` } as CSSProperties}
           >
             <span className={`${iconBase} ${active ? iconActive : iconIdle}`} aria-hidden="true">
-              <span className="sidebar-nav-icon__letter">{iconForSection(item)}</span>
+              <span className="sidebar-nav-icon__letter">{sectionIconGlyph(item)}</span>
             </span>
             {!desktopCollapsed ? <span className="min-w-0 flex-1 truncate">{sectionLabel(item)}</span> : null}
             {item === "notifications" && notificationCount > 0 ? (
@@ -244,7 +293,7 @@ export function DashboardSidebar({
                   title={sectionLabel(item)}
                 >
                   <span className={`sidebar-nav-icon sidebar-bottom-nav-icon flex h-8 w-8 items-center justify-center rounded-full ${currentSection === item ? "sidebar-nav-icon--active" : "sidebar-nav-icon--idle"}`}>
-                    <span className="sidebar-nav-icon__letter">{iconForSection(item)}</span>
+                    <span className="sidebar-nav-icon__letter">{sectionIconGlyph(item)}</span>
                   </span>
                   <span className="max-w-full truncate px-1 text-[10px] font-bold tracking-wide">{sectionLabel(item)}</span>
                 </button>

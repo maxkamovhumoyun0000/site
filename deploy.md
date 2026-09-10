@@ -8,12 +8,49 @@ Bu loyiha production serverda ishlaydi:
 
 ## Muhim Eslatma
 
-- Backup olinmasin.
+- **Har qanday sayt deployidan oldin database backup olinishi shart.**
 - Data papkalar yangilanmasin.
 - Media/upload/runtime fayllarga tegilmasin.
 - `--delete` ishlatilmasin.
 - `.env`, `data/`, upload/media papkalar, `.venv/`, `node_modules/`, `.next/` serverda o'z holicha qolsin.
 - Deploy faqat kod fayllarni serverga yuborish uchun ishlatiladi.
+
+## Majburiy: Deploydan Oldin Database Backup
+
+Saytda kod, dizayn yoki API bilan bog'liq istalgan o'zgarishni productionga
+chiqarishdan **oldin** ushbu backup bajariladi. Backup serverning o'zida,
+faqat root kira oladigan `/root/diamond-backups/` papkasiga yoziladi; u
+`data/`, media va upload fayllariga tegmaydi.
+
+```bash
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+  "cd /root/diamond-site && .venv/bin/python - <<'PY'
+import os
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+database_url = ''
+for raw in Path('.env').read_text(encoding='utf-8').splitlines():
+    line = raw.strip()
+    if line.startswith('DATABASE_URL='):
+        database_url = line.split('=', 1)[1].strip().strip(chr(34)).strip(chr(39))
+        break
+if not database_url:
+    raise RuntimeError('DATABASE_URL is not configured')
+backup_dir = Path('/root/diamond-backups')
+backup_dir.mkdir(mode=0o700, exist_ok=True)
+backup_path = backup_dir / f\"diamond-site-{datetime.now().strftime('%Y%m%d-%H%M%S')}.dump\"
+os.umask(0o077)
+subprocess.run(['pg_dump', database_url, '--format=custom', '--file', str(backup_path)], check=True)
+if not backup_path.is_file() or backup_path.stat().st_size < 1024:
+    raise RuntimeError('Database backup was not created correctly')
+print(f'backup:{backup_path.name} size:{backup_path.stat().st_size}')
+PY"
+```
+
+Backup muvaffaqiyatli yakunlangani tasdiqlanmaguncha keyingi deploy qadami
+bajarilmaydi.
 
 ## Kodni Serverga Sync Qilish
 

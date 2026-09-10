@@ -23295,3 +23295,208 @@ aside[data-testid="mobile-drawer"] {
   background-color: rgba(2, 6, 20, 0.72) !important;
   backdrop-filter: blur(2px) !important;
 }
+
+/* ========================================================================
+   APP-NATIVE WEB SHELL
+   The web cabinet intentionally shares the same navy / indigo / cyan system
+   as the Student and Teacher apps. These rules are scoped to authenticated
+   shells, so public marketing pages retain their own presentation.
+   ======================================================================== */
+.app-native-shell:not(.diamondvoy-fullscreen-shell) {
+  --app-blue: #1429f2;
+  --app-blue-deep: #071386;
+  --app-navy: #010954;
+  --app-cyan: #22d3ee;
+  background:
+    radial-gradient(circle at 94% -8%, rgba(34, 211, 238, .12), transparent 30rem),
+    radial-gradient(circle at -8% 20%, rgba(20, 41, 242, .09), transparent 34rem),
+    #f6f8ff;
+}
+
+.app-native-shell:not(.diamondvoy-fullscreen-shell) .workspace {
+  min-height: 100svh;
+  background: transparent;
+}
+
+.app-native-shell .topbar {
+  min-height: 76px;
+  padding: 12px clamp(16px, 2.5vw, 32px);
+  border-bottom: 1px solid rgba(20, 41, 242, .12);
+  background: rgba(255, 255, 255, .84);
+  box-shadow: 0 8px 26px rgba(1, 9, 84, .055);
+  backdrop-filter: blur(18px) saturate(1.18);
+  -webkit-backdrop-filter: blur(18px) saturate(1.18);
+}
+
+.app-native-shell .topbar-main .logo-mark {
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(34, 211, 238, .42);
+  box-shadow: 0 7px 18px rgba(20, 41, 242, .16);
+}
+
+.app-native-shell .topbar-desktop-logo {
+  border-radius: 16px;
+  padding: 4px 7px 4px 4px;
+}
+
+.app-native-shell .topbar-desktop-logo:hover {
+  background: rgba(20, 41, 242, .05);
+  transform: translateY(-1px);
+}
+
+.app-native-shell .topbar-nav-link {
+  color: #4b5d7c;
+  font-weight: 800;
+}
+
+.app-native-shell .topbar-nav-link:hover {
+  background: rgba(20, 41, 242, .075);
+  color: var(--app-blue-deep);
+}
+
+.app-native-shell .topbar-nav-link.active {
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--app-blue) 0%, var(--app-blue-deep) 100%);
+  box-shadow: 0 6px 16px rgba(20, 41, 242, .22);
+}
+
+.app-native-shell .topbar-icon-btn,
+.app-native-shell .topbar-profile-btn {
+  border-color: rgba(20, 41, 242, .12);
+  box-shadow: 0 4px 12px rgba(1, 9, 84, .045);
+}
+
+.desktop-side-drawer,
+.dashboard-mobile-drawer,
+.app-native-shell aside.sidebar {
+  border-right-color: rgba(34, 211, 238, .28) !important;
+  background:
+    radial-gradient(circle at 9% 2%, rgba(34, 211, 238, .18), transparent 15rem),
+    radial-gradient(circle at 100% 28%, rgba(20, 41, 242, .32), transparent 22rem),
+    linear-gradient(180deg, #091b97 0%, #030c54 50%, #010638 100%) !important;
+  color: #eef6ff;
+  box-shadow: 18px 0 42px rgba(1, 9, 84, .24) !important;
+}
+
+.desktop-side-drawer .sidebar-nav-icon--idle,
+.dashboard-mobile-drawer .sidebar-nav-icon--idle,
+.app-native-shell aside.sidebar .sidebar-nav-icon--idle {
+  color: rgba(224, 242, 254, .7) !important;
+}
+
+.desktop-side-drawer .group,
+.dashboard-mobile-drawer .group,
+.app-native-shell aside.sidebar .group {
+  color: rgba(238, 246, 255, .78) !important;
+}
+
+.desktop-side-drawer .group:hover,
+.dashboard-mobile-drawer .group:hover,
+.app-native-shell aside.sidebar .group:hover {
+  color: #fff !important;
+  border-color: rgba(34, 211, 238, .3) !important;
+  background: rgba(255, 255, 255, .08) !important;
+}
+
+.desktop-side-drawer .sidebar-nav-icon--active,
+.dashboard-mobile-drawer .sidebar-nav-icon--active,
+.app-native-shell aside.sidebar .sidebar-nav-icon--active {
+  color: #03105f !important;
+  background: linear-gradient(135deg, #67e8f9, #22d3ee) !important;
+  box-shadow: 0 6px 18px rgba(34, 211, 238, .3) !important;
+}
+
+.desktop-side-drawer .sidebar-nav-icon--active .sidebar-nav-icon__letter,
+.dashboard-mobile-drawer .sidebar-nav-icon--active .sidebar-nav-icon__letter,
+.app-native-shell aside.sidebar .sidebar-nav-icon--active .sidebar-nav-icon__letter {
+  color: #03105f !important;
+}
+
+.sidebar-nav-icon__letter {
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: 15px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.app-native-shell .content:not(.diamondvoy-fullscreen-content) {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-native-shell[data-app-section="videos"] .content,
+.app-native-shell[data-app-section="books"] .content,
+.app-native-shell[data-app-section="vocabulary"] .content,
+.app-native-shell[data-app-section="homework"] .content {
+  max-width: 1540px;
+  width: 100%;
+  margin-inline: auto;
+}
+
+.app-native-shell .media-filter-panel {
+  border: 1px solid rgba(20, 41, 242, .12);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 12px 30px rgba(1, 9, 84, .055);
+  backdrop-filter: blur(12px);
+}
+
+.app-native-shell .student-video-card,
+.app-native-shell .media-library-card {
+  border-color: rgba(20, 41, 242, .12);
+  box-shadow: 0 10px 26px rgba(1, 9, 84, .07);
+}
+
+.app-native-shell .student-video-card:hover,
+.app-native-shell .media-library-card:hover {
+  border-color: rgba(34, 211, 238, .55);
+  box-shadow: 0 18px 36px rgba(20, 41, 242, .13);
+}
+
+.app-native-shell .bottom-nav-mobile {
+  border-top-color: rgba(20, 41, 242, .16);
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 -8px 28px rgba(1, 9, 84, .08);
+}
+
+[data-theme="dark"] .app-native-shell:not(.diamondvoy-fullscreen-shell) {
+  background:
+    radial-gradient(circle at 94% -8%, rgba(34, 211, 238, .09), transparent 30rem),
+    radial-gradient(circle at -8% 20%, rgba(20, 41, 242, .15), transparent 34rem),
+    #040714;
+}
+
+[data-theme="dark"] .app-native-shell .topbar {
+  border-bottom-color: rgba(103, 232, 249, .15);
+  background: rgba(4, 7, 20, .82);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .2);
+}
+
+[data-theme="dark"] .app-native-shell .topbar-nav-link {
+  color: #b7c4e0;
+}
+
+[data-theme="dark"] .app-native-shell .topbar-nav-link:hover {
+  color: #fff;
+  background: rgba(103, 232, 249, .09);
+}
+
+[data-theme="dark"] .app-native-shell .media-filter-panel {
+  border-color: rgba(103, 232, 249, .16);
+  background: rgba(11, 18, 42, .78);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, .22);
+}
+
+[data-theme="dark"] .app-native-shell .student-video-card,
+[data-theme="dark"] .app-native-shell .media-library-card {
+  border-color: rgba(103, 232, 249, .14);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .2);
+}
+
+[data-theme="dark"] .app-native-shell .bottom-nav-mobile {
+  border-top-color: rgba(103, 232, 249, .16);
+  background: rgba(4, 7, 20, .94);
+}

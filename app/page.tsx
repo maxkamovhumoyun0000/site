@@ -16,7 +16,7 @@ import {
   SUPPORT_WEEKDAY_OPTIONS,
   type Role,
 } from "./ui/navigation-config";
-import { DashboardSidebar, orderSections } from "./ui/dashboard-sidebar";
+import { DashboardSidebar, orderSections, sectionIconGlyph } from "./ui/dashboard-sidebar";
 import { HeroSection } from "./ui/hero-section";
 import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
 import { getCourseGroups, type PublicCourse } from "./public-data";
@@ -22277,12 +22277,17 @@ function DashboardShell({
   const isChatsFullscreen = currentSection === "chats" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
   const shellClass = [
     "app-shell",
+    "app-native-shell",
     isMobileLayout ? "mobile-shell" : "",
     isChatsFullscreen ? "diamondvoy-fullscreen-shell" : "",
   ].filter(Boolean).join(" ");
 
   return (
-    <main className={shellClass}>
+    <main
+      className={shellClass}
+      data-app-role={activeRole}
+      data-app-section={currentSection}
+    >
       {!isChatsFullscreen && isMobileLayout ? (
         <DashboardSidebar
           visibleSections={visibleSections}
@@ -22343,7 +22348,7 @@ function DashboardShell({
                     title={labelFor(item, locale)}
                   >
                     <span className={`${iconBase} ${active ? iconActive : iconIdle}`} aria-hidden="true">
-                      <span className="sidebar-nav-icon__letter">{item.charAt(0).toUpperCase() || "N"}</span>
+                      <span className="sidebar-nav-icon__letter">{sectionIconGlyph(item)}</span>
                     </span>
                     <span className="min-w-0 flex-1 truncate">{labelFor(item, locale)}</span>
                     {item === "notifications" && unreadCount > 0 ? (
@@ -22425,22 +22430,29 @@ function DashboardShell({
                 <button
                   className={`btn btn-soft small topbar-icon-btn topbar-chat-btn mr-2 ${currentSection === "chats" ? "active" : ""}`}
                   onClick={() => handleNavigate("chats")}
-                  aria-label="Chats"
-                  title="Suhbatlar"
+                  aria-label={t(locale, "section.chats", "Chatlar")}
+                  title={t(locale, "section.chats", "Chatlar")}
                   style={{ fontSize: "16px" }}
                 >
                   💬
                 </button>
               )}
-              <button className="btn btn-soft small topbar-icon-btn" onClick={() => openNotificationsPanel().catch(() => null)} aria-label="Notifications">
+              <button
+                className="btn btn-soft small topbar-icon-btn"
+                onClick={() => openNotificationsPanel().catch(() => null)}
+                aria-label={t(locale, "section.notifications", "Bildirishnomalar")}
+                title={t(locale, "section.notifications", "Bildirishnomalar")}
+              >
                 <span>🔔</span>
                 {unreadCount > 0 ? <span className="notif-badge">{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
               </button>
               {notificationMenuOpen ? (
                 <div className="topbar-dropdown notifications-dropdown">
                   <div className="row-between">
-                    <strong>Bildirishnomalar</strong>
-                    <button className="btn btn-soft small" onClick={() => markAllNotificationsRead().catch(() => null)}>Read all</button>
+                    <strong>{t(locale, "section.notifications", "Bildirishnomalar")}</strong>
+                    <button className="btn btn-soft small" onClick={() => markAllNotificationsRead().catch(() => null)}>
+                      {t(locale, "common.markAllRead", "Barchasini o‘qilgan deb belgilash")}
+                    </button>
                   </div>
                   <div className="notification-list">
                     {topNotifications.length ? topNotifications.slice(0, 20).map((note, idx) => (
@@ -22461,7 +22473,7 @@ function DashboardShell({
                         <span className="notification-message">{String(note.message || "")}</span>
                         <span className="notification-time">{formatWhen(note.created_at)}</span>
                       </button>
-                    )) : <p className="chip">No notifications yet.</p>}
+                    )) : <p className="chip">{t(locale, "common.noNotifications", "Hozircha bildirishnomalar yo‘q.")}</p>}
                   </div>
                 </div>
               ) : null}
