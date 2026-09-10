@@ -23462,6 +23462,56 @@ aside[data-testid="mobile-drawer"] {
   box-shadow: 0 -8px 28px rgba(1, 9, 84, .08);
 }
 
+/* Light mode follows the mobile apps: a clean white navigation surface with
+   dark readable labels.  Keep this explicit because Tailwind's dark utility
+   classes only change the background at runtime and previously left the
+   drawer's inherited white text behind on a white surface. */
+:root:not([data-theme="dark"]) .desktop-side-drawer,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar {
+  color: #16254a !important;
+  border-right-color: rgba(20, 41, 242, .14) !important;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(34, 211, 238, .14), transparent 15rem),
+    radial-gradient(circle at 0% 12%, rgba(20, 41, 242, .08), transparent 19rem),
+    #ffffff !important;
+  box-shadow: 16px 0 36px rgba(1, 9, 84, .12) !important;
+}
+
+:root:not([data-theme="dark"]) .desktop-side-drawer .group,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer .group,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar .group {
+  color: #50617d !important;
+}
+
+:root:not([data-theme="dark"]) .desktop-side-drawer .group:hover,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer .group:hover,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar .group:hover {
+  color: #071386 !important;
+  border-color: rgba(20, 41, 242, .16) !important;
+  background: rgba(20, 41, 242, .06) !important;
+}
+
+:root:not([data-theme="dark"]) .desktop-side-drawer .sidebar-nav-icon--idle,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer .sidebar-nav-icon--idle,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar .sidebar-nav-icon--idle {
+  color: #52627e !important;
+}
+
+:root:not([data-theme="dark"]) .desktop-side-drawer .sidebar-nav-icon--active,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer .sidebar-nav-icon--active,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar .sidebar-nav-icon--active {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #1429f2 0%, #071386 100%) !important;
+  box-shadow: 0 7px 18px rgba(20, 41, 242, .28) !important;
+}
+
+:root:not([data-theme="dark"]) .desktop-side-drawer .sidebar-nav-icon--active .sidebar-nav-icon__letter,
+:root:not([data-theme="dark"]) .dashboard-mobile-drawer .sidebar-nav-icon--active .sidebar-nav-icon__letter,
+:root:not([data-theme="dark"]) .app-native-shell aside.sidebar .sidebar-nav-icon--active .sidebar-nav-icon__letter {
+  color: #ffffff !important;
+}
+
 [data-theme="dark"] .app-native-shell:not(.diamondvoy-fullscreen-shell) {
   background:
     radial-gradient(circle at 94% -8%, rgba(34, 211, 238, .09), transparent 30rem),
