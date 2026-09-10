@@ -2475,7 +2475,12 @@ class DiamondvoyPinRequest(BaseModel):
 
 class DiamondvoySendMessageRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
+    # `image_urls` remains for installed app versions that only support
+    # photos. New clients use `attachments` so they can send documents,
+    # audio and video too, using the same signed-media rules as community
+    # chat.
     image_urls: list[str] = Field(default_factory=list)
+    attachments: list[CommunityChatAttachmentRequest] = Field(default_factory=list, max_length=5)
 
 
 class DiamondvoySettingsRequest(BaseModel):
@@ -11017,14 +11022,14 @@ def _diamondvoy_insert_message(chat_id: int, role: str, content: str) -> dict | 
         conn.close()
 
 
-def _diamondvoy_insert_attachments(chat_id: int, message_id: int, image_urls: list[str]) -> None:
+def _diamondvoy_insert_attachments(chat_id: int, message_id: int, attachment_urls: list[str]) -> None:
     _ensure_final_chat_schema()
-    if not image_urls:
+    if not attachment_urls:
         return
     conn = get_conn()
     cur = conn.cursor()
     try:
-        for url in image_urls[:3]:
+        for url in attachment_urls[:5]:
             clean_url = str(url or "").strip()
             if not clean_url:
                 continue
@@ -18981,6 +18986,23 @@ async def chats_upload_image(
     return {"url": url}
 
 
+@app.post("/chats/upload-media")
+async def chats_upload_media(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Upload a Diamondvoy attachment using the community-chat allow-list.
+
+    This endpoint deliberately accepts only the already reviewed file types
+    and returns a signed URL. Clients must still send that URL back in the
+    next Diamondvoy message, which prevents attaching arbitrary server paths.
+    """
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    attachment = await _upload_community_attachment_file(file, int(user.get("id") or 0))
+    return {"attachment": attachment}
+
+
 @app.get("/chats/media/{filename}")
 async def chats_serve_media(filename: str, sig: str = Query(default="")):
     """Serve signed chat/feedback images."""
@@ -20336,16 +20358,30 @@ async def _diamondvoy_stream_events(
     user_id = int(user.get("id") or 0)
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
     user_text = str(payload.message or "").strip()
-    image_urls = _validate_chat_image_urls(payload.image_urls)
-    if not user_text and not image_urls:
-        raise HTTPException(status_code=400, detail="Xabar yoki rasm yuboring")
+    legacy_image_urls = _validate_chat_image_urls(payload.image_urls)
+    attachment_rows = _validate_community_chat_attachments(payload.attachments)
+    attachment_urls = [str(item.get("url") or "") for item in attachment_rows]
+    # Keep compatibility with old clients which post `image_urls`, while
+    # avoiding duplicate records when a new client includes a photo in both
+    # fields by mistake.
+    for url in legacy_image_urls:
+        if url not in attachment_urls:
+            attachment_urls.append(url)
+    if len(attachment_urls) > 5:
+        raise HTTPException(status_code=422, detail="Bir xabarda 5 tagacha fayl yuborish mumkin")
+    image_urls = [
+        url for url in attachment_urls
+        if Path(_chat_media_filename_from_url(url) or "").suffix.lower() in CHAT_IMAGE_MIME_BY_EXT
+    ][:3]
+    if not user_text and not attachment_urls:
+        raise HTTPException(status_code=400, detail="Xabar yoki fayl yuboring")
 
     if not regenerate:
         _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
         user_message = _diamondvoy_insert_message(int(chat_id), "user", user_text)
         if not user_message:
             raise HTTPException(status_code=500, detail="Could not save user message")
-        _diamondvoy_insert_attachments(int(chat_id), int(user_message.get("id") or 0), image_urls)
+        _diamondvoy_insert_attachments(int(chat_id), int(user_message.get("id") or 0), attachment_urls)
     else:
         if role not in {"admin", "teacher", "support"}:
             raise HTTPException(status_code=403, detail="Regenerate is not available for students")
@@ -20704,7 +20740,11 @@ async def final_diamondvoy_regenerate(
     attachments = _diamondvoy_message_attachments([int(last_user.get("id") or 0)]).get(int(last_user.get("id") or 0), [])
     payload = DiamondvoySendMessageRequest(
         message=str(last_user.get("content") or ""),
-        image_urls=[str(item.get("url") or "") for item in attachments],
+        attachments=[
+            CommunityChatAttachmentRequest(url=str(item.get("url") or ""))
+            for item in attachments
+            if str(item.get("url") or "")
+        ],
     )
     return await _diamondvoy_stream_events(chat_id=int(chat_id), payload=payload, user=user, role=role, request=request, regenerate=True)
 
