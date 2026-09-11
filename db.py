@@ -11039,12 +11039,6 @@ def is_access_active(user):
         login_type = int(user.get("login_type") or 0)
     except Exception:
         login_type = 0
-    # Publicly self-registered users are approved by an admin before this
-    # branch can apply. They may use the platform before an administrator
-    # assigns a specific class, so their access is not silently denied just
-    # because there is no group row yet.
-    if bool(int(user.get('public_signup') or 0)) and not bool(int(user.get('pending_approval') or 0)):
-        return int(user.get('blocked') or 0) != 1
     # Part-1 policy: students without any active group must be blocked from bot usage.
     if login_type in (1, 2):
         user_id = int(user.get("id") or 0)
