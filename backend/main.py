@@ -6707,6 +6707,116 @@ def _generate_qr_login_token(user_id: int, ttl_seconds: int = WEB_QR_LOGIN_TTL_S
     }
 
 
+_APP_REVIEW_QR_EXPIRES_AT = "2099-12-31T23:59:59+00:00"
+
+
+def _get_or_create_app_review_demo_qr(user: dict) -> dict[str, str]:
+    """Return the durable QR credential for one explicitly flagged demo user.
+
+    This is deliberately separate from ordinary QR login tokens.  Normal QR
+    codes stay short-lived and one-time; this code is only for the two
+    server-controlled ``screenshot_demo`` accounts supplied to App Review.
+    The random token is persisted in the database, so opening the Admin page
+    again always returns the same QR payload.
+    """
+    user_id = int((user or {}).get("id") or 0)
+    if user_id <= 0 or not bool(int((user or {}).get("screenshot_demo") or 0)):
+        raise HTTPException(status_code=404, detail="App Review demo account was not found")
+
+    role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
+    if role not in {"student", "teacher"}:
+        raise HTTPException(status_code=400, detail="Only Student and Teacher demo accounts can have an App Review QR")
+
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT qr_token, qr_payload, expires_at
+            FROM web_qr_login_tokens
+            WHERE user_id=?
+              AND COALESCE(is_app_review_demo, 0)=1
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        existing = cur.fetchone()
+        if existing:
+            item = dict(existing)
+            return {
+                "qr_token": str(item.get("qr_token") or ""),
+                "qr_payload": str(item.get("qr_payload") or ""),
+                "expires_at": str(item.get("expires_at") or _APP_REVIEW_QR_EXPIRES_AT),
+            }
+
+        # Do not derive this credential from a name, password, or user ID.
+        # A high-entropy stored value remains stable without putting any secret
+        # into source control or exposing ordinary users' QR credentials.
+        for _ in range(4):
+            qr_token = f"qr_review_{secrets.token_urlsafe(32)}"
+            qr_payload = f"diamond://login?qr_token={quote(qr_token)}"
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO web_qr_login_tokens
+                    (
+                        qr_token,
+                        user_id,
+                        qr_payload,
+                        expires_at,
+                        created_at,
+                        is_app_review_demo
+                    )
+                    VALUES (?, ?, ?, ?, ?, 1)
+                    """,
+                    (qr_token, user_id, qr_payload, _APP_REVIEW_QR_EXPIRES_AT, _now_utc().isoformat()),
+                )
+                conn.commit()
+                return {
+                    "qr_token": qr_token,
+                    "qr_payload": qr_payload,
+                    "expires_at": _APP_REVIEW_QR_EXPIRES_AT,
+                }
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                # A simultaneous Admin request may have created this user's
+                # unique review QR just before this transaction committed.
+                # Re-read it rather than rotating to another token.
+                try:
+                    cur.execute(
+                        """
+                        SELECT qr_token, qr_payload, expires_at
+                        FROM web_qr_login_tokens
+                        WHERE user_id=?
+                          AND COALESCE(is_app_review_demo, 0)=1
+                        ORDER BY id ASC
+                        LIMIT 1
+                        """,
+                        (user_id,),
+                    )
+                    concurrent = cur.fetchone()
+                    if concurrent:
+                        item = dict(concurrent)
+                        return {
+                            "qr_token": str(item.get("qr_token") or ""),
+                            "qr_payload": str(item.get("qr_payload") or ""),
+                            "expires_at": str(item.get("expires_at") or _APP_REVIEW_QR_EXPIRES_AT),
+                        }
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+        raise HTTPException(status_code=500, detail="Could not create App Review demo QR")
+    finally:
+        conn.close()
+
+
 def _consume_qr_login_token(raw_token: str, used_device_id: str | None = None) -> dict:
     token = _extract_qr_token(raw_token)
     if not token:
@@ -6721,24 +6831,32 @@ def _consume_qr_login_token(raw_token: str, used_device_id: str | None = None) -
         if not row:
             raise HTTPException(status_code=401, detail="QR token is invalid or expired")
         item = dict(row)
-        if str(item.get("used_at") or "").strip():
-            raise HTTPException(status_code=409, detail="QR token is already used")
-        expires_at = _parse_utc_timestamp(str(item.get("expires_at") or ""))
-        if expires_at is None or expires_at <= now:
-            raise HTTPException(status_code=401, detail="QR token is invalid or expired")
-        cur.execute(
-            """
-            UPDATE web_qr_login_tokens
-            SET used_at=?,
-                used_by_device_id=?
-            WHERE id=?
-              AND used_at IS NULL
-            """,
-            (now_iso, str(used_device_id or "").strip() or None, int(item.get("id") or 0)),
-        )
-        if int(cur.rowcount or 0) <= 0:
-            raise HTTPException(status_code=409, detail="QR token is already used")
-        conn.commit()
+        is_app_review_demo = bool(int(item.get("is_app_review_demo") or 0))
+        if is_app_review_demo:
+            # A permanent QR must never become a general-purpose token.  It is
+            # valid only while its bound user remains a screenshot-demo account.
+            review_user = _safe_call(lambda: get_user_by_id(int(item.get("user_id") or 0)), None)
+            if not review_user or not bool(int(review_user.get("screenshot_demo") or 0)):
+                raise HTTPException(status_code=401, detail="QR token is invalid or expired")
+        else:
+            if str(item.get("used_at") or "").strip():
+                raise HTTPException(status_code=409, detail="QR token is already used")
+            expires_at = _parse_utc_timestamp(str(item.get("expires_at") or ""))
+            if expires_at is None or expires_at <= now:
+                raise HTTPException(status_code=401, detail="QR token is invalid or expired")
+            cur.execute(
+                """
+                UPDATE web_qr_login_tokens
+                SET used_at=?,
+                    used_by_device_id=?
+                WHERE id=?
+                  AND used_at IS NULL
+                """,
+                (now_iso, str(used_device_id or "").strip() or None, int(item.get("id") or 0)),
+            )
+            if int(cur.rowcount or 0) <= 0:
+                raise HTTPException(status_code=409, detail="QR token is already used")
+            conn.commit()
     finally:
         conn.close()
     user = _safe_call(lambda: get_user_by_id(int(item.get("user_id") or 0)), None)
@@ -10153,7 +10271,8 @@ def _ensure_web_tables_inner() -> None:
                 expires_at TIMESTAMP NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 used_at TIMESTAMP,
-                used_by_device_id TEXT
+                used_by_device_id TEXT,
+                is_app_review_demo INTEGER NOT NULL DEFAULT 0
             )
             """,
             """
@@ -10165,7 +10284,8 @@ def _ensure_web_tables_inner() -> None:
                 expires_at TIMESTAMP NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 used_at TIMESTAMP,
-                used_by_device_id TEXT
+                used_by_device_id TEXT,
+                is_app_review_demo INTEGER NOT NULL DEFAULT 0
             )
             """,
         ],
@@ -10200,6 +10320,8 @@ def _ensure_web_tables_inner() -> None:
         "CREATE INDEX IF NOT EXISTS idx_web_sessions_active ON web_user_sessions(user_id, revoked_at, expires_at)",
         "CREATE INDEX IF NOT EXISTS idx_web_qr_tokens_user ON web_qr_login_tokens(user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_web_qr_tokens_expires ON web_qr_login_tokens(expires_at, used_at)",
+        "CREATE INDEX IF NOT EXISTS idx_web_qr_tokens_review_demo ON web_qr_login_tokens(is_app_review_demo, user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_qr_tokens_one_review_demo_per_user ON web_qr_login_tokens(user_id) WHERE is_app_review_demo=1",
     ):
         try:
             cur.execute(idx_sql)
@@ -10217,6 +10339,7 @@ def _ensure_web_tables_inner() -> None:
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMP",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS revoked_reason TEXT",
         "ALTER TABLE web_qr_login_tokens ADD COLUMN IF NOT EXISTS used_by_device_id TEXT",
+        "ALTER TABLE web_qr_login_tokens ADD COLUMN IF NOT EXISTS is_app_review_demo INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE web_payment_notifications ADD COLUMN IF NOT EXISTS payment_refund_id BIGINT",
         "ALTER TABLE web_payment_notifications ADD COLUMN IF NOT EXISTS source_key TEXT",
         "ALTER TABLE web_payment_notifications ADD COLUMN IF NOT EXISTS meta_json TEXT",
@@ -10240,6 +10363,33 @@ def _ensure_web_tables_inner() -> None:
     ):
         try:
             cur.execute(col_sql)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    # SQLite versions used for local development do not understand
+    # ``ADD COLUMN IF NOT EXISTS``.  Production PostgreSQL handles the normal
+    # migration above; this fallback keeps an existing local database usable.
+    try:
+        cur.execute(
+            "ALTER TABLE web_qr_login_tokens ADD COLUMN is_app_review_demo INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    # The table can predate the marker column, so create these indexes only
+    # after the migration above has had a chance to run.
+    for review_index_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_web_qr_tokens_review_demo ON web_qr_login_tokens(is_app_review_demo, user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_qr_tokens_one_review_demo_per_user ON web_qr_login_tokens(user_id) WHERE is_app_review_demo=1",
+    ):
+        try:
+            cur.execute(review_index_sql)
             conn.commit()
         except Exception:
             try:
@@ -35784,6 +35934,76 @@ async def admin_homework_report(homework_id: int, authorization: str | None = He
             }
         )
     return {"homework": homework, "test": _sanitize_content_test_for_student(test), "items": items, "total": len(items)}
+
+
+@app.get("/admin/app-review/demo-qr")
+async def admin_app_review_demo_qr(authorization: str | None = Header(default=None)):
+    """Expose the two persistent App Review QR images to authorized admins.
+
+    Screenshot demo accounts deliberately remain absent from the normal Admin
+    users table.  This narrowly scoped route is the only management surface
+    that reveals their login QR payloads, and it cannot be called by teacher,
+    student, support, or anonymous sessions.
+    """
+    admin = _user_row_from_bearer(authorization)
+    _require_role(admin, {"admin"})
+    ensure_screenshot_demo_schema()
+    _ensure_web_tables()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE COALESCE(screenshot_demo, 0)=1
+              AND login_type IN (1, 2, 3)
+              AND TRIM(COALESCE(screenshot_demo_alias, ''))<>''
+              AND COALESCE(blocked, 0)=0
+              AND COALESCE(access_enabled, 1)=1
+            ORDER BY CASE WHEN login_type IN (1, 2) THEN 0 ELSE 1 END, id ASC
+            """
+        )
+        rows = [dict(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+    # One stable QR per application role.  If an old fixture exists alongside
+    # the current one, only the first explicit demo record for that role is
+    # exposed, avoiding accidental duplication in App Review instructions.
+    items: list[dict[str, Any]] = []
+    included_roles: set[str] = set()
+    for demo_user in rows:
+        role = _role_from_login_type(
+            int(demo_user.get("login_type") or 0),
+            str(demo_user.get("login_id") or ""),
+        )
+        if role not in {"student", "teacher"} or role in included_roles:
+            continue
+        qr = _get_or_create_app_review_demo_qr(demo_user)
+        included_roles.add(role)
+        items.append(
+            {
+                "role": role,
+                "title": "Diamond Students" if role == "student" else "Diamond Teachers",
+                "name": _display_name(demo_user),
+                "login_id": str(demo_user.get("screenshot_demo_alias") or demo_user.get("login_id") or "").strip(),
+                "qr_token": qr["qr_token"],
+                "qr_payload": qr["qr_payload"],
+                "permanent": True,
+                "expires_at": qr["expires_at"],
+                "blocked": bool(int(demo_user.get("blocked") or 0)),
+                "access_enabled": bool(int(demo_user.get("access_enabled") or 0)),
+            }
+        )
+
+    if not items:
+        raise HTTPException(status_code=404, detail="No Student or Teacher App Review demo account is configured")
+    return {
+        "items": items,
+        "message": "These QR codes are permanent and can be scanned repeatedly only for the App Review demo accounts.",
+    }
 
 
 @app.get("/admin/users")

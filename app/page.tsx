@@ -14830,6 +14830,10 @@ function AdminSection({
     qr_expires_at?: string | null;
   } | null>(null);
   const [resetPasswordPending, setResetPasswordPending] = useState<Record<number, boolean>>({});
+  const [appReviewDemoQrOpen, setAppReviewDemoQrOpen] = useState(false);
+  const [appReviewDemoQrItems, setAppReviewDemoQrItems] = useState<GenericRow[]>([]);
+  const [appReviewDemoQrLoading, setAppReviewDemoQrLoading] = useState(false);
+  const [appReviewDemoQrError, setAppReviewDemoQrError] = useState("");
   const [adminUsersFallback, setAdminUsersFallback] = useState<GenericRow[] | null>(null);
   const [adminUsersTotal, setAdminUsersTotal] = useState(0);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
@@ -15004,6 +15008,42 @@ function AdminSection({
     }
 
     return result;
+  }
+
+  async function openAppReviewDemoQr() {
+    const token = localStorage.getItem("diamond_token");
+    setAppReviewDemoQrOpen(true);
+    setAppReviewDemoQrError("");
+    setAppReviewDemoQrItems([]);
+    if (!token) {
+      setAppReviewDemoQrError(tt("admin.reviewQr.sessionRequired", "Admin sessiyasi topilmadi. Qayta kiring."));
+      return;
+    }
+    setAppReviewDemoQrLoading(true);
+    try {
+      const payload = await requestJson<{ items?: GenericRow[] }>("/admin/app-review/demo-qr", {
+        token,
+        timeoutMs: 30000,
+        retries: 1,
+      });
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      if (!items.length) {
+        setAppReviewDemoQrError(tt("admin.reviewQr.notConfigured", "App Review demo hisoblari sozlanmagan."));
+        return;
+      }
+      setAppReviewDemoQrItems(items);
+    } catch (error) {
+      const normalized = normalizeNetworkError(error);
+      setAppReviewDemoQrError(
+        normalized.message || tt("admin.reviewQr.loadFailed", "Demo QR kodlarini yuklab bo'lmadi."),
+      );
+    } finally {
+      setAppReviewDemoQrLoading(false);
+    }
+  }
+
+  function appReviewQrImageUrl(payload: string) {
+    return `https://api.qrserver.com/v1/create-qr-code/?size=900x900&format=png&data=${encodeURIComponent(payload)}`;
   }
 
   useEffect(() => {
@@ -16520,6 +16560,14 @@ function AdminSection({
           <div className="flex items-center gap-3">
             {adminUsersLoading ? <span className="text-xs font-semibold text-ink-500 dark:text-navy-400 flex items-center gap-1"><svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Loading...</span> : null}
             <button
+              className="inline-flex items-center gap-2 rounded-xl border border-violet-300 bg-violet-50 px-4 py-2.5 text-sm font-bold text-violet-800 transition-colors hover:bg-violet-100 dark:border-violet-400/30 dark:bg-violet-500/10 dark:text-violet-200 dark:hover:bg-violet-500/20"
+              type="button"
+              onClick={() => { void openAppReviewDemoQr(); }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><path d="M15 15h2v2h-2zM19 15h2v6h-2M15 19h2v2h-2"/></svg>
+              {tt("admin.reviewQr.action", "App Review demo QR")}
+            </button>
+            <button
               className="admin-btn-primary"
               type="button"
               onClick={() => setAdminUserCreateOpen(true)}
@@ -16529,6 +16577,60 @@ function AdminSection({
             </button>
           </div>
         </div>
+
+        {/* Screenshot-demo accounts must stay out of the normal user list. */}
+        <ModalPortal open={appReviewDemoQrOpen}>
+          <div className="overlay-modal-backdrop admin-user-modal-backdrop" onClick={() => setAppReviewDemoQrOpen(false)}>
+            <article className="overlay-modal-card admin-wide-modal admin-user-modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="row-between gap-3 admin-user-modal-header">
+                <div>
+                  <h3>▣ {tt("admin.reviewQr.title", "App Review uchun doimiy demo QR")}</h3>
+                  <p className="text-sm text-ink-500 dark:text-navy-300">{tt("admin.reviewQr.description", "Bu kodlar faqat Jon Doe demo hisoblari uchun. Ular ishlatilgandan keyin ham o'zgarmaydi.")}</p>
+                </div>
+                <button className="admin-modal-close" type="button" aria-label={tt("common.close", "Yopish")} onClick={() => setAppReviewDemoQrOpen(false)}>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+              <div className="admin-user-modal-scroll">
+                {appReviewDemoQrLoading ? (
+                  <div className="py-12 text-center text-sm font-semibold text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</div>
+                ) : null}
+                {!appReviewDemoQrLoading && appReviewDemoQrError ? (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-semibold text-red-700 dark:border-red-400/25 dark:bg-red-500/10 dark:text-red-200">{appReviewDemoQrError}</div>
+                ) : null}
+                {!appReviewDemoQrLoading && !appReviewDemoQrError ? (
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                    {appReviewDemoQrItems.map((item) => {
+                      const qrPayload = String(item.qr_payload || "");
+                      const role = String(item.role || "");
+                      const title = String(item.title || (role === "teacher" ? "Diamond Teachers" : "Diamond Students"));
+                      const imageUrl = appReviewQrImageUrl(qrPayload);
+                      return (
+                        <section key={`${role}-${String(item.qr_token || "")}`} className="rounded-2xl border border-violet-200 bg-violet-50/60 p-4 dark:border-violet-400/20 dark:bg-violet-500/5">
+                          <div className="mb-3 flex items-start justify-between gap-3">
+                            <div>
+                              <h4 className="font-extrabold text-navy-900 dark:text-white">{title}</h4>
+                              <p className="mt-0.5 text-xs text-ink-500 dark:text-navy-300">{String(item.name || "Jon Doe")} · {String(item.login_id || "-")}</p>
+                            </div>
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200">{tt("admin.reviewQr.permanent", "Doimiy")}</span>
+                          </div>
+                          <div className="flex flex-col items-center gap-3 rounded-xl bg-white p-3 dark:bg-navy-950/70">
+                            {qrPayload ? <img src={imageUrl} alt={`${title} App Review QR`} className="h-56 w-56 rounded-xl border border-line bg-white p-1" /> : null}
+                            <p className="text-center text-xs leading-5 text-ink-500 dark:text-navy-300">{tt("admin.reviewQr.scanHint", "Tegishli ilovaning QR login oynasida skanerlang. Apple’ga shu QR rasmni biriktiring.")}</p>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <button type="button" className="rounded-xl bg-violet-700 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-violet-800" onClick={() => copyText(qrPayload)}>{tt("admin.reviewQr.copyPayload", "QR ma'lumotini nusxalash")}</button>
+                            <button type="button" className="rounded-xl border border-line bg-white px-3 py-2 text-xs font-bold text-ink-700 transition-colors hover:border-violet-400 hover:text-violet-700 dark:border-white/10 dark:bg-white/5 dark:text-navy-100" onClick={() => window.open(imageUrl, "_blank", "noopener,noreferrer")}>{tt("admin.reviewQr.openImage", "QR rasmini ochish")}</button>
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          </div>
+        </ModalPortal>
 
         {/* ── Create User Modal ── */}
         <ModalPortal open={adminUserCreateOpen}>
