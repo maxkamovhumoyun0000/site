@@ -1318,6 +1318,25 @@ class UserCreate(UserBase):
     login_type: int | None = 1
 
 
+class PublicRegistrationRequest(BaseModel):
+    """Self-service enrollment request from the native Student/Teacher apps.
+
+    Public registration intentionally creates an authenticated-but-pending
+    account.  It is never an admin shortcut: access remains server-locked
+    until an administrator explicitly approves the request.
+    """
+
+    account_type: Literal["student", "teacher"]
+    login_id: str = Field(min_length=4, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+    first_name: str = Field(min_length=1, max_length=80)
+    last_name: str = Field(min_length=1, max_length=80)
+    phone: str = Field(min_length=5, max_length=32)
+    parent_phone: str | None = Field(default=None, max_length=32)
+    subject: str = Field(min_length=1, max_length=80)
+    language: Literal["uz", "ru", "en"] = "uz"
+
+
 class User(UserBase):
     id: str
     role: str
@@ -1331,6 +1350,7 @@ class User(UserBase):
     placement_required: bool = False
     placement_subject: str | None = None
     access_enabled: bool = True
+    pending_approval: bool = False
     face_enrollment_required: bool = True
     face_profile_status: str = "pending"
     face_profile_version: int = 0
@@ -6265,6 +6285,8 @@ def _build_user_payload(u: dict) -> User:
         str(u.get("proctoring_block_reason") or ""),
         str(u.get("parent_phone") or ""),
         int(u.get("public_offer_agreed") or 0),
+        int(u.get("pending_approval") or 0),
+        int(u.get("access_enabled") or 0),
         int(u.get("screenshot_demo") or 0),
     )
     now_ts = time.time()
@@ -6298,6 +6320,7 @@ def _build_user_payload(u: dict) -> User:
         placement_required=bool(int(u.get("placement_required") or 0)),
         placement_subject=(_normalize_subject_label(str(u.get("placement_subject") or "").strip()) or None),
         access_enabled=bool(int(u.get("access_enabled") or 0)),
+        pending_approval=bool(int(u.get("pending_approval") or 0)),
         face_enrollment_required=_user_requires_face_enrollment(user_row) if role == "student" else bool(int(user_row.get("face_enrollment_required") or 0)),
         face_profile_status="active" if role == "student" else str(user_row.get("face_profile_status") or "pending"),
         face_profile_version=int(user_row.get("face_profile_version") or 0),
@@ -7378,6 +7401,13 @@ async def student_no_group_access_guard(request: Request, call_next):
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
         return await call_next(request)
+    if (
+        bool(int(user.get("public_signup") or 0))
+        and not bool(int(user.get("pending_approval") or 0))
+        and int(user.get("access_enabled") or 0) == 1
+        and int(user.get("blocked") or 0) != 1
+    ):
+        return await call_next(request)
     if _student_has_group_access_cached(int(user.get("id") or 0)):
         return await call_next(request)
     return JSONResponse(status_code=403, content={"detail": "Siz hali guruhga biriktirilmagansiz"})
@@ -7412,6 +7442,63 @@ async def student_review_access_guard(request: Request, call_next):
     )
 
 
+_PENDING_APPROVAL_ALLOWED_PATHS = {
+    "/auth/me",
+    "/auth/logout",
+    "/auth/presence/heartbeat",
+    "/user/language",
+    "/user/account",
+    "/notifications/push-token",
+    "/notifications/push-token/unregister",
+    "/vocabulary",
+    "/vocabulary/tts",
+    "/learning/tts",
+}
+
+
+def _pending_approval_path_is_allowed(request: Request) -> bool:
+    path = str(request.url.path or "").rstrip("/") or "/"
+    if path in _PENDING_APPROVAL_ALLOWED_PATHS:
+        # Only read/listen actions are a Vocabulary preview.  No quiz,
+        # progress, rewards, or learning writes bypass approval.
+        return path not in {"/vocabulary"} or request.method.upper() == "GET"
+    return path.startswith("/student/placement")
+
+
+@app.middleware("http")
+async def public_registration_approval_guard(request: Request, call_next):
+    """Server-enforce the read-only pending-account experience.
+
+    The Flutter shells show the same state visually, but this guard makes it
+    impossible to unlock a page merely by calling a hidden API endpoint. It
+    targets only accounts created by `/auth/public-registration`; older
+    admin-managed `pending_approval` records keep their existing behavior.
+    """
+    if _pending_approval_path_is_allowed(request):
+        return await call_next(request)
+    authorization = request.headers.get("Authorization")
+    if not authorization:
+        return await call_next(request)
+    try:
+        user = _user_row_from_bearer(authorization)
+    except HTTPException:
+        return await call_next(request)
+    if (
+        bool(int(user.get("public_signup") or 0))
+        and bool(int(user.get("pending_approval") or 0))
+        and int(user.get("access_enabled") or 0) != 1
+        and int(user.get("blocked") or 0) != 1
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Your account is awaiting administrator approval.",
+                "code": "account_pending_approval",
+            },
+        )
+    return await call_next(request)
+
+
 def _require_role(user: dict, roles: set[str]) -> str:
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if role not in roles:
@@ -7426,6 +7513,13 @@ def _require_book_upload_access(user: dict) -> str:
 
 def _student_has_group_access(user: dict) -> bool:
     if bool(int(user.get("screenshot_demo") or 0)):
+        return True
+    if (
+        bool(int(user.get("public_signup") or 0))
+        and not bool(int(user.get("pending_approval") or 0))
+        and int(user.get("access_enabled") or 0) == 1
+        and int(user.get("blocked") or 0) != 1
+    ):
         return True
     user_id = int(user.get("id") or 0)
     if user_id <= 0:
@@ -7450,6 +7544,23 @@ def _require_student_learning_access(user: dict) -> None:
     if _student_has_group_access(user):
         return
     raise HTTPException(status_code=403, detail="Siz hali guruhga biriktirilmagansiz")
+
+
+def _require_student_vocabulary_preview_access(user: dict) -> None:
+    """Allow pending applicants to read/listen to Vocabulary only.
+
+    This exception is intentionally narrow: quizzes, progress, rewards and
+    every other learning endpoint still call `_require_student_learning_access`.
+    """
+    if (
+        bool(int(user.get("public_signup") or 0))
+        and
+        bool(int(user.get("pending_approval") or 0))
+        and int(user.get("blocked") or 0) != 1
+        and int(user.get("access_enabled") or 0) != 1
+    ):
+        return
+    _require_student_learning_access(user)
 
 
 def _require_placement_access(user: dict) -> None:
@@ -9291,6 +9402,8 @@ def _ensure_user_web_columns() -> None:
     columns = (
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS placement_required INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS placement_subject TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_approval INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS public_signup INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS review_wait_required INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_upload_daily_tests INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_generate_ai INTEGER DEFAULT 0",
@@ -12353,6 +12466,18 @@ def _user_subjects_from_row(user: dict) -> list[str]:
             subject = _normalize_subject_label(str(group.get("subject") or "").strip())
             if subject and subject not in group_subjects:
                 group_subjects.append(subject)
+        # Publicly registered students are intentionally not assigned to a
+        # class until an admin approves them.  Their selected subject still
+        # has to reach the Vocabulary preview and placement test while they
+        # wait, without granting group-based learning access.
+        if not group_subjects and (
+            bool(int(user.get("pending_approval") or 0))
+            or bool(int(user.get("public_signup") or 0))
+        ):
+            group_subjects = _normalize_subjects(
+                [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
+                fallback=["English"],
+            )
         return _short_cache_set(_USER_SUBJECTS_CACHE, cache_key, group_subjects, ttl_seconds=8.0, max_items=8192)
     subjects = _safe_call(lambda: get_user_subjects(user_id), []) or []
     if not subjects and user.get("subject"):
@@ -12396,6 +12521,7 @@ def _serialize_user_row_light(row: dict) -> dict:
         "subjects": _user_subjects_from_row(row) if role == "student" else _user_subjects_from_csv(row),
         "blocked": int(row.get("blocked") or 0) == 1,
         "access_enabled": int(row.get("access_enabled") or 0) == 1,
+        "pending_approval": int(row.get("pending_approval") or 0) == 1,
         "language": language,
         "placement_required": int(row.get("placement_required") or 0) == 1,
         "placement_subject": (_normalize_subject_label(str(row.get("placement_subject") or "").strip()) or None),
@@ -14190,6 +14316,7 @@ def _serialize_user_row(row: dict) -> dict:
         "subjects": _user_subjects_from_row(row),
         "blocked": int(row.get("blocked") or 0) == 1,
         "access_enabled": int(row.get("access_enabled") or 0) == 1,
+        "pending_approval": int(row.get("pending_approval") or 0) == 1,
         "language": language,
         "placement_required": int(row.get("placement_required") or 0) == 1,
         "placement_subject": (_normalize_subject_label(str(row.get("placement_subject") or "").strip()) or None),
@@ -15216,8 +15343,26 @@ async def _complete_web_placement(user: dict, session: dict) -> dict:
     update_user_level(user_id, level_display)
     save_test_result(user_id, subject, score, level_code, max_score=actual_max_score)
     set_user_login_type(user_id, 2)
-    enable_access(user_id)
-    set_pending_approval(user_id, True)
+    # Admin-created placement students retain their legacy activation flow.
+    # A self-registered student, however, remains safely locked after the
+    # level result until an administrator approves the account.
+    is_pending_registration = (
+        bool(int(user.get("pending_approval") or 0))
+        and bool(int(user.get("public_signup") or 0))
+    )
+    if is_pending_registration:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "UPDATE users SET access_enabled=0, blocked=0, pending_approval=1 WHERE id=?",
+                (user_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    else:
+        enable_access(user_id)
     clear_placement_session(user_id)
 
     _ensure_user_web_columns()
@@ -18090,6 +18235,218 @@ async def shutdown_event() -> None:
         background_scheduler_lock_file = None
 
 
+PUBLIC_REGISTRATION_IP_MAX_FAILURES = max(
+    1, int(os.getenv("PUBLIC_REGISTRATION_IP_MAX_FAILURES", "5") or 5)
+)
+
+
+def _public_registration_login_id(value: str) -> str:
+    login_id = str(value or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9@._-]{4,64}", login_id):
+        raise HTTPException(
+            status_code=422,
+            detail="Login ID must be 4-64 characters and use only letters, numbers, @, ., _, or -",
+        )
+    if login_id.startswith(("ADMIN", "SUP")):
+        raise HTTPException(status_code=422, detail="This Login ID prefix is reserved")
+    return login_id
+
+
+async def _notify_admins_public_registration(user: dict, *, account_type: str) -> None:
+    """Deliver one registration request to the web inbox and Admin bot.
+
+    Passwords and tokens are intentionally excluded.  The notification only
+    contains the data an authorized administrator needs to review the new
+    account and takes them to the Users list.
+    """
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        return
+    source = f"public_registration:{user_id}"
+    role_label = "O'quvchi" if account_type == "student" else "O'qituvchi"
+    message = "\n".join(
+        [
+            f"{role_label} akkaunti tasdiqlashni kutmoqda.",
+            f"Ism: {_display_name(user)}",
+            f"Login ID: {str(user.get('login_id') or '-')}",
+            f"Telefon: {str(user.get('phone') or '-')}",
+            f"Fan: {str(user.get('subject') or '-')}",
+            "Holat: admin tasdiqlashi kutilmoqda.",
+        ]
+    )
+    target_url = "/?role=admin&section=users"
+    recipients = _safe_call(_admin_purchase_web_recipient_ids, []) or []
+    if recipients:
+        _ensure_web_tables()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            for admin_user_id in recipients:
+                _payment_upsert_web_notification(
+                    cur,
+                    user_id=int(admin_user_id),
+                    notification_type="registration_pending",
+                    title="🆕 Yangi akkaunt so'rovi",
+                    message=message,
+                    button_text="Foydalanuvchilarni ochish",
+                    button_url=target_url,
+                    target_screen="users",
+                    source_key=f"{source}:web:{int(admin_user_id)}",
+                    meta={
+                        "registration_user_id": user_id,
+                        "account_type": account_type,
+                        "pending_approval": True,
+                    },
+                )
+                _invalidate_notification_unread_count(int(admin_user_id))
+            conn.commit()
+        except Exception:
+            with suppress(Exception):
+                conn.rollback()
+            logger.exception("public registration web notification failed user_id=%s", user_id)
+        finally:
+            conn.close()
+
+    token = (os.getenv("ADMIN_BOT_TOKEN") or "").strip()
+    admin_chat_ids = list(
+        dict.fromkeys(
+            int(item)
+            for item in ((ADMIN_CHAT_IDS or []) + (LIMITED_ADMIN_CHAT_IDS or []))
+            if int(item or 0) > 0
+        )
+    )
+    if not token:
+        return
+    button_url = f"{WEBAPP_URL}{target_url}" if WEBAPP_URL else None
+    for chat_id in admin_chat_ids:
+        if not _claim_admin_purchase_telegram_notification(source, chat_id):
+            continue
+        try:
+            await _send_telegram_text(
+                token,
+                str(chat_id),
+                "🆕 Yangi akkaunt so'rovi\n\n" + message,
+                button_text="Ko'rib chiqish" if button_url else None,
+                button_url=button_url,
+                button_web_app=True,
+            )
+        except Exception:
+            logger.exception(
+                "public registration telegram notification failed user_id=%s chat_id=%s",
+                user_id,
+                chat_id,
+            )
+
+
+@app.post("/auth/public-registration", response_model=TokenResponse)
+async def public_registration(payload: PublicRegistrationRequest, req: Request):
+    """Create a self-service Student/Teacher account awaiting admin approval."""
+    client_ip = _client_ip(req)
+    throttle_key = f"registration:{client_ip}" if client_ip else ""
+    if throttle_key and is_login_throttled(
+        throttle_key, max_failures=PUBLIC_REGISTRATION_IP_MAX_FAILURES
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many registration attempts. Please try again later.",
+            headers={"Retry-After": str(LOGIN_THROTTLE_WINDOW_SEC)},
+        )
+
+    try:
+        login_id = _public_registration_login_id(payload.login_id)
+        first_name = " ".join(str(payload.first_name or "").split())
+        last_name = " ".join(str(payload.last_name or "").split())
+        phone = " ".join(str(payload.phone or "").split())
+        parent_phone = " ".join(str(payload.parent_phone or "").split()) or None
+        subject = _normalize_subject_label(payload.subject)
+        if not first_name or not last_name or not phone:
+            raise HTTPException(status_code=422, detail="Name and phone are required")
+        if not subject or subject not in ALLOWED_SUBJECTS:
+            raise HTTPException(status_code=422, detail="Please select a supported subject")
+    except HTTPException:
+        if throttle_key:
+            record_login_failure(throttle_key)
+        raise
+
+    _ensure_user_web_columns()
+    if _safe_call(lambda: get_user_by_login_id(login_id), None):
+        if throttle_key:
+            record_login_failure(throttle_key)
+        raise HTTPException(status_code=409, detail="Login ID already exists")
+
+    account_type = str(payload.account_type)
+    login_type = 1 if account_type == "student" else 3
+    conn = get_conn()
+    cur = conn.cursor()
+    row = None
+    try:
+        # `blocked=0` is deliberate: a pending user needs a session to see
+        # the locked shell and complete placement. `access_enabled=0` plus
+        # server-side gates protect every non-preview feature.
+        cur.execute(
+            """
+            INSERT INTO users
+            (
+                login_id, password, first_name, last_name, phone,
+                parent_phone, subject, login_type, blocked, access_enabled,
+                pending_approval, placement_required, placement_subject,
+                language, public_offer_agreed, public_signup,
+                face_enrollment_required, proctoring_required
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?, ?, ?, 1, 1, 0, 0)
+            RETURNING id
+            """,
+            (
+                login_id,
+                hash_password(str(payload.password or "")),
+                first_name,
+                last_name,
+                phone,
+                parent_phone,
+                subject,
+                login_type,
+                1 if account_type == "student" else 0,
+                subject if account_type == "student" else None,
+                payload.language,
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    except Exception as exc:
+        with suppress(Exception):
+            conn.rollback()
+        # A concurrent registration can race the preflight check. Do not
+        # leak database internals or password-related details to the client.
+        logger.warning("public registration failed login_id=%s error=%s", login_id, type(exc).__name__)
+        if throttle_key:
+            record_login_failure(throttle_key)
+        raise HTTPException(status_code=409, detail="Login ID already exists or cannot be registered") from exc
+    finally:
+        conn.close()
+
+    created_id = int((row or {}).get("id") or 0)
+    created = _safe_call(lambda: get_user_by_id(created_id), None)
+    if not created:
+        raise HTTPException(status_code=500, detail="Account was created but could not be loaded")
+    if throttle_key:
+        clear_login_throttle(throttle_key)
+
+    session_id, ttl_hours = _issue_web_session(
+        created,
+        device_id=None,
+        source=f"public_registration_{account_type}",
+    )
+    token = _create_access_token(created, session_id=session_id, ttl_hours=ttl_hours)
+    asyncio.create_task(
+        _notify_admins_public_registration(created, account_type=account_type)
+    )
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        user=_build_user_payload(created),
+    )
+
+
 @app.post("/auth/register", response_model=TokenResponse)
 async def register(user: UserCreate):
     login_id = (user.login_id or "").strip().upper()
@@ -18201,7 +18558,14 @@ async def login(request: LoginRequest, req: Request):
         raise HTTPException(status_code=403, detail="Account is blocked")
 
     # Invalidate student OTP immediately upon successful verification
-    if int(user.get("login_type") or 0) in (1, 2) and not bool(int(user.get("screenshot_demo") or 0)):
+    if (
+        int(user.get("login_type") or 0) in (1, 2)
+        and not bool(int(user.get("screenshot_demo") or 0))
+        # Public self-service accounts must retain the password they chose;
+        # silently rotating it after the first login would strand a pending
+        # applicant the next time they open the app.
+        and not bool(int(user.get("public_signup") or 0))
+    ):
         new_pw = generate_password(16)
         try:
             reset_user_password(int(user["id"]), new_pw)
@@ -18627,6 +18991,21 @@ async def _student_channel_membership_status(user: dict) -> dict:
             "subscribed": True,
             "verified": True,
             "verification_state": "screenshot_demo",
+            "channel_url": "",
+            "bot_url": "",
+        }
+
+    # Self-service student registration has its own administrator-review
+    # workflow. It must not silently gain an unrelated Telegram-channel
+    # requirement after approval; that would leave a properly approved new
+    # student locked out despite the explicit onboarding contract.
+    if bool(int(user.get("public_signup") or 0)):
+        return {
+            "required": False,
+            "linked": bool(str(user.get("telegram_id") or "").strip()),
+            "subscribed": True,
+            "verified": True,
+            "verification_state": "public_registration",
             "channel_url": "",
             "bot_url": "",
         }
@@ -45119,6 +45498,75 @@ async def admin_set_user_access(user_id: int, payload: AdminUserAccessRequest, a
     return {"message": "Access updated", "user": _serialize_user_row(refreshed)}
 
 
+@app.post("/admin/users/{user_id}/approve-public-registration")
+async def admin_approve_public_registration(
+    user_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Approve a self-registered student/teacher in one auditable action."""
+    admin = _user_row_from_bearer(authorization)
+    _require_role(admin, {"admin"})
+    admin_ref = _admin_ref_id(admin)
+    target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not _can_manage_user_globally(admin_ref, target):
+        raise HTTPException(status_code=403, detail="You cannot manage this user")
+    _assert_not_protected_admin_target(target)
+    if not bool(int(target.get("public_signup") or 0)):
+        raise HTTPException(status_code=400, detail="This account was not created through public registration")
+    if not bool(int(target.get("pending_approval") or 0)):
+        raise HTTPException(status_code=400, detail="This account is already approved")
+
+    set_pending_approval(int(user_id), False)
+    enable_access(int(user_id))
+    refreshed = _safe_call(lambda: get_user_by_id(int(user_id)), None) or target
+
+    # App and web clients receive the approval in their normal inbox/push
+    # channel. Telegram is best-effort because public registration does not
+    # require a Telegram link.
+    conn = None
+    try:
+        _ensure_web_tables()
+        conn = get_conn()
+        cur = conn.cursor()
+        _payment_upsert_web_notification(
+            cur,
+            user_id=int(user_id),
+            notification_type="registration_approved",
+            title="✅ Akkauntingiz tasdiqlandi",
+            message="Administrator akkauntingizni tasdiqladi. Diamond Education funksiyalaridan foydalanishingiz mumkin.",
+            button_text="Ilovani ochish",
+            button_url="/",
+            target_screen="dashboard",
+            source_key=f"public_registration_approved:{int(user_id)}",
+            meta={"approved_by": int(admin.get("id") or 0)},
+        )
+        conn.commit()
+        _invalidate_notification_unread_count(int(user_id))
+    except Exception:
+        logger.exception("public registration approval notification failed user_id=%s", user_id)
+    finally:
+        if conn is not None:
+            with suppress(Exception):
+                conn.close()
+    student_tg = str(refreshed.get("telegram_id") or "").strip()
+    student_token = (
+        os.getenv("STUDENT_BOT_TOKEN")
+        if _role_from_login_type(int(refreshed.get("login_type") or 0), str(refreshed.get("login_id") or "")) == "student"
+        else os.getenv("TEACHER_BOT_TOKEN")
+    ) or ""
+    if student_tg and student_token:
+        asyncio.create_task(
+            _send_telegram_text(
+                str(student_token),
+                student_tg,
+                "✅ Akkauntingiz administrator tomonidan tasdiqlandi. Ilovaga qaytib, davom etishingiz mumkin.",
+            )
+        )
+    return {"message": "Public registration approved", "user": _serialize_user_row(refreshed)}
+
+
 @app.post("/admin/users/{user_id}/prepare-placement")
 async def admin_prepare_placement(
     user_id: int,
@@ -48730,7 +49178,7 @@ async def vocabulary(
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"student", "teacher", "admin", "support"})
     if role == "student":
-        _require_student_learning_access(user)
+        _require_student_vocabulary_preview_access(user)
 
     subjects = _user_subjects_from_row(user)
     selected_subject = _normalize_subject_label(subject) or (subjects[0] if subjects else "English")
@@ -48947,7 +49395,7 @@ async def vocabulary_tts(
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"student", "teacher", "admin", "support"})
     if role == "student":
-        _require_student_learning_access(user)
+        _require_student_vocabulary_preview_access(user)
 
     phrase = re.sub(r"\s+", " ", str(text or "").strip())
     if not phrase:

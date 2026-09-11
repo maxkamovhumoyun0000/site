@@ -137,6 +137,7 @@ type ApiUser = {
   placement_required?: boolean;
   placement_subject?: string | null;
   access_enabled?: boolean;
+  pending_approval?: boolean;
   face_enrollment_required?: boolean;
   face_profile_status?: string;
   face_profile_version?: number;
@@ -16469,10 +16470,14 @@ function AdminSection({
   async function toggleUserBlocked(targetUser: GenericRow) {
     const uid = Number(targetUser.id || 0);
     if (!uid) return;
+    const pendingApproval = Boolean(targetUser.pending_approval) && !Boolean(targetUser.access_enabled);
     const nextBlocked = !Boolean(targetUser.blocked);
+    const nextAccessEnabled = pendingApproval ? false : !nextBlocked;
     const result = await onAdminCall(
       `/admin/users/${uid}`,
-      { blocked: nextBlocked, access_enabled: !nextBlocked },
+      pendingApproval
+          ? { blocked: nextBlocked, access_enabled: false, pending_approval: true }
+          : { blocked: nextBlocked, access_enabled: !nextBlocked },
       "PATCH",
       nextBlocked ? "User blocked" : "User unblocked",
     );
@@ -16481,7 +16486,31 @@ function AdminSection({
       prev
         ? prev.map((row) =>
             Number(row.id || 0) === uid
-              ? { ...row, ...refreshed, blocked: nextBlocked, access_enabled: !nextBlocked }
+              ? { ...row, ...refreshed, blocked: nextBlocked, access_enabled: nextAccessEnabled }
+              : row,
+          )
+        : prev,
+    );
+    if (Number(selectedUserId || 0) === uid) {
+      loadUserDetail(uid);
+    }
+  }
+
+  async function approvePublicRegistration(targetUser: GenericRow) {
+    const uid = Number(targetUser.id || 0);
+    if (!uid) return;
+    const result = await onAdminCall(
+      `/admin/users/${uid}/approve-public-registration`,
+      {},
+      "POST",
+      "Public registration approved",
+    );
+    const refreshed = (result?.user || {}) as GenericRow;
+    setAdminUsersFallback((prev) =>
+      prev
+        ? prev.map((row) =>
+            Number(row.id || 0) === uid
+              ? { ...row, ...refreshed, pending_approval: false, blocked: false, access_enabled: true }
               : row,
           )
         : prev,
@@ -17007,10 +17036,11 @@ function AdminSection({
                   const isProtected = Number(user.login_type || 0) === 4;
                   const isAccountlessRow = Number(user.login_type || 0) === 6;
                   const isStudentRow = String(user.role || "") === "student";
+                  const isPendingApproval = Boolean(user.pending_approval) && !Boolean(user.access_enabled);
                   const canOpenProfile = isStudentRow || isAccountlessRow;
                   return (
                     <Fragment key={user.id}>
-                      <tr>
+                      <tr className={isPendingApproval ? "bg-amber-50/70 dark:bg-amber-500/10" : undefined}>
                         <td>
                           <button
                             type="button"
@@ -17039,6 +17069,7 @@ function AdminSection({
                               </span>
                             )}
                             {isAccountlessRow ? <span className="inline-block text-[10px] uppercase bg-orange-100 dark:bg-orange-500/15 text-orange-600 dark:text-orange-400 px-1.5 py-0.5 rounded font-bold w-fit">Akountsiz</span> : null}
+                            {isPendingApproval ? <span className="inline-block text-[10px] uppercase bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded font-bold w-fit">⏳ {tt("admin.users.pendingApproval", "Tasdiqlash kutilmoqda")}</span> : null}
                           </div>
                         </td>
                         <td>
@@ -17091,6 +17122,11 @@ function AdminSection({
                                 <button className={!user.blocked ? "admin-btn-block" : "admin-btn-unblock"} onClick={() => toggleUserBlocked(user)}>
                                   {!user.blocked ? tt("admin.users.action.block", "Bloklash") : tt("admin.users.action.unblock", "Blokdan chiqarish")}
                                 </button>
+                                {isPendingApproval ? (
+                                  <button className="admin-btn-unblock" onClick={() => approvePublicRegistration(user)}>
+                                    ✓ {tt("admin.users.action.approveRegistration", "Tasdiqlash")}
+                                  </button>
+                                ) : null}
                                 {/* ── Prep Test — students only ── */}
                                 {isStudentRow ? (
                                   <button className="admin-btn-prep" onClick={() => {
