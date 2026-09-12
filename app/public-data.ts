@@ -1,4 +1,16 @@
 export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+// Uploaded media is intentionally versioned at the URL level. Some embedded
+// browsers keep an earlier 404 for a long time because the backend correctly
+// marks media as cacheable for a week. Bumping this value makes browsers fetch
+// the intact file again without touching the original upload or its database
+// record.
+const UPLOADED_MEDIA_CACHE_VERSION = "20260912-2";
+
+function withUploadedMediaCacheVersion(url: string): string {
+  if (!/\/(?:courses\/images|results\/media)\//i.test(url)) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}asset_v=${UPLOADED_MEDIA_CACHE_VERSION}`;
+}
 
 function normalizeNetworkError(error: unknown) {
   if (error instanceof DOMException && error.name === "AbortError") {
@@ -231,8 +243,12 @@ export function toAssetUrl(value?: string | null): string {
   // deleted.
   if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
   if (raw.startsWith("/assets/")) return raw;
-  if (API_BASE && API_BASE !== "/" && (raw === API_BASE || raw.startsWith(`${API_BASE}/`))) return raw;
-  return raw.startsWith("/") ? `${API_BASE}${raw}` : `${API_BASE}/${raw.replace(/^\/+/, "")}`;
+  const resolved = API_BASE && API_BASE !== "/" && (raw === API_BASE || raw.startsWith(`${API_BASE}/`))
+    ? raw
+    : raw.startsWith("/")
+      ? `${API_BASE}${raw}`
+      : `${API_BASE}/${raw.replace(/^\/+/, "")}`;
+  return withUploadedMediaCacheVersion(resolved);
 }
 
 export function formatPublicDate(value?: string | null, locale?: "uz" | "ru" | "en"): string {
