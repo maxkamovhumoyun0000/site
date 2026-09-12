@@ -18319,13 +18319,13 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 
 .footer-brand-lockup {
   align-items: center;
-  background: #ffffff;
-  border: 1px solid rgba(51, 119, 255, 0.22);
-  border-radius: 14px;
-  box-shadow: 0 8px 22px rgba(0, 11, 59, 0.20);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   display: inline-flex;
   gap: 9px;
-  padding: 8px 11px 8px 8px;
+  padding: 0;
   width: fit-content;
 }
 
