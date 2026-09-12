@@ -18394,7 +18394,7 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   transform: translateY(-1px);
 }
 
-.footer-v2 .bg-white\\/10 {
+.footer-v2 [class~="bg-white/10"] {
   background-color: #D8E4FF !important;
 }
 
