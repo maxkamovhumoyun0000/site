@@ -18261,12 +18261,28 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   margin-bottom: 30px !important;
 }
 
-.footer-v2-brand-name {
-  font-size: 24px !important;
-  color: #ffffff !important;
+.footer-brand-lockup {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid rgba(51, 119, 255, 0.22);
+  border-radius: 14px;
+  box-shadow: 0 8px 22px rgba(0, 11, 59, 0.20);
+  display: inline-flex;
+  gap: 9px;
+  padding: 8px 11px 8px 8px;
+  width: fit-content;
 }
-.footer-v2-brand-name span {
-  color: var(--ev-primary) !important;
+
+.footer-brand-lockup .logo-mark {
+  flex: 0 0 auto;
+}
+
+.footer-diamond-wordmark > span:first-child {
+  color: #0d1235 !important;
+}
+
+.footer-diamond-wordmark > span:last-child {
+  color: #002dff !important;
 }
 .footer-v2-tagline {
   color: rgba(255, 255, 255, 0.55) !important;
