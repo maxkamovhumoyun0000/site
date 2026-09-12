@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useWebT } from "./web-i18n";
 
 /* ─────────────────────────── helpers ─────────────────────────── */
@@ -53,7 +53,17 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
   const [homeworks, setHomeworks] = useState<Hw[]>([]);
   const [reports, setReports] = useState<Record<number, StudentRow[]>>({});
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const homeworkRequestRef = useRef(0);
+  const homeworkLoadedRef = useRef(false);
+  const apiCallRef = useRef(onApiCall);
+
+  // DashboardShell supplies this callback inline. Keep its latest value
+  // without treating a parent render as a reason to reload every report.
+  useEffect(() => {
+    apiCallRef.current = onApiCall;
+  }, [onApiCall]);
 
   /* UI state */
   const [sortMode, setSortMode] = useState<SortMode>("last_submission");
@@ -65,46 +75,67 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
     let mounted = true;
     (async () => {
       try {
-        const d = await onApiCall("/admin/users?role=teacher&limit=500", undefined, "GET");
+        const d = await apiCallRef.current("/admin/users?role=teacher&limit=500", undefined, "GET");
         if (mounted && d?.items) setTeachers(d.items);
       } catch {}
       try {
-        const d = await onApiCall("/admin/groups", undefined, "GET");
+        const d = await apiCallRef.current("/admin/groups", undefined, "GET");
         if (mounted && d?.items) setGroups(d.items);
       } catch {}
     })();
     return () => { mounted = false; };
-  }, [onApiCall]);
+  }, []);
 
   const filteredGroups = groups.filter(g => !teacherId || g.teacher_id === teacherId);
 
-  /* load */
-  const load = useCallback(async (gid: number) => {
-    if (!gid) { setHomeworks([]); setReports({}); return; }
-    setLoading(true); setError("");
+  /*
+   * Do not require a filter before showing content.  Admins need the newest
+   * assignments immediately; teacher and group selections merely narrow the
+   * same list.  Keeping existing rows on refresh avoids the flash-to-empty
+   * effect that used to occur every time a filter changed.
+   */
+  const load = useCallback(async (nextTeacherId: number, nextGroupId: number) => {
+    const requestId = homeworkRequestRef.current + 1;
+    homeworkRequestRef.current = requestId;
+    const initialLoad = !homeworkLoadedRef.current;
+    if (initialLoad) setLoading(true);
+    else setRefreshing(true);
+    setError("");
     try {
-      const res = await onApiCall(`/admin/homework?group_id=${gid}`, undefined, "GET");
+      const params = new URLSearchParams();
+      if (nextTeacherId > 0) params.set("teacher_id", String(nextTeacherId));
+      if (nextGroupId > 0) params.set("group_id", String(nextGroupId));
+      const query = params.toString();
+      const res = await apiCallRef.current(`/admin/homework${query ? `?${query}` : ""}`, undefined, "GET");
       const hws: Hw[] = res?.items || [];
-      setHomeworks(hws);
+      // The landing view can contain a large historical list.  Reports are
+      // fetched for the most recent assignments first; an opened assignment
+      // still has its normal details and avoids hundreds of parallel calls.
+      const reportRows = hws.slice(0, nextGroupId > 0 ? 120 : 60);
       const newReports: Record<number, StudentRow[]> = {};
-      await Promise.all(hws.map(async (hw) => {
+      await Promise.all(reportRows.map(async (hw) => {
         try {
-          const rep = await onApiCall(`/admin/homework/${hw.id}/report`, undefined, "GET");
+          const rep = await apiCallRef.current(`/admin/homework/${hw.id}/report`, undefined, "GET");
           if (rep?.items) newReports[hw.id] = rep.items;
         } catch {}
       }));
+      if (homeworkRequestRef.current !== requestId) return;
+      setHomeworks(hws);
       setReports(newReports);
+      homeworkLoadedRef.current = true;
     } catch (err: any) {
-      setError(err.message || "Xatolik");
+      if (homeworkRequestRef.current === requestId) setError(err.message || "Xatolik");
     } finally {
-      setLoading(false);
+      if (homeworkRequestRef.current === requestId) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
-  }, [onApiCall]);
+  }, []);
 
   useEffect(() => {
-    if (groupId) load(groupId);
-    else { setHomeworks([]); setReports({}); }
-  }, [groupId, load]);
+    load(teacherId, groupId);
+  }, [teacherId, groupId, load]);
 
   /* sort */
   function lastActivity(hw: Hw): string {
@@ -154,11 +185,27 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
     return "📄 Oddiy";
   }
 
+  const activeScopeLabel = groupId > 0
+    ? groups.find((group) => Number(group.id) === Number(groupId))?.name || tt("admin.group", "Guruh")
+    : teacherId > 0
+      ? teachers.find((teacher) => Number(teacher.id) === Number(teacherId))?.full_name || tt("admin.teacher", "O'qituvchi")
+      : tt("admin.homework.latest", "So'nggi homeworklar");
+
   return (
-    <div className="flex flex-col gap-6 p-4 max-w-6xl mx-auto animate-fade-in">
+    <div className="admin-users-page admin-homework-page">
+      <div className="admin-page-header admin-homework-header">
+        <div>
+          <h2>📝 {tt("section.homework", "Uy vazifalari")}</h2>
+          <p>{tt("admin.homework.latestSubtitle", "Eng yangi vazifalar birinchi bo'lib ko'rsatiladi")} · <strong>{activeScopeLabel}</strong></p>
+        </div>
+        <button className="admin-page-btn" type="button" onClick={() => load(teacherId, groupId)} disabled={loading || refreshing}>
+          {refreshing ? tt("common.loading", "Yuklanmoqda...") : tt("admin.homework.refresh", "Yangilash")}
+        </button>
+      </div>
+
       {/* ── Filters ── */}
-      <div className="bg-white dark:bg-[#0f172a] p-6 rounded-2xl shadow-sm border border-line dark:border-white/10 flex flex-col gap-4">
-        <div className="flex flex-col md:flex-row gap-4">
+      <div className="admin-filter-card">
+        <div className="admin-form-grid-2">
           {/* Teacher */}
           <div className="flex-1 flex flex-col gap-1.5">
             <label className="text-xs font-bold text-ink-500 uppercase tracking-wider">{tt("admin.teacher", "O'qituvchi")}</label>
@@ -167,7 +214,7 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
               value={teacherId}
               onChange={e => { setTeacherId(parseInt(e.target.value)); setGroupId(0); }}
             >
-              <option value={0}>{tt("admin.teacher_select", "O'qituvchini tanlang")}</option>
+              <option value={0}>{tt("admin.homework.allTeachers", "Barcha o'qituvchilar")}</option>
               {teachers.map(t => (
                 <option key={t.id} value={t.id}>
                   {t.full_name || `${t.first_name || ""} ${t.last_name || ""}`.trim() || `O'qituvchi #${t.id}`}
@@ -183,16 +230,15 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
               className="w-full px-4 py-3 border border-line dark:border-white/10 rounded-xl bg-surface-soft dark:bg-[#0f172a] outline-none focus:border-cyan-500 font-semibold text-navy-900 dark:text-white"
               value={groupId}
               onChange={e => setGroupId(parseInt(e.target.value))}
-              disabled={!teacherId}
             >
-              <option value={0}>{tt("admin.group_select", "Guruhni tanlang")}</option>
+              <option value={0}>{tt("admin.homework.allGroups", "Barcha guruhlar")}</option>
               {filteredGroups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
           </div>
         </div>
 
         {/* Sort + Status filter row */}
-        {groupId > 0 && !loading && (
+        {!loading && (
           <div className="flex flex-wrap gap-3 items-center border-t border-line dark:border-white/10 pt-4">
             {/* Sort */}
             <div className="flex items-center gap-2 mr-2">
@@ -254,7 +300,7 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
       )}
 
       {/* ── Content ── */}
-      {!loading && groupId > 0 && (
+      {!loading && (
         <div className="flex flex-col gap-4">
           {filtered.length === 0 ? (
             <div className="bg-white dark:bg-[#0f172a] p-10 text-center rounded-2xl shadow-sm border border-line dark:border-white/10 font-bold text-ink-500">
@@ -449,13 +495,6 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
         </div>
       )}
 
-      {/* ── Placeholder ── */}
-      {!loading && !groupId && (
-        <div className="text-center p-12 text-ink-500 font-bold bg-white dark:bg-[#0f172a] rounded-2xl shadow-sm border border-line dark:border-white/10">
-          <div className="text-4xl mb-3">📚</div>
-          <p>{tt("admin.group_select", "Guruhni tanlang")}</p>
-        </div>
-      )}
     </div>
   );
 }

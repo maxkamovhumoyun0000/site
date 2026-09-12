@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { API_BASE } from "../public-data";
+import { useWebT } from "./web-i18n";
 
 interface Callback {
   id: number;
@@ -26,6 +27,7 @@ function formatDate(dateStr: string) {
 }
 
 export function AdminCallbacksPanel({ token }: { token: string }) {
+  const tt = useWebT();
   const [items, setItems] = useState<Callback[]>([]);
   const [loading, setLoading] = useState(true);
   const [callingId, setCallingId] = useState<number | null>(null);
@@ -79,19 +81,19 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
     return (
       <div className="admin-callbacks-loading">
         <div className="admin-callbacks-spinner" />
-        <span>Yuklanmoqda...</span>
+        <span>{tt("common.loading", "Yuklanmoqda...")}</span>
       </div>
     );
   }
 
   return (
-    <div className="admin-callbacks-root">
-      <div className="admin-callbacks-header">
+    <div className="admin-callbacks-root admin-users-page">
+      <div className="admin-page-header admin-callbacks-header">
         <h2 className="admin-callbacks-title">
           <span className="admin-callbacks-title-icon">📋</span>
-          Arizalar
+          {tt("section.applications", "Arizalar")}
         </h2>
-        <button className="admin-callbacks-refresh" onClick={fetchCallbacks} title="Yangilash">
+        <button className="admin-page-btn admin-callbacks-refresh" onClick={fetchCallbacks} title={tt("admin.callbacks.refresh", "Yangilash")}>
           ↻
         </button>
       </div>
@@ -99,15 +101,15 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
       {items.length === 0 ? (
         <div className="admin-callbacks-empty">
           <div className="admin-callbacks-empty-icon">📭</div>
-          <p>Hozircha ariza yo'q</p>
+          <p>{tt("admin.callbacks.empty", "Hozircha ariza yo'q")}</p>
         </div>
       ) : (
         <>
           {pending.length > 0 && (
-            <section className="admin-callbacks-section">
+            <section className="admin-callbacks-section admin-table-card">
               <h3 className="admin-callbacks-section-title">
                 <span className="admin-callbacks-dot pending" />
-                Kutilmoqda ({pending.length})
+                {tt("admin.callbacks.pending", "Kutilmoqda")} ({pending.length})
               </h3>
               <div className="admin-callbacks-list">
                 {pending.map((item) => (
@@ -123,10 +125,10 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
           )}
 
           {completed.length > 0 && (
-            <section className="admin-callbacks-section">
+            <section className="admin-callbacks-section admin-table-card">
               <h3 className="admin-callbacks-section-title">
                 <span className="admin-callbacks-dot completed" />
-                Ko'rib chiqilgan ({completed.length})
+                {tt("admin.callbacks.completed", "Ko'rib chiqilgan")} ({completed.length})
               </h3>
               <div className="admin-callbacks-list">
                 {completed.map((item) => (
@@ -144,16 +146,16 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
       )}
 
       <style>{`
-        .admin-callbacks-root {
-          max-width: 800px;
+        .admin-callbacks-root.admin-users-page {
+          max-width: 1100px;
           margin: 0 auto;
-          padding: 24px 16px 48px;
+          padding: 0 0 48px;
         }
         .admin-callbacks-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          margin-bottom: 28px;
+          margin-bottom: 0;
         }
         .admin-callbacks-title {
           display: flex;
@@ -170,20 +172,18 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
         .admin-callbacks-refresh {
           width: 36px;
           height: 36px;
-          border-radius: 10px;
-          border: 1.5px solid var(--ev-border, #e2e8f0);
-          background: var(--ev-surface, #fff);
+          min-width: 36px;
+          padding: 0;
           font-size: 18px;
           cursor: pointer;
           transition: all 0.15s;
           display: flex;
           align-items: center;
           justify-content: center;
-          color: var(--ev-muted, #64748b);
+          color: var(--ink-600, #64748b);
         }
         .admin-callbacks-refresh:hover {
-          background: var(--ev-surface-soft, #f8fafc);
-          color: var(--ev-primary, #002dff);
+          color: #2563eb;
         }
         .admin-callbacks-loading {
           display: flex;
@@ -213,7 +213,8 @@ export function AdminCallbacksPanel({ token }: { token: string }) {
           margin-bottom: 12px;
         }
         .admin-callbacks-section {
-          margin-bottom: 32px;
+          margin: 0;
+          padding: 16px;
         }
         .admin-callbacks-section-title {
           display: flex;
@@ -394,6 +395,7 @@ function CallbackCard({
   onCall: (item: Callback) => void;
   isLoading: boolean;
 }) {
+  const tt = useWebT();
   const isPending = item.status === "pending";
 
   return (
@@ -417,9 +419,9 @@ function CallbackCard({
         className={`callback-call-btn ${isLoading ? "loading" : ""} ${!isPending ? "done" : ""}`}
         onClick={() => onCall(item)}
         disabled={isLoading}
-        title={`${item.phone} raqamiga qo'ng'iroq qilish`}
+        title={`${item.phone} ${tt("admin.callbacks.callTitle", "raqamiga qo'ng'iroq qilish")}`}
       >
-        {isLoading ? "📡 Ulanyapti..." : !isPending ? "✅ Qilindi" : "📞 Qo'ng'iroq"}
+        {isLoading ? `📡 ${tt("admin.callbacks.calling", "Ulanyapti...")}` : !isPending ? `✅ ${tt("admin.callbacks.done", "Qilindi")}` : `📞 ${tt("admin.callbacks.call", "Qo'ng'iroq")}`}
       </button>
     </div>
   );

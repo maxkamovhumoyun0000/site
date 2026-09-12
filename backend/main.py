@@ -44646,6 +44646,59 @@ async def admin_family_groups_patch(
     return {"message": "Family group updated"}
 
 
+@app.delete("/admin/family-groups/{family_group_id}")
+async def admin_family_groups_delete(
+    family_group_id: int,
+    authorization: str | None = Header(default=None),
+):
+    """Permanently remove one family-group record and its memberships.
+
+    A family group is an administrative/payment grouping, not a student
+    account.  Deleting it must never delete its members.  We explicitly
+    remove only the membership rows after the same scope check used by all
+    other family-group actions, then pre-warm the affected payment views so
+    a family discount cannot linger in a cached result.
+    """
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    _ensure_payment_automation_schema()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM family_groups WHERE id=? LIMIT 1", (int(family_group_id),))
+        group_row = dict(cur.fetchone() or {})
+        if not group_row:
+            raise HTTPException(status_code=404, detail="Family group not found")
+
+        members = _family_group_member_rows(cur, int(family_group_id))
+        allowed, _ = _family_group_access_allowed(admin_ref, user, group_row, members)
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        member_ids = {
+            int(member.get("user_id") or 0)
+            for member in members
+            if int(member.get("user_id") or 0) > 0
+        }
+        cur.execute("DELETE FROM family_group_members WHERE family_group_id=?", (int(family_group_id),))
+        cur.execute("DELETE FROM family_groups WHERE id=?", (int(family_group_id),))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    if member_ids:
+        _payment_prewarm_users_month_async(
+            user_ids=member_ids,
+            reason="family_group_delete",
+        )
+    return {"message": "Family group deleted", "family_group_id": int(family_group_id)}
+
+
 @app.post("/admin/family-groups/{family_group_id}/members")
 async def admin_family_groups_add_member(
     family_group_id: int,

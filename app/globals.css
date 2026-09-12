@@ -23134,6 +23134,390 @@ select.pp-filter-input {
   gap: 14px;
 }
 
+/* ------------------------------------------------------------------
+   Admin / teacher group manager
+   The long group manager is a sheet on phones.  A former generic mobile
+   rule set it to overflow:hidden, so lower controls could not be reached in
+   portrait orientation.  Keep scrolling inside the actual sheet and leave
+   the page below locked while it is open.
+   ------------------------------------------------------------------ */
+.group-management-modal {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 760px) {
+  .overlay-modal-backdrop.group-management-backdrop,
+  .overlay-modal-backdrop:has(.group-management-modal) {
+    align-items: stretch !important;
+    padding: 8px !important;
+  }
+
+  .overlay-modal-card.admin-wide-modal.group-management-modal {
+    align-self: stretch !important;
+    height: calc(100dvh - 16px) !important;
+    margin: 0 !important;
+    max-height: calc(100dvh - 16px) !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    padding: 14px !important;
+    touch-action: pan-y !important;
+  }
+
+  .group-management-modal .admin-modal-section {
+    padding: 14px;
+  }
+
+  .group-management-modal .admin-groups-table-wrap,
+  .group-management-modal .table-wrap {
+    max-height: min(42dvh, 360px);
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+.overlay-modal-card.family-group-modal {
+  max-height: calc(100dvh - 40px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 760px) {
+  .overlay-modal-backdrop.family-group-backdrop {
+    align-items: stretch !important;
+    padding: 8px !important;
+  }
+
+  .overlay-modal-backdrop.family-group-backdrop .family-group-modal {
+    align-self: stretch;
+    margin: 0;
+    max-height: calc(100dvh - 16px);
+  }
+}
+
+/* ------------------------------------------------------------------
+   Family groups share the Users / Groups information architecture.
+   Cards deliberately have no nested page-height scrollers: one page scroll
+   and compact member rows are reliable on portrait phones and tablets.
+   ------------------------------------------------------------------ */
+.family-groups-filter .admin-form-label {
+  max-width: 460px;
+}
+
+.family-groups-card-shell {
+  overflow: visible;
+  padding: 16px;
+}
+
+.family-groups-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+}
+
+.family-group-card {
+  background: linear-gradient(145deg, var(--surface), var(--surface-soft));
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 8px 22px rgba(12, 34, 84, 0.06);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.family-group-card-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 16px;
+}
+
+.family-group-card h3 {
+  color: var(--ink-900);
+  font-size: 16px;
+  font-weight: 900;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.family-group-card-head p {
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 700;
+  margin: 3px 0 0;
+}
+
+.family-group-actions {
+  justify-content: flex-end;
+}
+
+.family-group-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.family-group-badges span,
+.family-group-members-head > span {
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 999px;
+  color: var(--ink-600);
+  font-size: 10px;
+  font-weight: 800;
+  padding: 4px 8px;
+}
+
+.family-group-badges .is-active,
+.family-members-list small.is-active {
+  background: rgba(34, 197, 94, 0.10);
+  border-color: rgba(34, 197, 94, 0.24);
+  color: #15803d;
+}
+
+.family-group-badges .is-inactive,
+.family-group-badges .is-neutral {
+  background: rgba(100, 116, 139, 0.08);
+}
+
+.family-group-badges .is-discount {
+  background: rgba(37, 99, 235, 0.10);
+  border-color: rgba(37, 99, 235, 0.25);
+  color: #1d4ed8;
+}
+
+.family-group-members {
+  border-top: 1px solid var(--line);
+  padding: 12px 16px 16px;
+}
+
+.family-group-members-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.family-group-members-head strong {
+  color: var(--ink-900);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.family-group-members-head .admin-btn-detail {
+  margin-left: auto;
+}
+
+.family-group-empty {
+  color: var(--ink-500);
+  font-size: 12px;
+  font-style: italic;
+  padding: 10px 0 2px;
+}
+
+.family-members-list {
+  display: grid;
+  gap: 7px;
+  list-style: none;
+  margin: 0;
+  max-height: 230px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.family-members-list li {
+  align-items: center;
+  background: rgba(37, 99, 235, 0.035);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 11px;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.family-members-list li > div {
+  min-width: 0;
+}
+
+.family-members-list span,
+.family-members-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.family-members-list span {
+  color: var(--ink-800);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.family-members-list small {
+  color: var(--ink-500);
+  font-size: 10px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+/* Holidays use the same quiet, dense admin surface as Users and Groups. */
+.admin-holidays-page {
+  max-width: 1180px;
+}
+
+.admin-holidays-note {
+  background: rgba(34, 197, 94, 0.10);
+  border: 1px solid rgba(34, 197, 94, 0.24);
+  border-radius: 12px;
+  color: #15803d;
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0;
+  padding: 10px 13px;
+}
+
+.admin-holiday-card {
+  padding: 18px;
+}
+
+.admin-holiday-card-title {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.admin-holiday-card-title > span {
+  align-items: center;
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.12));
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: 11px;
+  display: inline-flex;
+  font-size: 17px;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.admin-holiday-card h3 {
+  color: var(--ink-900);
+  font-size: 15px;
+  font-weight: 900;
+  margin: 0;
+}
+
+.admin-holiday-card-title p {
+  color: var(--ink-500);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 2px 0 0;
+}
+
+.admin-holiday-form {
+  align-items: end;
+}
+
+.admin-holiday-action {
+  justify-content: center;
+  min-height: 42px;
+  padding: 8px 14px;
+}
+
+.admin-holiday-reason {
+  margin-bottom: 14px;
+  max-width: 420px;
+}
+
+.admin-holiday-card .table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  max-height: min(48dvh, 430px);
+  overflow: auto;
+}
+
+.admin-holiday-card table thead th {
+  background: var(--surface-soft);
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.admin-holiday-card table td,
+.admin-holiday-card table th {
+  padding: 10px 12px;
+}
+
+[data-theme="dark"] .admin-holiday-card h3 { color: #f1f5f9; }
+[data-theme="dark"] .admin-holiday-card .table-wrap { border-color: #1a2840; }
+[data-theme="dark"] .admin-holiday-card table thead th { background: #0e1929; }
+
+@media (max-width: 640px) {
+  .admin-holiday-card { padding: 13px; }
+  .admin-holiday-form { grid-template-columns: 1fr; }
+  .admin-holiday-action { width: 100%; }
+}
+
+[data-theme="dark"] .family-group-card {
+  background: linear-gradient(145deg, #0d1929, #091426);
+  border-color: #1a2840;
+}
+
+[data-theme="dark"] .family-group-card h3,
+[data-theme="dark"] .family-group-members-head strong,
+[data-theme="dark"] .family-members-list span {
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] .family-group-members {
+  border-color: #1a2840;
+}
+
+[data-theme="dark"] .family-members-list li {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(148, 163, 184, 0.16);
+}
+
+@media (max-width: 640px) {
+  .family-groups-card-shell {
+    padding: 10px;
+  }
+
+  .family-groups-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .family-group-card-head {
+    flex-direction: column;
+  }
+
+  .family-group-actions {
+    justify-content: flex-start;
+  }
+
+  .family-group-members-head .admin-btn-detail {
+    margin-left: 0;
+  }
+
+  .family-members-list {
+    max-height: none;
+  }
+}
+
 .admin-user-modal-backdrop {
   overscroll-behavior: contain;
   touch-action: pan-y;

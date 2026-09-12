@@ -11837,8 +11837,8 @@ function TeacherSection({
         {/* ── Manage Group Modal ── */}
         {selectedTeacherGroup && (
           <ModalPortal open={true}>
-            <div className="overlay-modal-backdrop" onClick={() => setSelectedGroupId(0)}>
-              <article className="overlay-modal-card admin-wide-modal text-left" onClick={(e) => e.stopPropagation()}>
+            <div className="overlay-modal-backdrop group-management-backdrop" onClick={() => setSelectedGroupId(0)}>
+              <article className="overlay-modal-card admin-wide-modal group-management-modal text-left" onClick={(e) => e.stopPropagation()}>
                 {/* Modal Header */}
                 <div className="row-between gap-3">
                   <div>
@@ -16173,6 +16173,25 @@ function AdminSection({
     }
   }
 
+  async function deleteFamilyGroup(group: GenericRow) {
+    const id = Number(group.id || 0);
+    if (!id) return;
+    const name = String(group.name || `#${id}`);
+    if (!window.confirm(tt("admin.familyGroups.deleteConfirm", `"${name}" oilaviy guruhini o'chirasizmi? Guruh a'zolari o'chirilmaydi, faqat oilaviy bog'lanish bekor qilinadi.`, { name }))) return;
+    try {
+      const token = localStorage.getItem("diamond_token") || "";
+      const res = await fetch(`${API_BASE}/admin/family-groups/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to delete family group");
+      setFamilyGroups((prev) => prev.filter((item) => Number(item.id || 0) !== id));
+    } catch (error) {
+      console.error(error);
+      alert(tt("admin.familyGroups.deleteFailed", "Oilaviy guruhni o'chirib bo'lmadi"));
+    }
+  }
+
   function openFamilyMemberPicker(groupId: number) {
     setFamilyMemberPickerGroupId(Number(groupId));
     setFamilyMemberSearch("");
@@ -17338,80 +17357,90 @@ function AdminSection({
       })
       .slice(0, 80);
     return (
-      <div className="page-stack">
-
-        <section className="panel-card">
-          <div className="flex justify-between items-center mb-6">
-            <input 
-              type="text" 
-              placeholder="Search family group..." 
-              value={familyGroupsQuery} 
-              onChange={(e) => setFamilyGroupsQuery(e.target.value)} 
-            />
-            <button className="btn btn-primary" onClick={() => setFamilyGroupDraft({ name: "", active: true })}>
-              + Add Family
-            </button>
+      <div className="admin-users-page family-groups-page">
+        <div className="admin-page-header family-groups-header">
+          <div>
+            <h2>👨‍👩‍👧 {tt("section.family-groups", "Oilaviy guruhlar")}</h2>
+            <p>{tt("admin.familyGroups.subtitle", "Oila a'zolari va oilaviy chegirmalarni boshqaring")} · <strong>{visibleFamilyGroups.length}</strong></p>
           </div>
+          <button className="admin-btn-primary" type="button" onClick={() => setFamilyGroupDraft({ name: "", active: true })}>
+            + {tt("admin.familyGroups.create", "Oila qo'shish")}
+          </button>
+        </div>
+
+        <section className="admin-filter-card family-groups-filter">
+          <label className="admin-form-label">
+            {tt("common.search", "Qidirish")}
+            <input
+              type="search"
+              placeholder={tt("admin.familyGroups.search", "Oilaviy guruhni qidiring...")}
+              value={familyGroupsQuery}
+              onChange={(e) => setFamilyGroupsQuery(e.target.value)}
+            />
+          </label>
+        </section>
+
+        <section className="admin-table-card family-groups-card-shell">
           {familyGroupsLoading ? (
-            <div className="empty-state">Loading family groups...</div>
+            <div className="empty-state">{tt("common.loading", "Yuklanmoqda...")}</div>
           ) : visibleFamilyGroups.length === 0 ? (
-            <div className="empty-state">No family groups found.</div>
+            <div className="empty-state">{tt("admin.familyGroups.empty", "Oilaviy guruh topilmadi.")}</div>
           ) : (
-            <div className="grid grid-2 compact-cards">
+            <div className="family-groups-grid">
               {visibleFamilyGroups.map((group) => (
-                <div key={group.id} className="panel-card border-l-4 border-l-blue-500">
-                  <div className="flex justify-between items-start mb-4">
-                    <div>
-                      <h3 className="text-xl font-bold">{group.name}</h3>
-                      <div className="text-sm text-gray-500">ID: {group.id} • Created: {String(group.created_at || "").slice(0, 10)}</div>
-                      <div className="flex flex-wrap gap-2 mt-2">
-                        <span className={`chip ${Number(group.active || 0) === 1 ? "text-green-600 dark:text-green-400" : "text-ink-500 dark:text-navy-300"}`}>
-                          {Number(group.active || 0) === 1 ? "active" : "inactive"}
+                <article key={group.id} className="family-group-card">
+                  <div className="family-group-card-head">
+                    <div className="min-w-0">
+                      <h3>{group.name || `#${group.id}`}</h3>
+                      <p>#{group.id} · {String(group.created_at || "").slice(0, 10) || "—"}</p>
+                      <div className="family-group-badges">
+                        <span className={Number(group.active || 0) === 1 ? "is-active" : "is-inactive"}>
+                          {Number(group.active || 0) === 1 ? tt("common.active", "Faol") : tt("admin.familyGroups.inactive", "Faol emas")}
                         </span>
-                        <span className={`chip ${group.eligible_for_discount ? "text-green-600 dark:text-green-400" : "text-ink-500 dark:text-navy-300"}`}>
-                          {group.eligible_for_discount ? "eligible for discount" : "not eligible"}
+                        <span className={group.eligible_for_discount ? "is-discount" : "is-neutral"}>
+                          {group.eligible_for_discount ? tt("admin.familyGroups.discountEligible", "Chegirmaga mos") : tt("admin.familyGroups.discountNotEligible", "Chegirma uchun yetarli emas")}
                         </span>
-                        <span className="chip">active members: {Number(group.active_member_count || 0)}</span>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button 
-                        className={`btn ${group.active ? "btn-danger" : "btn-soft"}`} 
-                        onClick={() => toggleFamilyGroupStatus(Number(group.id), Number(group.active))}
-                      >
-                        {group.active ? "Disable" : "Enable"}
+                    <div className="admin-action-btns family-group-actions">
+                      <button className={group.active ? "admin-btn-block" : "admin-btn-unblock"} onClick={() => toggleFamilyGroupStatus(Number(group.id), Number(group.active))}>
+                        {group.active ? tt("admin.familyGroups.disable", "O'chirish") : tt("admin.familyGroups.enable", "Yoqish")}
                       </button>
-                      <button className="btn btn-soft" onClick={() => setFamilyGroupDraft({ id: Number(group.id), name: String(group.name || ""), active: !!group.active })}>
-                        Edit
+                      <button className="admin-btn-detail" onClick={() => setFamilyGroupDraft({ id: Number(group.id), name: String(group.name || ""), active: !!group.active })}>
+                        {tt("common.edit", "Tahrirlash")}
+                      </button>
+                      <button className="admin-btn-delete" onClick={() => deleteFamilyGroup(group)}>
+                        {tt("common.delete", "O'chirish")}
                       </button>
                     </div>
                   </div>
-                  <div className="border-t border-gray-200 dark:border-gray-800 pt-4 mt-2">
-                    <div className="flex justify-between items-center mb-2">
-                      <strong className="text-sm">Members ({(group.members || []).length})</strong>
-                      <button className="btn btn-soft text-xs" onClick={() => openFamilyMemberPicker(Number(group.id))}>+ Add Student</button>
+                  <div className="family-group-members">
+                    <div className="family-group-members-head">
+                      <strong>{tt("admin.familyGroups.members", "A'zolar")} ({(group.members || []).length})</strong>
+                      <span>{tt("admin.familyGroups.activeMembers", "Faol a'zolar")}: {Number(group.active_member_count || 0)}</span>
+                      <button className="admin-btn-detail" onClick={() => openFamilyMemberPicker(Number(group.id))}>+ {tt("admin.familyGroups.addStudent", "Talaba qo'shish")}</button>
                     </div>
                     {(group.members || []).length === 0 ? (
-                      <div className="text-sm text-gray-500 italic">No members in this family.</div>
+                      <div className="family-group-empty">{tt("admin.familyGroups.noMembers", "Bu oilaviy guruhda a'zo yo'q.")}</div>
                     ) : (
-                      <ul className="space-y-2">
+                      <ul className="family-members-list">
                         {(group.members || []).map((m: any) => (
-                          <li key={m.user_id} className="flex justify-between items-center bg-gray-50 dark:bg-gray-800 p-2 rounded">
-                            <div className="flex flex-col">
-                              <span className="text-sm">{m.full_name || m.login_id || `User #${m.user_id}`}</span>
-                              <span className={`text-xs ${m.is_active_student ? "text-green-600 dark:text-green-400" : "text-ink-500 dark:text-navy-300"}`}>
-                                {m.is_active_student ? "active student" : "not active"}
-                              </span>
+                          <li key={m.user_id}>
+                            <div>
+                              <span>{m.full_name || m.login_id || `#${m.user_id}`}</span>
+                              <small className={m.is_active_student ? "is-active" : ""}>
+                                {m.is_active_student ? tt("admin.familyGroups.activeStudent", "Faol talaba") : tt("admin.familyGroups.notActive", "Faol emas")}
+                              </small>
                             </div>
-                            <button className="text-red-500 hover:text-red-700 text-sm" onClick={() => removeFamilyGroupMember(Number(group.id), Number(m.user_id))}>
-                              Remove
+                            <button className="admin-btn-delete" onClick={() => removeFamilyGroupMember(Number(group.id), Number(m.user_id))}>
+                              {tt("common.delete", "O'chirish")}
                             </button>
                           </li>
                         ))}
                       </ul>
                     )}
                   </div>
-                </div>
+                </article>
               ))}
             </div>
           )}
@@ -17419,17 +17448,17 @@ function AdminSection({
 
         <ModalPortal open={Boolean(familyGroupDraft)}>
         {familyGroupDraft && (
-          <div className="overlay-modal-backdrop" onClick={() => setFamilyGroupDraft(null)}>
-            <article className="overlay-modal-card" onClick={(e) => e.stopPropagation()}>
-              <h3 className="modal-title">{familyGroupDraft.id ? "Edit Family Group" : "New Family Group"}</h3>
+          <div className="overlay-modal-backdrop family-group-backdrop" onClick={() => setFamilyGroupDraft(null)}>
+            <article className="overlay-modal-card family-group-modal" onClick={(e) => e.stopPropagation()}>
+              <h3 className="modal-title">{familyGroupDraft.id ? tt("admin.familyGroups.edit", "Oilaviy guruhni tahrirlash") : tt("admin.familyGroups.new", "Yangi oilaviy guruh")}</h3>
               <form onSubmit={saveFamilyGroup} className="grid grid-1 gap-4">
-                <label>
-                  Family Name
-                  <input required value={familyGroupDraft.name} onChange={(e) => setFamilyGroupDraft({ ...familyGroupDraft, name: e.target.value })} placeholder="e.g. Aliyevs" />
+                <label className="admin-form-label">
+                  {tt("admin.familyGroups.name", "Oila nomi")}
+                  <input required value={familyGroupDraft.name} onChange={(e) => setFamilyGroupDraft({ ...familyGroupDraft, name: e.target.value })} placeholder="Masalan: Aliyevlar" />
                 </label>
                 <div className="flex gap-4">
-                  <button type="submit" className="btn btn-primary flex-1">Save</button>
-                  <button type="button" className="btn btn-soft flex-1" onClick={() => setFamilyGroupDraft(null)}>Cancel</button>
+                  <button type="submit" className="admin-btn-primary flex-1">{tt("common.save", "Saqlash")}</button>
+                  <button type="button" className="admin-page-btn flex-1" onClick={() => setFamilyGroupDraft(null)}>{tt("common.cancel", "Bekor qilish")}</button>
                 </div>
               </form>
             </article>
@@ -17438,12 +17467,12 @@ function AdminSection({
         </ModalPortal>
         <ModalPortal open={Boolean(familyMemberPickerGroupId)}>
         {familyMemberPickerGroupId ? (
-          <div className="overlay-modal-backdrop" onClick={() => setFamilyMemberPickerGroupId(null)}>
-            <article className="overlay-modal-card admin-wide-modal" onClick={(e) => e.stopPropagation()}>
-              <h3 className="modal-title">Add student to family group</h3>
+          <div className="overlay-modal-backdrop family-group-backdrop" onClick={() => setFamilyMemberPickerGroupId(null)}>
+            <article className="overlay-modal-card admin-wide-modal family-group-modal" onClick={(e) => e.stopPropagation()}>
+              <h3 className="modal-title">{tt("admin.familyGroups.addStudent", "Oilaviy guruhga talaba qo'shish")}</h3>
               <div className="grid grid-1 gap-4">
-                <label>
-                  Search student (name / surname / phone)
+                <label className="admin-form-label">
+                  {tt("admin.familyGroups.searchStudent", "Talabani qidirish (ism, familiya yoki telefon)")}
                   <input
                     value={familyMemberSearch}
                     onChange={(event) => setFamilyMemberSearch(event.target.value)}
@@ -17454,10 +17483,10 @@ function AdminSection({
                   <table>
                     <thead>
                       <tr>
-                        <th>Student</th>
-                        <th>Phone</th>
-                        <th>Role</th>
-                        <th>Action</th>
+                        <th>{tt("common.student", "Talaba")}</th>
+                        <th>{tt("common.phone", "Telefon")}</th>
+                        <th>{tt("common.role", "Rol")}</th>
+                        <th>{tt("common.actions", "Amallar")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -17465,27 +17494,27 @@ function AdminSection({
                         <tr key={`family-member-candidate-${row.id}`}>
                           <td>{row.full_name || `User #${row.id}`}</td>
                           <td>{row.phone || "-"}</td>
-                          <td>{Number(row.login_type || 0) === 6 ? "accountless" : "student"}</td>
+                          <td>{Number(row.login_type || 0) === 6 ? tt("admin.familyGroups.accountless", "Akkauntsiz") : tt("common.student", "Talaba")}</td>
                           <td>
                             <button
-                              className="btn btn-soft"
+                              className="admin-btn-detail"
                               onClick={() => addFamilyGroupMember(Number(familyMemberPickerGroupId || 0), Number(row.id || 0))}
                             >
-                              Add
+                              {tt("admin.familyGroups.add", "Qo'shish")}
                             </button>
                           </td>
                         </tr>
                       ))}
                       {familyMemberCandidates.length === 0 ? (
                         <tr>
-                          <td colSpan={4} className="text-center text-ink-500">No students found</td>
+                          <td colSpan={4} className="text-center text-ink-500">{tt("admin.familyGroups.noStudents", "Talaba topilmadi")}</td>
                         </tr>
                       ) : null}
                     </tbody>
                   </table>
                 </div>
                 <div className="button-grid">
-                  <button className="btn btn-soft" onClick={() => setFamilyMemberPickerGroupId(null)}>Close</button>
+                  <button className="admin-page-btn" onClick={() => setFamilyMemberPickerGroupId(null)}>{tt("common.cancel", "Yopish")}</button>
                 </div>
               </div>
             </article>
@@ -19289,8 +19318,8 @@ function AdminSection({
         {/* ── Manage Group Modal ── */}
         <ModalPortal open={Boolean(selectedGroupId && selectedGroup)}>
           {selectedGroupId && selectedGroup ? (
-          <div className="overlay-modal-backdrop" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
-            <article className="overlay-modal-card admin-wide-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="overlay-modal-backdrop group-management-backdrop" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
+            <article className="overlay-modal-card admin-wide-modal group-management-modal" onClick={(event) => event.stopPropagation()}>
               {/* Modal Header */}
               <div className="row-between gap-3">
                 <div>
@@ -20447,18 +20476,40 @@ function AdminHolidaysManager() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="page-stack">
+    <div className="admin-users-page admin-holidays-page">
+      <div className="admin-page-header admin-holidays-header">
+        <div>
+          <h2>☀️ {tt("section.holidays", "Bayramlar")}</h2>
+          <p>{tt("admin.holidays.subtitle", "Dars bekor qilinishi va bayram kunlarini boshqaring")}</p>
+        </div>
+        <button
+          className="admin-page-btn"
+          type="button"
+          onClick={() => {
+            refreshAll().catch((err) => setError(err instanceof Error ? err.message : tt("admin.holidays.loadFailed", "Bayram ma'lumotlarini yuklab bo'lmadi")));
+          }}
+          disabled={busy}
+        >
+          {tt("admin.holidays.refresh", "Yangilash")}
+        </button>
+      </div>
       {error ? <div className="error-box">{error}</div> : null}
-      {note ? <p className="chip">{note}</p> : null}
+      {note ? <p className="admin-holidays-note">{note}</p> : null}
 
-      <section className="panel-card">
-        <h3>{tt("admin.holidays.manualTitle", "Tanlangan sana uchun to'liq otmen")}</h3>
-        <div className="grid grid-3">
-          <label>
+      <section className="admin-table-card admin-holiday-card">
+        <div className="admin-holiday-card-title">
+          <span>📅</span>
+          <div>
+            <h3>{tt("admin.holidays.manualTitle", "Tanlangan sana uchun to'liq otmen")}</h3>
+            <p>{tt("admin.holidays.manualSubtitle", "Tanlangan sanaga tegishli barcha darslarni bir marta bekor qilish")}</p>
+          </div>
+        </div>
+        <div className="admin-form-grid-3 admin-holiday-form">
+          <label className="admin-form-label">
             {tt("common.date", "Sana")}
             <input type="date" value={manualDate} onChange={(event) => setManualDate(event.target.value)} />
           </label>
-          <label>
+          <label className="admin-form-label">
             {tt("common.reason", "Sabab")}
             <input
               value={manualReason}
@@ -20467,28 +20518,34 @@ function AdminHolidaysManager() {
             />
           </label>
           <button
-            className="btn btn-primary"
+            className="admin-btn-primary admin-holiday-action"
             disabled={busy || !manualDate}
             onClick={() =>
               runAction(async () => {
-                if (!window.confirm(`Selected date ${manualDate} bo'yicha barcha darslarni otmen qilinsinmi?`)) return;
+                if (!window.confirm(tt("admin.holidays.manualConfirm", `${manualDate} bo'yicha barcha darslar bekor qilinsinmi?`, { date: manualDate }))) return;
                 await callHolidayApi("/admin/holiday-otmen/cancel", "POST", {
                   date: manualDate,
                   reason: manualReason || undefined,
                   mode: "manual",
                 });
                 await refreshAll();
-              }, "Manual date cancellation applied")}
+              }, tt("admin.holidays.manualApplied", "Tanlangan sana uchun darslar bekor qilindi"))}
           >
             {tt("common.cancel", "Bekor qilish")}
           </button>
         </div>
       </section>
 
-      <section className="panel-card">
-        <h3>{tt("admin.holidays.upcomingTitle", "Yaqin rasmiy bayramlar")}</h3>
-        <div className="grid grid-3">
-          <label>
+      <section className="admin-table-card admin-holiday-card">
+        <div className="admin-holiday-card-title">
+          <span>✨</span>
+          <div>
+            <h3>{tt("admin.holidays.upcomingTitle", "Yaqin rasmiy bayramlar")}</h3>
+            <p>{tt("admin.holidays.upcomingSubtitle", "Taqvimdagi rasmiy dam olish kunlari")}</p>
+          </div>
+        </div>
+        <div className="admin-holiday-reason">
+          <label className="admin-form-label">
             {tt("common.reason", "Sabab")}
             <input
               value={holidayReason}
@@ -20520,29 +20577,29 @@ function AdminHolidaysManager() {
                     <td>
                       <div className="button-grid inline">
                         <button
-                          className="btn btn-soft"
+                          className="admin-btn-detail"
                           disabled={busy || !dateIso || isCancelled}
                           onClick={() =>
                             runAction(async () => {
-                              if (!window.confirm(`${dateIso} sanasini bayram rejimida otmen qilinsinmi?`)) return;
+                              if (!window.confirm(tt("admin.holidays.holidayConfirm", `${dateIso} sanasini bayram kuni sifatida bekor qilinsinmi?`, { date: dateIso }))) return;
                               await callHolidayApi("/admin/holiday-otmen/cancel", "POST", {
                                 date: dateIso,
                                 reason: holidayReason || row.reason_db || undefined,
                                 mode: "auto",
                               });
                               await refreshAll();
-                            }, "Holiday cancellation applied")}
+                            }, tt("admin.holidays.holidayApplied", "Bayram uchun darslar bekor qilindi"))}
                         >
                           {tt("common.cancel", "Bekor qilish")}
                         </button>
                         <button
-                          className="btn btn-soft"
+                          className="admin-btn-detail"
                           disabled={busy || !dateIso}
                           onClick={() =>
                             runAction(async () => {
                               await callHolidayApi("/admin/holiday-otmen/reopen", "POST", { date: dateIso });
                               await refreshAll();
-                            }, "Date reopened")}
+                            }, tt("admin.holidays.reopened", "Sana qayta ochildi"))}
                         >
                           {tt("common.reopen", "Qayta ochish")}
                         </button>
@@ -20560,8 +20617,14 @@ function AdminHolidaysManager() {
         </div>
       </section>
 
-      <section className="panel-card">
-        <h3>{tt("admin.holidays.historyTitle", "Cancelled Holiday History")}</h3>
+      <section className="admin-table-card admin-holiday-card">
+        <div className="admin-holiday-card-title">
+          <span>🕘</span>
+          <div>
+            <h3>{tt("admin.holidays.historyTitle", "Bekor qilingan kunlar tarixi")}</h3>
+            <p>{tt("admin.holidays.historySubtitle", "Oldingi bayram va qo'lda bekor qilish yozuvlari")}</p>
+          </div>
+        </div>
         <div className="table-wrap">
           <table>
             <thead>
