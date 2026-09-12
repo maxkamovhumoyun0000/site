@@ -1,6 +1,7 @@
 "use client";
 
 import { useWebT, Locale } from "./web-i18n";
+import { LogoMark } from "./primitives";
 
 export function PublicFooter() {
   const tt = useWebT();
@@ -16,12 +17,15 @@ export function PublicFooter() {
         <div className="footer-v2-top grid grid-cols-1 md:grid-cols-3 gap-12 lg:gap-16">
           {/* Brand */}
           <div className="flex flex-col">
-            <p className="footer-v2-brand-name" style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" }}>
-              <span style={{ fontSize: "20px", fontWeight: 900, letterSpacing: "-0.02em", color: "#ffffff" }}>
-                D<span style={{ position: "relative", display: "inline-block" }}>ı<svg viewBox="0 0 24 24" fill="currentColor" style={{ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" }}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
-              </span>
-              <span style={{ fontSize: "9.5px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ev-primary)", marginTop: "1.5px" }}>Education</span>
-            </p>
+            <div className="footer-brand-lockup" aria-label="Diamond Education">
+              <LogoMark size="sm" />
+              <strong className="footer-diamond-wordmark" style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" }}>
+                <span style={{ fontSize: "19px", fontWeight: 900, letterSpacing: "-0.02em" }}>
+                  D<span style={{ position: "relative", display: "inline-block" }}>ı<svg viewBox="0 0 24 24" fill="currentColor" style={{ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" }}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
+                </span>
+                <span style={{ fontSize: "9px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", marginTop: "1px" }}>Education</span>
+              </strong>
+            </div>
             <p className="footer-v2-tagline mt-4">
               {tt("landing.footer.about", "Kelajak texnologiyalari va mukammal metodikaga asoslangan premium ta'lim platformasi.")}
             </p>

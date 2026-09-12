@@ -36,7 +36,7 @@ export function HeroSection() {
   }, []);
 
   return (
-    <section className="relative min-h-[100svh] w-full bg-white dark:bg-[#07111f] font-sans flex flex-col transition-colors duration-300">
+    <section className="public-landing-hero relative min-h-[100svh] w-full bg-white dark:bg-[#07111f] font-sans flex flex-col transition-colors duration-300">
       {/* ── NAVBAR ────────────────────────────────────────── */}
       <header
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b ${

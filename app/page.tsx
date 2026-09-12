@@ -18,6 +18,7 @@ import {
 } from "./ui/navigation-config";
 import { DashboardSidebar, orderSections, sectionIconGlyph } from "./ui/dashboard-sidebar";
 import { HeroSection } from "./ui/hero-section";
+import { PublicPageMotion } from "./ui/public-page-motion";
 import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
 import { getCourseGroups, toAssetUrl, type PublicCourse } from "./public-data";
 import { AssetIcon, GIFT_CHEST_ICON_SRC, LogoMark, SectionTitle, StatCard } from "./ui/primitives";
@@ -2107,7 +2108,8 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
   });
 
   return (
-    <main className="min-h-screen bg-background">
+    <main className="public-landing-page min-h-screen bg-background">
+      <PublicPageMotion rootSelector=".public-landing-page" />
       {/* ── HERO ──────────────────────────────────────────────── */}
       <HeroSection />
 

@@ -5,6 +5,7 @@ import { useWebT } from "./ui/web-i18n";
 import { LanguageIconButton } from "./ui/theme-provider";
 import { LogoMark } from "./ui/primitives";
 import { PublicFooter } from "./ui/public-footer";
+import { PublicPageMotion } from "./ui/public-page-motion";
 
 type PublicTab = "home" | "courses" | "results" | "articles" | "about" | "videos";
 
@@ -34,7 +35,8 @@ export function PublicShell({
   }, []);
 
   return (
-    <main className="min-h-screen bg-gray-50 dark:bg-[#07111f] font-sans flex flex-col transition-colors duration-300">
+    <main className="public-page-shell min-h-screen bg-gray-50 dark:bg-[#07111f] font-sans flex flex-col transition-colors duration-300">
+      <PublicPageMotion rootSelector=".public-page-shell" />
       {/* ── NAVBAR ────────────────────────────────────────── */}
       <header
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b ${
@@ -126,7 +128,7 @@ export function PublicShell({
       </div>
 
       {/* Main Content Area */}
-      <section className="pt-32 pb-12 px-4 md:px-8 bg-white dark:bg-[#0a1526] border-b border-gray-100 dark:border-gray-800">
+      <section className="public-page-hero pt-32 pb-12 px-4 md:px-8 bg-white dark:bg-[#0a1526] border-b border-gray-100 dark:border-gray-800">
         <div className="container mx-auto max-w-5xl text-center">
           <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 text-sm font-bold mb-4 uppercase tracking-wider">
             {kicker}
@@ -137,7 +139,7 @@ export function PublicShell({
         </div>
       </section>
 
-      <section className="flex-1 py-12 px-4 md:px-8 bg-gray-50 dark:bg-[#07111f]">
+      <section className="public-page-content flex-1 py-12 px-4 md:px-8 bg-gray-50 dark:bg-[#07111f]">
         <div className="w-full 2xl:px-8 mx-auto">
           {children}
         </div>
