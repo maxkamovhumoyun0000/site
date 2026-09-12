@@ -23375,6 +23375,15 @@ select.pp-filter-input {
   max-width: 1180px;
 }
 
+/* A shared, higher-contrast blue/cyan surface keeps the dense admin pages
+   readable without making the dashboard look like plain white cards. */
+.admin-holidays-page .admin-page-header,
+.admin-homework-page .admin-page-header {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.13), rgba(6, 182, 212, 0.09));
+  border-color: rgba(37, 99, 235, 0.24);
+  box-shadow: 0 10px 28px rgba(30, 64, 175, 0.08);
+}
+
 .admin-holidays-note {
   background: rgba(34, 197, 94, 0.10);
   border: 1px solid rgba(34, 197, 94, 0.24);
@@ -23387,6 +23396,9 @@ select.pp-filter-input {
 }
 
 .admin-holiday-card {
+  background: linear-gradient(135deg, #ffffff 0%, #f2f7ff 100%);
+  border-color: rgba(37, 99, 235, 0.20);
+  box-shadow: 0 10px 26px rgba(30, 64, 175, 0.07);
   padding: 18px;
 }
 
@@ -23439,6 +23451,7 @@ select.pp-filter-input {
 }
 
 .admin-holiday-card .table-wrap {
+  background: rgba(255, 255, 255, 0.72);
   border: 1px solid var(--line);
   border-radius: 14px;
   max-height: min(48dvh, 430px);
@@ -23446,8 +23459,8 @@ select.pp-filter-input {
 }
 
 .admin-holiday-card table thead th {
-  background: var(--surface-soft);
-  color: var(--ink-500);
+  background: linear-gradient(90deg, #eaf2ff, #edfaff);
+  color: #31517f;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: .06em;
@@ -23463,8 +23476,56 @@ select.pp-filter-input {
 }
 
 [data-theme="dark"] .admin-holiday-card h3 { color: #f1f5f9; }
+[data-theme="dark"] .admin-holidays-page .admin-page-header,
+[data-theme="dark"] .admin-homework-page .admin-page-header {
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.38), rgba(8, 145, 178, 0.20));
+  border-color: rgba(96, 165, 250, 0.25);
+}
+[data-theme="dark"] .admin-holiday-card {
+  background: linear-gradient(135deg, #0d1929, #0b2030);
+  border-color: #1a4163;
+}
 [data-theme="dark"] .admin-holiday-card .table-wrap { border-color: #1a2840; }
+[data-theme="dark"] .admin-holiday-card .table-wrap { background: rgba(7, 18, 33, 0.72); }
 [data-theme="dark"] .admin-holiday-card table thead th { background: #0e1929; }
+
+.admin-homework-page .admin-filter-card,
+.admin-homework-empty {
+  background: linear-gradient(135deg, #ffffff 0%, #f4f9ff 100%);
+  border-color: rgba(37, 99, 235, 0.20);
+  box-shadow: 0 8px 22px rgba(30, 64, 175, 0.06);
+}
+
+.admin-homework-list-card {
+  background: linear-gradient(145deg, #ffffff 0%, #f6faff 100%);
+  border-color: rgba(37, 99, 235, 0.22);
+  box-shadow: 0 9px 24px rgba(30, 64, 175, 0.07);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.admin-homework-list-card:hover {
+  border-color: rgba(6, 182, 212, 0.46);
+  box-shadow: 0 13px 28px rgba(30, 64, 175, 0.11);
+}
+
+.admin-homework-list-card-header {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.11), rgba(6, 182, 212, 0.065)) !important;
+}
+
+.admin-homework-list-card-header:hover {
+  background: linear-gradient(135deg, rgba(37, 99, 235, 0.17), rgba(6, 182, 212, 0.11)) !important;
+}
+
+[data-theme="dark"] .admin-homework-page .admin-filter-card,
+[data-theme="dark"] .admin-homework-empty,
+[data-theme="dark"] .admin-homework-list-card {
+  background: linear-gradient(145deg, #0d1929, #0b2030);
+  border-color: #1a4163;
+}
+
+[data-theme="dark"] .admin-homework-list-card-header {
+  background: linear-gradient(135deg, rgba(30, 64, 175, 0.32), rgba(8, 145, 178, 0.16)) !important;
+}
 
 @media (max-width: 640px) {
   .admin-holiday-card { padding: 13px; }

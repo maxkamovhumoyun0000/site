@@ -19,7 +19,7 @@ import {
 import { DashboardSidebar, orderSections, sectionIconGlyph } from "./ui/dashboard-sidebar";
 import { HeroSection } from "./ui/hero-section";
 import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
-import { getCourseGroups, type PublicCourse } from "./public-data";
+import { getCourseGroups, toAssetUrl, type PublicCourse } from "./public-data";
 import { AssetIcon, GIFT_CHEST_ICON_SRC, LogoMark, SectionTitle, StatCard } from "./ui/primitives";
 import { LanguageIconButton, ThemeToggleButton } from "./ui/theme-provider";
 import { resolveLocale, sectionLabelByLocale, t, useWebT, useWebLocale, type Locale, WebLocaleProvider } from "./ui/web-i18n";
@@ -1657,7 +1657,7 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
               <div className="relative aspect-square bg-surface-soft dark:bg-navy-800 overflow-hidden">
                 {course.cover_image_url ? (
                   <img
-                    src={String(course.cover_image_url).startsWith("/") ? `${API_BASE}${course.cover_image_url}` : String(course.cover_image_url)}
+                    src={toAssetUrl(String(course.cover_image_url))}
                     alt={localizedTitle}
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108"
                   />
@@ -20465,14 +20465,14 @@ function AdminHolidaysManager() {
       await action();
       setNote(successText);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Holiday action failed");
+      setError(err instanceof Error ? err.message : tt("admin.holidays.actionFailed", "Bayram amali bajarilmadi"));
     } finally {
       setBusy(false);
     }
   }
 
   useEffect(() => {
-    refreshAll().catch((err) => setError(err instanceof Error ? err.message : "Could not load holiday data"));
+    refreshAll().catch((err) => setError(err instanceof Error ? err.message : tt("admin.holidays.loadFailed", "Bayram ma'lumotlarini yuklab bo'lmadi")));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (

@@ -223,7 +223,16 @@ export async function recordPublicArticleView(articleId: number): Promise<number
 export function toAssetUrl(value?: string | null): string {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  return raw.startsWith("/") ? `${API_BASE}${raw}` : raw;
+  // Uploaded course covers and result media are stored by the backend as
+  // root-relative paths (for example, `/courses/images/...`).  They must be
+  // requested through the public API proxy in production.  Keep values that
+  // are already resolved untouched so a re-render can never create
+  // `/api/api/...`, which otherwise makes existing media look as if it was
+  // deleted.
+  if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
+  if (raw.startsWith("/assets/")) return raw;
+  if (API_BASE && API_BASE !== "/" && (raw === API_BASE || raw.startsWith(`${API_BASE}/`))) return raw;
+  return raw.startsWith("/") ? `${API_BASE}${raw}` : `${API_BASE}/${raw.replace(/^\/+/, "")}`;
 }
 
 export function formatPublicDate(value?: string | null, locale?: "uz" | "ru" | "en"): string {

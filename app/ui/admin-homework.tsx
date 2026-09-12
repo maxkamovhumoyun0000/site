@@ -303,7 +303,7 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
       {!loading && (
         <div className="flex flex-col gap-4">
           {filtered.length === 0 ? (
-            <div className="bg-white dark:bg-[#0f172a] p-10 text-center rounded-2xl shadow-sm border border-line dark:border-white/10 font-bold text-ink-500">
+            <div className="admin-homework-empty bg-white dark:bg-[#0f172a] p-10 text-center rounded-2xl shadow-sm border border-line dark:border-white/10 font-bold text-ink-500">
               {tt("admin.no_homeworks", "Bu guruhda vazifalar topilmadi.")}
             </div>
           ) : filtered.map(hw => {
@@ -318,11 +318,11 @@ export function AdminHomeworkPanel({ data, onApiCall }: any) {
               : rows.filter(r => rowStatus(r) === statusFilter);
 
             return (
-              <div key={hw.id} className="bg-white dark:bg-[#0f172a] border border-line dark:border-white/10 rounded-2xl overflow-hidden shadow-sm">
+              <div key={hw.id} className="admin-homework-list-card bg-white dark:bg-[#0f172a] border border-line dark:border-white/10 rounded-2xl overflow-hidden shadow-sm">
 
                 {/* ── Homework header ── */}
                 <button
-                  className="w-full text-left p-4 sm:p-5 bg-surface-soft dark:bg-white/[0.03] hover:bg-surface-soft/80 dark:hover:bg-white/[0.05] transition-colors"
+                  className="admin-homework-list-card-header w-full text-left p-4 sm:p-5 bg-surface-soft dark:bg-white/[0.03] hover:bg-surface-soft/80 dark:hover:bg-white/[0.05] transition-colors"
                   onClick={() => setExpandedHw(isExpanded ? null : hw.id)}
                 >
                   <div className="flex flex-wrap gap-3 items-start justify-between">
