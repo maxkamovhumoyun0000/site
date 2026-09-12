@@ -15966,12 +15966,12 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   --ev-secondary: #3377FF;
   --ev-secondary-hover: #1D5FDC;
   --ev-yellow: #A9C6FF;
-  --ev-bg: #F9FBFF;
-  --ev-bg-soft: #EDF4FF;
+  --ev-bg: #FFFFFF;
+  --ev-bg-soft: #F8FAFC;
   --ev-text: #0D1235;
   --ev-text-muted: #46577C;
-  --ev-border: #D8E4FF;
-  --ev-border-hover: #AEC5F5;
+  --ev-border: #DDE6F5;
+  --ev-border-hover: #AFC6F5;
   --ev-shadow-sm: 0 3px 12px rgba(0, 45, 255, 0.07);
   --ev-shadow-md: 0 12px 28px rgba(0, 45, 255, 0.10);
   --ev-shadow-lg: 0 22px 52px rgba(0, 26, 136, 0.15);
@@ -18299,11 +18299,8 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 
 /* Footer Section */
 .footer-v2 {
-  background:
-    radial-gradient(circle at 12% -12%, rgba(81, 137, 255, 0.48), transparent 35%),
-    radial-gradient(circle at 92% 104%, rgba(0, 45, 255, 0.36), transparent 42%),
-    linear-gradient(135deg, #000827 0%, #00146f 48%, #000a38 100%) !important;
-  border-top: 1px solid rgba(174, 201, 255, 0.28) !important;
+  background: #FFFFFF !important;
+  border-top: 1px solid #D8E4FF !important;
 }
 .footer-v2::before,
 .footer-v2::after {
@@ -18315,7 +18312,7 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 }
 
 .footer-v2-top {
-  border-bottom: 1px solid rgba(174, 201, 255, 0.28) !important;
+  border-bottom: 1px solid #D8E4FF !important;
   padding-bottom: 40px !important;
   margin-bottom: 30px !important;
 }
@@ -18344,33 +18341,33 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   color: #002dff !important;
 }
 .footer-v2-tagline {
-  color: rgba(236, 243, 255, 0.84) !important;
+  color: #4A5B7D !important;
   max-width: 320px !important;
 }
 
 .footer-v2-col-title {
-  color: #B9D0FF !important;
+  color: #3154A7 !important;
   font-size: 11px !important;
   font-weight: 850 !important;
 }
 
 .footer-v2-link {
-  color: rgba(245, 249, 255, 0.92) !important;
+  color: #142149 !important;
   font-size: 14px !important;
 }
 .footer-v2-link:hover {
-  color: #AFCBFF !important;
+  color: var(--ev-primary) !important;
 }
 
 .footer-v2-bottom {
   align-items: center;
 }
 .footer-v2-bottom p {
-  color: rgba(221, 233, 255, 0.74) !important;
+  color: #5C6D8E !important;
   font-size: 13px;
 }
 .footer-v2-copy {
-  color: rgba(221, 233, 255, 0.74) !important;
+  color: #5C6D8E !important;
 }
 
 .footer-socials {
@@ -18385,16 +18382,20 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: rgba(161, 196, 255, 0.14);
-  border: 1px solid rgba(179, 205, 255, 0.25);
-  color: #F7FAFF;
+  background: #EEF4FF;
+  border: 1px solid #D8E4FF;
+  color: var(--ev-primary);
   font-size: 16px;
   transition: all 0.2s ease;
 }
 .footer-social-link:hover {
-  background: #3377FF;
+  background: var(--ev-primary);
   color: #ffffff;
   transform: translateY(-1px);
+}
+
+.footer-v2 .bg-white\\/10 {
+  background-color: #D8E4FF !important;
 }
 
 
