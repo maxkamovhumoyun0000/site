@@ -82,7 +82,7 @@ export interface GlobalVoiceRoomContextValue {
   reactions: Reaction[];
   raisedHands: RaisedHand[];
   speakingPeers: string[];
-  createRoom: () => Promise<void>;
+  createRoom: (name?: string, subject?: string) => Promise<void>;
   joinRoom: (roomId: string) => void;
   deleteRoom: (roomId: string) => Promise<void>;
   requestStage: () => void;
@@ -694,7 +694,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     }
   };
 
-  const createRoom = async () => {
+  const createRoom = async (name?: string, subject?: string) => {
     setErrorMsg("");
     // Unlock AudioContext on user gesture
     if (!audioContextRef.current) {
@@ -712,7 +712,10 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
           "Content-Type": "application/json",
           ...(token ? { "Authorization": `Bearer ${token}` } : {})
         },
-        body: JSON.stringify({})
+        body: JSON.stringify({
+          name: name || undefined,
+          subject: subject || undefined
+        })
       });
       const data = await res.json();
       if (!res.ok) {

@@ -513,6 +513,36 @@ function aiLevelOptionsBySubject(subject: string, includeMixed = false) {
   return includeMixed ? [...base, "MIXED"] : base;
 }
 
+function formatLevelDisplay(level: string | null | undefined): string {
+  if (!level) return "-";
+  const s = String(level).trim();
+  if (!s || s === "-" || s.toLowerCase() === "none" || s.toLowerCase() === "null") return "-";
+
+  const parenMatch = s.match(/^([ABC][12]|C1|C2)\s*\(([^)]+)\)$/i);
+  if (parenMatch) {
+    return `${parenMatch[1].toUpperCase()} (${parenMatch[2].trim()})`;
+  }
+
+  const upper = s.toUpperCase().replace(/\s+/g, " ");
+  const clean = upper.replace(/[-\s]/g, "");
+
+  if (clean === "A1" || clean === "BEGINNER") return "A1 (Beginner)";
+  if (clean === "ELEMENTARY") return "A2 (Elementary)";
+  if (clean === "A2" || clean === "PREINTERMEDIATE") return "A2 (Pre-Intermediate)";
+  if (clean === "B1" || clean === "INTERMEDIATE") return "B1 (Intermediate)";
+  if (clean === "B2" || clean === "UPPERINTERMEDIATE") return "B2 (Upper-Intermediate)";
+  if (clean === "C1" || clean === "ADVANCED") return "C1 (Advanced)";
+  if (clean === "C2" || clean === "PROFICIENT") return "C2 (Proficient)";
+  if (clean === "MIXED") return "Mixed";
+
+  if (upper.includes("НАЧАЛЬН") || upper.includes("А1")) return "A1 (Начальный)";
+  if (upper.includes("БАЗОВ") || upper.includes("А2")) return "A2 (Базовый)";
+  if ((upper.includes("СРЕДН") && !upper.includes("ПРОДВИНУТ")) || upper.includes("Б1")) return "B1 (Средний)";
+  if (upper.includes("ПРОДВИНУТ") || upper.includes("Б2")) return "B2 (Продвинутый)";
+
+  return s;
+}
+
 function getOrCreateDeviceId() {
   if (typeof window === "undefined") return "";
   const existing = localStorage.getItem(DEVICE_ID_KEY);
@@ -2769,12 +2799,34 @@ function CompactStudentStatCard({
   value,
   detail,
   tone = "navy",
+  icon,
 }: {
   title: string;
   value: string | number;
   detail?: string;
   tone?: "navy" | "cyan" | "gold" | "green" | "red";
+  icon?: string;
 }) {
+  // When an icon is provided (dashboard hero cards), render in admin-stat-card style.
+  // Otherwise fall back to the compact inline variant used in tables/payments.
+  if (icon !== undefined) {
+    const ascClass = {
+      navy: "asc-indigo",
+      cyan: "asc-cyan",
+      gold: "asc-amber",
+      green: "asc-emerald",
+      red: "asc-rose",
+    }[tone] ?? "asc-indigo";
+    return (
+      <article className={`admin-stat-card ${ascClass}`}>
+        <div className="asc-bg-blob" />
+        <div className="asc-icon">{icon}</div>
+        <div className="asc-value">{value}</div>
+        <div className="asc-label">{title}</div>
+        {detail ? <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "4px", fontWeight: 600, position: "relative", zIndex: 1 }}>{detail}</div> : null}
+      </article>
+    );
+  }
   const toneClasses = {
     navy: "border-navy-700/20 bg-navy-700/5 text-navy-900 dark:border-cyan-400/20 dark:bg-cyan-400/10 dark:text-white",
     cyan: "border-cyan-500/25 bg-cyan-500/10 text-navy-900 dark:border-cyan-300/25 dark:bg-cyan-300/10 dark:text-white",
@@ -2945,68 +2997,129 @@ function StudentHome({
         </section>
       ) : null}
 
-      {/* Stats Grid */}
-      <section className="grid grid-cols-4 gap-2 sm:gap-3">
-        <CompactStudentStatCard title={tt("student.dashboard.streak", "Streak")} value={`${stats.streak_days || 0}d`} detail={tt("student.dashboard.daily", "Kunlik")} />
-        <CompactStudentStatCard title={tt("student.dashboard.tests", "Testlar")} value={stats.tests_completed || 0} detail={`${stats.tests_taken || 0} ${tt("student.dashboard.attempts", "urinish")}`} tone="cyan" />
-        <CompactStudentStatCard title={tt("student.dashboard.words", "So'zlar")} value={stats.words_learned || 0} detail={tt("student.dashboard.monthly", "Oylik")} tone="green" />
-        <CompactStudentStatCard title={tt("student.grammar.kicker", "Grammatika")} value={stats.topics_completed || 0} detail={tt("student.dashboard.monthly", "Oylik")} tone="gold" />
-      </section>
+      {/* Stats Grid — admin-style hero cards */}
+      <div className="admin-hero-stats">
+        <CompactStudentStatCard icon="🔥" title={tt("student.dashboard.streak", "Streak")} value={`${stats.streak_days || 0}d`} detail={tt("student.dashboard.daily", "Kunlik")} tone="red" />
+        <CompactStudentStatCard icon="📝" title={tt("student.dashboard.tests", "Testlar")} value={stats.tests_completed || 0} detail={`${stats.tests_taken || 0} ${tt("student.dashboard.attempts", "urinish")}`} tone="cyan" />
+        <CompactStudentStatCard icon="📖" title={tt("student.dashboard.words", "So'zlar")} value={stats.words_learned || 0} detail={tt("student.dashboard.monthly", "Oylik")} tone="green" />
+        <CompactStudentStatCard icon="📐" title={tt("student.grammar.kicker", "Grammatika")} value={stats.topics_completed || 0} detail={tt("student.dashboard.monthly", "Oylik")} tone="gold" />
+      </div>
 
-      {/* Arena & Subjects */}
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
+      {/* Panels Row — Admin & Mobile App Style */}
+      <div className="admin-dash-panels">
+        {/* Enrolled Subjects & Progress Panel */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">📚 {tt("student.dashboard.mySubjects", "Fanlarim va progress")}</span>
+            <span className="admin-dash-panel-badge">{subjects.length} {tt("student.dashboard.subjectsCount", "fan")}</span>
+          </div>
           {subjects && subjects.length > 0 ? (
-            <article className="p-4 sm:p-5 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-2xl shadow-premium min-w-0">
-              <div className="flex flex-col gap-4">
-                {(subjects || []).map((subject: GenericRow, idx: number) => (
-                  <div key={subject.name} className={`${idx > 0 ? 'pt-4 border-t border-line dark:border-white/10' : ''}`}>
-                    <div className="flex items-center justify-between gap-2 mb-3">
-                      <h3 className="min-w-0 truncate text-base sm:text-lg font-bold text-navy-900 font-display dark:text-white" title={String(subject.name || "")}>{subject.name}</h3>
-                      <span className="shrink-0 px-2.5 py-1 text-[11px] sm:text-xs font-bold text-navy-700 bg-surface-soft dark:bg-white/10 dark:text-white rounded-md">{tt("student.dashboard.level", "Daraja")}: {subject.level || "-"}</span>
-                    </div>
-                    <div className="w-full h-2.5 bg-[#e2e8f0] dark:bg-navy-900/50 rounded-full overflow-hidden mb-2">
-                      <div 
-                        className="h-full bg-cyan-500 dark:bg-gradient-to-r dark:from-cyan-400 dark:to-cyan-300 rounded-full transition-all duration-1000 ease-out" 
-                        style={{ width: `${Math.min(100, Number(subject.progress || 0))}%` }} 
-                      />
-                    </div>
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 sm:gap-2 text-sm">
-                      <span className="font-medium text-ink-700 dark:text-navy-200">{subject.progress || 0}% {tt("student.dashboard.progress", "progress")}</span>
-                      <span className="text-xs font-semibold text-ink-500 dark:text-navy-300">
-                        {tt("student.dashboard.words", "Words")}: {Number(subject.words_learned || 0)}
-                      </span>
-                    </div>
+            <div className="flex flex-col gap-3">
+              {subjects.map((subject: GenericRow, idx: number) => (
+                <div key={subject.name || idx} className="p-3 rounded-xl bg-slate-50 dark:bg-white/[0.03] border border-slate-100 dark:border-white/[0.06]">
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <h4 className="min-w-0 truncate text-sm font-bold text-navy-950 dark:text-white" title={String(subject.name || "")}>
+                      {subject.name}
+                    </h4>
+                    <span className="shrink-0 px-2 py-0.5 text-[10px] font-black text-cyan-700 bg-cyan-500/10 dark:text-cyan-300 dark:bg-cyan-400/15 rounded-md">
+                      {subject.level || "-"}
+                    </span>
                   </div>
-                ))}
-              </div>
-            </article>
-          ) : null}
+                  <div className="w-full h-2 bg-slate-200 dark:bg-white/10 rounded-full overflow-hidden mb-1.5">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-700"
+                      style={{ width: `${Math.min(100, Number(subject.progress || 0))}%` }}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-ink-500 dark:text-white/60">
+                    <span>{subject.progress || 0}% {tt("student.dashboard.progress", "progress")}</span>
+                    <span>{tt("student.dashboard.words", "Words")}: <strong className="text-navy-900 dark:text-white">{Number(subject.words_learned || 0)}</strong></span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-center text-sm font-semibold text-ink-500 dark:text-white/50 py-6">
+              {tt("student.dashboard.noSubjects", "Fanlar biriktirilmagan")}
+            </p>
+          )}
         </div>
-        
-        {/* Quick Start Card */}
-        <article className="p-4 sm:p-5 bg-gradient-to-br from-navy-900 to-navy-800 rounded-2xl border border-white/10 shadow-[0_0_30px_rgba(0,11,59,0.2)] flex flex-col justify-between h-full relative overflow-hidden compact-hero-card logo-gradient-card">
-          <div className="absolute top-0 right-0 w-40 h-40 bg-cyan-500/20 blur-[60px] pointer-events-none" />
-          <div className="relative z-10 mb-4">
-            <h3 className="text-lg sm:text-xl font-black text-white font-display mb-1">{tt("student.dashboard.quickStart", "Tezkor boshlash")}</h3>
-            <p className="text-xs sm:text-sm font-medium text-cyan-100">{tt("student.dashboard.chooseSection", "Bo'lim tanlang:")}</p>
+
+        {/* Daily Goals / Activity Panel */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">🎯 {tt("student.dashboard.dailyGoals", "Kunlik statistika")}</span>
+            <span className="admin-dash-panel-badge">{tt("student.dashboard.daily", "Kunlik")}</span>
           </div>
-          <div className="grid grid-cols-2 gap-2.5 relative z-10">
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("daily-test-process")}>
-              <span className="truncate">{tt("student.dashboard.dailyTest", "Kunlik Test")}</span> <span>→</span>
+          {[
+            ["🔥 " + tt("student.dashboard.streak", "Streak"), `${stats.streak_days || 0} ${tt("common.days", "kun")}`],
+            ["📝 " + tt("student.dashboard.tests", "Topshirilgan testlar"), `${stats.tests_completed || 0} ta`],
+            ["📖 " + tt("student.dashboard.words", "Yodlangan so'zlar"), `${stats.words_learned || 0} ta`],
+            ["📐 " + tt("student.grammar.kicker", "Grammatika mavzulari"), `${stats.topics_completed || 0} ta`],
+          ].map(([label, value]) => (
+            <div key={String(label)} className="admin-alert-item">
+              <span>{String(label)}</span>
+              <strong>{String(value)}</strong>
+            </div>
+          ))}
+          <div className="mt-3 text-[11px] font-semibold text-ink-500 dark:text-white/50 flex items-center justify-between">
+            <span>🏆 D'Coin: <strong className="text-cyan-600 dark:text-cyan-300 font-black">{Number(stats.total_dcoin || 0).toFixed(1)}</strong></span>
+            <span>{tt("student.dashboard.globalRank", "Global rank")}: <strong className="text-amber-600 dark:text-gold-300">#{stats.global_rank || "-"}</strong></span>
+          </div>
+        </div>
+
+        {/* Quick Start Panel (iOS & Android App Style) */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">⚡ {tt("student.dashboard.quickStart", "Tezkor bo'limlar")}</span>
+            <span className="admin-dash-panel-badge">Mobile App</span>
+          </div>
+          <div className="app-quick-actions-grid">
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("daily-test-process")}>
+              <div className="app-quick-action-icon">📝</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("student.dashboard.dailyTest", "Kunlik Test")}</div>
+                <div className="app-quick-action-sub">{tt("student.dashboard.practice", "Sinov")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("vocabulary")}>
-              <span className="truncate">{tt("student.dashboard.vocabulary", "Lug'at")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("vocabulary")}>
+              <div className="app-quick-action-icon">📖</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("student.dashboard.vocabulary", "Lug'at")}</div>
+                <div className="app-quick-action-sub">{tt("student.dashboard.words", "So'zlar")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("arena-boss")}>
-              <span className="truncate">{tt("arena.boss.title", "Boss Arena")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("arena-boss")}>
+              <div className="app-quick-action-icon">⚔️</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("arena.boss.title", "Boss Arena")}</div>
+                <div className="app-quick-action-sub">{tt("arena.battle", "Jang")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate("duel-1v1")}>
-              <span className="truncate">{tt("student.dashboard.duel1v1", "Duel 1v1")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("duel-1v1")}>
+              <div className="app-quick-action-icon">🤺</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("student.dashboard.duel1v1", "Duel 1v1")}</div>
+                <div className="app-quick-action-sub">{tt("arena.duel", "Musobaqa")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("grammar")}>
+              <div className="app-quick-action-icon">📐</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("student.grammar.kicker", "Grammatika")}</div>
+                <div className="app-quick-action-sub">{tt("student.dashboard.topics", "Qoidalar")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("dcoin")}>
+              <div className="app-quick-action-icon">🎁</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("student.dashboard.dcoinStore", "D'Coin Store")}</div>
+                <div className="app-quick-action-sub">{tt("student.dashboard.rewards", "Mukofot")}</div>
+              </div>
             </button>
           </div>
-        </article>
-      </section>
+        </div>
+      </div>
     </div>
   );
 }
@@ -10800,6 +10913,9 @@ function TeacherSection({
   const [tempUpcomingCount, setTempUpcomingCount] = useState(3);
   const [perfStudentId, setPerfStudentId] = useState("");
   const [perfSearch, setPerfSearch] = useState("");
+  const [perfSubjectFilter, setPerfSubjectFilter] = useState("all");
+  const [perfLevelFilter, setPerfLevelFilter] = useState("all");
+  const [perfPage, setPerfPage] = useState(1);
   const [perfDetail, setPerfDetail] = useState<GenericRow | null>(null);
   const [arenaStatus, setArenaStatus] = useState<GenericRow | null>(null);
   const [arenaQuestionCount, setArenaQuestionCount] = useState(10);
@@ -10814,6 +10930,8 @@ function TeacherSection({
   const [teacherDcoinRows, setTeacherDcoinRows] = useState<GenericRow[]>([]);
   const [teacherDcoinDraft, setTeacherDcoinDraft] = useState<Record<number, { amount: string; subject: string; reason: string }>>({});
   const [teacherDpointSearch, setTeacherDpointSearch] = useState("");
+  const [teacherDpointSubjectFilter, setTeacherDpointSubjectFilter] = useState("all");
+  const [teacherDpointPage, setTeacherDpointPage] = useState(1);
   const [teacherTestHistoryRows, setTeacherTestHistoryRows] = useState<GenericRow[]>(Array.isArray(data.test_history) ? data.test_history as GenericRow[] : []);
   const [teacherDailySubject, setTeacherDailySubject] = useState(
     normalizeSubjectLabel(String((Array.isArray(data.groups) ? data.groups[0]?.subject : "") || user.subjects?.[0] || "English")) || "English",
@@ -11765,7 +11883,7 @@ function TeacherSection({
                       <span className="inline-block px-2 py-1 text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg border border-indigo-100 dark:border-indigo-500/20">{group.subject || "-"}</span>
                     </td>
                     <td>
-                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{group.level || "-"}</span>
+                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">{formatLevelDisplay(group.level)}</span>
                     </td>
                     <td>
                       <div className="flex flex-col gap-0.5">
@@ -11847,7 +11965,7 @@ function TeacherSection({
                 <div className="row-between gap-3">
                   <div>
                     <h3>🏫 {selectedTeacherGroup.name || "Guruhni boshqarish"}</h3>
-                    <p className="text-sm text-ink-500 dark:text-navy-300">{selectedTeacherGroup.subject || "-"} · {selectedTeacherGroup.level || "-"}</p>
+                    <p className="text-sm text-ink-500 dark:text-navy-300">{selectedTeacherGroup.subject || "-"} · {formatLevelDisplay(selectedTeacherGroup.level)}</p>
                   </div>
                   <button className="admin-modal-close" type="button" onClick={() => setSelectedGroupId(0)}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -12874,129 +12992,252 @@ if (section === "attendance") {
 
   if (section === "performance") {
     const perfRows = teacherDcoinRows.length ? teacherDcoinRows : (data.performance?.students || []).map((row: GenericRow) => ({
-      student: { id: row.user_id, full_name: row.full_name, phone: row.phone, level: row.level },
+      student: {
+        id: row.user_id,
+        full_name: row.full_name,
+        phone: row.phone,
+        level: row.level,
+        login_id: row.login_id,
+        profile_image_url: row.profile_image_url || row.avatar_url || "",
+      },
       subjects: row.subjects || [],
       balances: {},
       balance_total: row.dcoin_total,
+      dpoints_total: row.dpoints_total ?? row.dcoin_total,
       adjustment_allowed: true,
       tests_completed: row.tests_completed || 0,
       accuracy_percent: row.accuracy_percent || 0,
     }));
+
+    const allSubjects: string[] = Array.from(
+      new Set(perfRows.flatMap((r: GenericRow) => normalizeSubjectList(r.subjects || [], ["English"])))
+    );
+
     const filteredRows = perfRows.filter((row: GenericRow) => {
       const student = row.student || {};
       const q = perfSearch.trim().toLowerCase();
-      if (!q) return true;
-      return [
+      const matchesQuery = !q || [
         String(student.full_name || row.full_name || ""),
         String(student.phone || row.phone || ""),
+        String(student.login_id || row.login_id || ""),
         String(student.level || row.level || ""),
+        formatLevelDisplay(student.level || row.level),
         String((row.subjects || []).join(", ")),
       ].join(" ").toLowerCase().includes(q);
-    });
-    return (
-      <div className="flex flex-col gap-8 pb-12 animate-fade-in">
 
-        <section className="p-6 md:p-8 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-[2rem] shadow-premium">
-          <div className="teacher-panel-toolbar flex gap-3">
-            <input
-              className="flex-1 px-4 py-3 bg-surface-soft border border-line dark:bg-navy-900/50 dark:border-white/10 rounded-xl outline-none focus:ring-2 focus:ring-cyan-500 text-navy-900 dark:text-white font-semibold placeholder:text-ink-400"
-              value={perfSearch}
-              onChange={(event) => setPerfSearch(event.target.value)}
-              placeholder="Search by student, phone, level, subject"
-            />
+      const subjects = normalizeSubjectList(row.subjects || [], ["English"]);
+      const matchesSubject = perfSubjectFilter === "all" || subjects.includes(perfSubjectFilter);
+
+      const studentLevelDisplay = formatLevelDisplay(student.level || row.level);
+      const matchesLevel = perfLevelFilter === "all" || studentLevelDisplay === perfLevelFilter || String(student.level || row.level || "").toUpperCase() === perfLevelFilter.toUpperCase();
+
+      return matchesQuery && matchesSubject && matchesLevel;
+    });
+
+    const perfPerPage = 25;
+    const totalPerfPages = Math.max(1, Math.ceil(filteredRows.length / perfPerPage));
+    const pagedPerfRows = filteredRows.slice((perfPage - 1) * perfPerPage, perfPage * perfPerPage);
+
+    return (
+      <div className="admin-groups-page">
+        {/* ── Page Header ── */}
+        <div className="admin-page-header">
+          <div>
+            <h2>📊 {tt("section.performance", "Talaba natijalari")}</h2>
+            <p>{tt("teacher.performance.subtitle", "O'quvchilar ko'rsatkichlari, test natijalari va D'Point statistikasi")} · <strong>{filteredRows.length}</strong> {tt("admin.users.studentsWord", "o'quvchi")}</p>
           </div>
-        </section>
-        <section className="p-6 md:p-8 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-[2rem] shadow-premium">
-          <h3 className="text-xl font-bold text-navy-900 dark:text-white font-display mb-6">Students</h3>
-          <div className="table-wrap teacher-scroll-table teacher-performance-table-wrap overflow-x-auto -mx-2 px-2">
-            <table className="teacher-wide-table teacher-performance-table min-w-[620px]">
+          <span className="admin-dash-panel-badge">{filteredRows.length} o'quvchi</span>
+        </div>
+
+        {/* ── Filter Card ── */}
+        <div className="admin-filter-card">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="admin-form-label">
+              {tt("common.search", "Qidirish")}
+              <input
+                value={perfSearch}
+                onChange={(event) => { setPerfPage(1); setPerfSearch(event.target.value); }}
+                placeholder={tt("teacher.performance.searchPlaceholder", "Ism, telefon, ID yoki daraja...")}
+              />
+            </label>
+            <label className="admin-form-label">
+              {tt("admin.groups.table.subject", "Fan")}
+              <select value={perfSubjectFilter} onChange={(e) => { setPerfPage(1); setPerfSubjectFilter(e.target.value); }}>
+                <option value="all">{tt("admin.filter.allSubjects", "Barcha fanlar")}</option>
+                {allSubjects.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+            <label className="admin-form-label">
+              {tt("admin.groups.table.level", "Daraja")}
+              <select value={perfLevelFilter} onChange={(e) => { setPerfPage(1); setPerfLevelFilter(e.target.value); }}>
+                <option value="all">{tt("admin.filter.allLevels", "Barcha darajalar")}</option>
+                {["A1 (Beginner)", "A2 (Pre-Intermediate)", "B1 (Intermediate)", "B2 (Upper-Intermediate)", "C1 (Advanced)"].map((lvl) => (
+                  <option key={lvl} value={lvl}>{lvl}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* ── Performance Table ── */}
+        <div className="admin-table-card">
+          <div className="admin-groups-table-wrap">
+            <table className="admin-groups-table">
               <thead>
                 <tr>
-                  <th>Student</th>
-                  <th>Phone</th>
-                  <th>Level</th>
-                  <th>Subjects</th>
-                  <th>Tests</th>
-                  <th>Accuracy</th>
-                  <th>D'Point</th>
-                  <th>Action</th>
+                  <th>{tt("admin.users.table.name", "O'quvchi")}</th>
+                  <th>{tt("common.phone", "Telefon")}</th>
+                  <th>{tt("admin.groups.table.level", "Daraja")}</th>
+                  <th>{tt("admin.groups.table.subject", "Fanlar")}</th>
+                  <th>{tt("student.dashboard.tests", "Testlar")}</th>
+                  <th>{tt("common.accuracy", "Aniqlik")}</th>
+                  <th>{tt("common.dpoint", "D'Point")}</th>
+                  <th>{tt("admin.users.table.actions", "Amallar")}</th>
                 </tr>
               </thead>
               <tbody>
-            {filteredRows.map((row: GenericRow) => {
-              const student = row.student || {};
-              const studentId = Number(student.id || row.user_id || 0);
-              return (
-                <tr key={`perf-row-${studentId}`}>
-                  <td><UserNameCell row={student} name={student.full_name || row.full_name || `Student #${studentId}`} sub={student.login_id || row.login_id || ""} /></td>
-                  <td>{student.phone || row.phone || "-"}</td>
-                  <td>{student.level || row.level || "-"}</td>
-                  <td>{normalizeSubjectList(row.subjects || [], ["English"]).join(", ")}</td>
-                  <td>{Number(row.tests_completed || 0)}</td>
-                  <td>{Number(row.accuracy_percent || 0).toFixed(1)}%</td>
-                  <td>{Number(row.dpoints_total ?? row.balance_total ?? 0).toFixed(1)}</td>
-                  <td>
-                    <button
-                      className="btn btn-soft small"
-                      onClick={async () => {
-                        setPerfStudentId(String(studentId));
-                        const result = await onApiCall(`/teacher/student-performance/${studentId}`, undefined, "GET");
-                        setPerfDetail(result);
-                      }}
-                    >
-                      Batafsil
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-            {!filteredRows.length && (
-              <tr><td colSpan={8} className="text-center text-ink-500">No students found.</td></tr>
-            )}
+                {pagedPerfRows.map((row: GenericRow) => {
+                  const student = row.student || {};
+                  const studentId = Number(student.id || row.user_id || 0);
+                  const subjects = normalizeSubjectList(row.subjects || [], ["English"]);
+                  return (
+                    <tr key={`perf-row-${studentId}`}>
+                      <td>
+                        <UserNameCell
+                          row={student}
+                          name={student.full_name || row.full_name || `Student #${studentId}`}
+                          sub={student.login_id || row.login_id || ""}
+                        />
+                      </td>
+                      <td className="font-mono text-xs text-ink-600 dark:text-navy-300 whitespace-nowrap">
+                        {student.phone || row.phone || "—"}
+                      </td>
+                      <td>
+                        <span className="inline-block px-2.5 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">
+                          {formatLevelDisplay(student.level || row.level)}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="flex flex-wrap gap-1">
+                          {subjects.map((s) => (
+                            <span key={s} className="inline-block px-2 py-0.5 text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-md border border-indigo-100 dark:border-indigo-500/20">
+                              {s}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="font-semibold text-sm text-navy-900 dark:text-white">
+                        {Number(row.tests_completed || 0)}
+                      </td>
+                      <td>
+                        <span className="font-bold text-sm text-emerald-600 dark:text-emerald-400">
+                          {Number(row.accuracy_percent || 0).toFixed(1)}%
+                        </span>
+                      </td>
+                      <td>
+                        <span className="font-bold text-sm text-amber-600 dark:text-gold-300">
+                          {Number(row.dpoints_total ?? row.balance_total ?? 0).toFixed(1)}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          className="admin-btn-detail"
+                          onClick={async () => {
+                            setPerfStudentId(String(studentId));
+                            const result = await onApiCall(`/teacher/student-performance/${studentId}`, undefined, "GET");
+                            setPerfDetail(result);
+                          }}
+                        >
+                          {tt("admin.users.action.details", "Batafsil")}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!filteredRows.length && (
+                  <tr>
+                    <td colSpan={8} className="text-center py-8 text-ink-500 font-medium">
+                      {tt("common.noData", "O'quvchilar topilmadi.")}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-        </section>
-        {perfDetail ? (
-          <ModalPortal open={true}>
-          <div className="overlay-modal-backdrop" onClick={() => setPerfDetail(null)}>
-            <article className="overlay-modal-card mobile-sheet w-full max-w-3xl mx-auto flex flex-col max-h-[90vh]" onClick={(event) => event.stopPropagation()}>
-              <div className="row-between mb-4 shrink-0">
-                <h3>{String(perfDetail.student?.full_name || "Student detail")}</h3>
-                <button className="modal-icon-close" type="button" onClick={() => setPerfDetail(null)}>
-                  <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+
+          {/* ── Pagination ── */}
+          {totalPerfPages > 1 && (
+            <div className="admin-pagination">
+              <span className="admin-pagination-info">
+                {perfPage} / {totalPerfPages} {tt("common.page", "sahifa")} ({filteredRows.length} {tt("admin.users.totalWord", "jami")})
+              </span>
+              <div className="admin-pagination-btns">
+                <button
+                  type="button"
+                  disabled={perfPage <= 1}
+                  className="admin-page-btn"
+                  onClick={() => setPerfPage((p) => Math.max(1, p - 1))}
+                >
+                  ◀ {tt("common.prev", "Oldingi")}
+                </button>
+                <button
+                  type="button"
+                  disabled={perfPage >= totalPerfPages}
+                  className="admin-page-btn"
+                  onClick={() => setPerfPage((p) => Math.min(totalPerfPages, p + 1))}
+                >
+                  {tt("common.next", "Keyingi")} ▶
                 </button>
               </div>
-              <div className="overflow-y-auto space-y-4 pr-2">
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                <div className="kv"><span>Level</span><strong>{perfDetail.student?.level || "-"}</strong></div>
-                <div className="kv"><span>Total D'Point</span><strong>{Number(perfDetail.dpoints_total ?? perfDetail.dcoin_total ?? 0).toFixed(1)}</strong></div>
-                <div className="kv"><span>Tests Taken</span><strong>{Number(perfDetail.monthly?.tests_taken || 0)}</strong></div>
-                <div className="kv"><span>Tests Completed</span><strong>{Number(perfDetail.monthly?.tests_completed || 0)}</strong></div>
-                <div className="kv"><span>Accuracy</span><strong>{Number(perfDetail.monthly?.accuracy_percent || 0).toFixed(1)}%</strong></div>
-                <div className="kv"><span>Words Learned</span><strong>{Number(perfDetail.monthly?.words_learned || 0)}</strong></div>
-              </div>
-              <div className="table-wrap teacher-scroll-table teacher-performance-detail-table-wrap">
-                <table className="teacher-wide-table teacher-performance-detail-table">
-                  <thead>
-                    <tr><th>Date</th><th>Correct</th><th>Wrong</th><th>Skipped</th><th>D'Point</th></tr>
-                  </thead>
-                  <tbody>
-                    {(perfDetail.tests || []).slice(0, 20).map((row: GenericRow, idx: number) => (
-                      <tr key={`perf-test-${idx}`}>
-                        <td>{row.test_date || "-"}</td>
-                        <td>{row.correct_count || 0}</td>
-                        <td>{row.wrong_count || 0}</td>
-                        <td>{row.unanswered_count || 0}</td>
-                        <td>{Number(row.net_dpoints ?? row.net_dcoins ?? 0).toFixed(1)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              </div>
-            </article>
-          </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Student Performance Detail Modal ── */}
+        {perfDetail ? (
+          <ModalPortal open={true}>
+            <div className="overlay-modal-backdrop" onClick={() => setPerfDetail(null)}>
+              <article className="overlay-modal-card mobile-sheet w-full max-w-3xl mx-auto flex flex-col max-h-[90vh] p-6 md:p-8 rounded-[2rem] bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                <div className="row-between mb-4 shrink-0">
+                  <h3>{String(perfDetail.student?.full_name || "Student detail")}</h3>
+                  <button className="modal-icon-close" type="button" onClick={() => setPerfDetail(null)}>
+                    <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                  </button>
+                </div>
+                <div className="overflow-y-auto space-y-4 pr-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                    <div className="kv"><span>Level</span><strong>{formatLevelDisplay(perfDetail.student?.level)}</strong></div>
+                    <div className="kv"><span>Total D'Point</span><strong>{Number(perfDetail.dpoints_total ?? perfDetail.dcoin_total ?? 0).toFixed(1)}</strong></div>
+                    <div className="kv"><span>Tests Taken</span><strong>{Number(perfDetail.monthly?.tests_taken || 0)}</strong></div>
+                    <div className="kv"><span>Tests Completed</span><strong>{Number(perfDetail.monthly?.tests_completed || 0)}</strong></div>
+                    <div className="kv"><span>Accuracy</span><strong>{Number(perfDetail.monthly?.accuracy_percent || 0).toFixed(1)}%</strong></div>
+                    <div className="kv"><span>Words Learned</span><strong>{Number(perfDetail.monthly?.words_learned || 0)}</strong></div>
+                  </div>
+                  <div className="admin-table-card mt-4">
+                    <div className="admin-groups-table-wrap">
+                      <table className="admin-groups-table">
+                        <thead>
+                          <tr><th>Sana</th><th>To'g'ri</th><th>Xato</th><th>O'tkazildi</th><th>D'Point</th></tr>
+                        </thead>
+                        <tbody>
+                          {(perfDetail.tests || []).slice(0, 30).map((row: GenericRow, idx: number) => (
+                            <tr key={`perf-test-${idx}`}>
+                              <td>{row.test_date || "-"}</td>
+                              <td className="font-semibold text-emerald-600 dark:text-emerald-400">{row.correct_count || 0}</td>
+                              <td className="font-semibold text-rose-600 dark:text-rose-400">{row.wrong_count || 0}</td>
+                              <td>{row.unanswered_count || 0}</td>
+                              <td className="font-bold text-amber-600 dark:text-gold-300">{Number(row.net_dpoints ?? row.net_dcoins ?? 0).toFixed(1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
           </ModalPortal>
         ) : null}
       </div>
@@ -13145,82 +13386,140 @@ if (section === "attendance") {
 
   if (section === "dcoin") {
     const rows = teacherDcoinRows.length ? teacherDcoinRows : (data.performance?.students || []).map((row: GenericRow) => ({
-      student: { id: row.user_id, full_name: row.full_name, profile_image_url: row.profile_image_url || row.avatar_url || "" },
+      student: {
+        id: row.user_id,
+        full_name: row.full_name,
+        profile_image_url: row.profile_image_url || row.avatar_url || "",
+        login_id: row.login_id,
+        phone: row.phone,
+        level: row.level,
+      },
       subjects: row.subjects || [],
       balances: {},
       balance_total: row.dcoin_total,
+      dpoints_total: row.dpoints_total ?? row.dcoin_total,
       adjustment_allowed: true,
+      rules: row.rules || {},
     }));
+
+    const allDcoinSubjects: string[] = Array.from(
+      new Set(rows.flatMap((r: GenericRow) => normalizeSubjectList(r.subjects || [], ["English"])))
+    );
+
     const filteredRows = rows.filter((row: GenericRow) => {
       const student = row.student || {};
       const q = teacherDpointSearch.trim().toLowerCase();
-      if (!q) return true;
-      return [
+      const matchesQuery = !q || [
         String(student.full_name || row.full_name || ""),
         String(student.login_id || row.login_id || ""),
         String(student.phone || row.phone || ""),
         String((row.subjects || []).join(", ")),
       ].join(" ").toLowerCase().includes(q);
-    });
-    return (
-      <div className="page-stack">
 
-        <section className="panel-card">
-          <div className="row-between">
-            <h3>O'quvchilar</h3>
+      const subjects = normalizeSubjectList(row.subjects || [], ["English"]);
+      const matchesSubject = teacherDpointSubjectFilter === "all" || subjects.includes(teacherDpointSubjectFilter);
+
+      return matchesQuery && matchesSubject;
+    });
+
+    const dcoinPerPage = 25;
+    const totalDcoinPages = Math.max(1, Math.ceil(filteredRows.length / dcoinPerPage));
+    const pagedDcoinRows = filteredRows.slice((teacherDpointPage - 1) * dcoinPerPage, teacherDpointPage * dcoinPerPage);
+
+    return (
+      <div className="admin-groups-page">
+        {/* ── Page Header ── */}
+        <div className="admin-page-header">
+          <div>
+            <h2>🏅 {tt("teacher.dpoint.title", "D'Point Tarqatish")}</h2>
+            <p>{tt("teacher.dpoint.subtitle", "O'quvchilarga D'Point berish va rag'batlantirish tizimi")} · <strong>{filteredRows.length}</strong> {tt("admin.users.studentsWord", "o'quvchi")}</p>
           </div>
-          <input
-            value={teacherDpointSearch}
-            onChange={(event) => setTeacherDpointSearch(event.target.value)}
-            placeholder="Student qidirish"
-          />
-          <div className="table-wrap teacher-scroll-table teacher-dpoint-table-wrap overflow-x-auto -mx-2 px-2">
-            <table className="leaderboard-table teacher-wide-table teacher-dpoint-table min-w-[620px]">
+          <span className="admin-dash-panel-badge">{filteredRows.length} o'quvchi</span>
+        </div>
+
+        {/* ── Filter Card ── */}
+        <div className="admin-filter-card">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="admin-form-label">
+              {tt("common.search", "Qidirish")}
+              <input
+                value={teacherDpointSearch}
+                onChange={(event) => { setTeacherDpointPage(1); setTeacherDpointSearch(event.target.value); }}
+                placeholder={tt("teacher.dpoint.searchPlaceholder", "Student ismi, login ID yoki fan bo'yicha...")}
+              />
+            </label>
+            <label className="admin-form-label">
+              {tt("admin.groups.table.subject", "Fan")}
+              <select value={teacherDpointSubjectFilter} onChange={(e) => { setTeacherDpointPage(1); setTeacherDpointSubjectFilter(e.target.value); }}>
+                <option value="all">{tt("admin.filter.allSubjects", "Barcha fanlar")}</option>
+                {allDcoinSubjects.map((s) => (
+                  <option key={s} value={s}>{s}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {/* ── Table Card ── */}
+        <div className="admin-table-card">
+          <div className="admin-groups-table-wrap">
+            <table className="admin-groups-table">
               <thead>
                 <tr>
-                  <th>Student</th>
-                  <th>D&apos;coin (derived)</th>
-                  <th>Subject</th>
-                  <th>Amount</th>
-                  <th>Reason</th>
-                  <th>Actions</th>
+                  <th>{tt("admin.users.table.name", "O'quvchi")}</th>
+                  <th>{tt("common.dpointBalance", "D'Point Balans")}</th>
+                  <th>{tt("admin.groups.table.subject", "Fan")}</th>
+                  <th style={{ minWidth: 150 }}>{tt("common.amount", "Miqdor")}</th>
+                  <th style={{ minWidth: 200 }}>{tt("common.reason", "Sabab")}</th>
+                  <th>{tt("admin.users.table.actions", "Amallar")}</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row: GenericRow) => {
+                {pagedDcoinRows.map((row: GenericRow) => {
                   const student = row.student || {};
                   const studentId = Number(student.id || row.user_id || 0);
-	                  const subjects = normalizeSubjectList(row.subjects || [], ["English"]);
-	                  const draft = teacherDcoinDraft[studentId] || { amount: "", subject: subjects[0] || "English", reason: "" };
-	                  const allowed = Boolean(row.adjustment_allowed);
-	                  const rules = row.rules || {};
-	                  const giveMax = Math.max(0, Number(rules.give_max ?? rules.daily_remaining ?? 500) || 0);
-	                  const takeMax = Math.max(1, Number(rules.take_max ?? 500) || 500);
-	                  const dailyMax = Math.max(0, Number(rules.daily_max ?? 500) || 500);
-	                  const dailyRemaining = Math.max(0, Number(rules.daily_remaining ?? giveMax) || 0);
-	                  const canSubmit = allowed && Number(draft.amount || 0) > 0 && String(draft.reason || "").trim().length >= 3;
-	                  const validateDpointAmount = (mode: "give" | "take") => {
-	                    const rawAmount = Number(draft.amount || 0);
-	                    if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
-	                      emitUiToast("D'Point miqdorini kiriting.", "error");
-	                      return null;
-	                    }
-	                    if (mode === "give" && rawAmount > giveMax) {
-	                      emitUiToast(`24 soatlik limitdan oshdi. Qolgan: ${dailyRemaining.toFixed(1)} D'Point`, "error");
-	                      return null;
-	                    }
-	                    if (mode === "take" && rawAmount > takeMax) {
-	                      emitUiToast(`Maximum olish miqdori: ${takeMax.toFixed(1)} D'Point`, "error");
-	                      return null;
-	                    }
-	                    return rawAmount;
-	                  };
-	                  return (
+                  const subjects = normalizeSubjectList(row.subjects || [], ["English"]);
+                  const draft = teacherDcoinDraft[studentId] || { amount: "", subject: subjects[0] || "English", reason: "" };
+                  const allowed = Boolean(row.adjustment_allowed);
+                  const rules = row.rules || {};
+                  const giveMax = Math.max(0, Number(rules.give_max ?? rules.daily_remaining ?? 500) || 0);
+                  const takeMax = Math.max(1, Number(rules.take_max ?? 500) || 500);
+                  const dailyMax = Math.max(0, Number(rules.daily_max ?? 500) || 500);
+                  const dailyRemaining = Math.max(0, Number(rules.daily_remaining ?? giveMax) || 0);
+                  const canSubmit = allowed && Number(draft.amount || 0) > 0 && String(draft.reason || "").trim().length >= 3;
+                  const validateDpointAmount = (mode: "give" | "take") => {
+                    const rawAmount = Number(draft.amount || 0);
+                    if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+                      emitUiToast("D'Point miqdorini kiriting.", "error");
+                      return null;
+                    }
+                    if (mode === "give" && rawAmount > giveMax) {
+                      emitUiToast(`24 soatlik limitdan oshdi. Qolgan: ${dailyRemaining.toFixed(1)} D'Point`, "error");
+                      return null;
+                    }
+                    if (mode === "take" && rawAmount > takeMax) {
+                      emitUiToast(`Maximum olish miqdori: ${takeMax.toFixed(1)} D'Point`, "error");
+                      return null;
+                    }
+                    return rawAmount;
+                  };
+                  return (
                     <tr key={`teacher-dcoin-${studentId}`}>
-                      <td><UserNameCell row={student} name={student.full_name || row.full_name || `Student #${studentId}`} sub={student.login_id || row.login_id || ""} /></td>
-                      <td>{Number(row.balance_total || 0).toFixed(1)}</td>
+                      <td>
+                        <UserNameCell
+                          row={student}
+                          name={student.full_name || row.full_name || `Student #${studentId}`}
+                          sub={student.login_id || row.login_id || ""}
+                        />
+                      </td>
+                      <td>
+                        <span className="font-bold text-sm text-amber-600 dark:text-gold-300 whitespace-nowrap">
+                          {Number(row.balance_total ?? row.dpoints_total ?? 0).toFixed(1)} D'P
+                        </span>
+                      </td>
                       <td>
                         <select
+                          className="h-8 px-2.5 text-xs font-bold rounded-lg bg-surface-soft dark:bg-navy-900 border border-line dark:border-white/10 outline-none focus:border-cyan-500 text-navy-900 dark:text-white"
                           value={draft.subject}
                           onChange={(event) => setTeacherDcoinDraft((prev) => ({ ...prev, [studentId]: { ...draft, subject: event.target.value } }))}
                         >
@@ -13229,65 +13528,105 @@ if (section === "attendance") {
                       </td>
                       <td>
                         <input
-	                          type="number"
-	                          value={draft.amount}
-	                          max={giveMax || 500}
-	                          onChange={(event) => {
-	                            const nextAmount = event.target.value;
-	                            setTeacherDcoinDraft((prev) => ({ ...prev, [studentId]: { ...draft, amount: nextAmount } }));
-	                            const numeric = Number(nextAmount || 0);
-	                            if (Number.isFinite(numeric) && numeric > giveMax) {
-	                              emitUiToast(`24 soatlik limitdan oshdi. Qolgan: ${dailyRemaining.toFixed(1)} D'Point`, "error");
-	                            }
-	                          }}
-	                        />
-	                        <div className="muted tiny">24 soat: {dailyRemaining.toFixed(1)} / {dailyMax.toFixed(1)} D&apos;Point</div>
-	                      </td>
+                          type="number"
+                          className="h-8 px-2.5 text-xs font-semibold rounded-lg bg-surface-soft dark:bg-navy-900 border border-line dark:border-white/10 outline-none focus:border-cyan-500 w-24 text-navy-900 dark:text-white"
+                          placeholder="0"
+                          value={draft.amount}
+                          max={giveMax || 500}
+                          onChange={(event) => {
+                            const nextAmount = event.target.value;
+                            setTeacherDcoinDraft((prev) => ({ ...prev, [studentId]: { ...draft, amount: nextAmount } }));
+                            const numeric = Number(nextAmount || 0);
+                            if (Number.isFinite(numeric) && numeric > giveMax) {
+                              emitUiToast(`24 soatlik limitdan oshdi. Qolgan: ${dailyRemaining.toFixed(1)} D'Point`, "error");
+                            }
+                          }}
+                        />
+                        <div className="text-[10px] text-ink-400 dark:text-navy-400 font-semibold mt-0.5 whitespace-nowrap">
+                          24 soat: {dailyRemaining.toFixed(0)} / {dailyMax.toFixed(0)}
+                        </div>
+                      </td>
                       <td>
                         <input
+                          type="text"
+                          className="h-8 px-2.5 text-xs font-medium rounded-lg bg-surface-soft dark:bg-navy-900 border border-line dark:border-white/10 outline-none focus:border-cyan-500 w-full min-w-[140px] text-navy-900 dark:text-white"
+                          placeholder={tt("common.reasonPlaceholder", "Faol qatnashgani uchun...")}
                           value={draft.reason}
                           onChange={(event) => setTeacherDcoinDraft((prev) => ({ ...prev, [studentId]: { ...draft, reason: event.target.value } }))}
                         />
                       </td>
                       <td>
-                        <div className="button-grid inline">
+                        <div className="admin-action-btns">
                           <button
-	                            className="btn btn-primary small"
-	                            disabled={!canSubmit}
-	                            onClick={async () => {
-	                              const amount = validateDpointAmount("give");
-	                              if (amount === null) return;
-	                              const result = await onApiCall(`/teacher/students/${studentId}/dpoint-adjust`, { amount, subject: draft.subject, reason: draft.reason }, "POST", "D'Point berildi");
-	                              applyTeacherDpointResult(studentId, result);
-	                            }}
+                            type="button"
+                            className="admin-btn-unblock"
+                            disabled={!canSubmit}
+                            onClick={async () => {
+                              const amount = validateDpointAmount("give");
+                              if (amount === null) return;
+                              const result = await onApiCall(`/teacher/students/${studentId}/dpoint-adjust`, { amount, subject: draft.subject, reason: draft.reason }, "POST", "D'Point berildi");
+                              applyTeacherDpointResult(studentId, result);
+                            }}
                           >
-                            + berish
+                            + Berish
                           </button>
                           <button
-	                            className="btn btn-soft small"
-	                            disabled={!canSubmit}
-	                            onClick={async () => {
-	                              const rawAmount = validateDpointAmount("take");
-	                              if (rawAmount === null) return;
-	                              const amount = -Math.abs(rawAmount);
-	                              const result = await onApiCall(`/teacher/students/${studentId}/dpoint-adjust`, { amount, subject: draft.subject, reason: draft.reason }, "POST", "D'Point olindi");
-	                              applyTeacherDpointResult(studentId, result);
-	                            }}
+                            type="button"
+                            className="admin-btn-block"
+                            disabled={!canSubmit}
+                            onClick={async () => {
+                              const rawAmount = validateDpointAmount("take");
+                              if (rawAmount === null) return;
+                              const amount = -Math.abs(rawAmount);
+                              const result = await onApiCall(`/teacher/students/${studentId}/dpoint-adjust`, { amount, subject: draft.subject, reason: draft.reason }, "POST", "D'Point olindi");
+                              applyTeacherDpointResult(studentId, result);
+                            }}
                           >
-                            - olish
+                            - Olish
                           </button>
                         </div>
                       </td>
                     </tr>
                   );
                 })}
-                {!filteredRows.length ? (
-                  <tr><td colSpan={6}>Studentlar topilmadi.</td></tr>
-                ) : null}
+                {!filteredRows.length && (
+                  <tr>
+                    <td colSpan={6} className="text-center py-8 text-ink-500 font-medium">
+                      {tt("common.noData", "Studentlar topilmadi.")}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
-        </section>
+
+          {/* ── Pagination ── */}
+          {totalDcoinPages > 1 && (
+            <div className="admin-pagination">
+              <span className="admin-pagination-info">
+                {teacherDpointPage} / {totalDcoinPages} {tt("common.page", "sahifa")} ({filteredRows.length} {tt("admin.users.totalWord", "jami")})
+              </span>
+              <div className="admin-pagination-btns">
+                <button
+                  type="button"
+                  disabled={teacherDpointPage <= 1}
+                  className="admin-page-btn"
+                  onClick={() => setTeacherDpointPage((p) => Math.max(1, p - 1))}
+                >
+                  ◀ {tt("common.prev", "Oldingi")}
+                </button>
+                <button
+                  type="button"
+                  disabled={teacherDpointPage >= totalDcoinPages}
+                  className="admin-page-btn"
+                  onClick={() => setTeacherDpointPage((p) => Math.min(totalDcoinPages, p + 1))}
+                >
+                  {tt("common.next", "Keyingi")} ▶
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -13392,75 +13731,142 @@ if (section === "attendance") {
         </div>
       </section>
 
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
-        <CompactStudentStatCard title={tt("teacher.dashboard.activeGroups", "Active Groups")} value={stats.group_count || 0} />
-        <CompactStudentStatCard title={tt("teacher.dashboard.totalStudents", "Total Students")} value={stats.total_students || 0} tone="cyan" />
-        <CompactStudentStatCard title={tt("teacher.dashboard.attendanceWeek", "Attendance This Week")} value={`${Number(stats.attendance_rate_week || 0).toFixed(1)}%`} tone="green" />
-        <CompactStudentStatCard title={tt("teacher.dashboard.dpointsWeek", "D'Points Given")} value={Number(stats.weekly_dpoints_given ?? stats.weekly_dcoins_given ?? 0).toFixed(1)} tone="gold" />
-      </section>
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-3">
-        <CompactStudentStatCard title={tt("teacher.dashboard.pendingAttendance", "Pending Attendance")} value={pending.pending_attendance_groups || 0} tone="red" />
-        <CompactStudentStatCard title={tt("teacher.dashboard.supportRequests", "Support Requests")} value={pending.pending_support_requests || 0} tone="gold" />
+      <div className="admin-hero-stats">
+        <CompactStudentStatCard icon="🏫" title={tt("teacher.dashboard.activeGroups", "Active Groups")} value={stats.group_count || 0} tone="navy" />
+        <CompactStudentStatCard icon="🎓" title={tt("teacher.dashboard.totalStudents", "Total Students")} value={stats.total_students || 0} tone="cyan" />
+        <CompactStudentStatCard icon="✅" title={tt("teacher.dashboard.attendanceWeek", "Attendance This Week")} value={`${Number(stats.attendance_rate_week || 0).toFixed(1)}%`} tone="green" />
+        <CompactStudentStatCard icon="🏅" title={tt("teacher.dashboard.dpointsWeek", "D'Points Given")} value={Number(stats.weekly_dpoints_given ?? stats.weekly_dcoins_given ?? 0).toFixed(1)} tone="gold" />
+        <CompactStudentStatCard icon="⏳" title={tt("teacher.dashboard.pendingAttendance", "Pending Attendance")} value={pending.pending_attendance_groups || 0} tone="red" />
+        <CompactStudentStatCard icon="📩" title={tt("teacher.dashboard.supportRequests", "Support Requests")} value={pending.pending_support_requests || 0} tone="gold" />
         <CompactStudentStatCard
+          icon="👥"
           title={tt("teacher.dashboard.todayPresence", "Today's Presence")}
-          value={`${Number(stats.attendance_present || 0)}/${Number(stats.attendance_expected || 0)}`}
+          value={
+            Number(stats.attendance_expected || 0) > 0
+              ? `${Number(stats.attendance_present || 0)}/${Number(stats.attendance_expected || 0)}`
+              : tt("teacher.dashboard.noClassToday", "Bugun dars yo'q")
+          }
           tone="green"
         />
-      </section>
+        <CompactStudentStatCard icon="📝" title={tt("teacher.dashboard.homeworkPending", "Homework Pending")} value={pending.pending_homework || 0} tone="cyan" />
+      </div>
 
-      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
-          <RoleDashboardListPanel
-            title={tt("teacher.groups.title", "My Groups")}
-            subtitle={tt("teacher.groups.subtitle", "Groups, students, schedules")}
-          >
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              {teacherDashboardGroups.length ? teacherDashboardGroups.map((group: GenericRow) => (
-                <article key={`teacher-dash-group-${group.id || group.name}`} className="min-w-0 rounded-xl border border-line bg-surface-soft px-3 py-2.5 dark:border-white/10 dark:bg-navy-950/55">
-                  <div className="flex min-w-0 items-start justify-between gap-2">
-                    <strong className="truncate text-sm font-black text-navy-950 dark:text-white">{group.name || `#${group.id}`}</strong>
-                    <span className="shrink-0 rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-black text-cyan-700 dark:bg-cyan-300/10 dark:text-cyan-200">
-                      {String(group.subject || "-")}
-                    </span>
-                  </div>
-                  <p className="mt-1 truncate text-xs font-semibold text-ink-500 dark:text-white/60">
-                    {String(group.level || "-")} · {String(group.lesson_date || "-")} · {String(group.lesson_start || "")}
-                  </p>
-                  <p className="mt-1 text-xs font-black text-navy-800 dark:text-white">
-                    {tt("teacher.dashboard.studentCount", "{count} students").replace("{count}", String(group.student_count || group.students_count || 0))}
-                  </p>
-                </article>
-              )) : (
-                <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-sm font-semibold text-ink-500 dark:border-white/10 dark:text-white/60">
-                  {tt("teacher.dashboard.noGroups", "No groups yet")}
-                </p>
-              )}
-            </div>
-          </RoleDashboardListPanel>
+      {/* Panels Row — Admin & Mobile App Style */}
+      <div className="admin-dash-panels">
+        {/* My Groups Panel */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">🏫 {tt("teacher.groups.title", "My Groups")}</span>
+            <span className="admin-dash-panel-badge">{teacherDashboardGroups.length} {tt("teacher.groups.count", "guruh")}</span>
+          </div>
+          {teacherDashboardGroups.length ? (
+            teacherDashboardGroups.map((group: GenericRow) => (
+              <div key={`teacher-dash-group-${group.id || group.name}`} className="admin-user-item cursor-pointer hover:opacity-80 transition-opacity" onClick={() => onNavigate?.("attendance")}>
+                <div className="admin-user-avatar" style={{ background: "linear-gradient(135deg, #0284c7, #06b6d4)" }}>
+                  {String(group.name || "G").charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="admin-user-name">{group.name || `#${group.id}`}</div>
+                  <div className="admin-user-sub">{String(group.subject || "")} · {formatLevelDisplay(group.level)} · {String(group.lesson_start || "")}</div>
+                </div>
+                <span className="admin-dash-panel-badge" style={{ background: "rgba(6,182,212,0.12)", color: "#0891b2" }}>
+                  {tt("teacher.dashboard.studentCount", "{count} students").replace("{count}", String(group.student_count || group.students_count || 0))}
+                </span>
+              </div>
+            ))
+          ) : (
+            <p className="text-center text-sm font-semibold text-ink-500 dark:text-white/50 py-6">
+              {tt("teacher.dashboard.noGroups", "No groups yet")}
+            </p>
+          )}
         </div>
 
-        <article className="p-4 sm:p-5 bg-gradient-to-br from-navy-900 to-navy-800 rounded-2xl border border-white/10 shadow-[0_0_30px_rgba(0,11,59,0.2)] flex flex-col justify-between h-full relative overflow-hidden compact-hero-card logo-gradient-card">
-          <div className="absolute top-0 right-0 w-40 h-40 bg-cyan-500/20 blur-[60px] pointer-events-none" />
-          <div className="relative z-10 mb-4">
-            <h3 className="text-lg sm:text-xl font-black text-white font-display mb-1">{tt("teacher.dashboard.quickStart", "Tezkor boshlash")}</h3>
-            <p className="text-xs sm:text-sm font-medium text-cyan-100">{tt("teacher.dashboard.chooseSection", "Bo'lim tanlang:")}</p>
+        {/* Pending Tasks Panel */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">⚠️ {tt("teacher.dashboard.pendingTasks", "Pending Tasks")}</span>
+            <span className="admin-dash-panel-badge">
+              {(Number(pending.pending_attendance_groups || 0) + Number(pending.pending_homework || 0) + Number(pending.pending_support_requests || 0))} {tt("teacher.dashboard.alerts", "alerts")}
+            </span>
           </div>
-          <div className="grid grid-cols-2 gap-2.5 relative z-10">
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate?.("attendance")}>
-              <span className="truncate">{tt("teacher.dashboard.attendance", "Davomat")}</span> <span>→</span>
+          {[
+            [tt("teacher.dashboard.pendingAttendance", "Pending Attendance"), pending.pending_attendance_groups || 0, "attendance"],
+            [tt("teacher.dashboard.homeworkPending", "Homework Pending"), pending.pending_homework || 0, "homework"],
+            [tt("teacher.dashboard.supportRequests", "Support Requests"), pending.pending_support_requests || 0, "support"],
+            [
+              tt("teacher.dashboard.todayPresence", "Today's Presence"),
+              Number(stats.attendance_expected || 0) > 0
+                ? `${Number(stats.attendance_present || 0)}/${Number(stats.attendance_expected || 0)}`
+                : tt("teacher.dashboard.noClassToday", "Bugun dars yo'q"),
+              "attendance",
+            ],
+          ].map(([label, value, targetSec]) => (
+            <div
+              key={String(label)}
+              className={`admin-alert-item${Number(value) > 0 || (typeof value === "string" && !value.startsWith("0/")) ? " has-warning" : ""} cursor-pointer`}
+              onClick={() => targetSec && onNavigate?.(String(targetSec))}
+            >
+              <span>{String(label)}</span>
+              <strong>{String(value)}</strong>
+            </div>
+          ))}
+          <div className="mt-3 text-[11px] font-semibold text-ink-500 dark:text-white/50">
+            📊 {tt("teacher.dashboard.attendanceWeek", "Attendance This Week")}: <span className="font-bold text-emerald-600 dark:text-emerald-400">{Number(stats.attendance_rate_week || 0).toFixed(1)}%</span>
+          </div>
+        </div>
+
+        {/* Quick Actions Panel (iOS & Android App Style) */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">⚡ {tt("teacher.dashboard.quickStart", "Tezkor amallar")}</span>
+            <span className="admin-dash-panel-badge">Mobile App</span>
+          </div>
+          <div className="app-quick-actions-grid">
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("attendance")}>
+              <div className="app-quick-action-icon">📋</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.dashboard.attendance", "Davomat")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.record", "Belgilash")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate?.("homework")}>
-              <span className="truncate">{tt("teacher.dashboard.homework", "Uy vazifasi")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("homework")}>
+              <div className="app-quick-action-icon">📝</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.dashboard.homework", "Uy vazifasi")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.check", "Tekshirish")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate?.("tests")}>
-              <span className="truncate">{tt("teacher.dashboard.tests", "Testlar")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("tests")}>
+              <div className="app-quick-action-icon">📊</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.dashboard.tests", "Testlar")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.manage", "Boshqarish")}</div>
+              </div>
             </button>
-            <button className="flex items-center justify-between w-full min-w-0 px-3 py-2.5 text-xs sm:text-sm font-bold text-white transition-all border border-white/20 bg-white/10 rounded-xl hover:bg-white/20" onClick={() => onNavigate?.("dcoin")}>
-              <span className="truncate">{tt("teacher.dashboard.dcoin", "D'Coin")}</span> <span>→</span>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("dcoin")}>
+              <div className="app-quick-action-icon">💎</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.dashboard.dcoin", "D'Coin")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.reward", "Rag'bat")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("groups")}>
+              <div className="app-quick-action-icon">👥</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.groups.title", "Guruhlar")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.list", "Ro'yxat")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("books")}>
+              <div className="app-quick-action-icon">📚</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("teacher.library.title", "Kutubxona")}</div>
+                <div className="app-quick-action-sub">{tt("teacher.dashboard.books", "Materiallar")}</div>
+              </div>
             </button>
           </div>
-        </article>
-      </section>
+        </div>
+      </div>
     </div>
   );
 }
@@ -17105,7 +17511,7 @@ function AdminSection({
                         </td>
                         <td className="font-mono text-sm text-ink-600 dark:text-navy-300 whitespace-nowrap">{user.login_id || "-"}</td>
                         <td>
-                          <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{user.level || "-"}</span>
+                          <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">{formatLevelDisplay(user.level)}</span>
                         </td>
                         <td className="text-sm text-ink-600 dark:text-navy-300 max-w-[140px]">
                           <span className="block truncate">{(user.subjects || []).join(", ") || "-"}</span>
@@ -17295,7 +17701,7 @@ function AdminSection({
 
               {inactiveStudents.length > 0 && (
                 <div className="admin-table-card overflow-hidden">
-                  <div className="admin-users-table-wrap" style={{ maxHeight: 320 }}>
+                  <div className="admin-users-table-wrap">
                     <table className="admin-users-table">
                       <thead>
                         <tr>
@@ -19005,7 +19411,7 @@ function AdminSection({
           {auditRows.length === 0 ? (
             <p className="text-ink-500 text-sm">No change logs yet.</p>
           ) : (
-            <div className="table-wrap max-h-[70vh] overflow-auto">
+            <div className="table-wrap">
               <table className="min-w-[760px]">
                 <thead>
                   <tr>
@@ -19068,7 +19474,7 @@ function AdminSection({
           {deductionRows.length === 0 ? (
             <p className="text-ink-500 text-sm">Hozircha D&apos;point tarixi yo&apos;q.</p>
           ) : (
-            <div className="table-wrap max-h-[70vh] overflow-auto">
+            <div className="table-wrap">
               <table className="min-w-[880px]">
                 <thead>
                   <tr>
@@ -19241,7 +19647,7 @@ function AdminSection({
                       <span className="inline-block px-2 py-1 text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg border border-indigo-100 dark:border-indigo-500/20">{group.subject || "-"}</span>
                     </td>
                     <td>
-                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{group.level || "-"}</span>
+                      <span className="inline-block px-2 py-1 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">{formatLevelDisplay(group.level)}</span>
                     </td>
                     <td>
                       <div className="flex flex-col gap-0.5">
@@ -19328,7 +19734,7 @@ function AdminSection({
               <div className="row-between gap-3">
                 <div>
                   <h3>🏫 {selectedGroup.name || tt("admin.groups.manage", "Guruhni boshqarish")}</h3>
-                  <p className="text-sm text-ink-500 dark:text-navy-300">{selectedGroup.teacher_name || "-"} · {selectedGroup.subject || "-"} · {selectedGroup.level || "-"}</p>
+                  <p className="text-sm text-ink-500 dark:text-navy-300">{selectedGroup.teacher_name || "-"} · {selectedGroup.subject || "-"} · {formatLevelDisplay(selectedGroup.level)}</p>
                 </div>
                 <button className="admin-modal-close" type="button" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -19493,7 +19899,7 @@ function AdminSection({
                         <tr key={`enrolled-${row.user_id || row.id}`}>
                           <td className="font-semibold text-sm">{row.full_name || row.login_id || "-"}</td>
                           <td className="font-mono text-xs text-ink-500 dark:text-navy-400">{row.login_id || "-"}</td>
-                          <td><span className="inline-block px-2 py-0.5 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{row.level || "-"}</span></td>
+                          <td><span className="inline-block px-2 py-0.5 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">{formatLevelDisplay(row.level)}</span></td>
                           <td className="text-xs text-ink-500 dark:text-navy-400">{String(row.joined_at || row.created_at || "-").slice(0, 10)}</td>
                           <td>
                             <button
@@ -19534,7 +19940,7 @@ function AdminSection({
                             <tr key={`available-${row.user_id || row.id}`}>
                               <td className="font-semibold text-sm">{row.full_name || row.login_id || "-"}</td>
                               <td className="font-mono text-xs text-ink-500 dark:text-navy-400">{row.login_id || "-"}</td>
-                              <td><span className="inline-block px-2 py-0.5 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20">{row.level || "-"}</span></td>
+                              <td><span className="inline-block px-2 py-0.5 text-[11px] font-bold bg-cyan-50 dark:bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded-lg border border-cyan-100 dark:border-cyan-500/20 whitespace-nowrap">{formatLevelDisplay(row.level)}</span></td>
                               <td>
                                 <button
                                   className="admin-btn-unblock"
@@ -20012,12 +20418,14 @@ function SupportSection({
   user,
   onBookingStatus,
   onBookingAttendance,
+  onNavigate,
 }: {
   section: string;
   data: GenericRow;
   user: ApiUser;
   onBookingStatus: (bookingId: string, payload: GenericRow) => Promise<GenericRow | null>;
   onBookingAttendance: (bookingId: string, payload: GenericRow) => Promise<GenericRow | null>;
+  onNavigate?: (section: string) => void;
 }) {
   const tt = useWebT();
   const authedApiFetch = useCallback(
@@ -20117,38 +20525,126 @@ function SupportSection({
   return (
     <div className="flex flex-col gap-4 sm:gap-6 pb-10 animate-fade-in">
       <SectionTitle kicker={tt("support.dashboard.kicker", "Support Dashboard")} title={tt("support.dashboard.title", "Support Operations Overview")} subtitle={tt("support.dashboard.subtitle", "Daily bookings and pending requests")} />
-      <section className="grid grid-cols-2 gap-2 sm:grid-cols-4 sm:gap-3">
-        <CompactStudentStatCard title={tt("support.dashboard.todayBookings", "Today Bookings")} value={metrics.today_bookings || 0} />
-        <CompactStudentStatCard title={tt("support.dashboard.upcoming", "Upcoming")} value={metrics.active_upcoming || 0} tone="cyan" />
-        <CompactStudentStatCard title={tt("support.dashboard.pastEnded", "Past Ended")} value={metrics.past_ended || 0} tone="gold" />
-        <CompactStudentStatCard title={tt("support.dashboard.total", "Total")} value={metrics.total_bookings || 0} tone="green" />
-      </section>
-      <RoleDashboardListPanel
-        title={tt("support.dashboard.pendingRequests", "Pending Requests")}
-        subtitle={tt("support.dashboard.subtitle", "Daily bookings and pending requests")}
-      >
-        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {pendingRequests.length ? pendingRequests.map((row: GenericRow) => (
-            <article key={`support-dash-pending-${row.id || `${row.student_name}-${row.date}-${row.time}`}`} className="min-w-0 rounded-xl border border-line bg-surface-soft px-3 py-2.5 dark:border-white/10 dark:bg-navy-950/55">
-              <div className="flex min-w-0 items-start justify-between gap-2">
-                <strong className="truncate text-sm font-black text-navy-950 dark:text-white">
-                  {row.student_name || row.full_name || row.name || "-"}
-                </strong>
-                <span className="shrink-0 rounded-full bg-gold-500/10 px-2 py-0.5 text-[10px] font-black text-gold-700 dark:bg-gold-300/10 dark:text-gold-200">
-                  {String(row.status || "pending")}
-                </span>
-              </div>
-              <p className="mt-1 truncate text-xs font-semibold text-ink-500 dark:text-white/60">
-                {String(row.date || "-")} · {String(row.time || "-")} · {String(row.subject || row.purpose || "-")}
-              </p>
-            </article>
-          )) : (
-            <p className="rounded-xl border border-dashed border-line px-4 py-6 text-center text-sm font-semibold text-ink-500 dark:border-white/10 dark:text-white/60">
+
+      {/* Hero Stats */}
+      <div className="admin-hero-stats">
+        <CompactStudentStatCard icon="📅" title={tt("support.dashboard.todayBookings", "Today Bookings")} value={metrics.today_bookings || 0} tone="navy" />
+        <CompactStudentStatCard icon="⏳" title={tt("support.dashboard.upcoming", "Upcoming")} value={metrics.active_upcoming || 0} tone="cyan" />
+        <CompactStudentStatCard icon="⌛" title={tt("support.dashboard.pastEnded", "Past Ended")} value={metrics.past_ended || 0} tone="gold" />
+        <CompactStudentStatCard icon="🎯" title={tt("support.dashboard.total", "Total Bookings")} value={metrics.total_bookings || 0} tone="green" />
+      </div>
+
+      {/* Panels Row — Admin & Mobile App Style */}
+      <div className="admin-dash-panels">
+        {/* Pending Requests */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">⏳ {tt("support.dashboard.pendingRequests", "Pending Requests")}</span>
+            <span className="admin-dash-panel-badge">{pendingRequests.length} {tt("support.dashboard.pendingCount", "so'rov")}</span>
+          </div>
+          {pendingRequests.length ? (
+            pendingRequests.map((row: GenericRow) => {
+              const name = row.student_name || row.full_name || row.name || "—";
+              return (
+                <div key={`support-dash-pending-${row.id || `${name}-${row.date}-${row.time}`}`} className="admin-user-item cursor-pointer hover:opacity-80 transition-opacity" onClick={() => onNavigate?.("bookings")}>
+                  <div className="admin-user-avatar" style={{ background: "linear-gradient(135deg, #0284c7, #06b6d4)" }}>
+                    {name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="admin-user-name">{name}</div>
+                    <div className="admin-user-sub">{String(row.date || "-")} · {String(row.time || "-")} · {String(row.subject || row.purpose || "-")}</div>
+                  </div>
+                  <span className="admin-dash-panel-badge" style={{ background: "rgba(245,158,11,0.12)", color: "#d97706" }}>
+                    {String(row.status || "pending")}
+                  </span>
+                </div>
+              );
+            })
+          ) : (
+            <p className="text-center text-sm font-semibold text-ink-500 dark:text-white/50 py-6">
               {tt("support.dashboard.noPendingRequests", "No pending requests")}
             </p>
           )}
         </div>
-      </RoleDashboardListPanel>
+
+        {/* Operations Overview */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">📊 {tt("support.dashboard.operations", "Support Holati")}</span>
+            <span className="admin-dash-panel-badge">Overview</span>
+          </div>
+          {[
+            [tt("support.dashboard.todayBookings", "Today Bookings"), metrics.today_bookings || 0, "bookings"],
+            [tt("support.dashboard.upcoming", "Upcoming"), metrics.active_upcoming || 0, "bookings"],
+            [tt("support.dashboard.pastEnded", "Past Ended"), metrics.past_ended || 0, "attendance"],
+            [tt("support.dashboard.total", "Total Bookings"), metrics.total_bookings || 0, "bookings"],
+          ].map(([label, value, targetSec]) => (
+            <div
+              key={String(label)}
+              className={`admin-alert-item${Number(value) > 0 ? " has-warning" : ""} cursor-pointer`}
+              onClick={() => targetSec && onNavigate?.(String(targetSec))}
+            >
+              <span>{String(label)}</span>
+              <strong>{String(value)}</strong>
+            </div>
+          ))}
+          <div className="mt-3 text-[11px] font-semibold text-ink-500 dark:text-white/50">
+            🎯 {tt("support.dashboard.dailyFocus", "Faoliyat")}: {tt("support.dashboard.dailySummary", "O'quvchilar bilan individual support va konsultatsiyalar")}
+          </div>
+        </div>
+
+        {/* Quick Actions Panel (iOS & Android App Style) */}
+        <div className="admin-dash-panel">
+          <div className="admin-dash-panel-head">
+            <span className="admin-dash-panel-title">⚡ {tt("support.dashboard.quickActions", "Tezkor amallar")}</span>
+            <span className="admin-dash-panel-badge">Mobile App</span>
+          </div>
+          <div className="app-quick-actions-grid">
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("bookings")}>
+              <div className="app-quick-action-icon">📅</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.bookings", "Bookinglar")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.list", "Ro'yxat")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("attendance")}>
+              <div className="app-quick-action-icon">✅</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.attendance", "Davomat")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.record", "Belgilash")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("calendar")}>
+              <div className="app-quick-action-icon">🕐</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.calendar", "Jadval")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.hours", "Soatlar")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("settings")}>
+              <div className="app-quick-action-icon">⚙️</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.settings", "Sozlamalar")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.filial", "Filial")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("broadcasts")}>
+              <div className="app-quick-action-icon">📢</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.broadcasts", "Xabar")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.telegram", "Telegram")}</div>
+              </div>
+            </button>
+            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("books")}>
+              <div className="app-quick-action-icon">📚</div>
+              <div className="min-w-0 flex-1">
+                <div className="app-quick-action-label">{tt("support.dashboard.books", "Kitoblar")}</div>
+                <div className="app-quick-action-sub">{tt("support.dashboard.materials", "Materiallar")}</div>
+              </div>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -22533,7 +23029,7 @@ function DashboardShell({
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="support" />;
     } else {
-      content = <SupportSection section={currentSection} data={roleData} user={user} onBookingStatus={onBookingStatus} onBookingAttendance={onBookingAttendance} />;
+      content = <SupportSection section={currentSection} data={roleData} user={user} onBookingStatus={onBookingStatus} onBookingAttendance={onBookingAttendance} onNavigate={handleNavigate} />;
     }
   } else {
     if (currentSection === "profile") {
