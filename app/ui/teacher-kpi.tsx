@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWebT } from "./web-i18n";
 
 type GenericRow = Record<string, unknown>;
@@ -9,7 +9,7 @@ function CircleProgress({
   value,
   max = 100,
   label,
-  size = 96,
+  size = 88,
   color = "#0284c7",
 }: {
   value: number;
@@ -23,7 +23,7 @@ function CircleProgress({
   const circ = 2 * Math.PI * r;
   const dash = (pct / 100) * circ;
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-1.5 sm:gap-2">
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} className="-rotate-90">
           <circle
@@ -32,7 +32,7 @@ function CircleProgress({
             r={r}
             fill="none"
             className="stroke-slate-100 dark:stroke-white/10"
-            strokeWidth={8}
+            strokeWidth={7}
           />
           <circle
             cx={size / 2}
@@ -40,20 +40,20 @@ function CircleProgress({
             r={r}
             fill="none"
             stroke={color}
-            strokeWidth={8}
+            strokeWidth={7}
             strokeDasharray={`${dash} ${circ - dash}`}
             strokeLinecap="round"
             className="transition-all duration-1000 ease-out"
           />
         </svg>
         <div
-          className="absolute inset-0 flex items-center justify-center text-sm font-black tracking-tight"
+          className="absolute inset-0 flex items-center justify-center text-xs sm:text-sm font-black tracking-tight"
           style={{ color }}
         >
           {Math.round(pct)}%
         </div>
       </div>
-      <div className="text-[11px] sm:text-xs font-semibold text-ink-600 dark:text-navy-300 text-center max-w-[84px] leading-tight">
+      <div className="text-[11px] sm:text-xs font-semibold text-ink-600 dark:text-navy-300 text-center max-w-[80px] sm:max-w-[84px] leading-tight">
         {label}
       </div>
     </div>
@@ -61,8 +61,6 @@ function CircleProgress({
 }
 
 function ScoreBadge({ score }: { score: number }) {
-  const clr =
-    score >= 80 ? "#10b981" : score >= 55 ? "#f59e0b" : score >= 30 ? "#0284c7" : "#ef4444";
   const label =
     score >= 80
       ? "A+ A'lo natija"
@@ -82,11 +80,11 @@ function ScoreBadge({ score }: { score: number }) {
       : "bg-rose-50 text-rose-600 border-rose-200/80 dark:bg-rose-500/10 dark:text-rose-400 dark:border-rose-500/20";
 
   return (
-    <div className={`inline-flex flex-col items-center justify-center gap-1.5 rounded-2xl border px-6 py-4 sm:px-8 sm:py-5 shadow-sm transition-all ${badgeClass}`}>
+    <div className={`inline-flex flex-col items-center justify-center gap-1.5 rounded-2xl border px-5 py-3.5 sm:px-8 sm:py-5 shadow-sm transition-all ${badgeClass}`}>
       <div className="text-3xl sm:text-4xl font-black leading-none font-display">
         {score.toFixed(1)}
       </div>
-      <div className="text-xs font-bold uppercase tracking-wider">{label}</div>
+      <div className="text-[11px] sm:text-xs font-bold uppercase tracking-wider">{label}</div>
     </div>
   );
 }
@@ -112,7 +110,7 @@ function LeaderboardRow({ item, idx }: { item: GenericRow; idx: number }) {
 
   return (
     <div
-      className={`flex items-center gap-3 p-3.5 sm:p-4 rounded-xl border transition-all ${
+      className={`flex items-center gap-3 p-3 sm:p-4 rounded-xl border transition-all ${
         isSelf
           ? "bg-sky-50/70 dark:bg-sky-500/10 border-sky-300 dark:border-sky-500/30 shadow-sm"
           : "bg-white dark:bg-white/[0.02] border-slate-200/70 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/10"
@@ -152,44 +150,65 @@ export function TeacherKpiPanel({
   const [totalTeachers, setTotalTeachers] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<"my" | "leaderboard">(adminMode ? "leaderboard" : "my");
+  const [tab, setTab] = useState<"my" | "leaderboard">("my");
+  const onApiCallRef = useRef(onApiCall);
+  onApiCallRef.current = onApiCall;
+  const initialLoadDoneRef = useRef(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    if (adminMode) {
-      const res = await onApiCall("/admin/teacher-kpi?limit=200", undefined, "GET");
-      const items = (res?.items as GenericRow[]) || [];
-      setLeaderboard(items);
-      setTotalTeachers(Number(res?.total || items.length));
-      setKpiData(null);
-      setRank(null);
+  const load = useCallback(async (silent = false) => {
+    if (!silent && !initialLoadDoneRef.current) {
+      setLoading(true);
+    }
+    try {
+      if (adminMode) {
+        const res = await onApiCallRef.current("/admin/teacher-kpi?limit=200", undefined, "GET");
+        const items = (res?.items as GenericRow[]) || [];
+        setLeaderboard(items);
+        setTotalTeachers(Number(res?.total || items.length));
+        setKpiData(null);
+        setRank(null);
+      } else {
+        const res = await onApiCallRef.current("/teacher/kpi/me", undefined, "GET");
+        if (res) {
+          setKpiData((res.kpi as GenericRow) || null);
+          setRank(typeof res.rank === "number" ? res.rank : null);
+          setTotalTeachers(Number(res.total_teachers || 0));
+        }
+        const lbRes = await onApiCallRef.current("/teacher/kpi/leaderboard?limit=30", undefined, "GET");
+        setLeaderboard((lbRes?.items as GenericRow[]) || []);
+      }
+    } catch {
+      // Quietly ignore background poll errors to avoid disrupting UX
+    } finally {
+      initialLoadDoneRef.current = true;
       setLoading(false);
-      return;
     }
-    const res = await onApiCall("/teacher/kpi/me", undefined, "GET");
-    if (res) {
-      setKpiData((res.kpi as GenericRow) || null);
-      setRank(typeof res.rank === "number" ? res.rank : null);
-      setTotalTeachers(Number(res.total_teachers || 0));
-    }
-    const lbRes = await onApiCall("/teacher/kpi/leaderboard?limit=30", undefined, "GET");
-    setLeaderboard((lbRes?.items as GenericRow[]) || []);
-    setLoading(false);
-  }, [adminMode, onApiCall]);
+  }, [adminMode]);
 
   useEffect(() => {
-    load();
+    // Initial fetch
+    load(false);
+
+    // Silent background auto-refresh every 30 seconds
+    const interval = window.setInterval(() => {
+      load(true);
+    }, 30000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
   }, [load]);
 
   const handleRefresh = async () => {
-    if (adminMode) {
-      await load();
-      return;
-    }
     setRefreshing(true);
-    await onApiCall("/teacher/kpi/refresh", {}, "POST", "KPI yangilandi ✅");
-    await load();
-    setRefreshing(false);
+    try {
+      if (!adminMode) {
+        await onApiCallRef.current("/teacher/kpi/refresh", {}, "POST");
+      }
+      await load(true);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const kpi = kpiData || {};
@@ -200,19 +219,14 @@ export function TeacherKpiPanel({
   const respSpeed = Math.round(Number(kpi.response_speed_score || 0) * 100);
   const groupCompl = Math.round(Number(kpi.group_completion_rate || 0) * 100);
 
-  return (
-    <div className="admin-groups-page">
-      {/* ── Page Header ── */}
-      <div className="admin-page-header">
-        <div>
-          <h2>📊 {adminMode ? "O'qituvchilar KPI" : tt("teacher.kpi.title", "Mening KPI")}</h2>
-          <p>
-            {adminMode
-              ? "Barcha o'qituvchilarning unumdorlik ko'rsatkichlari va reytingi"
-              : "O'qituvchilik unumdorlik ko'rsatkichlari, tahlili va reyting"}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
+  if (adminMode) {
+    return (
+      <div className="admin-groups-page">
+        <div className="admin-page-header">
+          <div>
+            <h2>📊 O'qituvchilar KPI</h2>
+            <p>Barcha o'qituvchilarning unumdorlik ko'rsatkichlari va reytingi</p>
+          </div>
           <button
             className="admin-btn-action"
             onClick={handleRefresh}
@@ -221,13 +235,117 @@ export function TeacherKpiPanel({
             {refreshing ? "⏳ ..." : `🔄 ${tt("teacher.kpi.refresh", "Yangilash")}`}
           </button>
         </div>
-      </div>
 
-      {/* ── Modern Tabs Bar ── */}
-      <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-white/[0.06] rounded-2xl w-fit border border-slate-200/60 dark:border-white/10 mb-2">
-        {!adminMode && (
+        {loading && !initialLoadDoneRef.current ? (
+          <div className="admin-table-card p-12 text-center text-sm font-semibold text-ink-500 dark:text-navy-400">
+            ⏳ Yuklanmoqda...
+          </div>
+        ) : (
+          <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
+            <div className="flex items-center justify-between mb-5">
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-navy-950 dark:text-white">
+                  🏆 O'qituvchilar reytingi
+                </h3>
+                <p className="text-xs text-ink-500 dark:text-navy-400 mt-0.5">
+                  Eng yuqori unumdorlikka ega o'qituvchilar ro'yxati
+                </p>
+              </div>
+              <span className="admin-dash-panel-badge">{leaderboard.length} o'qituvchi</span>
+            </div>
+
+            {leaderboard.length === 0 ? (
+              <div className="text-center py-12 text-sm font-semibold text-ink-500 dark:text-navy-400">
+                Reyting ma&rsquo;lumotlari yo&rsquo;q.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2.5">
+                {leaderboard.map((item, idx) => (
+                  <LeaderboardRow key={String(item.teacher_id || idx)} item={item} idx={idx} />
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="admin-groups-page">
+      {/* 1. Main KPI Indicators Hero Card (No redundant header banner) */}
+      <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
+        {loading && !initialLoadDoneRef.current ? (
+          <div className="text-center py-10 text-sm font-semibold text-ink-500 dark:text-navy-400">
+            ⏳ Yuklanmoqda...
+          </div>
+        ) : !kpiData ? (
+          <div className="text-center py-8 sm:py-10">
+            <p className="text-sm font-semibold text-ink-500 dark:text-navy-400 mb-4">
+              📭 {tt("teacher.kpi.noData", "KPI ma'lumotlari hali hisoblanmagan")}
+            </p>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-sm font-bold shadow-md hover:opacity-90 transition-opacity"
+            >
+              {refreshing ? "⏳ Hisoblanmoqda..." : "🔄 Hisoblash"}
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col lg:flex-row gap-6 lg:gap-10 items-center justify-between">
+            {/* Score Badge */}
+            <div className="flex flex-col items-center text-center">
+              <ScoreBadge score={score} />
+              {rank !== null ? (
+                <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-white/10 text-xs font-bold text-ink-700 dark:text-navy-200">
+                  <span>🏆</span>
+                  <span>
+                    {tt("teacher.kpi.youAreRank", "{rank}-o'rinda", { rank })} &bull;{" "}
+                    {tt("teacher.kpi.outOf", "{total} o'qituvchidan", { total: totalTeachers })}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Circle charts with logo colors (Emerald, Cyan, Blue, Amber, Rose) */}
+            <div className="flex flex-wrap items-center justify-center gap-3.5 sm:gap-6 flex-1">
+              <CircleProgress
+                value={attRate}
+                label={tt("teacher.kpi.attendance", "Davomat foizi")}
+                color="#10b981"
+              />
+              <CircleProgress
+                value={hwRate}
+                label={tt("teacher.kpi.hwReview", "Homework tekshirish")}
+                color="#0284c7"
+              />
+              <CircleProgress
+                value={avgScore}
+                label={tt("teacher.kpi.avgScore", "O'quvchilar balli")}
+                color="#f59e0b"
+              />
+              <CircleProgress
+                value={respSpeed}
+                label={tt("teacher.kpi.responseSpeed", "Javob tezligi")}
+                color="#06b6d4"
+              />
+              <CircleProgress
+                value={groupCompl}
+                label={tt("teacher.kpi.groupCompletion", "Guruh to'liqligi")}
+                color="#f43f5e"
+              />
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* 2. Tabs Bar placed directly UNDER the KPI Hero Card */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-white/[0.06] rounded-2xl border border-slate-200/60 dark:border-white/10">
           <button
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+            type="button"
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all min-h-[38px] ${
               tab === "my"
                 ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md"
                 : "text-ink-600 dark:text-navy-300 hover:text-navy-900 dark:hover:text-white"
@@ -236,89 +354,34 @@ export function TeacherKpiPanel({
           >
             📊 {tt("teacher.kpi.title", "Mening KPI")}
           </button>
-        )}
+          <button
+            type="button"
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all min-h-[38px] ${
+              tab === "leaderboard"
+                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md"
+                : "text-ink-600 dark:text-navy-300 hover:text-navy-900 dark:hover:text-white"
+            }`}
+            onClick={() => setTab("leaderboard")}
+          >
+            🏆 {tt("teacher.kpi.leaderboard", "Reytingni ko'rish")}
+          </button>
+        </div>
+
         <button
-          className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
-            tab === "leaderboard"
-              ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md"
-              : "text-ink-600 dark:text-navy-300 hover:text-navy-900 dark:hover:text-white"
-          }`}
-          onClick={() => setTab("leaderboard")}
+          type="button"
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl text-ink-600 hover:text-navy-900 dark:text-navy-300 dark:hover:text-white bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/10 transition-colors border border-slate-200/60 dark:border-white/10"
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="KPI ni qayta hisoblash"
         >
-          🏆 {tt("teacher.kpi.leaderboard", "O'qituvchilar reytingi")}
+          <span className={`inline-block ${refreshing ? "animate-spin" : ""}`}>🔄</span>
+          <span>{refreshing ? "Yangilanmoqda..." : "Yangilash"}</span>
         </button>
       </div>
 
-      {/* ── Content ── */}
-      {loading ? (
-        <div className="admin-table-card p-12 text-center text-sm font-semibold text-ink-500 dark:text-navy-400">
-          ⏳ Yuklanmoqda...
-        </div>
-      ) : tab === "my" ? (
+      {/* 3. Tab Content */}
+      {tab === "my" ? (
         <div className="flex flex-col gap-6">
-          {/* Main Score Hero Card */}
-          <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
-            {!kpiData ? (
-              <div className="text-center py-10">
-                <p className="text-sm font-semibold text-ink-500 dark:text-navy-400 mb-4">
-                  📭 {tt("teacher.kpi.noData", "KPI ma'lumotlari hali hisoblanmagan")}
-                </p>
-                <button
-                  onClick={handleRefresh}
-                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 text-white text-sm font-bold shadow-md hover:opacity-90 transition-opacity"
-                >
-                  🔄 Hisoblash
-                </button>
-              </div>
-            ) : (
-              <div className="flex flex-col lg:flex-row gap-6 lg:gap-10 items-center justify-between">
-                {/* Score Badge */}
-                <div className="flex flex-col items-center text-center">
-                  <ScoreBadge score={score} />
-                  {rank !== null ? (
-                    <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-white/10 text-xs font-bold text-ink-700 dark:text-navy-200">
-                      <span>🏆</span>
-                      <span>
-                        {tt("teacher.kpi.youAreRank", "{rank}-o'rinda", { rank })} &bull;{" "}
-                        {tt("teacher.kpi.outOf", "{total} o'qituvchidan", { total: totalTeachers })}
-                      </span>
-                    </div>
-                  ) : null}
-                </div>
-
-                {/* Circle charts with logo colors (Emerald, Cyan, Blue, Amber, Rose) */}
-                <div className="flex flex-wrap items-center justify-center gap-5 sm:gap-7 flex-1">
-                  <CircleProgress
-                    value={attRate}
-                    label={tt("teacher.kpi.attendance", "Davomat foizi")}
-                    color="#10b981"
-                  />
-                  <CircleProgress
-                    value={hwRate}
-                    label={tt("teacher.kpi.hwReview", "Homework tekshirish")}
-                    color="#0284c7"
-                  />
-                  <CircleProgress
-                    value={avgScore}
-                    label={tt("teacher.kpi.avgScore", "O'quvchilar o'rtacha ball")}
-                    color="#f59e0b"
-                  />
-                  <CircleProgress
-                    value={respSpeed}
-                    label={tt("teacher.kpi.responseSpeed", "Javob tezligi")}
-                    color="#06b6d4"
-                  />
-                  <CircleProgress
-                    value={groupCompl}
-                    label={tt("teacher.kpi.groupCompletion", "Guruh to'liqlik")}
-                    color="#f43f5e"
-                  />
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Detailed Statistics Cards — Clean Light/Dark Theme Cards */}
           {kpiData ? (
             <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
               <div className="flex items-center justify-between mb-5">
@@ -328,7 +391,7 @@ export function TeacherKpiPanel({
                 <span className="admin-dash-panel-badge">6 ta ko'rsatkich</span>
               </div>
 
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-4">
                 {[
                   {
                     icon: "👥",
@@ -369,7 +432,7 @@ export function TeacherKpiPanel({
                 ].map((item) => (
                   <div
                     key={item.label}
-                    className="p-4 rounded-2xl bg-slate-50/70 dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col justify-between"
+                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-50/70 dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/06 hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col justify-between"
                   >
                     <div className="text-2xl mb-2">{item.icon}</div>
                     <div>
@@ -391,7 +454,7 @@ export function TeacherKpiPanel({
                   <span>🧮</span>
                   <span>KPI Hisoblash Formulasi:</span>
                 </div>
-                <div className="flex flex-wrap gap-2 text-xs font-semibold">
+                <div className="flex flex-wrap gap-1.5 sm:gap-2 text-xs font-semibold">
                   <span className="px-2.5 py-1 rounded-lg bg-emerald-100/80 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300">
                     Davomat × 30%
                   </span>
