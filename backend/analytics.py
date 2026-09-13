@@ -208,6 +208,24 @@ async def teacher_analytics(authorization: str | None = Header(default=None)):
 
     student_ids = _teacher_student_ids(teacher_id)
     if not student_ids:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT DISTINCT user_id FROM lesson_bookings WHERE support_teacher_id = ?", (teacher_id,))
+            rows = cur.fetchall() or []
+            booking_student_ids = set()
+            for r in rows:
+                uid = int(r["user_id"] if hasattr(r, "keys") else (r[0] if len(r) > 0 else 0))
+                if uid > 0:
+                    booking_student_ids.add(uid)
+            if booking_student_ids:
+                student_ids = booking_student_ids
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    if not student_ids:
         return {"students": [], "groups_comparison": []}
 
     stats = _get_student_analytics(student_ids)

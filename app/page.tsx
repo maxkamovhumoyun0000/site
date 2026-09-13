@@ -20453,7 +20453,7 @@ function SupportSection({
     [authedApiFetch],
   );
 
-  if (section === "groups" || section === "group-attendance" || section === "arena" || section === "performance" || section === "dcoin") {
+  if (section === "materials" || section === "analytics" || section === "groups" || section === "group-attendance" || section === "arena" || section === "performance" || section === "dcoin") {
     return <TeacherSection section={section === "group-attendance" ? "attendance" : section} data={data} user={user} onApiCall={supportHomeworkCall} />;
   }
 
