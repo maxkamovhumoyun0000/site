@@ -585,7 +585,7 @@ def try_diamondvoy_app_version_action(
 
     # Must contain version-related keywords
     version_keywords = re.search(
-        r"\b(versiya|versiyalar|versiyasi|version|versions|build|force update|force_update|app versiya|app version|min_version|min_build)\b",
+        r"(versiy\w*|version\w*|build|force[ _-]*update|app[ _-]*versiy\w*|app[ _-]*version\w*|min[ _-]*(version|build))",
         ql,
     )
     if not version_keywords:
@@ -598,6 +598,8 @@ def try_diamondvoy_app_version_action(
         k in ql
         for k in (
             "qil",
+            "yangil",
+            "yangl",
             "o'zgartir",
             "ozgartir",
             "o‘zgartir",
@@ -616,12 +618,9 @@ def try_diamondvoy_app_version_action(
     )
 
     ver_match = re.search(r"\b(\d+\.\d+(?:\.\d+)?)\b", ql)
-    build_match = re.search(r"\b(?:build|b)[\s:=]*(\d+)\b", ql)
 
     if is_set_command and ver_match:
         new_ver = ver_match.group(1)
-        new_build = int(build_match.group(1)) if build_match else None
-
         target_student = any(k in ql for k in ("student", "o'quvchi", "oquvchi", "talaba", "ученик", "студент"))
         target_teacher = any(k in ql for k in ("teacher", "o'qituvchi", "oqituvchi", "ustoz", "учитель", "преподаватель"))
 
@@ -633,13 +632,9 @@ def try_diamondvoy_app_version_action(
         upd = {}
 
         if target_student:
-            b_num = new_build if new_build is not None else settings.get("min_student_build", 1)
             upd["min_student_version"] = new_ver
-            upd["min_student_build"] = b_num
         if target_teacher:
-            b_num = new_build if new_build is not None else settings.get("min_teacher_build", 1)
             upd["min_teacher_version"] = new_ver
-            upd["min_teacher_build"] = b_num
 
         if upd:
             update_app_version_settings(upd)

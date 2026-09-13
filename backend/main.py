@@ -404,6 +404,7 @@ from diamondvoy_helpers import (
     diamondvoy_is_subject_related,
     resolve_query_subject,
     sanitize_diamondvoy_reply,
+    try_diamondvoy_app_version_action,
     try_diamondvoy_bot_info,
 )
 from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
@@ -19079,7 +19080,12 @@ async def start_mobile_telegram_login(payload: TelegramMobileLoginStartRequest):
 
 
 def _is_app_version_below(current_ver: str, min_ver: str, current_build: int = 0, min_build: int = 0) -> bool:
-    """Returns True if current_ver is strictly below min_ver, or build is below min_build."""
+    """Return True only when the semantic public version is below minimum.
+
+    Android/iOS build counters are intentionally ignored: a store may assign
+    different build values to the same public version, so they must not block
+    a current app from continuing.
+    """
     if not min_ver:
         return False
     c_parts = [int(p) for p in re.findall(r'\d+', str(current_ver or ""))]
@@ -19098,10 +19104,50 @@ def _is_app_version_below(current_ver: str, min_ver: str, current_build: int = 0
     if c_parts > m_parts:
         return False
 
-    if min_build > 0 and current_build > 0:
-        return current_build < min_build
-
     return False
+
+
+_APP_VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
+
+
+def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Accept legacy flat fields and the DiamondVoy student/teacher shape."""
+    raw = dict(payload or {})
+    normalized = {key: value for key, value in raw.items() if key not in {"student", "teacher"}}
+    for role in ("student", "teacher"):
+        nested = raw.get(role)
+        if not isinstance(nested, dict):
+            continue
+        for source, target in {
+            "min_version": f"min_{role}_version",
+            "min_build": f"min_{role}_build",
+            "store_url": f"{role}_play_store_url",
+            "ios_store_url": f"{role}_app_store_url",
+        }.items():
+            if source in nested:
+                normalized[target] = nested[source]
+    for key in ("min_student_version", "min_teacher_version"):
+        if key not in normalized:
+            continue
+        version = str(normalized[key] or "").strip().lstrip("vV")
+        if not _APP_VERSION_RE.fullmatch(version):
+            raise HTTPException(status_code=422, detail=f"{key} must use a version such as 2.7.0")
+        normalized[key] = version
+    return normalized
+
+
+def _app_version_settings_response(settings: dict[str, Any]) -> dict[str, Any]:
+    """Serve both the long-lived flat contract and DiamondVoy's form shape."""
+    result = dict(settings or {})
+    for role in ("student", "teacher"):
+        result[role] = {
+            "min_version": result.get(f"min_{role}_version") or "1.0.0",
+            "min_build": int(result.get(f"min_{role}_build") or 1),
+            "store_url": result.get(f"{role}_play_store_url") or "",
+            "ios_store_url": result.get(f"{role}_app_store_url") or "",
+        }
+    result["comparison"] = "version_only"
+    return result
 
 
 @app.get("/api/app-version-check")
@@ -19154,14 +19200,15 @@ async def check_app_version(
 async def admin_get_version_settings(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    return get_app_version_settings()
+    return _app_version_settings_response(get_app_version_settings())
 
 
 @app.post("/admin/app-version-settings")
 async def admin_update_version_settings(payload: dict, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    return update_app_version_settings(payload)
+    updated = update_app_version_settings(_normalize_app_version_settings_payload(payload))
+    return _app_version_settings_response(updated)
 
 
 @app.get("/auth/telegram/mobile/status/{request_token}")
@@ -21382,9 +21429,20 @@ async def _diamondvoy_stream_events(
             return StreamingResponse(fast_add_students_stream(), media_type="text/event-stream")
 
         if re.search(
-            r"(mobil.*versiya|app.*version|force.*update|versiya.*boshqar|versiya.*sozlam|app.*versiya|versiyalarni.*boshqarish)",
+            r"(mobil.*versiy|app.*version|force.*update|versiy.*(boshqar|sozlam|yangil|qil|o.zgar)|app.*versiy|ilova.*versiy)",
             norm,
         ):
+            direct_action = None
+            if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", norm):
+                direct_action = try_diamondvoy_app_version_action(user_text, is_admin=True, lang=query_lang)
+            if direct_action is not None:
+                async def fast_app_version_action_stream():
+                    current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
+                    assistant_text = re.sub(r"<[^>]+>", "", html.unescape(str(direct_action))).strip()
+                    _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+                    yield _sse_pack("delta", {"delta": assistant_text, "content": assistant_text})
+                    yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
+                return StreamingResponse(fast_app_version_action_stream(), media_type="text/event-stream")
             async def fast_app_version_stream():
                 current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
                 assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "app_version"})

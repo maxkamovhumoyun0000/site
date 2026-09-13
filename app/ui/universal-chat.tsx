@@ -1148,6 +1148,7 @@ function DiamondVoyAppVersionWizard({
         <h4 className="font-bold text-blue-800 dark:text-blue-300">
           🚀 Mobil Ilovalar Versiyasi (Force Update)
         </h4>
+        <span className="text-[11px] text-blue-700 dark:text-blue-300">Build raqami tekshirilmaydi</span>
       </div>
 
       <div className="p-4 space-y-4 text-sm">
@@ -1159,7 +1160,7 @@ function DiamondVoyAppVersionWizard({
           <h5 className="font-bold text-ink-800 dark:text-slate-200 flex items-center gap-2">
             📱 Diamond Students App
           </h5>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <div>
               <label className="block text-xs font-semibold mb-1 text-ink-600 dark:text-slate-400">Minimal Versiya</label>
               <input
@@ -1167,16 +1168,6 @@ function DiamondVoyAppVersionWizard({
                 value={studentVersion}
                 onChange={(e) => setStudentVersion(e.target.value)}
                 placeholder="1.0.0"
-                className="w-full px-3 py-1.5 border border-line dark:border-white/10 rounded-xl bg-transparent text-sm font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold mb-1 text-ink-600 dark:text-slate-400">Minimal Build</label>
-              <input
-                type="number"
-                value={studentBuild}
-                onChange={(e) => setStudentBuild(e.target.value)}
-                placeholder="1"
                 className="w-full px-3 py-1.5 border border-line dark:border-white/10 rounded-xl bg-transparent text-sm font-mono"
               />
             </div>
@@ -1208,7 +1199,7 @@ function DiamondVoyAppVersionWizard({
           <h5 className="font-bold text-ink-800 dark:text-slate-200 flex items-center gap-2">
             👨‍🏫 Diamond Teachers App
           </h5>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2">
             <div>
               <label className="block text-xs font-semibold mb-1 text-ink-600 dark:text-slate-400">Minimal Versiya</label>
               <input
@@ -1216,16 +1207,6 @@ function DiamondVoyAppVersionWizard({
                 value={teacherVersion}
                 onChange={(e) => setTeacherVersion(e.target.value)}
                 placeholder="1.0.0"
-                className="w-full px-3 py-1.5 border border-line dark:border-white/10 rounded-xl bg-transparent text-sm font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold mb-1 text-ink-600 dark:text-slate-400">Minimal Build</label>
-              <input
-                type="number"
-                value={teacherBuild}
-                onChange={(e) => setTeacherBuild(e.target.value)}
-                placeholder="1"
                 className="w-full px-3 py-1.5 border border-line dark:border-white/10 rounded-xl bg-transparent text-sm font-mono"
               />
             </div>
