@@ -5,7 +5,6 @@ import { useWebT } from "./ui/web-i18n";
 import { LanguageIconButton } from "./ui/theme-provider";
 import { LogoMark } from "./ui/primitives";
 import { PublicFooter } from "./ui/public-footer";
-import { PublicPageMotion } from "./ui/public-page-motion";
 
 type PublicTab = "home" | "courses" | "results" | "articles" | "about" | "videos";
 
@@ -36,7 +35,6 @@ export function PublicShell({
 
   return (
     <main className="public-page-shell min-h-screen bg-gray-50 dark:bg-[#07111f] font-sans flex flex-col transition-colors duration-300">
-      <PublicPageMotion rootSelector=".public-page-shell" />
       {/* ── NAVBAR ────────────────────────────────────────── */}
       <header
         className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 border-b ${

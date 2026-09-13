@@ -18,7 +18,6 @@ import {
 } from "./ui/navigation-config";
 import { DashboardSidebar, orderSections, sectionIconGlyph } from "./ui/dashboard-sidebar";
 import { HeroSection } from "./ui/hero-section";
-import { PublicPageMotion } from "./ui/public-page-motion";
 import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
 import { getCourseGroups, toAssetUrl, type PublicCourse } from "./public-data";
 import { AssetIcon, GIFT_CHEST_ICON_SRC, LogoMark, SectionTitle, StatCard } from "./ui/primitives";
@@ -980,7 +979,7 @@ function SafeAvatarImage({
   if (!src || failed) {
     return <span className={fallbackClassName}>{fallback}</span>;
   }
-  return <img src={src} alt={alt} className={className} loading="lazy" decoding="async" onError={() => setFailed(true)} />;
+  return <img src={src} alt={alt} className={className} loading="eager" decoding="async" onError={() => setFailed(true)} />;
 }
 
 function SmallUserAvatar({
@@ -1661,6 +1660,8 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
                     src={toAssetUrl(String(course.cover_image_url))}
                     alt={localizedTitle}
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108"
+                    loading="eager"
+                    decoding="async"
                   />
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-cyan-50 to-blue-100 dark:from-navy-800 dark:to-navy-700">
@@ -1746,6 +1747,8 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
                   src={String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)}
                   alt={video.title || "Video"}
                   className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                  loading="eager"
+                  decoding="async"
                 />
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-soft to-line">
@@ -1829,6 +1832,8 @@ function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
                   src={testimonial.avatarUrl}
                   alt={`${testimonial.name} profili`}
                   className="landing-review-avatar"
+                  loading="eager"
+                  decoding="async"
                 />
               ) : (
                 <span>{testimonial.name.charAt(0).toUpperCase()}</span>
@@ -2109,7 +2114,6 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
 
   return (
     <main className="public-landing-page min-h-screen bg-background">
-      <PublicPageMotion rootSelector=".public-landing-page" />
       {/* ── HERO ──────────────────────────────────────────────── */}
       <HeroSection />
 

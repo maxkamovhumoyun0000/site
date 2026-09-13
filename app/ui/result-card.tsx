@@ -151,7 +151,8 @@ export function ResultCard({
                   src={toAssetUrl(img)}
                   alt={`${title} - ${tt("public.results.mediaNumber", "Media {number}", { number: idx + 1 })}`}
                   className="w-full h-full object-cover block shrink-0 snap-center"
-                  loading="lazy"
+                  loading="eager"
+                  decoding="async"
                 />
               ))}
             </div>
@@ -166,7 +167,8 @@ export function ResultCard({
             src={resolvedMedia}
             alt={title}
             className="w-full h-full object-cover block transition-transform duration-500 group-hover:scale-105"
-            loading="lazy"
+            loading="eager"
+            decoding="async"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">

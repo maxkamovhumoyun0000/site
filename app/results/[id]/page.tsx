@@ -165,6 +165,8 @@ export default function ResultDetailPage() {
                           className="w-full max-h-[58svh] lg:max-h-[calc(100svh-8rem)] object-contain block"
                           src={toAssetUrl(activeMedia)}
                           alt={item.student_name || tt("public.results.result", "Natija")}
+                          loading="eager"
+                          decoding="async"
                         />
                       </button>
                     )
@@ -220,7 +222,7 @@ export default function ResultDetailPage() {
                           {isVideo ? (
                             <video className="h-full w-full object-cover" src={`${toAssetUrl(entry)}#t=0.001`} muted playsInline preload="metadata" />
                           ) : (
-                            <img className="h-full w-full object-cover" src={toAssetUrl(entry)} alt={`${item.student_name || tt("public.results.result", "Natija")} ${idx + 1}`} loading="lazy" />
+                            <img className="h-full w-full object-cover" src={toAssetUrl(entry)} alt={`${item.student_name || tt("public.results.result", "Natija")} ${idx + 1}`} loading="eager" decoding="async" />
                           )}
                         </button>
                       );

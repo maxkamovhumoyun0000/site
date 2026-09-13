@@ -35268,7 +35268,10 @@ async def course_image_file(filename: str):
         if placeholder is not None:
             return placeholder
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(str(file_path))
+    return FileResponse(
+        str(file_path),
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
 
 
 @app.post("/results/upload-image")
@@ -35298,6 +35301,7 @@ async def result_media_file(filename: str):
     return FileResponse(
         str(file_path),
         media_type=mimetypes.guess_type(safe)[0] or "application/octet-stream",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
     )
 
 
