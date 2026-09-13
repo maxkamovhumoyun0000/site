@@ -1691,6 +1691,28 @@ def lesson_is_slot_free(start_ts: str) -> bool:
         conn.close()
 
 
+def lesson_is_support_teacher_slot_free(teacher_id: int, date_iso: str, time_hhmm: str) -> bool:
+    """Whether one support teacher can accept a lesson at this exact time."""
+    ensure_support_lessons_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT 1 FROM lesson_bookings
+            WHERE support_teacher_id=? AND date=? AND time=?
+              AND status IN ('pending','approved')
+            LIMIT 1
+            """,
+            (int(teacher_id), str(date_iso), str(time_hhmm)),
+        )
+        return not bool(cur.fetchone())
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 def lesson_is_slot_free_for_subject(subject: str, date_iso: str, time_hhmm: str) -> bool:
     """
     Slot is free if the number of available teachers for this subject/weekday/time
@@ -1842,7 +1864,10 @@ def create_lesson_booking_request(
     if is_lesson_date_effectively_closed(str(branch), str(date_iso)):
         return False
     if subject:
-        if not lesson_is_slot_free_for_subject(subject, date_iso, time_hhmm):
+        if support_teacher_id:
+            if not lesson_is_support_teacher_slot_free(int(support_teacher_id), date_iso, time_hhmm):
+                return False
+        elif not lesson_is_slot_free_for_subject(subject, date_iso, time_hhmm):
             return False
     else:
         if not lesson_is_slot_free(start_ts):
@@ -1851,6 +1876,23 @@ def create_lesson_booking_request(
     conn = get_conn()
     cur = conn.cursor()
     try:
+        if subject and support_teacher_id:
+            cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(?))",
+                (f"support-booking:{int(support_teacher_id)}:{date_iso}:{time_hhmm}",),
+            )
+            cur.execute(
+                """
+                SELECT 1 FROM lesson_bookings
+                WHERE support_teacher_id=? AND date=? AND time=?
+                  AND status IN ('pending','approved')
+                LIMIT 1
+                """,
+                (int(support_teacher_id), str(date_iso), str(time_hhmm)),
+            )
+            if cur.fetchone():
+                conn.rollback()
+                return False
         cur.execute(
             """
             INSERT INTO lesson_bookings(
@@ -5041,6 +5083,7 @@ def ensure_support_lessons_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_lesson_bookings_student_status_end ON lesson_bookings(student_user_id, status, end_ts)",
             "CREATE INDEX IF NOT EXISTS idx_lesson_bookings_subject_status ON lesson_bookings(support_subject, status)",
             "CREATE INDEX IF NOT EXISTS idx_lesson_bookings_teacher_subject_start ON lesson_bookings(support_teacher_id, support_subject, start_ts)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_lesson_bookings_active_teacher_slot ON lesson_bookings(support_teacher_id, date, time) WHERE support_teacher_id IS NOT NULL AND status IN ('pending','approved')",
         ):
             try:
                 cur.execute(index_sql)

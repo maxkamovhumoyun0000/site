@@ -20763,7 +20763,6 @@ function BookingOpsPanel({
           const status = String(row.status || "pending").toLowerCase();
           const attendance = String(row.support_attendance_status || "").toLowerCase();
           const isBusy = Boolean(busyById[rowId]);
-          const canDecide = mode === "bookings" && status === "pending";
           const canMarkAttendance = mode === "attendance" && (status === "approved" || status === "passed" || status === "pending");
           const avatarUrl = resolveAssetUrl(String(row.student_profile_image_url || ""));
           const draft = rescheduleDraft[rowId] || { date: String(row.date || ""), time: String(row.time || "") };
@@ -20851,24 +20850,6 @@ function BookingOpsPanel({
                 </button>
               </div>
               <div className="support-ops-actions">
-                {canDecide ? (
-                  <>
-                    <button disabled={isBusy} className="support-action-btn is-approve" onClick={() => setBookingConfirm({
-                      row,
-                      payload: { status: "approved" },
-                      title: tt("support.popup.approveTitle", "Bookingni tasdiqlash"),
-                      message: tt("support.popup.approveMessage", "#{id} booking tasdiqlanadi.", { id: rowId }),
-                      actionLabel: tt("common.approve", "Tasdiqlash"),
-                    })}>{tt("common.approve", "Tasdiqlash")}</button>
-                    <button disabled={isBusy} className="support-action-btn is-reject" onClick={() => setBookingConfirm({
-                      row,
-                      payload: { status: "rejected" },
-                      title: tt("support.popup.rejectTitle", "Bookingni rad etish"),
-                      message: tt("support.popup.rejectMessage", "#{id} booking rad etiladi.", { id: rowId }),
-                      actionLabel: tt("common.reject", "Rad etish"),
-                    })}>{tt("common.reject", "Rad etish")}</button>
-                  </>
-                ) : null}
                 {canMarkAttendance ? (
                   <>
                     <button disabled={isBusy} className="support-action-btn is-present" onClick={() => runAttendance(row, { status: "present", bonus_amount: 2, penalty_amount: 1 })}>{tt("common.present", "Keldi")}</button>

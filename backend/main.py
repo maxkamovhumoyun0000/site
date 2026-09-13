@@ -238,6 +238,7 @@ from db import (
     join_duel_session,
     lesson_is_slot_free,
     lesson_is_slot_free_for_subject,
+    lesson_is_support_teacher_slot_free,
     list_all_student_telegram_ids,
     list_arena_group_session_answers_for_export,
     list_branch_dates_closed,
@@ -5906,6 +5907,21 @@ def _support_teacher_candidates_for_slot(subject: str, branch: str, date_iso: st
     return out
 
 
+def _available_support_teacher_candidates_for_slot(
+    subject: str,
+    branch: str,
+    date_iso: str,
+    time_hhmm: str,
+) -> list[dict]:
+    """Return schedule-matching support teachers who are individually free."""
+    return [
+        teacher
+        for teacher in _support_teacher_candidates_for_slot(subject, branch, date_iso, time_hhmm)
+        if int(teacher.get("id") or 0) > 0
+        and lesson_is_support_teacher_slot_free(int(teacher.get("id") or 0), date_iso, time_hhmm)
+    ]
+
+
 def _support_subject_date_state(subject: str, branch: str, date_iso: str) -> dict:
     if is_lesson_holiday(date_iso):
         return {"closed": True, "closed_reason": "Holiday"}
@@ -6079,8 +6095,12 @@ def _support_available_times_payload(branch: str, date_iso: str, subject: str | 
         blocked = is_slot_closed_effective(branch, date_iso, tm)
         if selected_subject and subject_allowed_times is not None and tm not in subject_allowed_times:
             blocked = True
+        available_teachers: list[dict] = []
         if selected_subject:
-            free = lesson_is_slot_free_for_subject(selected_subject, date_iso, tm) and not blocked
+            available_teachers = _available_support_teacher_candidates_for_slot(
+                selected_subject, branch, date_iso, tm,
+            )
+            free = bool(available_teachers) and not blocked
         else:
             free = (lesson_is_slot_free(start_ts) if start_ts else True) and not blocked
         try:
@@ -6104,13 +6124,14 @@ def _support_available_times_payload(branch: str, date_iso: str, subject: str | 
                 "time": tm,
                 "status": status,
                 "reason": get_slot_block_reason(branch, date_iso, tm) if status == "blocked" else None,
+                "available_teacher_count": len(available_teachers) if status == "free" else 0,
             }
         )
     return rows
 
 
 def _select_support_teacher_for_slot(subject: str, branch: str, date_iso: str, time_hhmm: str) -> int | None:
-    candidates = _support_teacher_candidates_for_slot(subject, branch, date_iso, time_hhmm)
+    candidates = _available_support_teacher_candidates_for_slot(subject, branch, date_iso, time_hhmm)
     if not candidates:
         return None
     return int(candidates[0].get("id") or 0) or None
@@ -8889,6 +8910,81 @@ async def _cancel_future_support_bookings_for_closed_time(
     for booking in rows:
         ok = set_lesson_booking_status(str(booking.get("id") or ""), "cancelled", admin_id=int(actor_id or 0), admin_note=admin_note)
         if ok:
+            cancelled += 1
+            await _notify_support_slot_booking_cancelled(booking)
+    return cancelled
+
+
+def _future_active_support_bookings_for_closed_day(
+    support_teacher_id: int,
+    subject: str,
+    *,
+    weekday: int | None = None,
+    date_iso: str | None = None,
+) -> list[dict]:
+    """Find only this teacher's future active bookings for a closed day."""
+    teacher_id = int(support_teacher_id or 0)
+    normalized_subject = _normalize_subject_label(subject)
+    if teacher_id <= 0 or not normalized_subject:
+        return []
+    today_iso = datetime.now(TASHKENT_TZ).date().isoformat()
+    now_utc = _now_utc()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        query = """
+            SELECT * FROM lesson_bookings
+            WHERE support_teacher_id=? AND support_subject=?
+              AND LOWER(COALESCE(status,'')) IN ('pending','approved')
+        """
+        values: list[Any] = [teacher_id, normalized_subject]
+        if date_iso:
+            query += " AND date=?"
+            values.append(date_iso)
+        else:
+            query += " AND date>=?"
+            values.append(today_iso)
+        cur.execute(query + " ORDER BY date ASC, time ASC", tuple(values))
+        rows: list[dict] = []
+        for row in cur.fetchall() or []:
+            item = dict(row)
+            try:
+                day = datetime.strptime(str(item.get("date") or ""), "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if weekday is not None and day.weekday() != int(weekday):
+                continue
+            start_dt = _parse_utc_timestamp(
+                str(item.get("start_ts") or "")
+                or support_make_start_ts(str(item.get("date") or ""), str(item.get("time") or ""))
+                or ""
+            )
+            if start_dt is None or start_dt > now_utc:
+                rows.append(item)
+        return rows
+    except Exception:
+        logger.exception("closed support day lookup failed")
+        return []
+    finally:
+        conn.close()
+
+
+async def _cancel_future_support_bookings_for_closed_day(
+    support_teacher_id: int,
+    subject: str,
+    actor_id: int,
+    *,
+    weekday: int | None = None,
+    date_iso: str | None = None,
+    reason: str,
+) -> int:
+    cancelled = 0
+    for booking in _future_active_support_bookings_for_closed_day(
+        support_teacher_id, subject, weekday=weekday, date_iso=date_iso,
+    ):
+        if set_lesson_booking_status(
+            str(booking.get("id") or ""), "cancelled", admin_id=int(actor_id or 0), admin_note=reason,
+        ):
             cancelled += 1
             await _notify_support_slot_booking_cancelled(booking)
     return cancelled
@@ -30047,7 +30143,7 @@ async def student_support_available_times(
     for slot in raw_items:
         slot_copy = dict(slot)
         if slot.get("status") == "free" and selected_subject:
-            candidates = _support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, str(slot["time"]))
+            candidates = _available_support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, str(slot["time"]))
             slot_copy["available_teachers"] = [
                 {"id": int(c.get("id") or 0), "name": _display_name(c)}
                 for c in candidates
@@ -30085,7 +30181,7 @@ async def student_support_available_teachers(
     time_normalized = normalize_time_hhmm(str(time or "").strip())
     if not time_normalized:
         raise HTTPException(status_code=400, detail="Invalid time format")
-    candidates = _support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, time_normalized)
+    candidates = _available_support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, time_normalized)
     teachers = [
         {"id": int(c.get("id") or 0), "name": _display_name(c)}
         for c in candidates
@@ -48322,6 +48418,10 @@ async def support_manage_schedule_update(payload: SupportSubjectScheduleRequest,
     if not weekdays:
         raise HTTPException(status_code=400, detail="At least one weekday is required")
     current = {int(row["weekday"]): row for row in _support_weekday_settings_for_teacher(teacher_id, selected_subject)}
+    closing_days = [
+        weekday for weekday, row in current.items()
+        if bool(row.get("active")) and weekday not in weekdays
+    ]
     for weekday in range(0, 6):
         branch_key = str((current.get(weekday) or {}).get("branch") or _default_support_branch_for_weekday(weekday))
         _upsert_support_weekday_setting(
@@ -48332,8 +48432,14 @@ async def support_manage_schedule_update(payload: SupportSubjectScheduleRequest,
             branch=branch_key,
             updated_by=int(user.get("id") or 0),
         )
+    cancelled_bookings = 0
+    for weekday in closing_days:
+        cancelled_bookings += await _cancel_future_support_bookings_for_closed_day(
+            teacher_id, selected_subject, int(user.get("id") or 0), weekday=weekday,
+            reason="Support teacher ushbu kunni yopdi",
+        )
     rows = _support_weekday_settings_for_teacher(teacher_id, selected_subject)
-    return {"subject": selected_subject, "support_teacher_id": teacher_id, "items": rows, "weekdays": weekdays}
+    return {"subject": selected_subject, "support_teacher_id": teacher_id, "items": rows, "weekdays": weekdays, "cancelled_bookings": cancelled_bookings}
 
 
 @app.get("/support/manage/calendar")
@@ -48360,6 +48466,7 @@ async def support_manage_calendar(
                 "date": iso,
                 "weekday": _weekday_short_name(iso),
                 "closed": bool(override and int(override.get("is_closed") or 0) == 1),
+                "is_closed": bool(override and int(override.get("is_closed") or 0) == 1),
                 "closed_reason": str((override or {}).get("reason") or "").strip() or None,
                 "locked": bool(override and int(override.get("is_closed") or 0) == 1),
                 "is_open_override": bool(override and int(override.get("is_closed") or 0) == 0),
@@ -48379,15 +48486,21 @@ async def support_manage_calendar_save(payload: SupportSubjectCalendarRequest, a
     reason = str(payload.reason or "").strip()
     if not reason:
         raise HTTPException(status_code=400, detail="Sabab kiritilishi shart")
+    is_closed = bool(payload.is_closed)
     _set_support_teacher_date_override(
         teacher_id,
         selected_subject,
         date_iso,
-        is_closed=bool(payload.is_closed),
+        is_closed=is_closed,
         reason=reason,
         actor_id=int(user.get("id") or 0),
     )
-    return {"subject": selected_subject, "support_teacher_id": teacher_id, "date": date_iso, "closed": bool(payload.is_closed), "reason": reason}
+    cancelled_bookings = 0
+    if is_closed:
+        cancelled_bookings = await _cancel_future_support_bookings_for_closed_day(
+            teacher_id, selected_subject, int(user.get("id") or 0), date_iso=date_iso, reason=reason,
+        )
+    return {"subject": selected_subject, "support_teacher_id": teacher_id, "date": date_iso, "closed": is_closed, "reason": reason, "cancelled_bookings": cancelled_bookings}
 
 
 @app.get("/support/manage/hours")
@@ -48501,7 +48614,13 @@ async def support_manage_filial_update(payload: SupportSubjectFilialRequest, aut
         branch=branch_key,
         updated_by=int(user.get("id") or 0),
     )
-    return {"subject": selected_subject, "support_teacher_id": teacher_id, "weekday": int(payload.weekday), "branch": branch_key, "active": bool(payload.active)}
+    cancelled_bookings = 0
+    if not bool(payload.active):
+        cancelled_bookings = await _cancel_future_support_bookings_for_closed_day(
+            teacher_id, selected_subject, int(user.get("id") or 0), weekday=int(payload.weekday),
+            reason="Support teacher ushbu kunni yopdi",
+        )
+    return {"subject": selected_subject, "support_teacher_id": teacher_id, "weekday": int(payload.weekday), "branch": branch_key, "active": bool(payload.active), "cancelled_bookings": cancelled_bookings}
 
 
 def _support_booking_rows_for_actor(user: dict, mode: str, subject: str | None = None, limit: int = 80) -> list[dict]:
@@ -48859,7 +48978,7 @@ def _validate_support_booking_reschedule_target(
     if not start_ts:
         raise HTTPException(status_code=400, detail="Invalid booking date/time")
     current_start = str(booking.get("start_ts") or "")
-    if start_ts != current_start and not lesson_is_slot_free(start_ts):
+    if start_ts != current_start and not lesson_is_support_teacher_slot_free(teacher_id, target_date, tm):
         raise HTTPException(status_code=409, detail="Selected slot is already taken")
     return target_date, tm
 
@@ -48931,7 +49050,7 @@ async def create_student_booking(payload: BookingCreateRequest, authorization: s
     if d.weekday() == 6:
         raise HTTPException(status_code=409, detail="Sunday bookings are not available")
     
-    candidates = _support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, tm)
+    candidates = _available_support_teacher_candidates_for_slot(selected_subject, branch_key, date_iso, tm)
     if not candidates:
         raise HTTPException(status_code=409, detail="Selected date is not available for this branch")
         
@@ -48968,11 +49087,7 @@ async def create_student_booking(payload: BookingCreateRequest, authorization: s
     if not start_ts:
         raise HTTPException(status_code=400, detail="Invalid booking date/time")
         
-    slot_is_free = False
-    if selected_subject:
-        slot_is_free = lesson_is_slot_free_for_subject(selected_subject, date_iso, tm)
-    else:
-        slot_is_free = lesson_is_slot_free(start_ts)
+    slot_is_free = bool(support_teacher_id)
         
     if not slot_is_free:
         alternatives = _suggest_support_slots(branch_key, date_iso)
@@ -49077,6 +49192,8 @@ async def change_booking_status(booking_id: str, payload: BookingStatusRequest, 
         raise HTTPException(status_code=403, detail="Permission denied")
 
     status_value = payload.status
+    if role == "support" and status_value != "reschedule":
+        raise HTTPException(status_code=403, detail="Support teacher faqat booking vaqtini o'zgartira oladi")
     if status_value == "reschedule":
         if not payload.date or not payload.time:
             raise HTTPException(status_code=400, detail="Reschedule requires date and time")
