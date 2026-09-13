@@ -150,7 +150,6 @@ export function TeacherKpiPanel({
   const [totalTeachers, setTotalTeachers] = useState(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [tab, setTab] = useState<"my" | "leaderboard">("my");
   const onApiCallRef = useRef(onApiCall);
   onApiCallRef.current = onApiCall;
   const initialLoadDoneRef = useRef(false);
@@ -273,7 +272,7 @@ export function TeacherKpiPanel({
 
   return (
     <div className="admin-groups-page">
-      {/* 1. Main KPI Indicators Hero Card (No redundant header banner) */}
+      {/* 1. Main KPI Indicators Hero Card */}
       <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
         {loading && !initialLoadDoneRef.current ? (
           <div className="text-center py-10 text-sm font-semibold text-ink-500 dark:text-navy-400">
@@ -340,173 +339,130 @@ export function TeacherKpiPanel({
         )}
       </section>
 
-      {/* 2. Tabs Bar placed directly UNDER the KPI Hero Card */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-white/[0.06] rounded-2xl border border-slate-200/60 dark:border-white/10">
-          <button
-            type="button"
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all min-h-[38px] ${
-              tab === "my"
-                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md"
-                : "text-ink-600 dark:text-navy-300 hover:text-navy-900 dark:hover:text-white"
-            }`}
-            onClick={() => setTab("my")}
-          >
-            📊 {tt("teacher.kpi.title", "Mening KPI")}
-          </button>
-          <button
-            type="button"
-            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all min-h-[38px] ${
-              tab === "leaderboard"
-                ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-md"
-                : "text-ink-600 dark:text-navy-300 hover:text-navy-900 dark:hover:text-white"
-            }`}
-            onClick={() => setTab("leaderboard")}
-          >
-            🏆 {tt("teacher.kpi.leaderboard", "Reytingni ko'rish")}
-          </button>
-        </div>
-
-        <button
-          type="button"
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl text-ink-600 hover:text-navy-900 dark:text-navy-300 dark:hover:text-white bg-slate-100 dark:bg-white/[0.06] hover:bg-slate-200/70 dark:hover:bg-white/10 transition-colors border border-slate-200/60 dark:border-white/10"
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="KPI ni qayta hisoblash"
-        >
-          <span className={`inline-block ${refreshing ? "animate-spin" : ""}`}>🔄</span>
-          <span>{refreshing ? "Yangilanmoqda..." : "Yangilash"}</span>
-        </button>
-      </div>
-
-      {/* 3. Tab Content */}
-      {tab === "my" ? (
-        <div className="flex flex-col gap-6">
-          {kpiData ? (
-            <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
-              <div className="flex items-center justify-between mb-5">
-                <h3 className="text-base sm:text-lg font-bold text-navy-950 dark:text-white">
-                  📈 Batafsil statistika
-                </h3>
-                <span className="admin-dash-panel-badge">6 ta ko'rsatkich</span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-4">
-                {[
-                  {
-                    icon: "👥",
-                    label: tt("teacher.kpi.totalStudents", "Jami o'quvchilar"),
-                    val: Number(kpi.total_students || 0),
-                    unit: "ta",
-                  },
-                  {
-                    icon: "📚",
-                    label: tt("teacher.kpi.totalGroups", "Guruhlar"),
-                    val: Number(kpi.groups_count || 0),
-                    unit: "ta",
-                  },
-                  {
-                    icon: "📝",
-                    label: "Jami homework",
-                    val: Number(kpi.total_homeworks || 0),
-                    unit: "ta",
-                  },
-                  {
-                    icon: "✅",
-                    label: "Tekshirilgan",
-                    val: Number(kpi.reviewed_homeworks || 0),
-                    unit: "ta",
-                  },
-                  {
-                    icon: "📊",
-                    label: "Davomat foizi",
-                    val: attRate,
-                    unit: "%",
-                  },
-                  {
-                    icon: "⚡",
-                    label: "Tezlik ball",
-                    val: respSpeed,
-                    unit: "%",
-                  },
-                ].map((item) => (
-                  <div
-                    key={item.label}
-                    className="p-3.5 sm:p-4 rounded-2xl bg-slate-50/70 dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/06 hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col justify-between"
-                  >
-                    <div className="text-2xl mb-2">{item.icon}</div>
-                    <div>
-                      <div className="text-xl sm:text-2xl font-black text-navy-950 dark:text-white leading-none">
-                        {item.val}
-                        <span className="text-xs font-semibold text-ink-500 dark:text-navy-400 ml-1">{item.unit}</span>
-                      </div>
-                      <div className="text-xs font-semibold text-ink-600 dark:text-navy-300 mt-1.5 leading-snug">
-                        {item.label}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* KPI Formula Banner */}
-              <div className="mt-6 p-4 sm:p-5 bg-sky-50/60 dark:bg-sky-500/10 border border-sky-100 dark:border-sky-500/20 rounded-2xl">
-                <div className="flex items-center gap-2 text-sm font-bold text-sky-950 dark:text-cyan-200 mb-2">
-                  <span>🧮</span>
-                  <span>KPI Hisoblash Formulasi:</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5 sm:gap-2 text-xs font-semibold">
-                  <span className="px-2.5 py-1 rounded-lg bg-emerald-100/80 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300">
-                    Davomat × 30%
-                  </span>
-                  <span className="text-ink-400 dark:text-white/40 self-center">+</span>
-                  <span className="px-2.5 py-1 rounded-lg bg-blue-100/80 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300">
-                    Homework tekshirish × 25%
-                  </span>
-                  <span className="text-ink-400 dark:text-white/40 self-center">+</span>
-                  <span className="px-2.5 py-1 rounded-lg bg-amber-100/80 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">
-                    O'quvchilar ball × 20%
-                  </span>
-                  <span className="text-ink-400 dark:text-white/40 self-center">+</span>
-                  <span className="px-2.5 py-1 rounded-lg bg-cyan-100/80 text-cyan-800 dark:bg-cyan-500/20 dark:text-cyan-300">
-                    Javob tezligi × 15%
-                  </span>
-                  <span className="text-ink-400 dark:text-white/40 self-center">+</span>
-                  <span className="px-2.5 py-1 rounded-lg bg-rose-100/80 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300">
-                    Guruh to'liqlik × 10%
-                  </span>
-                </div>
-              </div>
-            </section>
-          ) : null}
-        </div>
-      ) : (
-        /* Leaderboard Tab */
+      {/* 2. Detailed Statistics (Batafsil statistika) */}
+      {kpiData ? (
         <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
           <div className="flex items-center justify-between mb-5">
-            <div>
-              <h3 className="text-base sm:text-lg font-bold text-navy-950 dark:text-white">
-                🏆 {tt("teacher.kpi.leaderboard", "O'qituvchilar reytingi")}
-              </h3>
-              <p className="text-xs text-ink-500 dark:text-navy-400 mt-0.5">
-                Eng yuqori unumdorlikka ega o'qituvchilar ro'yxati
-              </p>
-            </div>
-            <span className="admin-dash-panel-badge">{leaderboard.length} o'qituvchi</span>
+            <h3 className="text-base sm:text-lg font-bold text-navy-950 dark:text-white">
+              📈 Batafsil statistika
+            </h3>
+            <span className="admin-dash-panel-badge">6 ta ko'rsatkich</span>
           </div>
 
-          {leaderboard.length === 0 ? (
-            <div className="text-center py-12 text-sm font-semibold text-ink-500 dark:text-navy-400">
-              Reyting ma&rsquo;lumotlari yo&rsquo;q. Avval KPI ni hisoblang.
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-4">
+            {[
+              {
+                icon: "👥",
+                label: tt("teacher.kpi.totalStudents", "Jami o'quvchilar"),
+                val: Number(kpi.total_students || 0),
+                unit: "ta",
+              },
+              {
+                icon: "📚",
+                label: tt("teacher.kpi.totalGroups", "Guruhlar"),
+                val: Number(kpi.groups_count || 0),
+                unit: "ta",
+              },
+              {
+                icon: "📝",
+                label: "Jami homework",
+                val: Number(kpi.total_homeworks || 0),
+                unit: "ta",
+              },
+              {
+                icon: "✅",
+                label: "Tekshirilgan",
+                val: Number(kpi.reviewed_homeworks || 0),
+                unit: "ta",
+              },
+              {
+                icon: "📊",
+                label: "Davomat foizi",
+                val: attRate,
+                unit: "%",
+              },
+              {
+                icon: "⚡",
+                label: "Tezlik ball",
+                val: respSpeed,
+                unit: "%",
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="p-3.5 sm:p-4 rounded-2xl bg-slate-50/70 dark:bg-white/[0.03] border border-slate-200/70 dark:border-white/[0.06] hover:border-slate-300 dark:hover:border-white/15 transition-all flex flex-col justify-between"
+              >
+                <div className="text-2xl mb-2">{item.icon}</div>
+                <div>
+                  <div className="text-xl sm:text-2xl font-black text-navy-950 dark:text-white leading-none">
+                    {item.val}
+                    <span className="text-xs font-semibold text-ink-500 dark:text-navy-400 ml-1">{item.unit}</span>
+                  </div>
+                  <div className="text-xs font-semibold text-ink-600 dark:text-navy-300 mt-1.5 leading-snug">
+                    {item.label}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* KPI Formula Banner */}
+          <div className="mt-6 p-4 sm:p-5 bg-sky-50/60 dark:bg-sky-500/10 border border-sky-100 dark:border-sky-500/20 rounded-2xl">
+            <div className="flex items-center gap-2 text-sm font-bold text-sky-950 dark:text-cyan-200 mb-2">
+              <span>🧮</span>
+              <span>KPI Hisoblash Formulasi:</span>
             </div>
-          ) : (
-            <div className="flex flex-col gap-2.5">
-              {leaderboard.map((item, idx) => (
-                <LeaderboardRow key={String(item.teacher_id || idx)} item={item} idx={idx} />
-              ))}
+            <div className="flex flex-wrap gap-1.5 sm:gap-2 text-xs font-semibold">
+              <span className="px-2.5 py-1 rounded-lg bg-emerald-100/80 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300">
+                Davomat × 30%
+              </span>
+              <span className="text-ink-400 dark:text-white/40 self-center">+</span>
+              <span className="px-2.5 py-1 rounded-lg bg-blue-100/80 text-blue-800 dark:bg-blue-500/20 dark:text-blue-300">
+                Homework tekshirish × 25%
+              </span>
+              <span className="text-ink-400 dark:text-white/40 self-center">+</span>
+              <span className="px-2.5 py-1 rounded-lg bg-amber-100/80 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300">
+                O'quvchilar ball × 20%
+              </span>
+              <span className="text-ink-400 dark:text-white/40 self-center">+</span>
+              <span className="px-2.5 py-1 rounded-lg bg-cyan-100/80 text-cyan-800 dark:bg-cyan-500/20 dark:text-cyan-300">
+                Javob tezligi × 15%
+              </span>
+              <span className="text-ink-400 dark:text-white/40 self-center">+</span>
+              <span className="px-2.5 py-1 rounded-lg bg-rose-100/80 text-rose-800 dark:bg-rose-500/20 dark:text-rose-300">
+                Guruh to'liqlik × 10%
+              </span>
             </div>
-          )}
+          </div>
         </section>
-      )}
+      ) : null}
+
+      {/* 3. Reyting (O'qituvchilar reytingi) directly UNDER Batafsil statistika */}
+      <section className="bg-white dark:bg-white/[0.03] border border-slate-200/80 dark:border-white/10 rounded-2xl p-5 sm:p-7 shadow-sm">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h3 className="text-base sm:text-lg font-bold text-navy-950 dark:text-white">
+              🏆 {tt("teacher.kpi.leaderboard", "O'qituvchilar reytingi")}
+            </h3>
+            <p className="text-xs text-ink-500 dark:text-navy-400 mt-0.5">
+              Eng yuqori unumdorlikka ega o'qituvchilar ro'yxati
+            </p>
+          </div>
+          <span className="admin-dash-panel-badge">{leaderboard.length} o'qituvchi</span>
+        </div>
+
+        {leaderboard.length === 0 ? (
+          <div className="text-center py-12 text-sm font-semibold text-ink-500 dark:text-navy-400">
+            Reyting ma&rsquo;lumotlari yo&rsquo;q. Avval KPI ni hisoblang.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2.5">
+            {leaderboard.map((item, idx) => (
+              <LeaderboardRow key={String(item.teacher_id || idx)} item={item} idx={idx} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }
