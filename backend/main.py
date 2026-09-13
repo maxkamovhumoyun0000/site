@@ -19164,14 +19164,14 @@ async def check_app_version(
 
     if app_name == "teacher":
         min_ver = str(settings.get("min_teacher_version") or "1.0.0")
-        min_build = int(settings.get("min_teacher_build") or 1)
+        min_build = int(settings.get("min_teacher_build") or 0)
         store_url = str(
             (settings.get("teacher_app_store_url") if plat == "ios" else settings.get("teacher_play_store_url"))
             or ""
         ).strip()
     else:
         min_ver = str(settings.get("min_student_version") or "1.0.0")
-        min_build = int(settings.get("min_student_build") or 1)
+        min_build = int(settings.get("min_student_build") or 0)
         store_url = str(
             (settings.get("student_app_store_url") if plat == "ios" else settings.get("student_play_store_url"))
             or ""
@@ -19189,6 +19189,7 @@ async def check_app_version(
         "build_number": build_number,
         "min_version": min_ver,
         "min_build": min_build,
+        "comparison": "version_only",
         "store_url": store_url,
         "message_uz": "Ilovaning yangi versiyasi chiqdi! Davom etish uchun ilovani yangilang.",
         "message_ru": "Доступна новая версия приложения! Обновите приложение для продолжения.",
