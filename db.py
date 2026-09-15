@@ -7088,6 +7088,18 @@ def ensure_video_teachers_schema() -> None:
                 conn.rollback()
             except Exception:
                 pass
+    try:
+        # Explicit catalogue order for admin drag-and-drop.  Existing videos
+        # retain their legacy relative order until an admin saves a new one.
+        cur.execute("ALTER TABLE videos ADD COLUMN IF NOT EXISTS sort_order INTEGER")
+        cur.execute("UPDATE videos SET sort_order=id WHERE sort_order IS NULL")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_videos_sort_order ON videos(sort_order, id)")
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
     # language ustunini qo'shish (foydalanuvchi tilini saqlash uchun)
     try:

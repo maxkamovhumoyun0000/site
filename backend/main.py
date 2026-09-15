@@ -2271,6 +2271,10 @@ class VideoUpdateRequest(BaseModel):
     support_teacher_ids: str | None = None
 
 
+class VideoReorderRequest(BaseModel):
+    video_ids: list[int] = Field(min_length=1, max_length=500)
+
+
 class VideoProgressUpdateRequest(BaseModel):
     watched_seconds: int = Field(default=0, ge=0, le=24 * 3600)
     max_watched_seconds: int | None = Field(default=None, ge=0, le=24 * 3600)
@@ -29546,6 +29550,21 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
         _competition_apply_question_outcome(sess, uid, q_index, None if sel is None else int(sel), timer_state)
         _duel_persist_session(sess)
 
+        # Progress is per participant. A student goes straight to their next
+        # question; the opponent waiting state is only meaningful after the
+        # student has completed their own round.
+        next_question = _competition_current_question_payload(sess, uid)
+        if next_question is not None:
+            return {
+                "completed": False,
+                "status": sess.get("status"),
+                "phase": _competition_session_phase(sess),
+                "stage": int(sess.get("stage") or 0),
+                "total_stages": int(sess.get("total_stages") or _competition_total_stages(mode)),
+                "result": None,
+                **next_question,
+            }
+
         finalized_or_transitioned = _competition_finalize_if_all_progress_finished(sess)
         if not finalized_or_transitioned:
             return {
@@ -29703,6 +29722,39 @@ def _competition_question_allowed_seconds(question: dict[str, Any], mode: str = 
         seconds = 30 + int(words * 0.85)
         return max(30, min(120, seconds))
     return COMPETITION_WEB_SECONDS
+
+
+def _competition_current_question_payload(session: dict[str, Any], user_id: int) -> dict[str, Any] | None:
+    """Build the next question response for one participant.
+
+    Competition progress is per participant, not lock-step. Returning this
+    payload immediately after an answer prevents a fast student from seeing
+    the misleading "waiting for opponent" screen between every question.
+    The waiting state is reserved for the actual end of a round.
+    """
+    uid = int(user_id)
+    progress = _competition_user_progress(session, uid) or {}
+    questions = _competition_questions_for_user(session, uid)
+    total = len(questions)
+    question_index = int(progress.get("index") or 1)
+    if question_index <= 0 or question_index > total:
+        return None
+    question = questions[question_index - 1]
+    timer = _competition_timer_state(
+        session, uid, question_index, question, create=True
+    )
+    return {
+        "question_index": question_index,
+        "total_questions": total,
+        "progress_percent": int(round(((question_index - 1) * 100) / max(1, total))),
+        "time_limit_sec": timer["allowed_seconds"],
+        "time_remaining_sec": timer["time_remaining_sec"],
+        "deadline_at": timer["deadline_at"],
+        "question_started_at": timer["started_at"],
+        "question": _public_question_payload(question, question_index=question_index),
+        "live": _competition_live_lists(session),
+        "opponent_progress": _competition_opponent_progress(session, uid),
+    }
 
 
 def _competition_timer_state(
@@ -50499,7 +50551,7 @@ async def admin_get_videos(
         """
         SELECT *
         FROM videos
-        ORDER BY COALESCE(view_count, 0) DESC, COALESCE(like_count, 0) DESC, created_at DESC, id DESC
+        ORDER BY COALESCE(sort_order, id) ASC, id ASC
         LIMIT ? OFFSET ?
         """,
         (int(limit), int(offset)),
@@ -50655,6 +50707,39 @@ async def admin_update_video(
     return {"message": "Video updated", "item": _serialize_video_row(dict(row), viewer_user_id=int(user.get("id") or 0)) if row else None}
 
 
+@app.post("/admin/videos/reorder")
+async def admin_reorder_videos(
+    payload: VideoReorderRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    video_ids = [int(item) for item in payload.video_ids if int(item) > 0]
+    if len(video_ids) != len(set(video_ids)):
+        raise HTTPException(status_code=400, detail="Video ids must be unique")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM videos ORDER BY COALESCE(sort_order, id), id")
+        existing_ids = [int(row.get("id") or 0) for row in (cur.fetchall() or [])]
+        if set(video_ids) != set(existing_ids):
+            raise HTTPException(status_code=400, detail="Send the complete current video catalogue order")
+        for position, video_id in enumerate(video_ids, start=1):
+            cur.execute("UPDATE videos SET sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", (position, video_id))
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("video reorder failed")
+        raise HTTPException(status_code=500, detail="Video order could not be saved") from exc
+    finally:
+        conn.close()
+    _clear_video_list_caches()
+    return {"message": "Video order saved", "video_ids": video_ids}
+
+
 @app.delete("/admin/videos/{video_id}")
 async def admin_delete_video(video_id: int, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -50717,7 +50802,7 @@ async def user_get_videos(
             SELECT {columns}
             FROM videos
             WHERE {where}
-            ORDER BY COALESCE(view_count, 0) DESC, COALESCE(like_count, 0) DESC, created_at DESC, id DESC
+            ORDER BY COALESCE(sort_order, id) ASC, id ASC
             LIMIT ? OFFSET ?
             """,
             tuple([*params, int(limit), int(offset)]),
@@ -50736,7 +50821,7 @@ async def user_get_videos(
             query += " AND level=?"
             queryParams.append(selected_level)
         query += """
-            ORDER BY COALESCE(view_count, 0) DESC, COALESCE(like_count, 0) DESC, created_at DESC, id DESC
+            ORDER BY COALESCE(sort_order, id) ASC, id ASC
             LIMIT ? OFFSET ?
         """
         cur.execute(query, tuple([*queryParams, int(limit), int(offset)]))
@@ -50751,7 +50836,7 @@ async def user_get_videos(
             query += " AND level=?"
             queryParams.append(selected_level)
         query += """
-            ORDER BY COALESCE(view_count, 0) DESC, COALESCE(like_count, 0) DESC, created_at DESC, id DESC
+            ORDER BY COALESCE(sort_order, id) ASC, id ASC
             LIMIT ? OFFSET ?
         """
         cur.execute(query, tuple([*queryParams, int(limit), int(offset)]))

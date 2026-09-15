@@ -1,5 +1,5 @@
 "use client";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { DragEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ModalPortal } from "./modal-portal";
 import { SharedTestEditor, validateTestQuestions, TestQuestion } from "./shared-test-editor";
@@ -90,6 +90,8 @@ export function AdminVideos({
   const [levelFilter, setLevelFilter] = useState("all");
   const [teachers, setTeachers] = useState<any[]>([]);
   const [fetchingTeachers, setFetchingTeachers] = useState(false);
+  const [draggingVideoId, setDraggingVideoId] = useState<number | null>(null);
+  const [reorderingVideos, setReorderingVideos] = useState(false);
 
   // Test editor state
   const [testModalOpen, setTestModalOpen] = useState(false);
@@ -190,6 +192,40 @@ export function AdminVideos({
   });
   const subjectOptions = Array.from(new Set(videos.map((video) => String(video.subject || "").trim()).filter(Boolean)));
   const levelOptions = Array.from(new Set(videos.map((video) => String(video.level || "").trim()).filter(Boolean)));
+  const canReorderVideos = canManageVideos && !reorderingVideos && !query.trim() && subjectFilter === "all" && levelFilter === "all";
+
+  async function reorderVideos(sourceId: number, targetId: number) {
+    if (!canReorderVideos || sourceId === targetId) return;
+    const sourceIndex = videos.findIndex((item) => item.id === sourceId);
+    const targetIndex = videos.findIndex((item) => item.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const previous = videos;
+    const next = [...videos];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setVideos(next);
+    setReorderingVideos(true);
+    setError("");
+    try {
+      await apiFetch("/admin/videos/reorder", {
+        method: "POST",
+        body: { video_ids: next.map((item) => item.id) },
+      });
+      setNotice("Video darslar tartibi saqlandi.");
+    } catch (e) {
+      setVideos(previous);
+      setError(e instanceof Error ? e.message : "Video tartibini saqlab bo'lmadi.");
+    } finally {
+      setReorderingVideos(false);
+    }
+  }
+
+  function onVideoDrop(event: DragEvent<HTMLElement>, targetId: number) {
+    event.preventDefault();
+    const sourceId = Number(event.dataTransfer.getData("application/x-diamond-video") || draggingVideoId || 0);
+    setDraggingVideoId(null);
+    if (sourceId > 0) reorderVideos(sourceId, targetId);
+  }
 
   function openVideoDetail(video: VideoItem) {
     const videoId = Number(video?.id || (video as any)?.video_id || 0);
@@ -542,6 +578,7 @@ export function AdminVideos({
           <span className="font-semibold text-slate-700 dark:text-slate-200">{filtered.length}</span>
         </div>
       </div>
+      {canManageVideos ? <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{canReorderVideos ? "Tartibni o'zgartirish uchun video kartasini ushlab sudrang." : "Tartiblash uchun qidiruv va filtrlarni tozalang."}</p> : null}
       {notice ? <div className="rounded-xl bg-green-50 text-green-700 border border-green-200 px-4 py-2 text-sm">{notice}</div> : null}
       {error ? <div className="rounded-xl bg-red-50 text-red-700 border border-red-200 px-4 py-2 text-sm">{error}</div> : null}
 
@@ -552,7 +589,7 @@ export function AdminVideos({
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {filtered.map((v) => (
-            <article key={v.id} className="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm">
+            <article key={v.id} draggable={canReorderVideos} onDragStart={(event) => { if (!canReorderVideos) return; event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-diamond-video", String(v.id)); setDraggingVideoId(v.id); }} onDragEnd={() => setDraggingVideoId(null)} onDragOver={(event) => { if (canReorderVideos) event.preventDefault(); }} onDrop={(event) => onVideoDrop(event, v.id)} className={`rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 overflow-hidden shadow-sm ${draggingVideoId === v.id ? "opacity-50" : ""} ${canReorderVideos ? "cursor-grab active:cursor-grabbing" : ""}`}>
               <button
                 type="button"
                 className="w-full text-left"
