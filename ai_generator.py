@@ -1110,6 +1110,16 @@ def _is_example_quality_ok(subject: str, word: Any, example: Any) -> bool:
     return True
 
 
+def _is_placeholder_uz_translation(value: Any) -> bool:
+    """Detect the legacy fallback that repeats a Russian word, not its Uzbek meaning."""
+    text = str(value or "").strip().casefold()
+    if not text:
+        return True
+    if "o‘zbekcha tarjimasi" in text or "o'zbekcha tarjimasi" in text:
+        return True
+    return bool(re.fullmatch(r".+\s+so['’`]?zi", text, flags=re.IGNORECASE))
+
+
 def _needs_vocab_quality_repair(item: dict[str, Any], subject: str) -> bool:
     if not _has_all_required_vocab_fields(item):
         return True
@@ -1118,6 +1128,8 @@ def _needs_vocab_quality_repair(item: dict[str, Any], subject: str) -> bool:
     if not _is_example_quality_ok(subject, item.get("word"), item.get("example")):
         return True
     if subject == "Russian" and not _is_valid_russian_vocab_item(item):
+        return True
+    if subject == "Russian" and _is_placeholder_uz_translation(item.get("translation_uz")):
         return True
     return False
 
@@ -1831,6 +1843,9 @@ def _insert_vocab_items_into_words(
             example = (prepared_item.get("example") or "").strip()
 
             if subject == "Russian":
+                if _is_placeholder_uz_translation(translation_uz):
+                    skipped_invalid += 1
+                    continue
                 raw_lv = prepared_item.get("level")
                 word_level = _normalize_russian_bank_level(
                     str(raw_lv) if raw_lv is not None else "",
