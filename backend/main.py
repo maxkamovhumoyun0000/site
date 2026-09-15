@@ -729,7 +729,7 @@ TASHKENT_TZ = pytz.timezone("Asia/Tashkent")
 PLACEMENT_TIME_LIMIT_SEC = 30
 DAILY_TEST_WEB_SECONDS = 35
 DAILY_TEST_QUESTION_COUNT = 20
-COMPETITION_WEB_SECONDS = 40
+COMPETITION_WEB_SECONDS = 30
 COMPETITION_DAILY_JOIN_LIMIT = 50
 ALLOWED_SUBJECTS = ("English", "Russian", "Matematika", "Ona tili", "Tarix", "Arab tili")
 SUPPORT_BRANCHES: dict[str, str] = {
@@ -29756,24 +29756,33 @@ def _competition_global_match_timer_state(session: dict[str, Any], user_id: int,
 
 
 def _competition_question_allowed_seconds(question: dict[str, Any], mode: str = "") -> int:
-
     q = _mcq_question_from_row(question or {})
+    payload = _safe_json_object(_row_value(question or {}, "payload_json"))
+    configured_limit = payload.get("time_limit_sec") or _row_value(question or {}, "time_limit_sec")
+    try:
+        configured_limit = int(configured_limit)
+    except (TypeError, ValueError):
+        configured_limit = 0
+    if configured_limit > 0:
+        # Admin/AI supplied a question-specific DB duration. Never let a bad
+        # import make a competitive question shorter than 30s or longer than
+        # one minute.
+        return max(30, min(60, configured_limit))
+
     passage = str(q.get("passage") or "").strip()
     prompt = str(q.get("prompt") or q.get("question") or "").strip()
     options_text = " ".join(str(opt) for opt in (q.get("options") or []))
     text = " ".join([passage, prompt, options_text]).strip()
     qtype = str(q.get("question_type") or "").strip().lower()
 
-    # Reading questions always get extended time (60–120 s)
+    # Reading questions always receive the full one-minute budget.
     if qtype == "reading" or passage:
-        words = len(text.split())
-        seconds = 30 + int(words * 0.85)
-        return max(60, min(120, seconds))
+        return 60
 
     if len(text.split()) >= 55 and (_duel_is_mode(mode) or mode in {"daily", "group", "boss"}):
         words = len(text.split())
-        seconds = 30 + int(words * 0.85)
-        return max(30, min(120, seconds))
+        seconds = 30 + int(words * 0.55)
+        return max(30, min(60, seconds))
     return COMPETITION_WEB_SECONDS
 
 
