@@ -21,3 +21,20 @@ def test_answer_response_contains_the_next_question_without_waiting_for_opponent
     assert payload["question_index"] == 2
     assert payload["question"]["prompt"] == "Second?"
     assert payload["time_remaining_sec"] >= 30
+
+
+def test_competition_question_validator_rejects_malformed_or_ambiguous_rows():
+    valid = {
+        "question": "Choose the correct answer.",
+        "option_a": "Correct",
+        "option_b": "Distractor",
+        "correct_option_index": 1,
+    }
+    missing_prompt = {**valid, "question": "   "}
+    duplicate_options = {**valid, "option_b": "correct"}
+    invalid_correct_index = {**valid, "correct_option_index": 3}
+
+    assert api._competition_question_is_valid(valid) is True
+    assert api._competition_question_is_valid(missing_prompt) is False
+    assert api._competition_question_is_valid(duplicate_options) is False
+    assert api._competition_question_is_valid(invalid_correct_index) is False
