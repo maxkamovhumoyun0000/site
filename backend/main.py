@@ -4897,6 +4897,54 @@ def _mcq_question_from_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _competition_question_key(row: dict[str, Any]) -> str:
+    """Return a stable, human-visible signature used to prevent repeats."""
+    q = _mcq_question_from_row(row)
+    text = "\n".join(
+        [
+            str(q.get("passage") or "").strip(),
+            str(q.get("prompt") or q.get("question") or "").strip(),
+        ]
+    )
+    return _normalize_answer_text(text)
+
+
+def _competition_question_is_valid(row: dict[str, Any]) -> bool:
+    """Accept only unambiguous MCQ questions that the Arena UI can render."""
+    q = _mcq_question_from_row(row)
+    prompt = str(q.get("prompt") or q.get("question") or "").strip()
+    options = [str(option).strip() for option in (q.get("options") or [])]
+    normalized_options = [_normalize_answer_text(option) for option in options]
+    try:
+        correct_index = int(q.get("correct_option_index") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        prompt
+        and 2 <= len(options) <= 4
+        and all(normalized_options)
+        and len(set(normalized_options)) == len(normalized_options)
+        and 1 <= correct_index <= len(options)
+    )
+
+
+def _competition_valid_unique_rows(
+    rows: list[dict[str, Any]], *, excluded_keys: set[str] | None = None
+) -> list[dict[str, Any]]:
+    """Filter malformed and duplicate questions before they reach a match."""
+    seen = set(excluded_keys or set())
+    valid: list[dict[str, Any]] = []
+    for row in rows:
+        if not _competition_question_is_valid(row):
+            continue
+        key = _competition_question_key(row)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        valid.append(row)
+    return valid
+
+
 def _public_question_payload(row: dict[str, Any], *, question_index: int | None = None) -> dict[str, Any]:
     q = _mcq_question_from_row(row)
     qtype = str(q.get("question_type") or "multiple_choice").strip().lower()
@@ -5053,9 +5101,9 @@ async def _runtime_generate_questions(
         # Combine seen_questions with questions we just generated in this loop
         current_seen = set(seen_questions)
         for r in rows:
-            q_txt = str(r.get("question") or "").strip().lower()
-            if q_txt:
-                current_seen.add(q_txt)
+            q_key = _competition_question_key(r)
+            if q_key:
+                current_seen.add(q_key)
 
         await generate_daily_tests_and_insert(
             subject=safe_subject,
@@ -5081,7 +5129,10 @@ async def _runtime_generate_questions(
                 """,
                 (int(created_by), safe_subject, safe_level, start_ts.isoformat()),
             )
-            rows = [dict(r) for r in (cur.fetchall() or [])]
+            rows = _competition_valid_unique_rows(
+                [dict(r) for r in (cur.fetchall() or [])],
+                excluded_keys=seen_questions,
+            )
         finally:
             conn.close()
 
@@ -5101,10 +5152,14 @@ async def _runtime_generate_questions(
                     level=safe_level,
                     count=reading_count,
                 )
-                if reading_qs:
-                    actual_rc = len(reading_qs)
+                valid_reading_qs = _competition_valid_unique_rows(
+                    reading_qs,
+                    excluded_keys={_competition_question_key(row) for row in rows},
+                )
+                if valid_reading_qs:
+                    actual_rc = min(len(valid_reading_qs), target_count)
                     # Replace last `actual_rc` regular questions with reading questions
-                    rows = rows[: target_count - actual_rc] + reading_qs
+                    rows = rows[: target_count - actual_rc] + valid_reading_qs[:actual_rc]
                     _random.shuffle(rows)
                     logger.info(
                         "_runtime_generate_questions: injected %d reading question(s) "
@@ -5137,12 +5192,11 @@ async def _runtime_generate_questions(
         # Exclude seen_questions and already generated questions
         current_seen = set(seen_questions)
         for r in rows:
-            q_txt = str(r.get("question") or "").strip().lower()
-            if q_txt:
-                current_seen.add(q_txt)
+            q_key = _competition_question_key(r)
+            if q_key:
+                current_seen.add(q_key)
 
-        filtered = [q for q in fallback if str(q.get("question") or "").strip().lower() not in current_seen]
-        pool = filtered if len(filtered) >= needed else fallback
+        pool = _competition_valid_unique_rows(fallback, excluded_keys=current_seen)
 
         for row in pool[:needed]:
             rows.append({
@@ -5167,8 +5221,7 @@ async def _runtime_generate_questions(
     )
     fallback = _safe_call(lambda: get_tests_by_subject(safe_subject), []) or []
     _random.shuffle(fallback)
-    filtered = [q for q in fallback if str(q.get("question") or "").strip().lower() not in seen_questions]
-    pool = filtered if len(filtered) >= target_count else fallback
+    pool = _competition_valid_unique_rows(fallback, excluded_keys=seen_questions)
 
     mapped = []
     for row in pool[:target_count]:
@@ -5181,7 +5234,7 @@ async def _runtime_generate_questions(
             "option_d": str(row.get("option_d") or "").strip(),
             "correct_option_index": int(row.get("correct_option_index") or 1),
         })
-    return mapped
+    return mapped if len(mapped) >= target_count else []
 
 
 def _competition_theme(mode: str) -> str:
