@@ -53,3 +53,15 @@ def test_competition_question_deduplication_uses_the_question_not_distractors():
     }
 
     assert api._competition_valid_unique_rows([first, rewritten]) == [first]
+
+
+def test_competition_timer_uses_the_database_question_limit_with_safe_bounds():
+    question = {
+        "question": "Choose the correct answer.",
+        "option_a": "A",
+        "option_b": "B",
+        "correct_option_index": 1,
+        "payload_json": '{"time_limit_sec": 47}',
+    }
+
+    assert api._competition_question_allowed_seconds(question, "duel-1v1") == 47
