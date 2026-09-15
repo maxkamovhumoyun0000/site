@@ -38,3 +38,18 @@ def test_competition_question_validator_rejects_malformed_or_ambiguous_rows():
     assert api._competition_question_is_valid(missing_prompt) is False
     assert api._competition_question_is_valid(duplicate_options) is False
     assert api._competition_question_is_valid(invalid_correct_index) is False
+
+
+def test_competition_question_deduplication_uses_the_question_not_distractors():
+    first = {
+        "question": "What is the capital of France?",
+        "option_a": "Paris",
+        "option_b": "Rome",
+        "correct_option_index": 1,
+    }
+    rewritten = {
+        **first,
+        "option_b": "Berlin",
+    }
+
+    assert api._competition_valid_unique_rows([first, rewritten]) == [first]
