@@ -177,7 +177,7 @@ def _sync_student_badges(cur: Any, user_id: int) -> None:
     """Award only facts that are already persisted; future badge assets/rules stay additive."""
     checks = (
         ("first_test", "SELECT COUNT(*) AS n FROM test_history WHERE user_id=?", 1),
-        ("first_homework", "SELECT COUNT(*) AS n FROM homework WHERE student_id=?", 1),
+        ("first_homework", "SELECT COUNT(*) AS n FROM web_homeworks WHERE student_id=?", 1),
         ("study_room_host", "SELECT COUNT(*) AS n FROM study_rooms WHERE owner_id=?", 1),
         ("first_certificate", "SELECT COUNT(*) AS n FROM certificates WHERE user_id=?", 1),
         ("mistake_notebook_master", "SELECT COUNT(*) AS n FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NOT NULL", 20),
@@ -234,7 +234,7 @@ def _build_plan(student_id: int) -> dict[str, Any]:
             topic = str(item.get("topic_key") or "")
             title = f"{subject or 'Fan'}: {topic or 'xatolar'} bo‘yicha mashq"
             cur.execute("INSERT INTO personalization_plan_tasks(plan_id, task_type, title, subject, topic_key, target_url, priority, metadata_json) VALUES(?,?,?,?,?,?,?,?)", (plan_id, "mistake_review", title, subject, topic, "/?role=student&section=mistake-notebook", 100-index, json.dumps({"mistakes": int(item.get("mistakes") or 0)})))
-        cur.execute("SELECT COUNT(*) AS total FROM homework WHERE student_id=? AND COALESCE(status,'') NOT IN ('submitted','reviewed','completed')", (student_id,))
+        cur.execute("SELECT COUNT(*) AS total FROM web_homeworks h LEFT JOIN web_homework_submissions s ON s.homework_id=h.id AND s.student_id=? WHERE h.student_id=? AND COALESCE(s.status,'') NOT IN ('done','accepted','reviewed','completed')", (student_id, student_id))
         pending = int(dict(cur.fetchone() or {}).get("total") or 0)
         if pending:
             cur.execute("INSERT INTO personalization_plan_tasks(plan_id, task_type, title, target_url, priority, metadata_json) VALUES(?,?,?,?,?,?)", (plan_id, "homework", f"{pending} ta uyga vazifani yakunlang", "/?role=student&section=homework", 90, json.dumps({"pending": pending})))
@@ -569,7 +569,7 @@ async def parent_progress(access_token: str):
         if not row: raise HTTPException(status_code=404, detail="Parent progress link is invalid")
         student=dict(row); sid=int(student["id"])
         cur.execute("SELECT date,status,group_id FROM attendance WHERE user_id=? ORDER BY date DESC LIMIT 40",(sid,)); attendance=_dicts(cur.fetchall())
-        cur.execute("SELECT id,title,status,due_date,review_note,updated_at FROM homework WHERE student_id=? ORDER BY updated_at DESC LIMIT 40",(sid,)); homework=_dicts(cur.fetchall())
+        cur.execute("SELECT h.id,h.title,h.status,h.due_at,s.review_note,COALESCE(s.updated_at,h.updated_at) AS updated_at,COALESCE(s.status,'pending') AS submission_status FROM web_homeworks h LEFT JOIN web_homework_submissions s ON s.homework_id=h.id AND s.student_id=? WHERE h.student_id=? ORDER BY COALESCE(s.updated_at,h.updated_at) DESC LIMIT 40",(sid,sid)); homework=_dicts(cur.fetchall())
         cur.execute("SELECT test_type,topic_id,correct_count,wrong_count,skipped_count,created_at FROM test_history WHERE user_id=? ORDER BY created_at DESC LIMIT 40",(sid,)); tests=_dicts(cur.fetchall())
         cur.execute("SELECT subject,topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL GROUP BY subject,topic_key ORDER BY mistakes DESC LIMIT 5",(sid,)); weak=_dicts(cur.fetchall())
         cur.execute("SELECT course_title,certificate_id,issued_at FROM certificates WHERE user_id=? ORDER BY issued_at DESC",(sid,)); certificates=_dicts(cur.fetchall())
