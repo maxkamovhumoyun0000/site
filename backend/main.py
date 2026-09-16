@@ -52585,6 +52585,39 @@ app.include_router(analytics_router)
 from backend.library_ai import router as library_ai_router
 app.include_router(library_ai_router)
 
+# Additive personal-learning routes.  The module receives the established
+# authentication/role helpers instead of reimplementing session policy.
+from backend import personalization as personalization_api
+
+def _personalization_role_for_user(user: dict[str, Any]) -> str:
+    return _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+
+async def _personalization_explain(prompt: str, user: dict[str, Any]) -> str:
+    from diamondvoy_helpers import diamondvoy_gemini_answer
+    subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=[])
+    return await diamondvoy_gemini_answer(
+        prompt,
+        subjects,
+        lang=str(user.get("language") or "uz"),
+        is_admin_context=False,
+        conversation=[],
+    )
+
+personalization_api.configure_runtime(
+    user_from_bearer=_user_row_from_bearer,
+    role_for_user=_personalization_role_for_user,
+    explain=_personalization_explain,
+)
+app.include_router(personalization_api.router)
+
+# Public helpers are also exported here so lightweight contract tests and
+# background workers use the exact same token/code/spacing policy.
+_new_parent_access_token = personalization_api.new_parent_access_token
+_new_study_room_code = personalization_api.new_study_room_code
+_mistake_next_review_at = personalization_api.mistake_next_review_at
+
 # --- Voice Room WebSockets (Distributed via Redis) ---
 import uuid
 import json
