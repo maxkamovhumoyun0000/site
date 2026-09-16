@@ -61,6 +61,7 @@ import { StudentVideos } from "./ui/student-videos";
 import { StudentBooks } from "./ui/student-books";
 import { StudentAttendance } from "./ui/student-attendance";
 import { StudentNotesPanel } from "./ui/student-notes";
+import { PersonalLearningPanel } from "./ui/personal-learning";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
@@ -22969,7 +22970,8 @@ function DashboardShell({
   if (currentSection === "chats" || currentSection === "diamondvoy") {
     content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
   } else if (activeRole === "student") {
-    if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
+    if (currentSection === "personal-learning") content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" />;
+    else if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
     else if (currentSection === "videos") content = <StudentVideos apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "books") content = <StudentBooks apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "vocabulary") content = <StudentVocabulary data={roleData} onNavigate={handleNavigate} />;
@@ -22997,7 +22999,9 @@ function DashboardShell({
     else content = <StudentHome user={user} data={roleData} onNavigate={handleNavigate} />;
 
   } else if (activeRole === "teacher") {
-    if (currentSection === "profile") {
+    if (currentSection === "personal-learning") {
+      content = <PersonalLearningPanel apiFetch={authedApiFetch} role="teacher" />;
+    } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="teacher" />;
@@ -23005,7 +23009,9 @@ function DashboardShell({
       content = <TeacherSection section={currentSection} data={roleData} user={user} onApiCall={onAdminCall} onNavigate={handleNavigate} />;
     }
   } else if (activeRole === "support") {
-    if (currentSection === "profile") {
+    if (currentSection === "personal-learning") {
+      content = <PersonalLearningPanel apiFetch={authedApiFetch} role="support" />;
+    } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="support" />;

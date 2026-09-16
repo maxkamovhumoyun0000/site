@@ -16718,6 +16718,11 @@ def _auto_mark_overdue_homeworks() -> None:
                         )
                     except Exception:
                         pass
+                    _notify_parent_progress_event(
+                        user_id,
+                        "homework_missing",
+                        f'"{title}" uyga vazifasi deadlinegacha bajarilmadi',
+                    )
         conn.commit()
     except Exception:
         logger.exception("auto_mark_overdue_homeworks failed")
@@ -32561,6 +32566,12 @@ async def teacher_mark_attendance(payload: AttendanceMarkRequest, authorization:
     subject_hint = _normalize_subject_label(str((group or {}).get("subject") or "")) or None
     effect = _sync_attendance_effect(int(payload.user_id), int(payload.group_id), str(payload.date), status, subject_hint)
     add_attendance(int(payload.user_id), int(payload.group_id), str(payload.date), status=status)
+    if status.lower() == "absent":
+        _notify_parent_progress_event(
+            int(payload.user_id),
+            "attendance_absent",
+            f"{str(payload.date)} kungi darsda qatnashmadi",
+        )
     _payment_invalidate_attendance_scope(
         user_ids=[int(payload.user_id)],
         group_id=int(payload.group_id),
@@ -32604,6 +32615,12 @@ async def teacher_bulk_mark_attendance(payload: AttendanceBulkMarkRequest, autho
             noops += 1
         effect_rows.append({"user_id": int(uid), **effect})
         add_attendance(int(uid), int(payload.group_id), str(payload.date), status=status)
+        if status.lower() == "absent":
+            _notify_parent_progress_event(
+                int(uid),
+                "attendance_absent",
+                f"{str(payload.date)} kungi darsda qatnashmadi",
+            )
 
         marked += 1
     _payment_invalidate_attendance_scope(
@@ -46848,6 +46865,12 @@ async def admin_mark_attendance(payload: AttendanceMarkRequest, authorization: s
     subject_hint = _normalize_subject_label(str((group or {}).get("subject") or "")) or None
     effect = _sync_attendance_effect(int(payload.user_id), int(payload.group_id), str(payload.date), status, subject_hint)
     add_attendance(int(payload.user_id), int(payload.group_id), str(payload.date), status=status)
+    if status.lower() == "absent":
+        _notify_parent_progress_event(
+            int(payload.user_id),
+            "attendance_absent",
+            f"{str(payload.date)} kungi darsda qatnashmadi",
+        )
     _payment_invalidate_attendance_scope(
         user_ids=[int(payload.user_id)],
         group_id=int(payload.group_id),
@@ -52605,10 +52628,64 @@ async def _personalization_explain(prompt: str, user: dict[str, Any]) -> str:
         conversation=[],
     )
 
+def _notify_parent_progress_event(student_id: int, event_type: str, detail: str) -> None:
+    """Best-effort parent alert with a permanent, opaque progress URL."""
+    try:
+        student = _safe_call(lambda: get_user_by_id(int(student_id)), None) or {}
+        if not student:
+            return
+        token = personalization_api._get_or_create_parent_token(int(student_id))
+        base = str(WEBAPP_URL or "").rstrip("/")
+        url = f"{base}/parent/{token}" if base else f"/parent/{token}"
+        from userbot_manager import get_target_phones_for_user
+        message = (
+            f"Hurmatli ota-ona! { _display_name(student) } uchun {detail}.\n\n"
+            f"To‘liq progress, davomat, homework va testlar: {url}"
+        )
+        for phone in get_target_phones_for_user(student):
+            queue_userbot_notification(str(phone), message, event_type=event_type)
+    except Exception:
+        logger.exception("parent progress notification failed student_id=%s event=%s", student_id, event_type)
+
+async def _personalization_notify_plan(user: dict[str, Any], plan: dict[str, Any]) -> None:
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        return
+    target = "/?role=student&section=personal-learning"
+    title = "Diamondvoy: bugungi reja"
+    message = str(plan.get("diamondvoy_message") or "Bugungi shaxsiy mashqlaringiz tayyor.")
+    conn = get_conn()
+    try:
+        _store_browser_notification_for_user(
+            user_id,
+            notification_type="personal_learning_plan",
+            title=title,
+            message=message,
+            button_text="Rejani ochish",
+            button_url=target,
+            target_screen="personal-learning",
+            source_key=f"personal_plan:{user_id}:{str(plan.get('date') or _now_tashkent_date())}",
+            meta={"plan_id": int(plan.get("id") or 0)},
+        )
+    finally:
+        conn.close()
+    threading.Thread(
+        target=push_notifications.send_push_to_users,
+        args=([user_id], title, message),
+        kwargs={"data": {"target_screen": "personal-learning", "notification_type": "personal_learning_plan"}},
+        daemon=True,
+    ).start()
+    telegram_id = str(user.get("telegram_id") or "").strip()
+    bot_token = str(os.getenv("STUDENT_BOT_TOKEN") or "").strip()
+    if telegram_id and bot_token:
+        base = str(WEBAPP_URL or "").rstrip("/")
+        await _send_telegram_text(bot_token, telegram_id, message, button_text="Rejani ochish", button_url=f"{base}{target}" if base else None, button_web_app=True)
+
 personalization_api.configure_runtime(
     user_from_bearer=_user_row_from_bearer,
     role_for_user=_personalization_role_for_user,
     explain=_personalization_explain,
+    notify_plan=_personalization_notify_plan,
 )
 app.include_router(personalization_api.router)
 

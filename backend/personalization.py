@@ -122,6 +122,31 @@ def ensure_schema() -> None:
                 cur.execute(sql)
             except Exception:
                 pass
+        badge_defaults = (
+            ("first_lesson", "Birinchi dars", "Birinchi darsga qatnashdingiz", "lesson_count"),
+            ("lesson_streak_7", "7 kunlik dars seriyasi", "7 kun ketma-ket dars", "lesson_streak_7"),
+            ("homework_streak_10", "Homework ustasi", "10 vazifani topshiring", "homework_streak_10"),
+            ("first_test", "Birinchi test", "Birinchi testni tugating", "test_count"),
+            ("perfect_test", "Mukammal test", "100% natija oling", "perfect_test"),
+            ("mistake_notebook_master", "Xatolar ustasi", "Xatolar daftaridagi 20 savolni yoping", "mistakes_resolved"),
+            ("vocabulary_master", "Lug‘at ustasi", "Lug‘at mashqlarini bajaring", "vocabulary_master"),
+            ("grammar_master", "Grammatika ustasi", "Grammatika mavzularini yoping", "grammar_master"),
+            ("bookworm", "Kitobxon", "Kutubxona materiallarini tugating", "book_complete"),
+            ("video_finisher", "Video ustasi", "Video darslarni tugating", "video_complete"),
+            ("first_arena", "Arena jangchisi", "Arena musobaqasida qatnashing", "arena_count"),
+            ("arena_winner", "Arena g‘olibi", "Arenada g‘olib bo‘ling", "arena_win"),
+            ("duel_winner", "Duel g‘olibi", "Duelda g‘olib bo‘ling", "duel_win"),
+            ("study_room_host", "Study-room host", "Study-room yarating", "study_room_host"),
+            ("first_certificate", "Birinchi sertifikat", "Kurs/modulni yakunlang", "certificate_count"),
+        )
+        for code, title, description, rule_key in badge_defaults:
+            try:
+                cur.execute("INSERT INTO badge_definitions(code,title,description,rule_key,active) VALUES(?,?,?,?,1) ON CONFLICT(code) DO NOTHING", (code, title, description, rule_key))
+            except Exception:
+                try:
+                    cur.execute("INSERT OR IGNORE INTO badge_definitions(code,title,description,rule_key,active) VALUES(?,?,?,?,1)", (code, title, description, rule_key))
+                except Exception:
+                    pass
         conn.commit()
     finally:
         conn.close()
@@ -146,6 +171,25 @@ def _dicts(rows: Any) -> list[dict[str, Any]]:
 
 def _student_name(row: dict[str, Any]) -> str:
     return " ".join(part for part in (str(row.get("first_name") or "").strip(), str(row.get("last_name") or "").strip()) if part).strip() or str(row.get("login_id") or "Student")
+
+
+def _sync_student_badges(cur: Any, user_id: int) -> None:
+    """Award only facts that are already persisted; future badge assets/rules stay additive."""
+    checks = (
+        ("first_test", "SELECT COUNT(*) AS n FROM test_history WHERE user_id=?", 1),
+        ("first_homework", "SELECT COUNT(*) AS n FROM homework WHERE student_id=?", 1),
+        ("study_room_host", "SELECT COUNT(*) AS n FROM study_rooms WHERE owner_id=?", 1),
+        ("first_certificate", "SELECT COUNT(*) AS n FROM certificates WHERE user_id=?", 1),
+        ("mistake_notebook_master", "SELECT COUNT(*) AS n FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NOT NULL", 20),
+    )
+    for code, sql, threshold in checks:
+        try:
+            cur.execute(sql, (user_id,)); count=int(dict(cur.fetchone() or {}).get("n") or 0)
+            if count >= threshold:
+                try: cur.execute("INSERT INTO student_badges(user_id,badge_code) VALUES(?,?) ON CONFLICT(user_id,badge_code) DO NOTHING", (user_id,code))
+                except Exception: cur.execute("INSERT OR IGNORE INTO student_badges(user_id,badge_code) VALUES(?,?)", (user_id,code))
+        except Exception:
+            continue
 
 
 def _get_or_create_parent_token(student_id: int, created_by: int | None = None) -> str:
@@ -176,7 +220,7 @@ def _build_plan(student_id: int) -> dict[str, Any]:
             plan = dict(existing)
             cur.execute("SELECT * FROM personalization_plan_tasks WHERE plan_id=? ORDER BY priority DESC, id", (plan["id"],))
             plan["tasks"] = _dicts(cur.fetchall())
-            return plan
+            return _plan_payload(plan)
         cur.execute("SELECT subject, topic_key, COUNT(*) AS mistakes FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL GROUP BY subject, topic_key ORDER BY mistakes DESC LIMIT 3", (student_id,))
         weak = _dicts(cur.fetchall())
         summary = "Bugungi reja: zaif mavzularni takrorlang va berilgan vazifalarni yakunlang."
@@ -197,9 +241,27 @@ def _build_plan(student_id: int) -> dict[str, Any]:
         conn.commit()
         cur.execute("SELECT * FROM personalization_plans WHERE id=?", (plan_id,)); plan = dict(cur.fetchone())
         cur.execute("SELECT * FROM personalization_plan_tasks WHERE plan_id=? ORDER BY priority DESC, id", (plan_id,)); plan["tasks"] = _dicts(cur.fetchall())
-        return plan
+        return _plan_payload(plan)
     finally:
         conn.close()
+
+
+async def _notify_plan_once(user: dict[str, Any], plan: dict[str, Any]) -> None:
+    callback = _runtime.get("notify_plan")
+    if not callback:
+        return
+    ensure_schema()
+    event_key = f"personal_plan:{int(user['id'])}:{str(plan.get('date') or _now().date().isoformat())}"
+    conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT 1 FROM reminder_delivery_log WHERE user_id=? AND event_key=? LIMIT 1", (int(user["id"]),event_key))
+        if cur.fetchone(): return
+        await callback(user, plan)
+        for channel in ("in_app", "push", "telegram"):
+            try: cur.execute("INSERT INTO reminder_delivery_log(user_id,event_key,channel) VALUES(?,?,?)", (int(user["id"]),event_key,channel))
+            except Exception: pass
+        conn.commit()
+    finally: conn.close()
 
 
 class MistakeCreate(BaseModel):
@@ -230,6 +292,20 @@ class BookmarkRequest(BaseModel):
     title: str | None = Field(default=None, max_length=240)
     note: str | None = Field(default=None, max_length=3000)
     tag: str | None = Field(default=None, max_length=80)
+    position_seconds: int | None = Field(default=None, ge=0)
+    page: int | None = Field(default=None, ge=1)
+
+
+def _plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
+    tasks = []
+    for task in plan.get("tasks") or []:
+        row = dict(task)
+        row["kind"] = str(row.get("task_type") or "practice")
+        row["route"] = str(row.get("target_url") or "practice")
+        row["topic"] = row.get("topic_key")
+        row["completed"] = bool(row.get("completed_at"))
+        tasks.append(row)
+    return {**plan, "date": str(plan.get("plan_date") or ""), "diamondvoy_message": str(plan.get("summary") or ""), "tasks": tasks}
 
 
 class ReminderPreferencesRequest(BaseModel):
@@ -258,13 +334,25 @@ class StudyRoomMessage(BaseModel):
 @router.get("/student/personal-plan")
 async def student_personal_plan(authorization: str | None = Header(default=None)):
     user = _user(authorization); _require(user, {"student"})
-    return _build_plan(int(user["id"]))
+    plan=_build_plan(int(user["id"])); await _notify_plan_once(user,plan); return plan
 
 
 @router.post("/student/personal-plan/refresh")
 async def refresh_personal_plan(authorization: str | None = Header(default=None)):
     user = _user(authorization); _require(user, {"student"})
-    return _build_plan(int(user["id"]))
+    plan=_build_plan(int(user["id"])); await _notify_plan_once(user,plan); return plan
+
+
+@router.post("/student/personal-plan/tasks/{task_id}")
+async def complete_personal_plan_task(task_id: int, authorization: str | None = Header(default=None)):
+    user = _user(authorization); _require(user, {"student"}); ensure_schema(); conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE personalization_plan_tasks SET completed_at=? WHERE id=? AND plan_id IN (SELECT id FROM personalization_plans WHERE user_id=?)", (_now().isoformat(), task_id, int(user["id"])))
+        conn.commit()
+        if cur.rowcount == 0: raise HTTPException(status_code=404, detail="Plan task not found")
+        return {"completed": True}
+    finally: conn.close()
 
 
 @router.get("/student/mistake-notebook")
@@ -272,9 +360,29 @@ async def mistake_notebook(authorization: str | None = Header(default=None)):
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
     conn = get_conn()
     try:
-        cur = conn.cursor(); cur.execute("SELECT * FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL AND (review_at IS NULL OR review_at<=?) ORDER BY review_at NULLS FIRST, id LIMIT 50", (int(user["id"]), _now().isoformat()))
-        return {"items": _dicts(cur.fetchall())}
+        cur = conn.cursor(); uid=int(user["id"])
+        cur.execute("SELECT COUNT(*) AS total FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL", (uid,)); total=int(dict(cur.fetchone() or {}).get("total") or 0)
+        cur.execute("SELECT * FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL AND (review_at IS NULL OR review_at<=?) ORDER BY review_at NULLS FIRST, id LIMIT 50", (uid, _now().isoformat()))
+        items=[]
+        for row in _dicts(cur.fetchall()):
+            row["question"] = row.get("prompt")
+            row["topic"] = row.get("topic_key") or row.get("subject")
+            row["due_at"] = row.get("review_at")
+            items.append(row)
+        return {"items": items, "due_count": len(items), "total_count": total}
     finally: conn.close()
+
+
+@router.post("/student/mistake-notebook/start")
+async def start_mistake_notebook(authorization: str | None = Header(default=None)):
+    """Returns due questions in the common lightweight test contract."""
+    payload = await mistake_notebook(authorization)
+    questions=[]
+    for item in payload["items"]:
+        try: options=json.loads(str(item.get("options_json") or "[]"))
+        except Exception: options=[]
+        questions.append({"id": item.get("id"), "question": item.get("prompt"), "options": options, "topic": item.get("topic_key"), "subject": item.get("subject")})
+    return {"title": "Xatolar daftari", "questions": questions, "total": len(questions)}
 
 
 @router.post("/student/mistake-notebook")
@@ -327,13 +435,22 @@ def _bookmark_routes(prefix: str, roles: set[str]):
     async def list_bookmarks(authorization: str | None = Header(default=None)):
         user = _user(authorization); _require(user, roles); ensure_schema(); conn = get_conn()
         try:
-            cur=conn.cursor(); cur.execute("SELECT * FROM learning_bookmarks WHERE user_id=? ORDER BY created_at DESC", (int(user["id"]),)); return {"items": _dicts(cur.fetchall())}
+            cur=conn.cursor(); cur.execute("SELECT * FROM learning_bookmarks WHERE user_id=? ORDER BY created_at DESC", (int(user["id"]),)); items=[]
+            for row in _dicts(cur.fetchall()):
+                position=str(row.get("position_value") or "")
+                if position.startswith("seconds:"): row["position_seconds"]=int(position.split(":",1)[1] or 0)
+                if position.startswith("page:"): row["page"]=int(position.split(":",1)[1] or 0)
+                items.append(row)
+            return {"items": items}
         finally: conn.close()
     @router.post(f"/{prefix}/bookmarks")
     async def create_bookmark(payload: BookmarkRequest, authorization: str | None = Header(default=None)):
         user = _user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
         try:
-            cur=conn.cursor(); cur.execute("INSERT INTO learning_bookmarks(user_id, content_type, content_id, position_value, title, note, tag) VALUES(?,?,?,?,?,?,?)", (int(user["id"]), payload.content_type, payload.content_id, payload.position_value, payload.title, payload.note, payload.tag)); conn.commit(); return {"id": int(cur.lastrowid or 0)}
+            position = payload.position_value
+            if payload.position_seconds is not None: position = f"seconds:{payload.position_seconds}"
+            elif payload.page is not None: position = f"page:{payload.page}"
+            cur=conn.cursor(); cur.execute("INSERT INTO learning_bookmarks(user_id, content_type, content_id, position_value, title, note, tag) VALUES(?,?,?,?,?,?,?)", (int(user["id"]), payload.content_type, payload.content_id, position, payload.title, payload.note, payload.tag)); conn.commit(); return {"id": int(cur.lastrowid or 0)}
         finally: conn.close()
     @router.delete(f"/{prefix}/bookmarks/{{bookmark_id}}")
     async def delete_bookmark(bookmark_id: int, authorization: str | None = Header(default=None)):
@@ -473,7 +590,21 @@ async def regenerate_parent_access(authorization: str | None = Header(default=No
 async def portfolio(authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); uid=int(user["id"]); cur.execute("SELECT * FROM certificates WHERE user_id=? ORDER BY issued_at DESC",(uid,)); certificates=_dicts(cur.fetchall()); cur.execute("SELECT b.*,d.title,d.description,d.asset_url FROM student_badges b JOIN badge_definitions d ON d.code=b.badge_code WHERE b.user_id=? ORDER BY b.earned_at DESC",(uid,)); badges=_dicts(cur.fetchall()); return {"certificates":certificates,"badges":badges,"selected_badge":next((x for x in badges if int(x.get("selected") or 0)==1),None)}
+        cur=conn.cursor(); uid=int(user["id"]); _sync_student_badges(cur, uid); conn.commit(); cur.execute("SELECT *, course_title AS title, ('/certificates/' || certificate_id || '/pdf') AS pdf_url FROM certificates WHERE user_id=? ORDER BY issued_at DESC",(uid,)); certificates=_dicts(cur.fetchall()); cur.execute("SELECT d.code AS id,d.code,d.title,d.description,d.asset_url,CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS unlocked,COALESCE(b.selected,0) AS selected FROM badge_definitions d LEFT JOIN student_badges b ON b.badge_code=d.code AND b.user_id=? WHERE d.active=1 ORDER BY d.code",(uid,)); badges=_dicts(cur.fetchall()); selected=next((x for x in badges if int(x.get("selected") or 0)==1),None); return {"certificates":certificates,"badges":badges,"selected_badge":selected,"selected_badge_id":selected.get("id") if selected else None}
+    finally: conn.close()
+
+
+class BadgeSelectRequest(BaseModel):
+    badge_id: str = Field(min_length=1, max_length=120)
+
+
+@router.put("/student/portfolio/badge")
+async def select_portfolio_badge(payload: BadgeSelectRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); uid=int(user["id"]); cur.execute("SELECT 1 FROM student_badges WHERE user_id=? AND badge_code=?",(uid,payload.badge_id))
+        if not cur.fetchone(): raise HTTPException(status_code=403, detail="Badge is not unlocked")
+        cur.execute("UPDATE student_badges SET selected=0 WHERE user_id=?",(uid,)); cur.execute("UPDATE student_badges SET selected=1 WHERE user_id=? AND badge_code=?",(uid,payload.badge_id)); conn.commit(); return {"selected_badge_id":payload.badge_id}
     finally: conn.close()
 
 
