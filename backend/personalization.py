@@ -125,6 +125,7 @@ def ensure_schema() -> None:
         badge_defaults = (
             ("first_lesson", "Birinchi dars", "Birinchi darsga qatnashdingiz", "lesson_count"),
             ("lesson_streak_7", "7 kunlik dars seriyasi", "7 kun ketma-ket dars", "lesson_streak_7"),
+            ("first_homework", "Birinchi vazifa", "Birinchi uy vazifangizni topshiring", "homework_count"),
             ("homework_streak_10", "Homework ustasi", "10 vazifani topshiring", "homework_streak_10"),
             ("first_test", "Birinchi test", "Birinchi testni tugating", "test_count"),
             ("perfect_test", "Mukammal test", "100% natija oling", "perfect_test"),
