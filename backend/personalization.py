@@ -20,6 +20,7 @@ from db import get_conn
 
 router = APIRouter()
 _runtime: dict[str, Callable[..., Any]] = {}
+_schema_ready = False
 
 
 def configure_runtime(**callbacks: Callable[..., Any]) -> None:
@@ -43,7 +44,82 @@ def mistake_next_review_at(now: datetime, correct_streak: int) -> datetime:
     return now + timedelta(days=days)
 
 
+def record_test_mistake(
+    *,
+    user_id: int,
+    source_type: str,
+    source_id: str,
+    subject: str | None,
+    topic_key: str | None,
+    prompt: str,
+    options: list[Any] | None = None,
+    selected_answer: Any = None,
+    correct_answer: Any = None,
+    explanation: str | None = None,
+) -> int | None:
+    """Persist one wrong/skipped question from a first-party test flow.
+
+    This is deliberately server-side: a client cannot forge another user's
+    notebook and repeated delivery of the same request does not create a new
+    card.  Correct notebook reviews are handled by ``answer_mistake`` below.
+    """
+    text = str(prompt or "").strip()
+    key = str(source_id or "").strip()
+    if int(user_id or 0) <= 0 or not text or not key:
+        return None
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM mistake_notebook_items WHERE user_id=? AND source_type=? AND source_id=? LIMIT 1",
+            (int(user_id), str(source_type or "test"), key),
+        )
+        existing = cur.fetchone()
+        now = _now()
+        values = (
+            str(subject or ""), str(topic_key or ""), text,
+            json.dumps(options or [], ensure_ascii=False),
+            None if selected_answer is None else str(selected_answer),
+            None if correct_answer is None else str(correct_answer),
+            str(explanation or ""), now.isoformat(), now.isoformat(),
+        )
+        if existing:
+            item_id = int(dict(existing).get("id") or 0)
+            cur.execute(
+                "UPDATE mistake_notebook_items SET subject=?,topic_key=?,prompt=?,options_json=?,"
+                "selected_answer=?,correct_answer=?,explanation=?,updated_at=? WHERE id=?",
+                (*values[:-2], values[-1], item_id),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO mistake_notebook_items(user_id,source_type,source_id,subject,topic_key,prompt,"
+                "options_json,selected_answer,correct_answer,explanation,review_at,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    int(user_id), str(source_type or "test"), key,
+                    *values[:-1],
+                    now.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+            item_id = int(cur.lastrowid or 0)
+        conn.commit()
+        return item_id or None
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        conn.close()
+
+
 def ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -213,6 +289,7 @@ def ensure_schema() -> None:
                 except Exception:
                     pass
         conn.commit()
+        _schema_ready = True
     finally:
         conn.close()
 
@@ -432,6 +509,10 @@ class StudyRoomReport(BaseModel):
     message_id: int | None = Field(default=None, ge=1)
 
 
+class MistakeReviewAnswer(BaseModel):
+    selected_answer: str | None = Field(default=None, max_length=4000)
+
+
 @router.get("/student/personal-plan")
 async def student_personal_plan(authorization: str | None = Header(default=None)):
     user = _user(authorization); _require(user, {"student"})
@@ -470,7 +551,9 @@ async def mistake_notebook(authorization: str | None = Header(default=None)):
             row["topic"] = row.get("topic_key") or row.get("subject")
             row["due_at"] = row.get("review_at")
             items.append(row)
-        return {"items": items, "due_count": len(items), "total_count": total}
+        cur.execute("SELECT source_type,COUNT(*) AS count FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL GROUP BY source_type", (uid,))
+        sources = {str(row.get("source_type") or "test"): int(row.get("count") or 0) for row in _dicts(cur.fetchall())}
+        return {"items": items, "due_count": len(items), "total_count": total, "sources": sources}
     finally: conn.close()
 
 
@@ -498,18 +581,22 @@ async def add_mistake(payload: MistakeCreate, authorization: str | None = Header
 
 
 @router.post("/student/mistake-notebook/{item_id}/answer")
-async def answer_mistake(item_id: int, correct: bool, authorization: str | None = Header(default=None)):
+async def answer_mistake(item_id: int, payload: MistakeReviewAnswer, authorization: str | None = Header(default=None)):
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
     conn = get_conn()
     try:
-        cur = conn.cursor(); cur.execute("SELECT correct_streak FROM mistake_notebook_items WHERE id=? AND user_id=?", (item_id, int(user["id"])))
+        cur = conn.cursor(); cur.execute("SELECT correct_streak,correct_answer FROM mistake_notebook_items WHERE id=? AND user_id=?", (item_id, int(user["id"])))
         row = cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Mistake item not found")
-        streak = int(dict(row).get("correct_streak") or 0) + 1 if correct else 0
+        item = dict(row)
+        selected = str(payload.selected_answer or "").strip()
+        correct_answer = str(item.get("correct_answer") or "").strip()
+        correct = bool(selected and correct_answer and selected == correct_answer)
+        streak = int(item.get("correct_streak") or 0) + 1 if correct else 0
         resolved = _now().isoformat() if streak >= 4 else None
         review = mistake_next_review_at(_now(), streak).isoformat()
         cur.execute("UPDATE mistake_notebook_items SET correct_streak=?, review_at=?, resolved_at=?, updated_at=? WHERE id=?", (streak, review, resolved, _now().isoformat(), item_id)); conn.commit()
-        return {"correct_streak": streak, "review_at": review, "resolved": bool(resolved)}
+        return {"correct": correct, "correct_answer": correct_answer, "correct_streak": streak, "review_at": review, "resolved": bool(resolved)}
     finally: conn.close()
 
 
@@ -916,6 +1003,13 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
         (user_id,),
     )
     weak_by_mistakes = _dicts(cur.fetchall())
+    cur.execute(
+        "SELECT source_type,COUNT(*) AS count FROM mistake_notebook_items "
+        "WHERE user_id=? AND DATE(created_at)>=? AND DATE(created_at)<=? "
+        "GROUP BY source_type ORDER BY count DESC",
+        (user_id, week_start, week_end),
+    )
+    mistake_sources = _dicts(cur.fetchall())
 
     # Homework stats
     cur.execute(
@@ -939,6 +1033,7 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
         "accuracy_pct": accuracy,
         "weak_topics_by_tests": [{"topic": t, "errors": e} for t, e in weak_by_tests],
         "weak_topics_by_mistakes": weak_by_mistakes,
+        "mistake_sources": mistake_sources,
         "homework_total": hw_total,
         "homework_completed": hw_completed,
         "homework_completion_pct": round(hw_completed / hw_total * 100, 1) if hw_total > 0 else 0,
@@ -959,6 +1054,7 @@ async def _generate_ai_analysis(stats: dict[str, Any], user_name: str) -> dict[s
         weak_topics.append(f"- {subj} / {topic} ({cnt} ta hal qilinmagan xato)")
 
     weak_str = "\n".join(weak_topics) if weak_topics else "Hozircha zaif mavzular aniqlanmadi."
+    source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "Hozircha xato qayd etilmagan."
 
     prompt = f"""Sen Diamond Education platformasida o'quvchilarga yordam beruvchi AI tutorsan (Diamondvoy).
 O'quvchi: {user_name}
@@ -971,6 +1067,8 @@ Bu haftadagi statistika:
 
 Zaif mavzular:
 {weak_str}
+
+Xatolar kelgan test turlari: {source_str}
 
 Quyidagilarni JSON formatda yoz:
 {{

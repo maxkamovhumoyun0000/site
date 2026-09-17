@@ -4640,6 +4640,24 @@ def _daily_finalize_if_all_answered(user: dict, attempt: dict, items: list[dict]
         net_dcoins=net,
         net_dpoints=net_points,
     )
+    for row in items:
+        if bool(int(row.get("is_correct") or 0)):
+            continue
+        question = _mcq_question_from_row(row)
+        options = [str(item) for item in (question.get("options") or [])]
+        correct_index = int(question.get("correct_option_index") or 1) - 1
+        personalization_api.record_test_mistake(
+            user_id=int(user.get("id") or 0),
+            source_type="daily",
+            source_id=f"{int(attempt.get('id') or 0)}:{int(row.get('question_index') or 0)}",
+            subject=str(attempt.get("subject") or ""),
+            topic_key=str(question.get("topic") or question.get("topic_id") or "daily"),
+            prompt=str(question.get("prompt") or question.get("question") or ""),
+            options=options,
+            selected_answer=row.get("selected_option"),
+            correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
+        )
+    add_test_history(int(user.get("id") or 0), "daily", str(attempt.get("subject") or ""), correct, wrong, unanswered)
     refreshed_attempt = _daily_attempt_row(int(attempt.get("id") or 0)) or attempt
     refreshed_items = get_daily_test_attempt_items(int(attempt.get("id") or 0))
     return refreshed_attempt, refreshed_items, breakdown
@@ -24437,6 +24455,19 @@ async def student_grammar_quiz_answer(
             "is_correct": selected_idx is not None and selected_idx == correct_idx,
             "is_skipped": selected_idx is None,
         })
+        if selected_idx is None or selected_idx != correct_idx:
+            options = [str(item) for item in (q.get("options") or [])]
+            personalization_api.record_test_mistake(
+                user_id=user_id,
+                source_type="grammar",
+                source_id=f"{session_id}:{idx + 1}",
+                subject=str(session.get("subject") or ""),
+                topic_key=str(session.get("topic_id") or session.get("topic_title") or ""),
+                prompt=str(q.get("prompt") or ""),
+                options=options,
+                selected_answer=options[selected_idx] if selected_idx is not None and selected_idx < len(options) else None,
+                correct_answer=options[correct_idx] if 0 <= correct_idx < len(options) else None,
+            )
         session["index"] = idx + 1
 
         if session["index"] < len(questions):
@@ -24806,6 +24837,24 @@ async def student_daily_tests_answer(
         net_dcoins=net,
         net_dpoints=net_points,
     )
+    for row in items:
+        if bool(int(row.get("is_correct") or 0)):
+            continue
+        question = _mcq_question_from_row(row)
+        options = [str(item) for item in (question.get("options") or [])]
+        correct_index = int(question.get("correct_option_index") or 1) - 1
+        personalization_api.record_test_mistake(
+            user_id=user_id,
+            source_type="daily",
+            source_id=f"{int(payload.attempt_id)}:{int(row.get('question_index') or 0)}",
+            subject=str(attempt.get("subject") or ""),
+            topic_key=str(question.get("topic") or question.get("topic_id") or "daily"),
+            prompt=str(question.get("prompt") or question.get("question") or ""),
+            options=options,
+            selected_answer=row.get("selected_option"),
+            correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
+        )
+    add_test_history(user_id, "daily", str(attempt.get("subject") or ""), correct, wrong, unanswered)
     _invalidate_student_overview_cache(user_id)
     attempt = _daily_attempt_row(int(payload.attempt_id)) or attempt
     final_out = _daily_session_payload(user, attempt, get_daily_test_attempt_items(int(payload.attempt_id)))
@@ -24954,6 +25003,34 @@ async def student_gamified_tests_submit(
     net = float(summary.get("score") or 0)
     if net != 0:
         add_dpoints(user_id, net, subject=subject, change_type="gamified_test_result")
+    for question in questions:
+        question_index = int(question.get("index") or 0)
+        selected = answers_by_index.get(question_index)
+        if gamified_tests.score_answer(question, selected) == "correct":
+            continue
+        options = [str(item) for item in (question.get("options") or [])]
+        correct_raw = question.get("_answer")
+        selected_label: Any = selected
+        correct_label: Any = correct_raw
+        if isinstance(correct_raw, int) and 0 <= correct_raw < len(options):
+            correct_label = options[correct_raw]
+        if isinstance(selected, int) and 0 <= selected < len(options):
+            selected_label = options[selected]
+        personalization_api.record_test_mistake(
+            user_id=user_id,
+            source_type="gamified",
+            source_id=f"{payload.session_id}:{question_index}",
+            subject=subject,
+            topic_key=str(question.get("type") or "gamified"),
+            prompt=str(question.get("prompt") or question.get("passage") or "Gamified mashq"),
+            options=options,
+            selected_answer=selected_label,
+            correct_answer=correct_label,
+        )
+    add_test_history(
+        user_id, "gamified", str(session.get("level") or ""),
+        int(summary.get("correct") or 0), int(summary.get("wrong") or 0), int(summary.get("skipped") or 0),
+    )
     _invalidate_student_overview_cache(user_id)
     GAMIFIED_SESSIONS.pop(payload.session_id, None)
 
@@ -29946,6 +30023,21 @@ def _competition_apply_question_outcome(
         is_late=is_late,
         timer_state=timer_state,
     )
+    if not is_correct:
+        options = [str(item) for item in (q.get("options") or [])]
+        correct_index = int(q.get("correct_index") or q.get("correct_option_index") or 0)
+        mode = str(session.get("mode") or "")
+        personalization_api.record_test_mistake(
+            user_id=uid,
+            source_type="duel" if _duel_is_mode(mode) else "arena",
+            source_id=f"{str(session.get('id') or '')}:{uid}:{q_index}",
+            subject=str(session.get("subject") or q.get("subject") or ""),
+            topic_key=str(q.get("topic") or q.get("topic_id") or mode),
+            prompt=str(q.get("prompt") or q.get("question") or ""),
+            options=options,
+            selected_answer=options[int(selected)] if selected is not None and 0 <= int(selected) < len(options) else None,
+            correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
+        )
     if str(session.get("mode") or "") == "group" and int(session.get("external_group_arena_session_id") or 0) > 0:
         _safe_call(
             lambda: update_arena_group_session_attempt_progress(
@@ -50352,6 +50444,22 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
                 answered_at=_now_utc().replace(tzinfo=None),
             )
             _invalidate_student_overview_cache(user_id)
+        if not selected_correct:
+            correct_index = int(q.get("correct_index") or -1)
+            correct_value = str(q.get("correct") or "")
+            if not correct_value and 0 <= correct_index < len(options):
+                correct_value = str(options[correct_index] or "")
+            personalization_api.record_test_mistake(
+                user_id=user_id,
+                source_type="vocabulary",
+                source_id=f"{session_id}:{idx + 1}",
+                subject=str(session.get("subject") or ""),
+                topic_key=str(q.get("question_type") or session.get("quiz_type") or ""),
+                prompt=str(q.get("prompt") or q.get("question") or ""),
+                options=[str(item) for item in options],
+                selected_answer=selected_value if selected is not None else None,
+                correct_answer=correct_value or None,
+            )
         session["index"] = idx + 1
 
         if session["index"] < len(questions):
@@ -52372,6 +52480,33 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
     )
     if not result:
         raise HTTPException(status_code=404, detail="Test not found")
+    # Library/book tests are deliberately excluded from the mistake notebook.
+    # Video lessons and homework tests use the same persistent answer rows,
+    # so their incorrect/skipped questions can safely join the study plan.
+    if normalized in {"video", "homework"}:
+        source_subject = _content_test_subject(normalized, int(content_id), user)
+        for answer in (result.get("answers") or []):
+            if bool(answer.get("is_correct")):
+                continue
+            question_id = int(answer.get("question_id") or 0)
+            personalization_api.record_test_mistake(
+                user_id=user_id,
+                source_type=normalized,
+                source_id=f"{int(content_id)}:{question_id}",
+                subject=source_subject,
+                topic_key=normalized,
+                prompt=str(answer.get("question") or ""),
+                options=[],
+                selected_answer=answer.get("selected_option"),
+                correct_answer=answer.get("correct_option"),
+                explanation=str(answer.get("explanation") or ""),
+            )
+        add_test_history(
+            user_id, normalized, str(content_id),
+            int(result.get("correct_count") or result.get("correct") or 0),
+            int(result.get("wrong_count") or result.get("wrong") or 0),
+            int(result.get("skipped_count") or result.get("skipped") or 0),
+        )
     if normalized == "book":
         try:
             conn = get_conn()
