@@ -3,6 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolveLocale, useWebT } from "./web-i18n";
 import { SharedTestEditor } from "./shared-test-editor";
+import { StudyRoomChat } from "./study-room-chat";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const DIAMONDVOY_AVATAR = "/diamondvoy-avatar.jpg";
@@ -39,7 +40,7 @@ const MAX_IMAGES = 3;
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
-type ActivePane = "diamondvoy" | "community" | "feedback" | null;
+type ActivePane = "diamondvoy" | "community" | "feedback" | "study-room" | null;
 
 type ChatAttachment = {
   id?: number;
@@ -1257,6 +1258,7 @@ export function UniversalChat({
   const tt = useWebT();
   const role = String(userRole || "").toLowerCase();
   const isAdmin = role === "admin";
+  const isStudent = role === "student";
   const canRegenerate = ["admin", "teacher", "support"].includes(role);
 
   const [activePane, setActivePane] = useState<ActivePane>(null);
@@ -1990,6 +1992,26 @@ export function UniversalChat({
           <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{isAdmin ? tt("chat.feedback.adminReview", "Admin review") : tt("chat.feedback.subtitle", "Anonim yoki anonimmas xabar yuborish")}</p>
         </button>
 
+        {isStudent ? <button
+          type="button"
+          onClick={() => {
+            setActivePane("study-room");
+            setActiveChatId(null);
+            setError("");
+          }}
+          className={cx(
+            "w-full text-left rounded-lg border px-3 py-3 transition",
+            activePane === "study-room"
+              ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
+              : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-600 text-white">👥</span>
+            <div className="min-w-0"><p className="font-black text-sm text-navy-900 dark:text-white">Study-room</p><p className="mt-1 text-xs text-ink-600 dark:text-navy-300">Kod bilan kiring, birga mashq qiling</p></div>
+          </div>
+        </button> : null}
+
         <button
           type="button"
           onClick={() => {
@@ -2295,6 +2317,7 @@ export function UniversalChat({
   );
 
   const CommunityPane = (
+    <>
     <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "community" ? "flex" : "hidden")}>
       <div className="px-3 sm:px-5 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
@@ -2426,6 +2449,9 @@ export function UniversalChat({
         </div>
       </form>
     </section>
+
+    {isStudent ? <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "study-room" ? "flex" : "hidden")}><div className="flex min-h-0 flex-1"><StudyRoomChat apiFetch={apiFetch} /></div></section> : null}
+    </>
   );
 
   const UserFeedbackPane = (

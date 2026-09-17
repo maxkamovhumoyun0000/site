@@ -52617,6 +52617,34 @@ def _personalization_role_for_user(user: dict[str, Any]) -> str:
         int(user.get("login_type") or 0), str(user.get("login_id") or "")
     )
 
+
+def _personalization_visible_student_ids(user: dict[str, Any]) -> set[int]:
+    """Keep staff personal-learning insight and parent links within the
+    same roster boundary used by the rest of the product."""
+    role = _personalization_role_for_user(user)
+    uid = int(user.get("id") or 0)
+    if role == "admin":
+        conn = get_conn()
+        try:
+            cur = conn.cursor(); cur.execute("SELECT id FROM users WHERE login_type=1 AND COALESCE(active,1)=1")
+            return {int(row.get("id") or 0) for row in (cur.fetchall() or []) if int(row.get("id") or 0) > 0}
+        finally:
+            conn.close()
+    if role == "teacher":
+        return _teacher_student_ids(uid)
+    if role == "support":
+        rows, _ = _safe_call(lambda: list_lesson_bookings(status=None, page=1, per_page=500), ([], 0))
+        return {
+            int(row.get("student_user_id") or 0)
+            for row in _filter_bookings_for_support_user(user, rows)
+            if int(row.get("student_user_id") or 0) > 0
+        }
+    return set()
+
+
+def _personalization_staff_can_access_student(user: dict[str, Any], student_id: int) -> bool:
+    return int(student_id or 0) in _personalization_visible_student_ids(user)
+
 async def _personalization_explain(prompt: str, user: dict[str, Any]) -> str:
     from diamondvoy_helpers import diamondvoy_gemini_answer
     subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=[])
@@ -52684,6 +52712,8 @@ async def _personalization_notify_plan(user: dict[str, Any], plan: dict[str, Any
 personalization_api.configure_runtime(
     user_from_bearer=_user_row_from_bearer,
     role_for_user=_personalization_role_for_user,
+    staff_visible_student_ids=_personalization_visible_student_ids,
+    staff_can_access_student=_personalization_staff_can_access_student,
     explain=_personalization_explain,
     notify_plan=_personalization_notify_plan,
 )
@@ -53137,6 +53167,23 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     db_room = cur.fetchone()
                     
                     is_homework_room = False
+                    is_study_room = False
+                    if db_room and str(db_room.get("subject") or "").startswith("_study_room_"):
+                        try:
+                            study_room_id = int(str(db_room.get("subject") or "").rsplit("_", 1)[-1])
+                            cur.execute(
+                                "SELECT 1 FROM study_room_members WHERE room_id=? AND user_id=? AND left_at IS NULL",
+                                (study_room_id, my_user_id),
+                            )
+                            if not cur.fetchone():
+                                conn.close()
+                                await _send({"type": "error", "message": "Bu private Study-room ovozli xonasiga ruxsatingiz yo‘q."})
+                                continue
+                            is_study_room = True
+                        except Exception:
+                            conn.close()
+                            await _send({"type": "error", "message": "Study-room ruxsati tekshirilmadi."})
+                            continue
                     if not db_room:
                         cur.execute("SELECT * FROM web_homework_voiceroom_groups WHERE room_id=%s", (room_id,))
                         hw_group = cur.fetchone()

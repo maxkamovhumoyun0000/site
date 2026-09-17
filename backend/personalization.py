@@ -88,10 +88,21 @@ def ensure_schema() -> None:
             """CREATE TABLE IF NOT EXISTS study_room_messages (
                 id BIGSERIAL PRIMARY KEY, room_id BIGINT NOT NULL, sender_id BIGINT NOT NULL,
                 body TEXT NOT NULL, attachments_json TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+            """CREATE TABLE IF NOT EXISTS study_room_materials (
+                id BIGSERIAL PRIMARY KEY, room_id BIGINT NOT NULL, uploaded_by BIGINT NOT NULL,
+                title TEXT NOT NULL, file_url TEXT, mime_type TEXT, extracted_text TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+            """CREATE TABLE IF NOT EXISTS study_room_reports (
+                id BIGSERIAL PRIMARY KEY, room_id BIGINT NOT NULL, reporter_id BIGINT NOT NULL,
+                message_id BIGINT, reason TEXT NOT NULL, status TEXT DEFAULT 'open',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
             """CREATE TABLE IF NOT EXISTS pomodoro_sessions (
                 id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, mode TEXT NOT NULL,
                 planned_seconds INTEGER NOT NULL, completed_seconds INTEGER DEFAULT 0,
                 completed_at TIMESTAMP, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+            """CREATE TABLE IF NOT EXISTS pomodoro_preferences (
+                user_id BIGINT PRIMARY KEY, settings_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
             """CREATE TABLE IF NOT EXISTS badge_definitions (
                 code TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT, asset_url TEXT,
                 rule_key TEXT NOT NULL, active INTEGER DEFAULT 1)""",
@@ -103,6 +114,16 @@ def ensure_schema() -> None:
                 id BIGSERIAL PRIMARY KEY, certificate_id TEXT NOT NULL UNIQUE, user_id BIGINT NOT NULL,
                 course_key TEXT NOT NULL, course_title TEXT NOT NULL, issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 pdf_path TEXT, metadata_json TEXT)""",
+            """CREATE TABLE IF NOT EXISTS user_sessions (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              device_name TEXT,
+              platform TEXT,
+              ip_address TEXT,
+              last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
         ]
         for sql in statements:
             try:
@@ -116,29 +137,54 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON learning_bookmarks(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_study_room_members_room ON study_room_members(room_id, left_at)",
             "CREATE INDEX IF NOT EXISTS idx_study_room_messages_room ON study_room_messages(room_id, id)",
+            "CREATE INDEX IF NOT EXISTS idx_study_room_materials_room ON study_room_materials(room_id, id)",
             "CREATE INDEX IF NOT EXISTS idx_pomodoro_user ON pomodoro_sessions(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_user_sessions ON user_sessions(user_id, last_seen DESC)",
         ):
             try:
                 cur.execute(sql)
             except Exception:
                 pass
+        try:
+            cur.execute("ALTER TABLE study_rooms ADD COLUMN IF NOT EXISTS voice_room_id BIGINT")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE study_rooms ADD COLUMN voice_room_id INTEGER")
+            except Exception:
+                pass
         badge_defaults = (
             ("first_lesson", "Birinchi dars", "Birinchi darsga qatnashdingiz", "lesson_count"),
+            ("lesson_streak_3", "3 kunlik dars seriyasi", "3 kun ketma-ket dars", "lesson_streak_3"),
             ("lesson_streak_7", "7 kunlik dars seriyasi", "7 kun ketma-ket dars", "lesson_streak_7"),
+            ("lesson_streak_30", "30 kunlik dars seriyasi", "30 kun ketma-ket dars", "lesson_streak_30"),
+            ("perfect_attendance_month", "Namunali davomat", "Bir oy dars qoldirmang", "perfect_attendance_month"),
             ("first_homework", "Birinchi vazifa", "Birinchi uy vazifangizni topshiring", "homework_count"),
-            ("homework_streak_10", "Homework ustasi", "10 vazifani topshiring", "homework_streak_10"),
+            ("homework_streak_3", "Homework seriyasi", "3 vazifani ketma-ket topshiring", "homework_streak_3"),
+            ("homework_streak_10", "Homework ustasi", "10 vazifani ketma-ket topshiring", "homework_streak_10"),
+            ("all_homework_month", "Vazifalar oyining g‘olibi", "Bir oy barcha vazifalarni topshiring", "all_homework_month"),
+            ("early_submitter", "Erta topshiruvchi", "Vazifani deadline dan oldin topshiring", "early_submitter"),
             ("first_test", "Birinchi test", "Birinchi testni tugating", "test_count"),
+            ("test_streak_7", "Test seriyasi", "7 kun test ishlang", "test_streak_7"),
             ("perfect_test", "Mukammal test", "100% natija oling", "perfect_test"),
-            ("mistake_notebook_master", "Xatolar ustasi", "Xatolar daftaridagi 20 savolni yoping", "mistakes_resolved"),
-            ("vocabulary_master", "Lug‘at ustasi", "Lug‘at mashqlarini bajaring", "vocabulary_master"),
+            ("mistake_notebook_master", "Xatolar ustasi", "20 xatoni qayta to‘g‘ri yoping", "mistakes_resolved"),
+            ("daily_plan_streak_7", "Reja seriyasi", "7 kunlik reja vazifalarini yoping", "daily_plan_streak_7"),
+            ("daily_plan_streak_30", "Reja marafoni", "30 kunlik reja vazifalarini yoping", "daily_plan_streak_30"),
+            ("word_collector", "So‘z to‘plovchi", "Yangi so‘zlarni mashq qiling", "word_collector"),
+            ("vocabulary_master", "Lug‘at ustasi", "Lug‘at mashqlarini tugating", "vocabulary_master"),
             ("grammar_master", "Grammatika ustasi", "Grammatika mavzularini yoping", "grammar_master"),
             ("bookworm", "Kitobxon", "Kutubxona materiallarini tugating", "book_complete"),
             ("video_finisher", "Video ustasi", "Video darslarni tugating", "video_complete"),
-            ("first_arena", "Arena jangchisi", "Arena musobaqasida qatnashing", "arena_count"),
+            ("first_arena", "Arena jangchisi", "Arenada qatnashing", "arena_count"),
             ("arena_winner", "Arena g‘olibi", "Arenada g‘olib bo‘ling", "arena_win"),
+            ("arena_streak_3", "Arena seriyasi", "3 arena g‘alabasi", "arena_streak_3"),
             ("duel_winner", "Duel g‘olibi", "Duelda g‘olib bo‘ling", "duel_win"),
+            ("duel_streak_3", "Duel seriyasi", "3 duel g‘alabasi", "duel_streak_3"),
             ("study_room_host", "Study-room host", "Study-room yarating", "study_room_host"),
+            ("study_room_partner", "Study-room sherigi", "Study-roomga qo‘shiling", "study_room_partner"),
+            ("helpful_learner", "Yordamchi o‘quvchi", "Study-roomda foydali yordam bering", "helpful_learner"),
             ("first_certificate", "Birinchi sertifikat", "Kurs/modulni yakunlang", "certificate_count"),
+            ("course_graduate", "Kurs bitiruvchisi", "Kursni tugating", "course_complete"),
+            ("skill_builder", "Ko‘nikma quruvchisi", "Kuchli ko‘nikma yarating", "skill_builder"),
         )
         for code, title, description, rule_key in badge_defaults:
             try:
@@ -166,6 +212,16 @@ def _require(user: dict[str, Any], roles: set[str]) -> None:
         raise HTTPException(status_code=403, detail="Permission denied")
 
 
+def _staff_can_access_student(user: dict[str, Any], student_id: int) -> bool:
+    callback = _runtime.get("staff_can_access_student")
+    if not callback:
+        return False
+    try:
+        return bool(callback(user, int(student_id)))
+    except Exception:
+        return False
+
+
 def _dicts(rows: Any) -> list[dict[str, Any]]:
     return [dict(row) for row in (rows or [])]
 
@@ -181,6 +237,7 @@ def _sync_student_badges(cur: Any, user_id: int) -> None:
         ("first_homework", "SELECT COUNT(*) AS n FROM web_homeworks WHERE student_id=?", 1),
         ("study_room_host", "SELECT COUNT(*) AS n FROM study_rooms WHERE owner_id=?", 1),
         ("first_certificate", "SELECT COUNT(*) AS n FROM certificates WHERE user_id=?", 1),
+        ("perfect_test", "SELECT COUNT(*) AS n FROM test_history WHERE user_id=? AND correct_count > 0 AND wrong_count = 0 AND skipped_count = 0", 1),
         ("mistake_notebook_master", "SELECT COUNT(*) AS n FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NOT NULL", 20),
     )
     for code, sql, threshold in checks:
@@ -295,6 +352,9 @@ class BookmarkRequest(BaseModel):
     tag: str | None = Field(default=None, max_length=80)
     position_seconds: int | None = Field(default=None, ge=0)
     page: int | None = Field(default=None, ge=1)
+    # Older mobile builds call this field page_number; accepting it keeps
+    # bookmark deep-links backward compatible.
+    page_number: int | None = Field(default=None, ge=1)
 
 
 def _plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +383,16 @@ class PomodoroRequest(BaseModel):
     completed: bool = False
 
 
+class PomodoroSettingsRequest(BaseModel):
+    work_seconds: int = Field(default=1500, ge=60, le=14400)
+    short_break_seconds: int = Field(default=300, ge=60, le=3600)
+    long_break_seconds: int = Field(default=900, ge=60, le=7200)
+    cycles_before_long_break: int = Field(default=4, ge=1, le=12)
+    auto_start_next: bool = False
+    sound_enabled: bool = True
+    vibration_enabled: bool = True
+
+
 class StudyRoomCreate(BaseModel):
     title: str = Field(default="Study-room", min_length=1, max_length=120)
 
@@ -330,6 +400,18 @@ class StudyRoomCreate(BaseModel):
 class StudyRoomMessage(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
     attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=5)
+
+
+class StudyRoomMaterial(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    file_url: str | None = Field(default=None, max_length=2000)
+    mime_type: str | None = Field(default=None, max_length=120)
+    extracted_text: str | None = Field(default=None, max_length=30000)
+
+
+class StudyRoomReport(BaseModel):
+    reason: str = Field(min_length=2, max_length=1000)
+    message_id: int | None = Field(default=None, ge=1)
 
 
 @router.get("/student/personal-plan")
@@ -450,7 +532,7 @@ def _bookmark_routes(prefix: str, roles: set[str]):
         try:
             position = payload.position_value
             if payload.position_seconds is not None: position = f"seconds:{payload.position_seconds}"
-            elif payload.page is not None: position = f"page:{payload.page}"
+            elif payload.page is not None or payload.page_number is not None: position = f"page:{payload.page if payload.page is not None else payload.page_number}"
             cur=conn.cursor(); cur.execute("INSERT INTO learning_bookmarks(user_id, content_type, content_id, position_value, title, note, tag) VALUES(?,?,?,?,?,?,?)", (int(user["id"]), payload.content_type, payload.content_id, position, payload.title, payload.note, payload.tag)); conn.commit(); return {"id": int(cur.lastrowid or 0)}
         finally: conn.close()
     @router.delete(f"/{prefix}/bookmarks/{{bookmark_id}}")
@@ -477,6 +559,30 @@ def _reminder_routes(prefix: str, roles: set[str]):
 
 
 def _pomodoro_routes(prefix: str, roles: set[str]):
+    @router.get(f"/{prefix}/pomodoro/settings")
+    async def get_pomodoro_settings(authorization: str | None = Header(default=None)):
+        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
+        defaults = PomodoroSettingsRequest().model_dump()
+        try:
+            cur=conn.cursor(); cur.execute("SELECT settings_json FROM pomodoro_preferences WHERE user_id=?", (int(user["id"]),)); row=cur.fetchone()
+            if not row: return defaults
+            try: saved=json.loads(str(dict(row).get("settings_json") or "{}"))
+            except Exception: saved={}
+            return {**defaults, **(saved if isinstance(saved, dict) else {})}
+        finally: conn.close()
+
+    @router.put(f"/{prefix}/pomodoro/settings")
+    async def put_pomodoro_settings(payload: PomodoroSettingsRequest, authorization: str | None = Header(default=None)):
+        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
+        try:
+            cur=conn.cursor(); data=json.dumps(payload.model_dump())
+            try:
+                cur.execute("INSERT INTO pomodoro_preferences(user_id,settings_json,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,updated_at=excluded.updated_at", (int(user["id"]),data,_now().isoformat()))
+            except Exception:
+                cur.execute("DELETE FROM pomodoro_preferences WHERE user_id=?", (int(user["id"]),)); cur.execute("INSERT INTO pomodoro_preferences(user_id,settings_json,updated_at) VALUES(?,?,?)", (int(user["id"]),data,_now().isoformat()))
+            conn.commit(); return payload.model_dump()
+        finally: conn.close()
+
     @router.get(f"/{prefix}/pomodoro/summary")
     async def pomodoro_summary(authorization: str | None = Header(default=None)):
         user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
@@ -522,7 +628,13 @@ async def join_study_room(room_code: str, authorization: str | None = Header(def
         cur.execute("SELECT 1 FROM study_room_members WHERE room_id=? AND user_id=? AND left_at IS NULL", (int(room["id"]),int(user["id"])))
         already=bool(cur.fetchone())
         if not already and count >= 4: raise HTTPException(status_code=409, detail="Study-room is full")
-        if not already: cur.execute("INSERT INTO study_room_members(room_id,user_id) VALUES(?,?)", (int(room["id"]),int(user["id"]))); conn.commit()
+        if not already:
+            # The unique room/user row is kept for audit; a former member can
+            # safely rejoin with a currently valid code.
+            cur.execute("UPDATE study_room_members SET left_at=NULL,joined_at=? WHERE room_id=? AND user_id=?", (_now().isoformat(), int(room["id"]), int(user["id"])))
+            if cur.rowcount == 0:
+                cur.execute("INSERT INTO study_room_members(room_id,user_id) VALUES(?,?)", (int(room["id"]),int(user["id"])))
+            conn.commit()
         return {"room": room, "member_count": count if already else count+1, "max_members": 4}
     finally: conn.close()
 
@@ -540,7 +652,13 @@ def _room_for_member(room_id: int, user_id: int) -> dict[str, Any]:
 async def study_room_messages(room_id: int, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT m.*, u.first_name, u.last_name, u.login_id FROM study_room_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.room_id=? ORDER BY m.id ASC LIMIT 250", (room_id,)); return {"items":_dicts(cur.fetchall())}
+        cur=conn.cursor(); cur.execute("SELECT m.*, u.first_name, u.last_name, u.login_id FROM study_room_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.room_id=? ORDER BY m.id ASC LIMIT 250", (room_id,))
+        items=[]
+        for row in _dicts(cur.fetchall()):
+            try: row["attachments"]=json.loads(str(row.get("attachments_json") or "[]"))
+            except Exception: row["attachments"]=[]
+            items.append(row)
+        return {"items":items}
     finally: conn.close()
 
 
@@ -559,6 +677,97 @@ async def close_study_room(room_id: int, authorization: str | None = Header(defa
         cur=conn.cursor(); cur.execute("UPDATE study_rooms SET status='closed',closed_at=? WHERE id=? AND owner_id=?", (_now().isoformat(),room_id,int(user["id"]))); conn.commit()
         if cur.rowcount==0: raise HTTPException(status_code=403, detail="Only room owner can close this room")
         return {"closed":True}
+    finally: conn.close()
+
+
+def _room_owner(room_id: int, user_id: int) -> dict[str, Any]:
+    room = _room_for_member(room_id, user_id)
+    if int(room.get("owner_id") or 0) != int(user_id):
+        raise HTTPException(status_code=403, detail="Only room owner can manage this room")
+    return room
+
+
+@router.get("/student/study-rooms/{room_id}")
+async def study_room_detail(room_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); room=_room_for_member(room_id,int(user["id"])); conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute("SELECT m.user_id,m.joined_at,u.first_name,u.last_name,u.login_id FROM study_room_members m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.left_at IS NULL ORDER BY m.joined_at", (room_id,))
+        members=_dicts(cur.fetchall())
+        cur.execute("SELECT * FROM study_room_materials WHERE room_id=? ORDER BY id DESC LIMIT 50", (room_id,))
+        return {"room":room,"members":members,"materials":_dicts(cur.fetchall()),"max_members":4}
+    finally: conn.close()
+
+
+@router.post("/student/study-rooms/{room_id}/regenerate-code")
+async def regenerate_study_room_code(room_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
+    try:
+        cur=conn.cursor(); code=new_study_room_code()
+        for _ in range(8):
+            cur.execute("SELECT 1 FROM study_rooms WHERE room_code=? AND id<>?", (code,room_id))
+            if not cur.fetchone(): break
+            code=new_study_room_code()
+        else: raise HTTPException(status_code=503, detail="Could not allocate room code")
+        cur.execute("UPDATE study_rooms SET room_code=? WHERE id=? AND owner_id=?", (code,room_id,int(user["id"]))); conn.commit()
+        return {"room_code":code}
+    finally: conn.close()
+
+
+@router.delete("/student/study-rooms/{room_id}/members/{member_id}")
+async def remove_study_room_member(room_id: int, member_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
+    try:
+        if int(member_id) == int(user["id"]):
+            raise HTTPException(status_code=422, detail="Owner should close the room instead")
+        cur=conn.cursor(); cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (_now().isoformat(),room_id,member_id)); conn.commit()
+        return {"removed":cur.rowcount > 0}
+    finally: conn.close()
+
+
+@router.post("/student/study-rooms/{room_id}/materials")
+async def add_study_room_material(room_id: int, payload: StudyRoomMaterial, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("INSERT INTO study_room_materials(room_id,uploaded_by,title,file_url,mime_type,extracted_text) VALUES(?,?,?,?,?,?)", (room_id,int(user["id"]),payload.title,payload.file_url,payload.mime_type,payload.extracted_text)); conn.commit()
+        return {"id":int(cur.lastrowid or 0)}
+    finally: conn.close()
+
+
+@router.post("/student/study-rooms/{room_id}/voice-room")
+async def create_study_room_voice(room_id: int, authorization: str | None = Header(default=None)):
+    """Create a private WebRTC room; the established websocket validates
+    study-room membership before admitting a peer."""
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); room=_room_owner(room_id,int(user["id"])); conn=get_conn()
+    try:
+        cur=conn.cursor(); existing=int(room.get("voice_room_id") or 0)
+        if existing:
+            return {"room_id":str(existing),"reused":True}
+        title=f"Study-room · {str(room.get('title') or room_id)[:90]}"
+        subject=f"_study_room_{room_id}"
+        try:
+            cur.execute("INSERT INTO web_voicerooms(name,subject,owner_id,tags) VALUES(?,?,?,?) RETURNING id", (title,subject,int(user["id"]),"study-room,private"))
+            voice_id=int(dict(cur.fetchone()).get("id") or 0)
+        except Exception:
+            cur.execute("INSERT INTO web_voicerooms(name,subject,owner_id) VALUES(?,?,?)", (title,subject,int(user["id"])))
+            voice_id=int(cur.lastrowid or 0)
+        if not voice_id:
+            raise HTTPException(status_code=500, detail="Voice room could not be created")
+        cur.execute("UPDATE study_rooms SET voice_room_id=? WHERE id=?", (voice_id,room_id)); conn.commit()
+        return {"room_id":str(voice_id),"reused":False}
+    finally: conn.close()
+
+
+@router.post("/student/study-rooms/{room_id}/reports")
+async def report_study_room(room_id: int, payload: StudyRoomReport, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    try:
+        cur=conn.cursor()
+        if payload.message_id is not None:
+            cur.execute("SELECT 1 FROM study_room_messages WHERE id=? AND room_id=?", (payload.message_id,room_id))
+            if not cur.fetchone(): raise HTTPException(status_code=404, detail="Message not found in this room")
+        cur.execute("INSERT INTO study_room_reports(room_id,reporter_id,message_id,reason) VALUES(?,?,?,?)", (room_id,int(user["id"]),payload.message_id,payload.reason)); conn.commit()
+        return {"reported":True}
     finally: conn.close()
 
 
@@ -584,6 +793,28 @@ async def regenerate_parent_access(authorization: str | None = Header(default=No
     user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
     try:
         token=new_parent_access_token(); cur=conn.cursor(); cur.execute("UPDATE parent_access_links SET active=0,rotated_at=? WHERE student_id=? AND active=1",(_now().isoformat(),int(user["id"]))); cur.execute("INSERT INTO parent_access_links(student_id,access_token,active,created_by) VALUES(?,?,1,?)",(int(user["id"]),token,int(user["id"]))); conn.commit(); return {"access_token":token}
+    finally: conn.close()
+
+
+@router.get("/staff/students/{student_id}/parent-access")
+async def staff_parent_access(student_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"teacher","support","admin"})
+    if not _staff_can_access_student(user, student_id):
+        raise HTTPException(status_code=403, detail="Student is outside your access scope")
+    return {"access_token":_get_or_create_parent_token(student_id, int(user["id"]))}
+
+
+@router.post("/staff/students/{student_id}/parent-access/regenerate")
+async def staff_regenerate_parent_access(student_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"teacher","support","admin"}); ensure_schema()
+    if not _staff_can_access_student(user, student_id):
+        raise HTTPException(status_code=403, detail="Student is outside your access scope")
+    conn=get_conn()
+    try:
+        token=new_parent_access_token(); cur=conn.cursor()
+        cur.execute("UPDATE parent_access_links SET active=0,rotated_at=? WHERE student_id=? AND active=1",(_now().isoformat(),student_id))
+        cur.execute("INSERT INTO parent_access_links(student_id,access_token,active,created_by) VALUES(?,?,1,?)",(student_id,token,int(user["id"]))); conn.commit()
+        return {"access_token":token}
     finally: conn.close()
 
 
@@ -613,5 +844,10 @@ async def select_portfolio_badge(payload: BadgeSelectRequest, authorization: str
 async def teacher_student_insights(authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,{"teacher","support"}); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items m JOIN users u ON u.id=m.user_id WHERE m.resolved_at IS NULL GROUP BY m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key ORDER BY mistakes DESC LIMIT 100"); rows=_dicts(cur.fetchall()); return {"items":rows}
+        visible = _runtime.get("staff_visible_student_ids", lambda _u: set())(user)
+        ids = sorted({int(item) for item in (visible or set()) if int(item or 0) > 0})
+        if not ids:
+            return {"items":[]}
+        placeholders=",".join("?" for _ in ids)
+        cur=conn.cursor(); cur.execute(f"SELECT m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items m JOIN users u ON u.id=m.user_id WHERE m.resolved_at IS NULL AND m.user_id IN ({placeholders}) GROUP BY m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key ORDER BY mistakes DESC LIMIT 100", ids); rows=_dicts(cur.fetchall()); return {"items":rows}
     finally: conn.close()

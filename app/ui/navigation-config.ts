@@ -35,7 +35,11 @@ export const SUPPORT_WEEKDAY_OPTIONS = [
 export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   student: [
     "home",
-    "personal-learning",
+    "my-mistakes",
+    "mistake-notebook",
+    "saved",
+    "reminders",
+    "pomodoro",
     "grammar",
     "vocabulary",
     "videos",
@@ -60,9 +64,9 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "notes",
     "profile",
   ],
-  teacher: ["home", "personal-learning", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  teacher: ["home", "student-insights", "saved", "reminders", "pomodoro", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
-  support: ["home", "personal-learning", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  support: ["home", "student-insights", "saved", "reminders", "pomodoro", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
 export const HIDDEN_SECTION_IDS = new Set([
@@ -80,6 +84,9 @@ export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "arena
 
 export const SECTION_ALIAS: Record<string, string> = {
   dashboard: "home",
+  // Old push/deep links continue to open the most relevant new page after
+  // the former all-in-one learning hub was split into separate screens.
+  "personal-learning": "my-mistakes",
   daily: "daily-test",
   "daily-process": "daily-test-process",
   gamified: "gamified",
@@ -103,7 +110,12 @@ export const SECTION_ALIAS: Record<string, string> = {
 
 export const SECTION_LABELS: Record<string, string> = {
   home: "Boshqaruv paneli",
-  "personal-learning": "Shaxsiy o‘quv markazi",
+  "my-mistakes": "Mening xatolarim",
+  "mistake-notebook": "Xatolar daftari",
+  saved: "Saqlanganlar",
+  reminders: "Eslatmalar",
+  pomodoro: "Pomodoro",
+  "student-insights": "Student insightlari",
   grammar: "Grammatika Darslari",
   vocabulary: "Lug'at",
   videos: "Video Darslar",
