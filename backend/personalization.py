@@ -143,9 +143,6 @@ def ensure_schema() -> None:
                 id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, content_type TEXT NOT NULL,
                 content_id TEXT NOT NULL, position_value TEXT, title TEXT, note TEXT, tag TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-            """CREATE TABLE IF NOT EXISTS reminder_preferences (
-                user_id BIGINT PRIMARY KEY, enabled INTEGER DEFAULT 1, quiet_start TEXT,
-                quiet_end TEXT, settings_json TEXT, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
             """CREATE TABLE IF NOT EXISTS reminder_delivery_log (
                 id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, event_key TEXT NOT NULL,
                 channel TEXT NOT NULL, delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -464,13 +461,6 @@ def _plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
     return {**plan, "date": str(plan.get("plan_date") or ""), "diamondvoy_message": str(plan.get("summary") or ""), "tasks": tasks}
 
 
-class ReminderPreferencesRequest(BaseModel):
-    enabled: bool = True
-    quiet_start: str | None = Field(default=None, max_length=5)
-    quiet_end: str | None = Field(default=None, max_length=5)
-    settings: dict[str, Any] = Field(default_factory=dict)
-
-
 class PomodoroRequest(BaseModel):
     mode: str = Field(pattern="^(work|short_break|long_break)$")
     planned_seconds: int = Field(ge=60, le=14400)
@@ -648,21 +638,6 @@ def _bookmark_routes(prefix: str, roles: set[str]):
         finally: conn.close()
 
 
-def _reminder_routes(prefix: str, roles: set[str]):
-    @router.get(f"/{prefix}/reminder-preferences")
-    async def get_preferences(authorization: str | None = Header(default=None)):
-        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
-        try:
-            cur=conn.cursor(); cur.execute("SELECT * FROM reminder_preferences WHERE user_id=?", (int(user["id"]),)); row=cur.fetchone(); return dict(row) if row else {"enabled": True, "settings_json": "{}"}
-        finally: conn.close()
-    @router.put(f"/{prefix}/reminder-preferences")
-    async def put_preferences(payload: ReminderPreferencesRequest, authorization: str | None = Header(default=None)):
-        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
-        try:
-            cur=conn.cursor(); cur.execute("DELETE FROM reminder_preferences WHERE user_id=?", (int(user["id"]),)); cur.execute("INSERT INTO reminder_preferences(user_id, enabled, quiet_start, quiet_end, settings_json, updated_at) VALUES(?,?,?,?,?,?)", (int(user["id"]), int(payload.enabled), payload.quiet_start, payload.quiet_end, json.dumps(payload.settings), _now().isoformat())); conn.commit(); return {"success": True}
-        finally: conn.close()
-
-
 def _pomodoro_routes(prefix: str, roles: set[str]):
     @router.get(f"/{prefix}/pomodoro/settings")
     async def get_pomodoro_settings(authorization: str | None = Header(default=None)):
@@ -703,7 +678,6 @@ def _pomodoro_routes(prefix: str, roles: set[str]):
 
 
 _bookmark_routes("student", {"student"}); _bookmark_routes("staff", {"teacher", "support"})
-_reminder_routes("student", {"student"}); _reminder_routes("staff", {"teacher", "support"})
 _pomodoro_routes("student", {"student"}); _pomodoro_routes("staff", {"teacher", "support"})
 
 
