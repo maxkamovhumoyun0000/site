@@ -15,7 +15,7 @@ import {
   SUBJECT_OPTIONS,
   SUPPORT_WEEKDAY_OPTIONS,
   type Role,
-} from "./ui/navigation-config";
+} from "@/app/ui/navigation-config";
 import { DashboardSidebar, orderSections, sectionIconGlyph } from "./ui/dashboard-sidebar";
 import { HeroSection } from "./ui/hero-section";
 import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
