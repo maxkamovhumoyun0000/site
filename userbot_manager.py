@@ -302,7 +302,14 @@ def get_target_phones_for_user(user: dict) -> list[str]:
 
 
 async def send_direct_userbot_message(phone_number: str, message_text: str, event_type: str = "general") -> Dict[str, Any]:
-    """Resolves phone number to Telegram contact and sends direct message."""
+    """Resolve a phone number and send a direct message without retaining it.
+
+    Telegram's phone-number lookup requires ``import_contacts``.  That API
+    temporarily adds the number to the userbot account's contact list, so the
+    imported contact is always removed after the send attempt.  The local
+    numeric Telegram-ID cache is deliberately retained: it lets later alerts
+    be delivered without importing (or saving) the parent's phone again.
+    """
     client = await get_active_pyrogram_client()
     if not client:
         logger.warning("Userbot is not active or connected.")
@@ -327,16 +334,31 @@ async def send_direct_userbot_message(phone_number: str, message_text: str, even
             logger.info("Sending to cached tg_user_id %s failed for %s (%s). Re-resolving contact...", tg_user_id, phone, exc)
             tg_user_id = None
 
-    # Resolve contact via Pyrogram import_contacts
+    # Resolve contact via Pyrogram import_contacts.  Telegram does not offer a
+    # phone lookup that avoids importing the contact, therefore the imported
+    # contact is removed in ``finally`` below.
     try:
         contacts = await client.import_contacts([InputPhoneContact(phone, "Parent", "Contact")])
         if contacts and getattr(contacts, "users", None):
             user = contacts.users[0]
             tg_user_id = user.id
             cache_userbot_contact(phone, user.id, getattr(user, "first_name", None), getattr(user, "last_name", None))
-            await client.send_message(tg_user_id, message_text)
-            log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
-            return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
+            try:
+                await client.send_message(tg_user_id, message_text)
+                log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
+                return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
+            finally:
+                # ``import_contacts`` has no ephemeral mode in Telegram's API.
+                # Remove only the contact we just imported, after the message
+                # has been attempted; failures here must never hide a sent DM.
+                try:
+                    await client.delete_contacts(tg_user_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Could not remove temporary userbot contact %s after send: %s",
+                        tg_user_id,
+                        cleanup_exc,
+                    )
         else:
             # Fallback direct send attempt to phone number string
             try:
@@ -772,5 +794,4 @@ def handle_userbot_achievement_event(student_id: int, title: str, description: s
                 queue_userbot_notification(phone, msg_text, event_type="achievement")
     except Exception as exc:
         logger.exception("handle_userbot_achievement_event failed: %s", exc)
-
 
