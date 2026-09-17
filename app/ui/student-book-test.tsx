@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { StudentTestProctoring } from "../student/proctoring";
+import { TestCompletionActions } from "./test-completion-actions";
 
 type BookQuestion = {
   id: number;
@@ -241,6 +242,22 @@ export function StudentBookTest({
               ))}
             </div>
           ) : null}
+          <TestCompletionActions
+            testTitle={`${contentLabel}: ${decodeDisplayText(bookTitle)}`}
+            review={(result.review || []).map((item) => {
+              const question = questions.find((row) => Number(row.id) === Number(item.question_id));
+              const options = Array.isArray(question?.options) ? question.options : Object.values(question?.options || {});
+              return {
+                prompt: decodeDisplayText(question?.question || `Savol #${item.question_id}`),
+                selected_answer: decodeDisplayText(item.selected_option || ""),
+                correct_answer: decodeDisplayText(item.correct_option || ""),
+                options: options.map(decodeDisplayText),
+                is_correct: Boolean(item.is_correct),
+                explanation: decodeDisplayText(item.explanation || ""),
+              };
+            })}
+            className="pt-5"
+          />
           <div className="pt-6 flex justify-end">
             <button onClick={onExit} className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold">
               {returnLabel}

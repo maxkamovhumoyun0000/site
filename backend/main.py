@@ -25000,6 +25000,30 @@ async def student_gamified_tests_submit(
         wrong_score=scoring["wrong"],
         skip_score=scoring["skipped"],
     )
+    review: list[dict[str, Any]] = []
+    for question in questions:
+        question_index = int(question.get("index") or 0)
+        selected = answers_by_index.get(question_index)
+        outcome = gamified_tests.score_answer(question, selected)
+        options = [str(item) for item in (question.get("options") or [])]
+        correct_raw = question.get("_answer")
+        selected_label: Any = selected
+        correct_label: Any = correct_raw
+        if isinstance(selected, int) and 0 <= selected < len(options):
+            selected_label = options[selected]
+        if isinstance(correct_raw, int) and 0 <= correct_raw < len(options):
+            correct_label = options[correct_raw]
+        review.append({
+            "question_index": question_index + 1,
+            "prompt": str(question.get("prompt") or question.get("sentence") or ""),
+            "passage": str(question.get("passage") or ""),
+            "options": options,
+            "selected_answer": selected_label,
+            "correct_answer": correct_label,
+            "is_correct": outcome == "correct",
+            "is_skipped": outcome == "skipped",
+            "question_type": str(question.get("type") or ""),
+        })
     net = float(summary.get("score") or 0)
     if net != 0:
         add_dpoints(user_id, net, subject=subject, change_type="gamified_test_result")
@@ -25037,6 +25061,7 @@ async def student_gamified_tests_submit(
     summary["subject"] = subject
     summary["awarded_dpoints"] = round(net, 1)
     summary["scoring"] = scoring
+    summary["review"] = review
     return summary
 
 
@@ -26497,6 +26522,64 @@ def _competition_questions_for_user(session: dict[str, Any], user_id: int | None
     assigned = session.get("participant_questions") or {}
     rows = assigned.get(str(int(user_id))) or assigned.get(int(user_id))
     return list(rows or questions[:5])
+
+
+def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[dict[str, Any]]:
+    """Build a result-only answer review without exposing answers mid-match."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return []
+    answer_rows: dict[int, dict[str, Any]] = {}
+    try:
+        _ensure_web_competition_runtime_schema()
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT question_index, selected_option_index, is_correct, is_unanswered
+                FROM web_competition_answers
+                WHERE session_id=? AND user_id=?
+                ORDER BY question_index ASC
+                """,
+                (str(session.get("id") or ""), uid),
+            )
+            answer_rows = {int(row["question_index"]): dict(row) for row in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("competition review load failed session_id=%s user_id=%s", session.get("id"), uid)
+        return []
+
+    review: list[dict[str, Any]] = []
+    for question_index, raw_question in enumerate(_competition_questions_for_user(session, uid), start=1):
+        answer = answer_rows.get(question_index)
+        if not answer:
+            continue
+        question = _mcq_question_from_row(raw_question)
+        options = [str(option) for option in (question.get("options") or [])]
+        correct_index = max(0, int(question.get("correct_option_index") or 1) - 1)
+        selected_index = answer.get("selected_option_index")
+        try:
+            selected_index = int(selected_index) if selected_index is not None else None
+        except (TypeError, ValueError):
+            selected_index = None
+        review.append(
+            {
+                "question_index": question_index,
+                "prompt": str(question.get("prompt") or question.get("question") or ""),
+                "passage": str(question.get("passage") or ""),
+                "options": options,
+                "selected_index": selected_index,
+                "correct_index": correct_index,
+                "selected_answer": options[selected_index] if selected_index is not None and 0 <= selected_index < len(options) else None,
+                "correct_answer": options[correct_index] if 0 <= correct_index < len(options) else None,
+                "is_correct": bool(answer.get("is_correct")),
+                "is_skipped": bool(answer.get("is_unanswered")),
+                "question_type": str(question.get("question_type") or "multiple_choice"),
+            }
+        )
+    return review
 
 
 def _competition_active_participant_ids(session: dict[str, Any]) -> list[int]:
@@ -29784,6 +29867,7 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
         "podium": (sess.get("result") or {}).get("podium") or [],
         "boss_summary": _competition_boss_summary(sess),
         "result": own,
+        "review": _competition_review_for_user(sess, uid),
         "live": _competition_live_lists(sess),
         "participants_result": _competition_result_participants(sess),
     }
@@ -50422,6 +50506,8 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
         selected = payload.selected_option_index
         options = q.get("options") or []
         selected_correct = False
+        selected_idx: int | None = None
+        selected_value: str | None = None
         if selected is None:
             session["skipped"] = int(session.get("skipped") or 0) + 1
         else:
@@ -50434,6 +50520,23 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
                 selected_correct = True
             else:
                 session["wrong"] = int(session.get("wrong") or 0) + 1
+        correct_index = int(q.get("correct_index") or -1)
+        correct_value = str(q.get("correct") or "")
+        if not correct_value and 0 <= correct_index < len(options):
+            correct_value = str(options[correct_index] or "")
+        session["user_answers"] = session.get("user_answers") or []
+        session["user_answers"].append({
+            "question_index": idx + 1,
+            "prompt": str(q.get("prompt") or q.get("question") or ""),
+            "options": [str(item) for item in options],
+            "selected_index": selected_idx,
+            "correct_index": correct_index if correct_index >= 0 else None,
+            "selected_answer": selected_value,
+            "correct_answer": correct_value or None,
+            "is_correct": bool(selected_correct),
+            "is_skipped": selected_idx is None,
+            "question_type": str(q.get("question_type") or "multiple_choice"),
+        })
         word_id = int(q.get("word_id") or 0)
         if word_id > 0:
             record_vocab_word_result(
@@ -50445,10 +50548,6 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
             )
             _invalidate_student_overview_cache(user_id)
         if not selected_correct:
-            correct_index = int(q.get("correct_index") or -1)
-            correct_value = str(q.get("correct") or "")
-            if not correct_value and 0 <= correct_index < len(options):
-                correct_value = str(options[correct_index] or "")
             personalization_api.record_test_mistake(
                 user_id=user_id,
                 source_type="vocabulary",
@@ -50520,6 +50619,7 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
             "dcoin": float(breakdown.get("final_dcoins") or 0),
             "dcoin_breakdown": breakdown,
             "dpoint_breakdown": breakdown,
+            "details": session.get("user_answers") or [],
         }
         if cur is not None:
             _update_student_quiz_session_tx(cur, session_id, session, status="completed", result=response)

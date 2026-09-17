@@ -4,9 +4,30 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AssetIcon } from "../ui/primitives";
 import { resolveLocale, useWebT } from "../ui/web-i18n";
+import { TestCompletionActions, type TestReviewItem } from "../ui/test-completion-actions";
 import { StudentTestProctoring, useStudentProctoringStatus } from "./proctoring";
 
 export type GenericRow = Record<string, any>;
+
+function testReviewItems(details: GenericRow[] | undefined | null): TestReviewItem[] {
+  return (details || []).map((detail) => {
+    const options = Array.isArray(detail?.options) ? detail.options.map(String) : [];
+    const selectedIndex = detail?.selected_index ?? detail?.selected_option_index;
+    const correctIndex = detail?.correct_index ?? detail?.correct_option_index;
+    const selected = detail?.selected_answer ?? detail?.selected_option ?? (selectedIndex !== null && selectedIndex !== undefined ? options[Number(selectedIndex)] : null);
+    const correct = detail?.correct_answer ?? detail?.correct_option ?? (correctIndex !== null && correctIndex !== undefined ? options[Number(correctIndex)] : null);
+    return {
+      prompt: String(detail?.prompt || detail?.question || ""),
+      passage: String(detail?.passage || ""),
+      options,
+      selected_answer: selected,
+      correct_answer: correct,
+      is_correct: Boolean(detail?.is_correct),
+      explanation: String(detail?.explanation || ""),
+      question_type: String(detail?.question_type || detail?.type || ""),
+    };
+  }).filter((item) => Boolean(item.prompt));
+}
 
 type StudentGrammarLevelsPayload = {
   subject: string;
@@ -1962,6 +1983,7 @@ export function StudentVocabularyProcess({
                 </div>
               </div>
               
+              <TestCompletionActions testTitle={tt("student.vocabulary.testTitle", "Vocabulary test")} subject={String(quizSession.subject || subject)} review={testReviewItems((quizSession.details || []) as GenericRow[])} className="mb-4" />
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
                 <button
                   className="bg-navy-900 hover:bg-navy-800 text-white dark:bg-cyan-500 dark:hover:bg-cyan-600 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-blue-500/30 transition-all hover:-translate-y-1"
@@ -2041,6 +2063,7 @@ type GamifiedSummary = {
   subject: string;
   awarded_dpoints: number;
   scoring: GamifiedScoring;
+  review?: GenericRow[];
 };
 
 // Feedback state for a single question (shown as overlay before advancing)
@@ -2747,6 +2770,7 @@ export function StudentGamified({
               </div>
             </div>
 
+            <TestCompletionActions testTitle={tt("student.gamified.done", "Gamified test")} subject={summary.subject || subject} review={testReviewItems(summary.review)} className="mb-5" />
             <div className="flex flex-col gap-2 sm:flex-row">
               <button
                 className="flex-1 rounded-xl border border-line bg-surface-soft px-4 py-2.5 text-sm font-black text-ink-700 transition hover:bg-line dark:border-white/10 dark:bg-white/10 dark:text-slate-100"
@@ -3547,15 +3571,7 @@ export function StudentDailyTestProcess({
                 </div>
               </div>
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-                {Array.isArray((session as GenericRow).details) && ((session as GenericRow).details as GenericRow[]).length > 0 && (
-                  <button
-                    className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:hover:bg-indigo-500/25 dark:text-indigo-300 px-6 py-3 rounded-2xl font-bold border border-indigo-100 dark:border-indigo-500/30 transition-all hover:-translate-y-0.5 flex items-center gap-2"
-                    onClick={() => setReviewOpen(true)}
-                  >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
-                    {tt("student.dailyTest.reviewAnswers", "Javoblarni ko'rish")}
-                  </button>
-                )}
+                <TestCompletionActions testTitle={tt("student.dailyTest.kicker", "Kunlik Test")} subject={session.subject} review={testReviewItems((session as GenericRow).details as GenericRow[])} />
                 {!(session?.subject ? (completedDailySubjects.has(normalizeSubjectLabel(session.subject) || session.subject) || session?.completed) : false) && (
                   <button
                     className="bg-navy-900 hover:bg-navy-800 text-white dark:bg-cyan-500 dark:hover:bg-cyan-600 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-blue-500/30 transition-all hover:-translate-y-1"
@@ -5508,7 +5524,7 @@ export function StudentCompetitionPage({
 	                  </div>
 	                ) : null}
 	                
-	                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-10">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-10">
                   <div className="bg-transparent p-4 rounded-2xl border border-line dark:border-white/10">
                     <p className="text-sm font-medium text-ink-500 mb-1">{tt("duel.correct", "To'g'ri")}</p>
                     <p className="text-2xl font-bold text-green-600 dark:text-green-400">{result.result?.correct || 0}</p>
@@ -5529,6 +5545,13 @@ export function StudentCompetitionPage({
                     <p className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">{Number(result.result?.dpoints_delta || 0) >= 0 ? "+" : ""}{Number(result.result?.dpoints_delta || 0).toFixed(1)}</p>
                   </div>
                 </div>
+
+                <TestCompletionActions
+                  testTitle={displayTitle}
+                  subject={effectiveSubject}
+                  review={testReviewItems((result.review || []) as GenericRow[])}
+                  className="mb-8"
+                />
                 
                 <div className="flex flex-wrap justify-center gap-4">
                   <button

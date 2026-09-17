@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { resolveLocale, useWebT } from "./web-i18n";
 import { SharedTestEditor } from "./shared-test-editor";
 import { StudyRoomChat } from "./study-room-chat";
+import { diamondvoyTestContextKey, type TestReviewItem } from "./test-completion-actions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const DIAMONDVOY_AVATAR = "/diamondvoy-avatar.jpg";
@@ -71,6 +72,35 @@ type DiamondvoyMessage = {
   retryMessage?: string;
   retryImages?: string[];
 };
+
+type TestReviewContext = {
+  title: string;
+  subject?: string;
+  questions: TestReviewItem[];
+};
+
+function reviewText(value: unknown, fallback = "O‘tkazilgan") {
+  if (value === null || value === undefined || value === "") return fallback;
+  if (Array.isArray(value)) return value.map((item) => reviewText(item, "")).filter(Boolean).join(" · ") || fallback;
+  if (typeof value === "object") return Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key}: ${reviewText(item, "")}`).join(" · ") || fallback;
+  return String(value);
+}
+
+function testReviewIntroduction(context: TestReviewContext) {
+  const questions = (context.questions || []).map((item, index) => [
+    `${index + 1}. Savol: ${reviewText(item.prompt, "")}`,
+    `Men tanlagan javob: ${reviewText(item.selected_answer)}`,
+    `To‘g‘ri javob: ${reviewText(item.correct_answer, "—")}`,
+    `Natija: ${item.is_correct ? "to‘g‘ri" : "noto‘g‘ri yoki o‘tkazilgan"}`,
+  ].join("\n")).join("\n\n");
+  return `Men “${context.title}” testini yakunladim${context.subject ? ` (${context.subject})` : ""}. Quyida savollar, men tanlagan javoblar va to‘g‘ri javoblar bor. Shu test kontekstini eslab qoling. Avval qisqacha qaysi mavzularda xato qilganimni ayting; keyin men tanlaydigan alohida savolni oddiy tilda tahlil qilib, nega mening javobim xato yoki to‘g‘ri ekanini tushuntiring.\n\n${questions}`;
+}
+
+function selectedReviewQuestion(context: TestReviewContext, index: number) {
+  const item = context.questions[index];
+  if (!item) return "";
+  return `Iltimos, ${index + 1}-savolni batafsil tahlil qiling. Savol: ${reviewText(item.prompt, "")}. Men tanlagan javob: ${reviewText(item.selected_answer)}. To‘g‘ri javob: ${reviewText(item.correct_answer, "—")}. Nega aynan shu javob to‘g‘ri, meniki nega ${item.is_correct ? "to‘g‘ri" : "xato"} ekanini oddiy qoida va kamida bitta misol bilan tushuntiring.`;
+}
 
 type FeedbackMessage = {
   id: number;
@@ -1295,6 +1325,7 @@ export function UniversalChat({
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia>(null);
   const [chatActionId, setChatActionId] = useState<number | null>(null);
   const [visibleTimeId, setVisibleTimeId] = useState<string | null>(null);
+  const [testReviewContext, setTestReviewContext] = useState<TestReviewContext | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const communityFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1548,6 +1579,29 @@ export function UniversalChat({
       if (msgLongPressTimerRef.current) window.clearTimeout(msgLongPressTimerRef.current);
     };
   }, [loadDiamondvoyChats]);
+
+  // A completed test hands its immutable review snapshot to Diamondvoy via
+  // sessionStorage.  It is consumed once, stays in the student's browser only,
+  // and is then sent as an ordinary attributable chat message.
+  useEffect(() => {
+    if (!isStudent || typeof window === "undefined") return;
+    try {
+      const raw = window.sessionStorage.getItem(diamondvoyTestContextKey);
+      if (!raw) return;
+      window.sessionStorage.removeItem(diamondvoyTestContextKey);
+      const parsed = JSON.parse(raw) as TestReviewContext;
+      if (!parsed?.title || !Array.isArray(parsed.questions) || !parsed.questions.length) return;
+      const safe: TestReviewContext = { title: String(parsed.title).slice(0, 180), subject: String(parsed.subject || "").slice(0, 80), questions: parsed.questions.slice(0, 40) };
+      setTestReviewContext(safe);
+      setActivePane("diamondvoy");
+      window.setTimeout(() => sendDiamondvoyMessage(testReviewIntroduction(safe)).catch(() => null), 0);
+    } catch {
+      window.sessionStorage.removeItem(diamondvoyTestContextKey);
+    }
+  // sendDiamondvoyMessage is a function declaration; this effect intentionally
+  // runs once to consume a single hand-off from a completed test.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isStudent]);
 
   useEffect(() => {
     if (activePane === "diamondvoy" && activeChatId) {
@@ -2162,6 +2216,14 @@ export function UniversalChat({
           </button>
         </div>
       </div>
+
+      {testReviewContext ? <div className="border-b border-cyan-500/20 bg-cyan-500/5 px-3 py-3 sm:px-5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div><p className="text-xs font-black text-cyan-800 dark:text-cyan-200">💎 Test tahlili ulandi</p><p className="text-xs text-ink-500 dark:text-navy-300">{testReviewContext.title} · {testReviewContext.questions.length} ta savol. Savolni tanlab Diamondvoydan so‘rang.</p></div>
+          <button type="button" disabled={sending} onClick={() => sendDiamondvoyMessage(`“${testReviewContext.title}” testimdagi barcha xatolarimni umumiy tahlil qilib, qaysi qoidalarni takrorlashim kerakligini ayting.`).catch(() => null)} className="rounded-lg border border-cyan-500/30 bg-white px-3 py-2 text-xs font-black text-cyan-700 disabled:opacity-50 dark:bg-white/10 dark:text-cyan-200">Umumiy tahlil</button>
+        </div>
+        <label className="mt-2 block text-xs font-bold text-ink-600 dark:text-navy-200">Savolni tanlang<select defaultValue="" disabled={sending} onChange={(event) => { const index = Number(event.target.value); if (Number.isInteger(index) && index >= 0) sendDiamondvoyMessage(selectedReviewQuestion(testReviewContext, index)).catch(() => null); event.currentTarget.value = ""; }} className="mt-1 block w-full rounded-lg border border-line bg-white px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:border-cyan-400 disabled:opacity-50 dark:border-white/10 dark:bg-navy-950 dark:text-white"><option value="">Savolni tanlang…</option>{testReviewContext.questions.map((question, index) => <option key={`${index}-${question.prompt}`} value={index}>{index + 1}. {String(question.prompt || "Savol").slice(0, 100)}</option>)}</select></label>
+      </div> : null}
 
       <div
         ref={aiScrollRef}
