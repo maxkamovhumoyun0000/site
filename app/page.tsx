@@ -22972,7 +22972,7 @@ function DashboardShell({
     content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
   } else if (activeRole === "student") {
     if (currentSection === "personal-plan") content = <WeeklyStudyPlan apiFetch={authedApiFetch} />;
-    else if (["my-mistakes", "mistake-notebook", "saved", "reminders", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
+    else if (["my-mistakes", "mistake-notebook", "saved", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
     else if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
     else if (currentSection === "videos") content = <StudentVideos apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "books") content = <StudentBooks apiFetch={authedApiFetch} user={user} />;
@@ -23001,7 +23001,7 @@ function DashboardShell({
     else content = <StudentHome user={user} data={roleData} onNavigate={handleNavigate} />;
 
   } else if (activeRole === "teacher") {
-    if (["student-insights", "saved", "reminders", "pomodoro"].includes(currentSection)) {
+    if (["student-insights", "saved", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="teacher" view={currentSection} />;
     } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
@@ -23011,7 +23011,7 @@ function DashboardShell({
       content = <TeacherSection section={currentSection} data={roleData} user={user} onApiCall={onAdminCall} onNavigate={handleNavigate} />;
     }
   } else if (activeRole === "support") {
-    if (["student-insights", "saved", "reminders", "pomodoro"].includes(currentSection)) {
+    if (["student-insights", "saved", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="support" view={currentSection} />;
     } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;

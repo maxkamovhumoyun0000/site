@@ -8,11 +8,10 @@ type Row = Record<string, any>;
 export function PersonalLearningPanel({ apiFetch, role, view }: { apiFetch: (path: string, options?: any) => Promise<any>; role: "student" | "teacher" | "support"; view: string }) {
   const student = role === "student";
   const prefix = student ? "/student" : "/staff";
-  const title = view === "my-mistakes" ? "Mening xatolarim" : view === "mistake-notebook" ? "Xatolar daftari" : view === "saved" ? "Saqlanganlar" : view === "reminders" ? "Eslatmalar" : view === "pomodoro" ? "Pomodoro" : "Student insightlari";
+  const title = view === "my-mistakes" ? "Mening xatolarim" : view === "mistake-notebook" ? "Xatolar daftari" : view === "saved" ? "Saqlanganlar" : view === "pomodoro" ? "Pomodoro" : "Student insightlari";
   const [notebook, setNotebook] = useState<Row>({ items: [], due_count: 0, total_count: 0, sources: {} });
   const [bookmarks, setBookmarks] = useState<Row[]>([]);
   const [summary, setSummary] = useState<Row>({ week_seconds: 0, sessions: 0 });
-  const [reminders, setReminders] = useState<Row>({ enabled: true, quiet_start: "", quiet_end: "" });
   const [insights, setInsights] = useState<Row[]>([]);
   const [practice, setPractice] = useState<Row | null>(null);
   const [position, setPosition] = useState(0);
@@ -23,17 +22,16 @@ export function PersonalLearningPanel({ apiFetch, role, view }: { apiFetch: (pat
 
   const load = async () => {
     try {
-      const calls: Promise<any>[] = [apiFetch(`${prefix}/bookmarks`), apiFetch(`${prefix}/pomodoro/summary`), apiFetch(`${prefix}/reminder-preferences`)];
+      const calls: Promise<any>[] = [apiFetch(`${prefix}/bookmarks`), apiFetch(`${prefix}/pomodoro/summary`)];
       if (student) calls.push(apiFetch("/student/mistake-notebook")); else calls.push(apiFetch("/teacher/student-insights"));
-      const [saved, pomo, reminder, extra] = await Promise.all(calls);
-      setBookmarks(saved?.items || []); setSummary(pomo || {}); setReminders(reminder || {});
+      const [saved, pomo, extra] = await Promise.all(calls);
+      setBookmarks(saved?.items || []); setSummary(pomo || {});
       if (student) setNotebook(extra || { items: [] }); else setInsights(extra?.items || []);
     } catch (error) { setNotice(error instanceof Error ? error.message : "Ma’lumot yuklanmadi"); }
   };
   useEffect(() => { const timer = window.setTimeout(() => { void load(); }, 0); return () => window.clearTimeout(timer); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const savePomodoro = async (mode: "work" | "short_break" | "long_break", seconds: number) => { setBusy(true); try { await apiFetch(`${prefix}/pomodoro/sessions`, { method: "POST", body: { mode, planned_seconds: seconds, completed_seconds: seconds, completed: true } }); setNotice("Pomodoro sessiyasi saqlandi"); await load(); } catch (error) { setNotice(error instanceof Error ? error.message : "Saqlanmadi"); } finally { setBusy(false); } };
-  const saveReminders = async () => { setBusy(true); try { await apiFetch(`${prefix}/reminder-preferences`, { method: "PUT", body: { enabled: Boolean(reminders.enabled), quiet_start: reminders.quiet_start || null, quiet_end: reminders.quiet_end || null, settings: { channels: ["push", "telegram", "in_app"] } } }); setNotice("Reminder sozlamalari saqlandi"); } catch (error) { setNotice(error instanceof Error ? error.message : "Saqlanmadi"); } finally { setBusy(false); } };
   const startPractice = async () => { setBusy(true); setNotice(""); try { const next = await apiFetch("/student/mistake-notebook/start", { method: "POST" }); setPractice(next); setPosition(0); setChosen(""); setResult(null); if (!next?.questions?.length) setNotice("Hozircha takrorlashga tayyor xato yo‘q."); } catch (error) { setNotice(error instanceof Error ? error.message : "Mashq yuklanmadi"); } finally { setBusy(false); } };
   const submitPractice = async () => { const question = practice?.questions?.[position]; if (!question || !chosen || busy) return; setBusy(true); try { const next = await apiFetch(`/student/mistake-notebook/${question.id}/answer`, { method: "POST", body: { selected_answer: chosen } }); setResult(next || {}); await load(); } catch (error) { setNotice(error instanceof Error ? error.message : "Javob tekshirilmadi"); } finally { setBusy(false); } };
   const nextPractice = () => { if (position + 1 >= (practice?.questions?.length || 0)) { setPractice(null); setChosen(""); setResult(null); return; } setPosition((value) => value + 1); setChosen(""); setResult(null); };
@@ -41,7 +39,7 @@ export function PersonalLearningPanel({ apiFetch, role, view }: { apiFetch: (pat
   const sourceEntries = Object.entries(notebook.sources || {}).filter(([, count]) => Number(count) > 0);
 
   return <div className="flex flex-col gap-5 pb-10 animate-fade-in">
-    <section className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-navy-950 to-indigo-800 p-5 text-white shadow-premium sm:p-7"><div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" /><p className="relative text-xs font-black uppercase tracking-[.18em] text-cyan-200">Diamondvoy · {student ? "O‘quv vositalari" : "Ish vositalari"}</p><h2 className="relative mt-2 text-2xl font-black">{title}</h2><p className="relative mt-2 max-w-2xl text-sm text-white/75">{view === "mistake-notebook" ? "Har xato interval bilan qaytadi. To‘g‘ri ishlaganingiz sari u kamroq chiqadi va yakunda yopiladi." : view === "my-mistakes" ? "Barcha test oqimlaridan yig‘ilgan xatolaringiz xaritasi." : view === "saved" ? "Video, kitob va grammatika bo‘yicha saqlangan joylaringiz." : view === "reminders" ? "Push, Telegram va ilova ichidagi eslatmalaringiz." : view === "pomodoro" ? "Diqqat bilan ishlash va statistikangiz." : "Studentlar qiynalayotgan mavzular va tavsiyalar."}</p></section>
+    <section className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-navy-950 to-indigo-800 p-5 text-white shadow-premium sm:p-7"><div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" /><p className="relative text-xs font-black uppercase tracking-[.18em] text-cyan-200">Diamondvoy · {student ? "O‘quv vositalari" : "Ish vositalari"}</p><h2 className="relative mt-2 text-2xl font-black">{title}</h2><p className="relative mt-2 max-w-2xl text-sm text-white/75">{view === "mistake-notebook" ? "Har xato interval bilan qaytadi. To‘g‘ri ishlaganingiz sari u kamroq chiqadi va yakunda yopiladi." : view === "my-mistakes" ? "Barcha test oqimlaridan yig‘ilgan xatolaringiz xaritasi." : view === "saved" ? "Video, kitob va grammatika bo‘yicha saqlangan joylaringiz." : view === "pomodoro" ? "Diqqat bilan ishlash va statistikangiz." : "Studentlar qiynalayotgan mavzular va tavsiyalar."}</p></section>
     {notice ? <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-800 dark:text-cyan-100">{notice}</div> : null}
 
     {student && (view === "my-mistakes" || view === "mistake-notebook") ? <>
@@ -53,7 +51,6 @@ export function PersonalLearningPanel({ apiFetch, role, view }: { apiFetch: (pat
 
     {!student && view === "student-insights" ? <section className="premium-card"><h3 className="text-lg font-black">Studentlar qiynalayotgan mavzular</h3><div className="mt-4 grid gap-2 sm:grid-cols-2">{insights.slice(0, 20).map((item, index) => <div key={`${item.user_id}-${index}`} className="rounded-xl border border-line p-3 text-sm dark:border-white/10"><strong>{item.first_name || item.login_id}</strong><p className="text-ink-500 dark:text-navy-300">{item.subject || "Fan"} · {item.topic_key || "Mavzu"} · {item.mistakes || 0} xato</p></div>)}{!insights.length ? <p className="text-sm text-ink-500">Hozircha xato insightlari yo‘q.</p> : null}</div></section> : null}
     {view === "pomodoro" ? <section className="premium-card"><h3 className="text-lg font-black">Pomodoro</h3><p className="mt-1 text-sm text-ink-500 dark:text-navy-300">Haftada {Math.round(Number(summary.week_seconds || 0) / 60)} daqiqa · {summary.sessions || 0} sessiya</p><div className="mt-4 grid max-w-md grid-cols-3 gap-2"><button disabled={busy} onClick={() => savePomodoro("work", 25 * 60)} className="btn btn-primary text-xs">25 min</button><button disabled={busy} onClick={() => savePomodoro("short_break", 5 * 60)} className="btn btn-soft text-xs">5 min</button><button disabled={busy} onClick={() => savePomodoro("long_break", 15 * 60)} className="btn btn-soft text-xs">15 min</button></div></section> : null}
-    {view === "reminders" ? <section className="premium-card max-w-xl"><h3 className="text-lg font-black">Smart reminder</h3><label className="mt-3 flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={Boolean(reminders.enabled)} onChange={(event) => setReminders({ ...reminders, enabled: event.target.checked })} /> Push, Telegram va ilova ichida</label><div className="mt-3 flex gap-2"><input className="min-w-0 rounded-lg border border-line bg-transparent px-2 py-1 text-sm dark:border-white/10" type="time" value={reminders.quiet_start || ""} onChange={(event) => setReminders({ ...reminders, quiet_start: event.target.value })} /><input className="min-w-0 rounded-lg border border-line bg-transparent px-2 py-1 text-sm dark:border-white/10" type="time" value={reminders.quiet_end || ""} onChange={(event) => setReminders({ ...reminders, quiet_end: event.target.value })} /></div><button disabled={busy} onClick={saveReminders} className="btn btn-soft mt-3 text-xs">Saqlash</button></section> : null}
     {view === "saved" ? <section className="premium-card"><h3 className="text-lg font-black">Saqlanganlar</h3><div className="mt-3 max-h-96 space-y-2 overflow-auto">{bookmarks.map((item) => <a key={item.id} href={item.target_url || "#"} className="block rounded-lg bg-surface-soft px-3 py-2 text-sm dark:bg-white/5">{item.title || item.content_type} {item.position_value ? `· ${item.position_value}` : ""}</a>)}{!bookmarks.length ? <p className="text-sm text-ink-500">Bookmark yo‘q.</p> : null}</div></section> : null}
   </div>;
 }
