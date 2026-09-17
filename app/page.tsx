@@ -15159,6 +15159,9 @@ function AdminSection({
   const [adminUserEditTarget, setAdminUserEditTarget] = useState<GenericRow | null>(null);
   const [adminGroupCreateOpen, setAdminGroupCreateOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
+  // Keep the management modal stable while the background list is refreshed.
+  // A delayed/filter response must never dismiss an admin who is editing a group.
+  const [selectedGroupSnapshot, setSelectedGroupSnapshot] = useState<GenericRow | null>(null);
   const [manageGroupTeachers, setManageGroupTeachers] = useState<GenericRow[]>([]);
   const [manageGroupCourses, setManageGroupCourses] = useState<GenericRow[]>([]);
   
@@ -15405,6 +15408,7 @@ function AdminSection({
         setAdminGroupsTotal((prev) => Math.max(0, Number(prev || 0) - 1));
         if (Number(selectedGroupId || 0) === gid) {
           setSelectedGroupId(null);
+          setSelectedGroupSnapshot(null);
           setGroupDraft({});
           setGroupMemberRows([]);
           setAvailableStudentRows([]);
@@ -15658,11 +15662,6 @@ function AdminSection({
         const rows = (payload.items || []) as GenericRow[];
         setAdminGroupsFallback(rows);
         setAdminGroupsTotal(Number(payload.total || rows.length || 0));
-        if (selectedGroupId && !rows.some((row) => Number(row.id || 0) === Number(selectedGroupId))) {
-          setSelectedGroupId(null);
-          setGroupMemberRows([]);
-          setAvailableStudentRows([]);
-        }
       })
       .catch((error) => {
         if (reqId !== adminGroupsReqRef.current || controller.signal.aborted) return;
@@ -19509,7 +19508,10 @@ function AdminSection({
   }
 
   if (section === "groups") {
-    const selectedGroup = groups.find((g) => Number(g.id) === Number(selectedGroupId)) || null;
+    // The list endpoint is intentionally refreshed when filters/search change.
+    // Use the snapshot opened by the user until they explicitly close the modal,
+    // so a transient or filtered list response cannot throw them back to search.
+    const selectedGroup = groups.find((g) => Number(g.id) === Number(selectedGroupId)) || selectedGroupSnapshot;
     const groupSubjects = Array.from(new Set(groups.map((g) => String(g.subject || "").trim()).filter(Boolean))) as string[];
     const groupTeachers = Array.from(new Set(groups.map((g) => String(g.teacher_name || "").trim()).filter(Boolean))).sort() as string[];
     const visibleGroups = groups.filter((group) => {
@@ -19674,6 +19676,7 @@ function AdminSection({
                           className="admin-btn-edit"
                           onClick={() => {
                             setSelectedGroupId(Number(group.id || 0));
+                            setSelectedGroupSnapshot(group);
                             setGroupDraft({
                               teacher_id: group.teacher_id || group.teacher || "",
                               subject: group.subject || "",
@@ -19730,7 +19733,7 @@ function AdminSection({
         {/* ── Manage Group Modal ── */}
         <ModalPortal open={Boolean(selectedGroupId && selectedGroup)}>
           {selectedGroupId && selectedGroup ? (
-          <div className="overlay-modal-backdrop group-management-backdrop" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
+          <div className="overlay-modal-backdrop group-management-backdrop" onClick={() => { setSelectedGroupId(null); setSelectedGroupSnapshot(null); setGroupDraft({}); }}>
             <article className="overlay-modal-card admin-wide-modal group-management-modal" onClick={(event) => event.stopPropagation()}>
               {/* Modal Header */}
               <div className="row-between gap-3">
@@ -19738,7 +19741,7 @@ function AdminSection({
                   <h3>🏫 {selectedGroup.name || tt("admin.groups.manage", "Guruhni boshqarish")}</h3>
                   <p className="text-sm text-ink-500 dark:text-navy-300">{selectedGroup.teacher_name || "-"} · {selectedGroup.subject || "-"} · {formatLevelDisplay(selectedGroup.level)}</p>
                 </div>
-                <button className="admin-modal-close" type="button" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
+                <button className="admin-modal-close" type="button" onClick={() => { setSelectedGroupId(null); setSelectedGroupSnapshot(null); setGroupDraft({}); }}>
                   <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
@@ -19854,7 +19857,7 @@ function AdminSection({
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                       {tt("common.save", "Saqlash")}
                     </button>
-                    <button className="admin-page-btn" onClick={() => { setSelectedGroupId(null); setGroupDraft({}); }}>
+                    <button className="admin-page-btn" onClick={() => { setSelectedGroupId(null); setSelectedGroupSnapshot(null); setGroupDraft({}); }}>
                       {tt("common.cancel", "Bekor qilish")}
                     </button>
                   </div>

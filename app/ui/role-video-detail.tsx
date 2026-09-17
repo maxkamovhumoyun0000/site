@@ -408,7 +408,10 @@ export function RoleVideoDetailPage({ role, videoId }: { role: "admin" | "teache
                       controlsList="nodownload noplaybackrate"
                       disablePictureInPicture
                       playsInline
-                      preload="metadata"
+                      // Ask the browser to build a playback buffer as soon as
+                      // the lesson opens.  `metadata` made every teacher/support
+                      // lesson wait for network data only after pressing play.
+                      preload="auto"
                       className={`outline-none ${isSimulatedFullscreen ? "w-full h-full max-h-screen object-contain" : "w-full aspect-video"}`}
                       onPlay={onPlaybackStarted}
                       onPlaying={onPlaybackStarted}

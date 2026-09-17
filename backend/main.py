@@ -16903,26 +16903,75 @@ def _run_competition_stale_lobbies_check() -> None:
 
 
 
+@contextmanager
+def _payment_automation_leader_lock():
+    """Elect one Uvicorn worker to run the expensive payment cron cycle.
+
+    The API runs with multiple workers.  Starting the automation task in every
+    worker used to recalculate every student/month several times concurrently,
+    which created avoidable PostgreSQL contention and slowed unrelated pages.
+    This session-level PostgreSQL advisory lock makes one worker the leader for
+    a single cycle; other workers simply wait for the next interval.
+    """
+    lock_key = "diamond_payment_automation_cycle"
+    conn = None
+    cur = None
+    acquired = False
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(hashtext(?)) AS acquired", (lock_key,))
+        acquired = bool((cur.fetchone() or {}).get("acquired"))
+    except Exception:
+        logger.exception("payment automation leader lock unavailable")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
+    try:
+        yield acquired
+    finally:
+        if acquired and conn and cur:
+            try:
+                cur.execute("SELECT pg_advisory_unlock(hashtext(?))", (lock_key,))
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 async def _payment_automation_worker() -> None:
     # Let API startup finish and socket bind before running heavy background work.
     startup_delay_sec = max(1, int(os.getenv("PAYMENT_AUTOMATION_START_DELAY_SEC", "2") or "2"))
     await asyncio.sleep(startup_delay_sec)
     while True:
         try:
-            for ym in _payment_months_for_background():
-                month_started = time.perf_counter()
-                await asyncio.to_thread(
-                    _run_payment_recalculation_for_month,
-                    str(ym),
-                    "cron",
-                )
-                logger.info(
-                    "payment_automation_worker step=recalc ym=%s ms=%.2f",
-                    str(ym),
-                    (time.perf_counter() - month_started) * 1000.0,
-                )
-            if PAYMENT_PART4_FEATURES_ENABLED and _is_payment_extra_feature_enabled("payment reminders"):
-                await _payment_run_scheduled_reminders()
+            with _payment_automation_leader_lock() as is_leader:
+                if is_leader:
+                    for ym in _payment_months_for_background():
+                        month_started = time.perf_counter()
+                        await asyncio.to_thread(
+                            _run_payment_recalculation_for_month,
+                            str(ym),
+                            "cron",
+                        )
+                        logger.info(
+                            "payment_automation_worker step=recalc ym=%s ms=%.2f",
+                            str(ym),
+                            (time.perf_counter() - month_started) * 1000.0,
+                        )
+                    if PAYMENT_PART4_FEATURES_ENABLED and _is_payment_extra_feature_enabled("payment reminders"):
+                        await _payment_run_scheduled_reminders()
+                else:
+                    logger.debug("payment_automation_worker skipped: another worker is leader")
         except Exception:
             logger.exception("payment automation worker failed")
         await asyncio.sleep(max(900, int(PAYMENT_AUTOCALC_INTERVAL_SEC)))
