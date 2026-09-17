@@ -35,6 +35,7 @@ export const SUPPORT_WEEKDAY_OPTIONS = [
 export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   student: [
     "home",
+    "personal-plan",
     "my-mistakes",
     "mistake-notebook",
     "saved",
@@ -86,7 +87,7 @@ export const SECTION_ALIAS: Record<string, string> = {
   dashboard: "home",
   // Old push/deep links continue to open the most relevant new page after
   // the former all-in-one learning hub was split into separate screens.
-  "personal-learning": "my-mistakes",
+  "personal-learning": "personal-plan",
   daily: "daily-test",
   "daily-process": "daily-test-process",
   gamified: "gamified",
@@ -110,6 +111,7 @@ export const SECTION_ALIAS: Record<string, string> = {
 
 export const SECTION_LABELS: Record<string, string> = {
   home: "Boshqaruv paneli",
+  "personal-plan": "Shaxsiy o‘quv rejam",
   "my-mistakes": "Mening xatolarim",
   "mistake-notebook": "Xatolar daftari",
   saved: "Saqlanganlar",

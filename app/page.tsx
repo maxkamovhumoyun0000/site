@@ -62,6 +62,7 @@ import { StudentBooks } from "./ui/student-books";
 import { StudentAttendance } from "./ui/student-attendance";
 import { StudentNotesPanel } from "./ui/student-notes";
 import { PersonalLearningPanel } from "./ui/personal-learning";
+import { WeeklyStudyPlan } from "./ui/weekly-study-plan";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
@@ -22970,7 +22971,8 @@ function DashboardShell({
   if (currentSection === "chats" || currentSection === "diamondvoy") {
     content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
   } else if (activeRole === "student") {
-    if (["my-mistakes", "mistake-notebook", "saved", "reminders", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
+    if (currentSection === "personal-plan") content = <WeeklyStudyPlan apiFetch={authedApiFetch} />;
+    else if (["my-mistakes", "mistake-notebook", "saved", "reminders", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
     else if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
     else if (currentSection === "videos") content = <StudentVideos apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "books") content = <StudentBooks apiFetch={authedApiFetch} user={user} />;

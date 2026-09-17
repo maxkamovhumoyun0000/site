@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -124,6 +125,22 @@ def ensure_schema() -> None:
               last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
+            """CREATE TABLE IF NOT EXISTS weekly_ai_analyses (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL,
+              week_start TEXT NOT NULL,
+              week_end TEXT NOT NULL,
+              analysis_text TEXT,
+              weak_topics_json TEXT,
+              recommendations_json TEXT,
+              test_stats_json TEXT,
+              homework_stats_json TEXT,
+              practice_questions_json TEXT,
+              status TEXT DEFAULT 'pending',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, week_start)
+            )""",
         ]
         for sql in statements:
             try:
@@ -140,6 +157,7 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_study_room_materials_room ON study_room_materials(room_id, id)",
             "CREATE INDEX IF NOT EXISTS idx_pomodoro_user ON pomodoro_sessions(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_user_sessions ON user_sessions(user_id, last_seen DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_weekly_analysis_user ON weekly_ai_analyses(user_id, week_start DESC)",
         ):
             try:
                 cur.execute(sql)
@@ -851,3 +869,441 @@ async def teacher_student_insights(authorization: str | None = Header(default=No
         placeholders=",".join("?" for _ in ids)
         cur=conn.cursor(); cur.execute(f"SELECT m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items m JOIN users u ON u.id=m.user_id WHERE m.resolved_at IS NULL AND m.user_id IN ({placeholders}) GROUP BY m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key ORDER BY mistakes DESC LIMIT 100", ids); rows=_dicts(cur.fetchall()); return {"items":rows}
     finally: conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEEKLY AI ANALYSIS — Personal Study Plan
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _current_week_range() -> tuple[str, str]:
+    """Return (monday_iso, sunday_iso) for the current week."""
+    today = _now().date()
+    monday = today - timedelta(days=today.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday.isoformat(), sunday.isoformat()
+
+
+def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) -> dict[str, Any]:
+    """Gather test + homework + mistake stats for the given week."""
+    # Test stats
+    cur.execute(
+        "SELECT test_type, topic_id, correct_count, wrong_count, skipped_count, created_at "
+        "FROM test_history WHERE user_id=? AND DATE(created_at) >= ? AND DATE(created_at) <= ? "
+        "ORDER BY created_at DESC",
+        (user_id, week_start, week_end),
+    )
+    tests = _dicts(cur.fetchall())
+    total_correct = sum(int(t.get("correct_count") or 0) for t in tests)
+    total_wrong = sum(int(t.get("wrong_count") or 0) for t in tests)
+    total_skipped = sum(int(t.get("skipped_count") or 0) for t in tests)
+    total_questions = total_correct + total_wrong + total_skipped
+    accuracy = round((total_correct / total_questions * 100), 1) if total_questions > 0 else 0
+
+    # Topic breakdown (which topics have most errors)
+    topic_errors: dict[str, int] = {}
+    for t in tests:
+        topic = str(t.get("topic_id") or "general")
+        wrong = int(t.get("wrong_count") or 0)
+        if wrong > 0:
+            topic_errors[topic] = topic_errors.get(topic, 0) + wrong
+    weak_by_tests = sorted(topic_errors.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Mistake notebook stats (unresolved)
+    cur.execute(
+        "SELECT subject, topic_key, COUNT(*) AS cnt "
+        "FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL "
+        "GROUP BY subject, topic_key ORDER BY cnt DESC LIMIT 5",
+        (user_id,),
+    )
+    weak_by_mistakes = _dicts(cur.fetchall())
+
+    # Homework stats
+    cur.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN COALESCE(s.status,'') IN ('done','accepted','reviewed','completed') THEN 1 ELSE 0 END) AS completed "
+        "FROM web_homeworks h "
+        "LEFT JOIN web_homework_submissions s ON s.homework_id=h.id AND s.student_id=? "
+        "WHERE h.student_id=? AND DATE(COALESCE(h.created_at, h.due_at)) >= ? AND DATE(COALESCE(h.created_at, h.due_at)) <= ?",
+        (user_id, user_id, week_start, week_end),
+    )
+    hw_row = dict(cur.fetchone() or {})
+    hw_total = int(hw_row.get("total") or 0)
+    hw_completed = int(hw_row.get("completed") or 0)
+
+    return {
+        "tests": tests[:20],
+        "test_count": len(tests),
+        "total_correct": total_correct,
+        "total_wrong": total_wrong,
+        "total_skipped": total_skipped,
+        "accuracy_pct": accuracy,
+        "weak_topics_by_tests": [{"topic": t, "errors": e} for t, e in weak_by_tests],
+        "weak_topics_by_mistakes": weak_by_mistakes,
+        "homework_total": hw_total,
+        "homework_completed": hw_completed,
+        "homework_completion_pct": round(hw_completed / hw_total * 100, 1) if hw_total > 0 else 0,
+    }
+
+
+async def _generate_ai_analysis(stats: dict[str, Any], user_name: str) -> dict[str, Any]:
+    """Call AI to produce weekly analysis, explanations, recommendations and practice questions."""
+    import aiohttp
+
+    weak_topics = []
+    for item in stats.get("weak_topics_by_tests", []):
+        weak_topics.append(f"- {item['topic']} ({item['errors']} ta xato)")
+    for item in stats.get("weak_topics_by_mistakes", []):
+        subj = str(item.get("subject") or "")
+        topic = str(item.get("topic_key") or "")
+        cnt = int(item.get("cnt") or 0)
+        weak_topics.append(f"- {subj} / {topic} ({cnt} ta hal qilinmagan xato)")
+
+    weak_str = "\n".join(weak_topics) if weak_topics else "Hozircha zaif mavzular aniqlanmadi."
+
+    prompt = f"""Sen Diamond Education platformasida o'quvchilarga yordam beruvchi AI tutorsan (Diamondvoy).
+O'quvchi: {user_name}
+
+Bu haftadagi statistika:
+- Testlar soni: {stats.get('test_count', 0)}
+- To'g'ri: {stats.get('total_correct', 0)}, Noto'g'ri: {stats.get('total_wrong', 0)}, O'tkazilgan: {stats.get('total_skipped', 0)}
+- Umumiy aniqlik: {stats.get('accuracy_pct', 0)}%
+- Uy vazifalari: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} bajarildi ({stats.get('homework_completion_pct', 0)}%)
+
+Zaif mavzular:
+{weak_str}
+
+Quyidagilarni JSON formatda yoz:
+{{
+  "analysis": "O'quvchining bu haftadagi holati haqida batafsil tahlil (3-5 jumlada, samimiy va rag'batlantiruvchi tonda, zaif tomonlarni ham aniq ko'rsat)",
+  "weak_topics": [
+    {{"topic": "mavzu nomi", "level": "weak/medium", "explanation": "bu mavzuda nega qiynalayotgani haqida tushuntirish", "rules": ["1-qoida yoki tushuntirish", "2-qoida yoki tushuntirish"]}}
+  ],
+  "recommendations": [
+    "1-tavsiya: aniq va amaliy qadam",
+    "2-tavsiya",
+    "3-tavsiya"
+  ],
+  "practice_questions": [
+    {{"question": "savol matni", "options": ["A) variant", "B) variant", "C) variant", "D) variant"], "correct": "A) variant", "topic": "mavzu", "difficulty": "easy", "explanation": "to'g'ri javob tushuntirmasi"}}
+  ],
+  "encouragement": "rag'batlantiruvchi xabar"
+}}
+
+practice_questions da eng kamida 5 ta savol bo'lsin, zaif mavzularga oid, OSON darajada.
+Har bir zaif mavzu uchun kamida 1 ta savol bo'lsin.
+Faqat JSON qaytar, boshqa hech narsa yozma."""
+
+    try:
+        from ai_generator import _xai_generate_text
+        async with aiohttp.ClientSession() as session:
+            raw = await _xai_generate_text(prompt, session=session, temperature=0.5)
+        # Parse JSON from response
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.rstrip().endswith("```"):
+                raw = raw.rstrip()[:-3]
+        if not raw.startswith("{"):
+            start, end = raw.find("{"), raw.rfind("}")
+            raw = raw[start : end + 1] if start >= 0 and end > start else raw
+        result = json.loads(raw)
+        if not isinstance(result, dict):
+            raise ValueError("AI response is not an object")
+        result["weak_topics"] = result.get("weak_topics") if isinstance(result.get("weak_topics"), list) else []
+        result["recommendations"] = result.get("recommendations") if isinstance(result.get("recommendations"), list) else []
+        result["practice_questions"] = result.get("practice_questions") if isinstance(result.get("practice_questions"), list) else []
+        return result
+    except Exception:
+        return {
+            "analysis": "Bu haftadagi ma’lumotlar tayyor. Diamondvoy tahlili birozdan so‘ng yangilanadi.",
+            "weak_topics": [{"topic": t.get("topic", ""), "level": "weak", "explanation": "", "rules": []} for t in stats.get("weak_topics_by_tests", [])],
+            "recommendations": ["Zaif mavzulardagi testlarni qayta ishlang.", "Xatolar daftarini muntazam ko'rib chiqing.", "Uyga vazifalarni o'z vaqtida topshiring."],
+            "practice_questions": [],
+            "encouragement": "Davom eting, har qanday natija — bu rivojlanish!",
+        }
+
+
+async def _finish_weekly_analysis(
+    *, user_id: int, user_name: str, week_start: str, stats: dict[str, Any]
+) -> None:
+    """Run the slow AI call outside the request and persist one immutable weekly result."""
+    try:
+        result = await _generate_ai_analysis(stats, user_name)
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
+                "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=?",
+                (
+                    str(result.get("analysis", "")),
+                    json.dumps(result.get("weak_topics", []), ensure_ascii=False),
+                    json.dumps(result.get("recommendations", []), ensure_ascii=False),
+                    json.dumps(result.get("practice_questions", []), ensure_ascii=False),
+                    _now().isoformat(), user_id, week_start,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        # Never leave the learner in an endless "thinking" state.
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE weekly_ai_analyses SET status='failed', updated_at=? WHERE user_id=? AND week_start=?",
+                (_now().isoformat(), user_id, week_start),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "exists": True,
+        "week_start": row["week_start"],
+        "week_end": row["week_end"],
+        "status": row.get("status", "done"),
+        "analysis": row.get("analysis_text", ""),
+        "weak_topics": json.loads(row.get("weak_topics_json") or "[]"),
+        "recommendations": json.loads(row.get("recommendations_json") or "[]"),
+        "test_stats": json.loads(row.get("test_stats_json") or "{}"),
+        "homework_stats": json.loads(row.get("homework_stats_json") or "{}"),
+        "practice_questions": json.loads(row.get("practice_questions_json") or "[]"),
+        "created_at": row.get("created_at"),
+    }
+
+
+@router.get("/student/personal-plan/weekly-analysis")
+async def get_weekly_analysis(authorization: str | None = Header(default=None)):
+    """Get the current week's AI analysis (or latest available)."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"]); week_start, week_end = _current_week_range()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM weekly_ai_analyses WHERE user_id=? AND week_start=?",
+            (uid, week_start),
+        )
+        row = cur.fetchone()
+        if row:
+            return _weekly_payload(dict(row))
+        # Collect live stats so the frontend can show partial data
+        stats = _collect_week_stats(cur, uid, week_start, week_end)
+        return {
+            "exists": False,
+            "week_start": week_start,
+            "week_end": week_end,
+            "status": "not_generated",
+            "analysis": "",
+            "weak_topics": [],
+            "recommendations": [],
+            "test_stats": stats,
+            "homework_stats": {
+                "total": stats["homework_total"],
+                "completed": stats["homework_completed"],
+                "completion_pct": stats["homework_completion_pct"],
+            },
+            "practice_questions": [],
+            "created_at": None,
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/student/personal-plan/weekly-analysis/generate")
+async def generate_weekly_analysis(authorization: str | None = Header(default=None)):
+    """Queue a weekly Diamondvoy analysis and return immediately for UI polling."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"]); week_start, week_end = _current_week_range()
+    user_name = _student_name(user)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        stats = _collect_week_stats(cur, uid, week_start, week_end)
+        cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+        current = cur.fetchone()
+        if current and str(dict(current).get("status") or "") == "processing":
+            return {"accepted": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+        # Mark as processing
+        try:
+            cur.execute(
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) "
+                "VALUES(?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET status='processing', updated_at=?",
+                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                    "total": stats["homework_total"], "completed": stats["homework_completed"],
+                    "completion_pct": stats["homework_completion_pct"],
+                }), _now().isoformat()),
+            )
+        except Exception:
+            cur.execute("DELETE FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+            cur.execute(
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) VALUES(?,?,?,'processing',?,?)",
+                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                    "total": stats["homework_total"], "completed": stats["homework_completed"],
+                    "completion_pct": stats["homework_completion_pct"],
+                })),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats))
+    return {"accepted": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+
+
+@router.get("/student/personal-plan/analysis-history")
+async def get_analysis_history(authorization: str | None = Header(default=None)):
+    """Get all previous weekly analyses for the student."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"])
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, week_start, week_end, analysis_text, weak_topics_json, "
+            "recommendations_json, test_stats_json, homework_stats_json, "
+            "practice_questions_json, status, created_at "
+            "FROM weekly_ai_analyses WHERE user_id=? AND status='done' "
+            "ORDER BY week_start DESC LIMIT 12",
+            (uid,),
+        )
+        items = []
+        for row in cur.fetchall():
+            r = dict(row)
+            items.append({
+                "id": r["id"],
+                "week_start": r["week_start"],
+                "week_end": r["week_end"],
+                "analysis": r.get("analysis_text", ""),
+                "weak_topics": json.loads(r.get("weak_topics_json") or "[]"),
+                "recommendations": json.loads(r.get("recommendations_json") or "[]"),
+                "test_stats": json.loads(r.get("test_stats_json") or "{}"),
+                "homework_stats": json.loads(r.get("homework_stats_json") or "{}"),
+                "practice_questions": json.loads(r.get("practice_questions_json") or "[]"),
+                "created_at": r.get("created_at"),
+            })
+        return {"items": items}
+    finally:
+        conn.close()
+
+
+class WeeklyAnalysisAskRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=1200)
+
+
+@router.post("/student/personal-plan/weekly-analysis/ask")
+async def ask_weekly_analysis(payload: WeeklyAnalysisAskRequest, authorization: str | None = Header(default=None)):
+    """Diamondvoy answers with the student's current-week learning context only."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    week_start, _ = _current_week_range()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT analysis_text,weak_topics_json,recommendations_json FROM weekly_ai_analyses "
+            "WHERE user_id=? AND week_start=? AND status='done' LIMIT 1",
+            (int(user["id"]), week_start),
+        )
+        row = cur.fetchone()
+        context = dict(row) if row else {}
+    finally:
+        conn.close()
+    weak_topics = context.get("weak_topics_json") or "[]"
+    recommendations = context.get("recommendations_json") or "[]"
+    try:
+        import aiohttp
+        from ai_generator import _xai_generate_text
+        prompt = (
+            "Sen Diamondvoysan. O‘quvchiga faqat oddiy, qisqa va foydali o‘quv izohini ber. "
+            "Javobni 4-6 jumladan oshirma; uydirma fakt yoki yangi test javobini bermagin.\n\n"
+            f"Haftalik tahlil: {str(context.get('analysis_text') or '')[:2500]}\n"
+            f"Zaif mavzular: {str(weak_topics)[:2500]}\n"
+            f"Tavsiyalar: {str(recommendations)[:1600]}\n\n"
+            f"O‘quvchi savoli: {payload.question}"
+        )
+        async with aiohttp.ClientSession() as session:
+            answer = await _xai_generate_text(prompt, session=session, temperature=0.35)
+        return {"answer": str(answer).strip()}
+    except Exception:
+        return {"answer": "Bu mavzuni kichik qismlarga bo‘lib takrorlang: avval qoida, keyin bir misol, so‘ng yengil mashq. Xatolar daftaridagi shu mavzuni ham qayta ishlang."}
+
+
+@router.get("/student/personal-plan/stats")
+async def get_plan_stats(authorization: str | None = Header(default=None)):
+    """Get current week stats without AI analysis."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"]); week_start, week_end = _current_week_range()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        stats = _collect_week_stats(cur, uid, week_start, week_end)
+        return {"week_start": week_start, "week_end": week_end, **stats}
+    finally:
+        conn.close()
+
+
+@router.post("/student/personal-plan/practice-test/check")
+async def check_practice_answer(payload: dict, authorization: str | None = Header(default=None)):
+    """Check a practice question answer and get AI explanation."""
+    user = _user(authorization); _require(user, {"student"})
+    question = str(payload.get("question", ""))
+    selected = str(payload.get("selected", ""))
+    correct = str(payload.get("correct", ""))
+    topic = str(payload.get("topic", ""))
+    is_correct = selected.strip() == correct.strip()
+
+    explanation = str(payload.get("explanation", ""))
+    if not explanation and not is_correct:
+        import aiohttp
+        try:
+            from ai_generator import _xai_generate_text
+            prompt = (
+                f"O'quvchi ingliz tili testida xato qildi.\n"
+                f"Savol: {question}\nTanlangan: {selected}\nTo'g'ri javob: {correct}\nMavzu: {topic}\n\n"
+                f"Nima uchun to'g'ri javob shu ekanini qisqa, sodda va tushunarli tilda tushuntir (2-3 jumla)."
+            )
+            async with aiohttp.ClientSession() as session:
+                explanation = await _xai_generate_text(prompt, session=session, temperature=0.4)
+        except Exception:
+            explanation = f"To'g'ri javob: {correct}"
+
+    # Save wrong answers to mistake notebook
+    if not is_correct:
+        ensure_schema(); conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO mistake_notebook_items(user_id, source_type, subject, topic_key, prompt, "
+                "options_json, selected_answer, correct_answer, explanation, review_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (int(user["id"]), "weekly_practice", str(payload.get("subject") or ""), topic, question,
+                 json.dumps(payload.get("options", []), ensure_ascii=False),
+                 selected, correct, explanation,
+                 mistake_next_review_at(_now(), 0).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    return {
+        "correct": is_correct,
+        "explanation": explanation,
+        "correct_answer": correct,
+    }
+
+
+# ── Alias Routes (fix frontend/backend path mismatch) ────────────────────────
+@router.get("/student/personalization/plan/today")
+async def alias_plan_today(authorization: str | None = Header(default=None)):
+    return await student_personal_plan(authorization)
+
+@router.post("/student/personalization/plan/generate")
+async def alias_plan_generate(authorization: str | None = Header(default=None)):
+    return await refresh_personal_plan(authorization)
+
+@router.put("/student/personalization/plan/tasks/{task_id}/complete")
+async def alias_plan_complete(task_id: int, authorization: str | None = Header(default=None)):
+    return await complete_personal_plan_task(task_id, authorization)
