@@ -58,24 +58,42 @@ class AmbientAudioEngine {
   }
 
   playChime() {
+    // 10-second repeating tit-tit alarm — plays 5 rapid double-beeps over 10 seconds
     try {
       this.initCtx();
       if (!this.ctx) return;
-      const now = this.ctx.currentTime;
-      const freqs = [528, 660, 792, 1056]; // Solfeggio / harmonious chime
-      freqs.forEach((f, i) => {
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(f, now + i * 0.08);
-        gain.gain.setValueAtTime(0.25 / (i + 1), now + i * 0.08);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.8 + i * 0.2);
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-        osc.start(now + i * 0.08);
-        osc.stop(now + 2.5);
-      });
+      const ctx = this.ctx;
+      const totalBeeps = 10;
+      const beepInterval = 1.0; // 1 second between each beep pair
+      for (let i = 0; i < totalBeeps; i++) {
+        const t = ctx.currentTime + i * beepInterval;
+        // First beep of the pair
+        const osc1 = ctx.createOscillator();
+        const gain1 = ctx.createGain();
+        osc1.type = "square";
+        osc1.frequency.setValueAtTime(880, t);
+        gain1.gain.setValueAtTime(0.0, t);
+        gain1.gain.linearRampToValueAtTime(0.35, t + 0.01);
+        gain1.gain.setValueAtTime(0.35, t + 0.09);
+        gain1.gain.linearRampToValueAtTime(0.0, t + 0.12);
+        osc1.connect(gain1);
+        gain1.connect(ctx.destination);
+        osc1.start(t);
+        osc1.stop(t + 0.15);
+        // Second beep of the pair
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = "square";
+        osc2.frequency.setValueAtTime(1100, t + 0.18);
+        gain2.gain.setValueAtTime(0.0, t + 0.18);
+        gain2.gain.linearRampToValueAtTime(0.35, t + 0.19);
+        gain2.gain.setValueAtTime(0.35, t + 0.27);
+        gain2.gain.linearRampToValueAtTime(0.0, t + 0.30);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(t + 0.18);
+        osc2.stop(t + 0.33);
+      }
     } catch {
       // Audio not permitted or unsupported
     }
@@ -464,12 +482,13 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
   const minutesStr = Math.floor(secondsLeft / 60).toString().padStart(2, "0");
   const secondsStr = (secondsLeft % 60).toString().padStart(2, "0");
 
+  // Diamond Education brand colors: navy→royal blue (work), cyan→teal (short break), amber→gold (long break)
   const modeColor =
     mode === "work"
-      ? "from-red-500 to-rose-600"
+      ? "from-[#0B2A6B] to-[#1E56CC]"
       : mode === "short_break"
-      ? "from-emerald-500 to-teal-600"
-      : "from-indigo-500 to-purple-600";
+      ? "from-[#00B8D9] to-[#00897B]"
+      : "from-[#FFB300] to-[#F57F17]";
 
   const modeBadge =
     mode === "work" ? "🎯 Chuqur Diqqat" : mode === "short_break" ? "☕ Qisqa Tanaffus" : "🌴 Uzun Tanaffus";
@@ -484,7 +503,7 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
     >
       {/* Notice Banner */}
       {notice && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl bg-emerald-500/15 border border-emerald-500/30 p-3 text-xs font-bold text-emerald-800 dark:text-emerald-200">
+        <div className="mb-4 flex items-center justify-between rounded-2xl bg-[#00B8D9]/15 border border-[#00B8D9]/30 p-3 text-xs font-bold text-[#006080] dark:text-[#7EEDFF]">
           <span>{notice}</span>
           <button type="button" onClick={() => setNotice(null)} className="ml-2 hover:opacity-80">✕</button>
         </div>
@@ -494,8 +513,8 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
       <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-line dark:border-white/10">
         <div>
           <h2 className="text-xl font-black text-navy-900 dark:text-white flex items-center gap-2">
-            🍅 Pomodoro Focus Studio
-            <span className="rounded-full bg-red-500/10 px-2.5 py-0.5 text-xs font-bold text-red-600 dark:text-red-400">
+            💎 Pomodoro Focus Studio
+            <span className="rounded-full bg-[#1E56CC]/10 px-2.5 py-0.5 text-xs font-bold text-[#1E56CC] dark:text-[#7EB3FF]">
               {modeBadge}
             </span>
           </h2>
@@ -643,7 +662,7 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
             onClick={() => switchMode("work")}
             className={`px-5 py-2 rounded-full text-xs font-black transition ${
               mode === "work"
-                ? "bg-red-500 text-white shadow-md"
+                ? "bg-gradient-to-r from-[#0B2A6B] to-[#1E56CC] text-white shadow-md"
                 : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
             }`}
           >
@@ -654,7 +673,7 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
             onClick={() => switchMode("short_break")}
             className={`px-5 py-2 rounded-full text-xs font-black transition ${
               mode === "short_break"
-                ? "bg-emerald-500 text-white shadow-md"
+                ? "bg-gradient-to-r from-[#00B8D9] to-[#00897B] text-white shadow-md"
                 : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
             }`}
           >
@@ -665,7 +684,7 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
             onClick={() => switchMode("long_break")}
             className={`px-5 py-2 rounded-full text-xs font-black transition ${
               mode === "long_break"
-                ? "bg-indigo-500 text-white shadow-md"
+                ? "bg-gradient-to-r from-[#FFB300] to-[#F57F17] text-white shadow-md"
                 : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
             }`}
           >
@@ -712,8 +731,8 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
             />
             <defs>
               <linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor={mode === "work" ? "#ef4444" : mode === "short_break" ? "#10b981" : "#6366f1"} />
-                <stop offset="100%" stopColor={mode === "work" ? "#f43f5e" : mode === "short_break" ? "#14b8a6" : "#a855f7"} />
+                <stop offset="0%" stopColor={mode === "work" ? "#0B2A6B" : mode === "short_break" ? "#00B8D9" : "#FFB300"} />
+                <stop offset="100%" stopColor={mode === "work" ? "#1E56CC" : mode === "short_break" ? "#00897B" : "#F57F17"} />
               </linearGradient>
             </defs>
           </svg>
@@ -734,7 +753,7 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
                     key={i}
                     title={`Sikl ${i + 1}`}
                     className={`h-2.5 w-2.5 rounded-full transition-all ${
-                      filled ? "bg-red-500 scale-110 shadow-sm" : "bg-gray-300 dark:bg-navy-700"
+                      filled ? "bg-[#1E56CC] scale-110 shadow-sm shadow-blue-500/40" : "bg-gray-300 dark:bg-navy-700"
                     }`}
                   />
                 );

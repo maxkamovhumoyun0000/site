@@ -53347,6 +53347,7 @@ personalization_api.configure_runtime(
     notify_certificate=_personalization_notify_certificate,
     add_test_history=add_test_history,
     content_test=get_content_test,
+    save_library_test=save_content_test,
     award_coins=add_dcoins,
 )
 app.include_router(personalization_api.router)

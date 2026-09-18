@@ -377,36 +377,83 @@ function LessonPlayerModal({ module, apiFetch, onClose }: { module: Row; apiFetc
                 {question.question}
               </h3>
 
-              <div className="mt-6 grid gap-2.5">
-                {(question.options || []).map((opt: string, i: number) => {
-                  const isSelected = selected === opt;
-                  const isCorrect = result && opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
-                  const isWrong = result && isSelected && !isCorrect;
+              {/* Test question interactive input based on type */}
+              {question.test_type === "fill_blank" && (!question.options || question.options.length < 2) ? (
+                <div className="mt-6 space-y-3">
+                  <input
+                    type="text"
+                    value={selected}
+                    onChange={(e) => setSelected(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !result && void submit()}
+                    disabled={Boolean(result)}
+                    placeholder="Javobingizni shu yerga yozing..."
+                    className="w-full rounded-2xl border-2 border-line bg-surface-soft p-4 text-base font-bold text-navy-900 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
+                  />
+                  <p className="text-xs text-ink-400 dark:text-navy-400">
+                    Javobni yozib "Tekshirish" tugmasini bosing yoki Enter'ni bosing.
+                  </p>
+                </div>
+              ) : question.test_type === "true_false" ? (
+                <div className="mt-6 grid grid-cols-2 gap-3">
+                  {["To'g'ri", "Noto'g'ri"].map((opt) => {
+                    const isSelected = selected.toLowerCase() === opt.toLowerCase();
+                    const isCorrect = result && opt.toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
+                    const isWrong = result && isSelected && !isCorrect;
 
-                  return (
-                    <button
-                      key={i}
-                      disabled={Boolean(result)}
-                      type="button"
-                      onClick={() => setSelected(opt)}
-                      className={`rounded-2xl border-2 p-4 text-left text-sm font-semibold transition-all ${
-                        isCorrect
-                          ? "border-emerald-400 bg-emerald-500/15 text-emerald-900 dark:text-emerald-100"
-                          : isWrong
-                          ? "border-rose-400 bg-rose-500/15 text-rose-900 dark:text-rose-100"
-                          : isSelected
-                          ? "border-cyan-400 bg-cyan-500/10 text-navy-900 dark:text-white shadow-sm"
-                          : "border-line bg-white/50 hover:border-cyan-400 dark:border-white/10 dark:bg-white/5"
-                      }`}
-                    >
-                      <span className="mr-3 inline-grid h-7 w-7 place-items-center rounded-xl bg-surface-soft text-xs font-black text-navy-800 dark:bg-white/10 dark:text-white">
-                        {String.fromCharCode(65 + i)}
-                      </span>
-                      {opt}
-                    </button>
-                  );
-                })}
-              </div>
+                    return (
+                      <button
+                        key={opt}
+                        disabled={Boolean(result)}
+                        type="button"
+                        onClick={() => setSelected(opt)}
+                        className={`rounded-2xl border-2 p-5 text-center text-base font-black transition-all ${
+                          isCorrect
+                            ? "border-emerald-400 bg-emerald-500/15 text-emerald-900 dark:text-emerald-100"
+                            : isWrong
+                            ? "border-rose-400 bg-rose-500/15 text-rose-900 dark:text-rose-100"
+                            : isSelected
+                            ? "border-cyan-400 bg-cyan-500/15 text-navy-900 dark:text-white shadow-md scale-102"
+                            : "border-line bg-white/50 hover:border-cyan-400 dark:border-white/10 dark:bg-white/5"
+                        }`}
+                      >
+                        <span className="text-xl mr-2">{opt === "To'g'ri" ? "✓" : "✕"}</span>
+                        {opt}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-6 grid gap-2.5">
+                  {(question.options || []).map((opt: string, i: number) => {
+                    const isSelected = selected === opt;
+                    const isCorrect = result && opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
+                    const isWrong = result && isSelected && !isCorrect;
+
+                    return (
+                      <button
+                        key={i}
+                        disabled={Boolean(result)}
+                        type="button"
+                        onClick={() => setSelected(opt)}
+                        className={`rounded-2xl border-2 p-4 text-left text-sm font-semibold transition-all ${
+                          isCorrect
+                            ? "border-emerald-400 bg-emerald-500/15 text-emerald-900 dark:text-emerald-100"
+                            : isWrong
+                            ? "border-rose-400 bg-rose-500/15 text-rose-900 dark:text-rose-100"
+                            : isSelected
+                            ? "border-cyan-400 bg-cyan-500/10 text-navy-900 dark:text-white shadow-sm"
+                            : "border-line bg-white/50 hover:border-cyan-400 dark:border-white/10 dark:bg-white/5"
+                        }`}
+                      >
+                        <span className="mr-3 inline-grid h-7 w-7 place-items-center rounded-xl bg-surface-soft text-xs font-black text-navy-800 dark:bg-white/10 dark:text-white">
+                          {String.fromCharCode(65 + i)}
+                        </span>
+                        {opt}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -1091,9 +1138,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
   const [libraryType, setLibraryType] = useState("book");
   const [libraryId, setLibraryId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [librarySearch, setLibrarySearch] = useState("");
-  const [libraryResults, setLibraryResults] = useState<Row[]>([]);
-  const [showPicker, setShowPicker] = useState(false);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
 
   const saveManual = async () => {
     let choices: string[] = [];
@@ -1102,13 +1147,37 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
     if (manualType === "true_false") {
       choices = ["To'g'ri", "Noto'g'ri"];
       if (!answer) answer = "To'g'ri";
-    } else {
+    } else if (manualType === "multiple_choice") {
       choices = options.split("|").map((x) => x.trim()).filter(Boolean);
+    } else if (manualType === "matching") {
+      choices = options.split("|").map((x) => x.trim()).filter(Boolean);
+      if (!answer && choices.length) answer = choices[0];
+    } else {
+      choices = options ? options.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
 
     const questionText = prompt.trim();
-    if (!title.trim() || !questionText || choices.length < 2 || !choices.includes(answer)) {
-      alert("Iltimos, dars nomi, savol, variantlar va to'g'ri javobni to'liq kiriting.");
+    if (!title.trim() || !questionText) {
+      alert("Iltimos, dars nomi va savol matnini kiriting.");
+      return;
+    }
+
+    if (manualType === "multiple_choice") {
+      if (choices.length < 2) {
+        alert("Ko'p variantli test uchun kamida 2 ta variant kiriting (| bilan ajrating).");
+        return;
+      }
+      if (!choices.includes(answer)) {
+        alert("To'g'ri javob kiritilgan variantlar ichida bo'lishi shart.");
+        return;
+      }
+    } else if (manualType === "matching") {
+      if (choices.length < 2) {
+        alert("Moslashtirish uchun kamida 2 ta juftlik kiriting (masalan: olma = apple | kitob = book).");
+        return;
+      }
+    } else if (!answer) {
+      alert("Iltimos, to'g'ri javobni kiriting.");
       return;
     }
 
@@ -1152,58 +1221,53 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
           test_types: types.split(",").map((value) => value.trim()).filter(Boolean),
         },
       });
-      const items = result?.items || [result];
-      for (const item of items) {
+      const items = Array.isArray(result?.items) ? result.items : (result ? [result] : []);
+      if (!items.length) {
+        alert("Diamondvoy savol yarata olmadi. Iltimos, boshqa mavzu bilan qayta urinib ko'ring.");
+        return;
+      }
+      const basePos = (module.lessons || []).length;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         await apiFetch(`/staff/learning-modules/${module.id}/lessons`, {
           method: "POST",
           body: {
-            title: item.title,
+            title: item.title || `${topic.trim()} · ${i + 1}`,
             source_kind: "ai",
-            position: (module.lessons || []).length,
+            position: basePos + i,
             question_payload: item.question_payload,
           },
         });
       }
       setTopic("");
       await onSaved();
+    } catch (err) {
+      alert("AI test yaratishda xatolik yuz berdi: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
   };
 
-  const attachLibrary = async (contentId?: number) => {
-    const id = contentId || Number(libraryId);
-    if (!id) return;
+  const attachLibrary = async (contentId: number, cType = libraryType, qCount = count) => {
+    if (!contentId) return;
     setBusy(true);
     try {
       await apiFetch(`/staff/learning-modules/${module.id}/library-test`, {
         method: "POST",
-        body: { content_type: libraryType, content_id: id, question_count: count },
+        body: { content_type: cType, content_id: contentId, question_count: qCount },
       });
       setLibraryId("");
-      setShowPicker(false);
+      setShowLibraryModal(false);
       await onSaved();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const searchLibrary = async () => {
-    setBusy(true);
-    try {
-      const data = await apiFetch(`/staff/materials-search?q=${encodeURIComponent(librarySearch.trim())}&content_type=${encodeURIComponent(libraryType)}`);
-      setLibraryResults(Array.isArray(data?.items) ? data.items : []);
-      setShowPicker(true);
-    } catch {
-      setLibraryResults([]);
-      setShowPicker(true);
+    } catch (err) {
+      alert("Material testini biriktirishda xatolik: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
   };
 
   const remove = async () => {
-    if (!window.confirm(`"${module.title}" moduli va uning darslari o'chirilsinmi?`)) return;
+    if (!window.confirm(`"${module.title}" moduli va uning barcha darslari o'chirilsinmi?`)) return;
     setBusy(true);
     try {
       await apiFetch(`/staff/learning-modules/${module.id}`, { method: "DELETE" });
@@ -1221,14 +1285,19 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
       <div className="mt-4 space-y-4">
         {/* Method 1: Manual question builder */}
         <div className="rounded-2xl border border-line p-4 dark:border-white/10 bg-white dark:bg-navy-900/60">
-          <p className="text-xs font-black uppercase text-navy-900 dark:text-white">1. Qo'lda test savoli kiritish</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-black uppercase text-navy-900 dark:text-white">1. Qo'lda test savoli kiritish</p>
+            <span className="rounded-full bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:text-cyan-300">
+              5 xil test turi
+            </span>
+          </div>
           <div className="mt-3 grid gap-3">
             <div className="grid gap-2 sm:grid-cols-2">
               <input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
-                placeholder="Dars/savol nomi"
+                placeholder="Dars/savol nomi (masalan: 1-mashq)"
               />
               <select
                 value={manualType}
@@ -1237,15 +1306,18 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                   if (e.target.value === "true_false") {
                     setOptions("To'g'ri | Noto'g'ri");
                     setCorrect("To'g'ri");
+                  } else if (e.target.value === "matching") {
+                    setOptions("cat = mushuk | dog = kuchuk | book = kitob");
+                    setCorrect("");
                   }
                 }}
-                className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+                className="rounded-xl border border-line bg-transparent p-2.5 text-xs font-bold text-navy-900 dark:text-white dark:border-white/10"
               >
-                <option value="multiple_choice">Ko'p variantli (MCQ)</option>
-                <option value="true_false">To'g'ri / Noto'g'ri</option>
-                <option value="fill_blank">Bo'sh joyni to'ldirish</option>
-                <option value="word_order">So'z tartibi</option>
-                <option value="matching">Moslashtirish</option>
+                <option value="multiple_choice">🔘 Ko'p variantli (MCQ)</option>
+                <option value="true_false">⚖️ To'g'ri / Noto'g'ri</option>
+                <option value="fill_blank">✏️ Bo'sh joyni to'ldirish</option>
+                <option value="word_order">🔤 So'z tartibi</option>
+                <option value="matching">🔗 Moslashtirish (Juftliklar)</option>
               </select>
             </div>
 
@@ -1254,21 +1326,58 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               onChange={(e) => setPrompt(e.target.value)}
               rows={2}
               className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
-              placeholder="Savol matni..."
+              placeholder={
+                manualType === "fill_blank"
+                  ? "Savol matni (bo'sh joy uchun _____ ishlating): He _____ a teacher."
+                  : manualType === "word_order"
+                  ? "Aralash so'zlar: teacher / is / He / a"
+                  : manualType === "matching"
+                  ? "Ko'rsatma: So'zlarni o'zbekcha tarjimasi bilan moslashtiring"
+                  : "Savol matni..."
+              }
             />
 
             {manualType === "true_false" ? (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-4 py-1">
                 <span className="text-xs font-bold">To'g'ri javob:</span>
-                <label className="flex items-center gap-1 text-xs">
-                  <input type="radio" name="tf_ans" checked={correct === "To'g'ri"} onChange={() => setCorrect("To'g'ri")} />
-                  To'g'ri
+                <label className="flex items-center gap-1.5 text-xs font-bold cursor-pointer">
+                  <input type="radio" name={`tf_${module.id}`} checked={correct === "To'g'ri"} onChange={() => setCorrect("To'g'ri")} />
+                  ✓ To'g'ri
                 </label>
-                <label className="flex items-center gap-1 text-xs">
-                  <input type="radio" name="tf_ans" checked={correct === "Noto'g'ri"} onChange={() => setCorrect("Noto'g'ri")} />
-                  Noto'g'ri
+                <label className="flex items-center gap-1.5 text-xs font-bold cursor-pointer">
+                  <input type="radio" name={`tf_${module.id}`} checked={correct === "Noto'g'ri"} onChange={() => setCorrect("Noto'g'ri")} />
+                  ✕ Noto'g'ri
                 </label>
               </div>
+            ) : manualType === "fill_blank" ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  value={correct}
+                  onChange={(e) => setCorrect(e.target.value)}
+                  className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+                  placeholder="To'g'ri to'ldiriladigan so'z (masalan: is)"
+                />
+                <input
+                  value={options}
+                  onChange={(e) => setOptions(e.target.value)}
+                  className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+                  placeholder="Qo'shimcha variantlar (ixtiyoriy, | bilan)"
+                />
+              </div>
+            ) : manualType === "word_order" ? (
+              <input
+                value={correct}
+                onChange={(e) => setCorrect(e.target.value)}
+                className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+                placeholder="To'g'ri tartibdagi to'liq gap: He is a teacher."
+              />
+            ) : manualType === "matching" ? (
+              <input
+                value={options}
+                onChange={(e) => setOptions(e.target.value)}
+                className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+                placeholder="Juftliklar: book = kitob | pen = ruchka | cat = mushuk (| bilan)"
+              />
             ) : (
               <div className="grid gap-2 sm:grid-cols-2">
                 <input
@@ -1299,20 +1408,25 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               onClick={() => void saveManual()}
               className="btn btn-soft text-xs self-start"
             >
-              Qo'lda saqlash
+              + Ushbu savolni modulga qo'shish
             </button>
           </div>
         </div>
 
         {/* Method 2: AI Diamondvoy test generator */}
         <div className="rounded-2xl border border-line p-4 dark:border-white/10 bg-cyan-500/5">
-          <p className="text-xs font-black uppercase text-cyan-700 dark:text-cyan-300">2. Diamondvoy AI bilan test yaratish</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-black uppercase text-cyan-700 dark:text-cyan-300">2. Diamondvoy AI bilan test yaratish</p>
+            <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+              Avtomatik kutubxonaga saqlanadi
+            </span>
+          </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_120px]">
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
-              placeholder="Diamondvoy uchun mavzu (masalan: Irregular verbs)"
+              placeholder="Diamondvoy uchun mavzu (masalan: Present Perfect, Irregular verbs)"
             />
             <div className="flex items-center gap-2">
               <label className="text-xs font-bold whitespace-nowrap">Soni:</label>
@@ -1328,15 +1442,15 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
             <select
               value={types}
               onChange={(e) => setTypes(e.target.value)}
-              className="sm:col-span-2 rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
+              className="sm:col-span-2 rounded-xl border border-line bg-transparent p-2.5 text-xs font-semibold dark:border-white/10"
             >
               <option value="multiple_choice,true_false,fill_blank">Aralash (MCQ + True/False + Fill blank)</option>
-              <option value="multiple_choice">Faqat MCQ (Variantli)</option>
+              <option value="multiple_choice">Faqat MCQ (Ko'p variantli)</option>
               <option value="true_false">Faqat To'g'ri / Noto'g'ri</option>
-              <option value="fill_blank">Faqat bo'sh joy to'ldirish</option>
-              <option value="word_order">So'z tartibi</option>
-              <option value="matching">Moslashtirish</option>
-              <option value="multiple_choice,true_false,fill_blank,word_order,matching">Barcha turlar</option>
+              <option value="fill_blank">Faqat Bo'sh joy to'ldirish</option>
+              <option value="word_order">Faqat So'z tartibi</option>
+              <option value="matching">Faqat Moslashtirish</option>
+              <option value="multiple_choice,true_false,fill_blank,word_order,matching">Barcha 5 xil tur aralash</option>
             </select>
             <button
               type="button"
@@ -1344,94 +1458,53 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               onClick={() => void generate()}
               className="btn btn-primary text-xs sm:col-span-2 py-2.5"
             >
-              💎 Diamondvoy {count} ta savol yaratib modulga qo'shsin
+              {busy ? "⏳ Diamondvoy yaratmoqda..." : `💎 Diamondvoy ${count} ta savol yaratib modulga qo'shsin`}
             </button>
           </div>
         </div>
 
-        {/* Method 3: Material Library Search Picker */}
+        {/* Method 3: Material Library Modal Picker Button */}
         <div className="rounded-2xl border border-line p-4 dark:border-white/10 bg-white dark:bg-navy-900/60">
-          <p className="text-xs font-black uppercase text-navy-900 dark:text-white">3. Materiallar kutubxonasidan test biriktirish</p>
-          <div className="mt-3 grid gap-2 sm:grid-cols-[130px_1fr_auto]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase text-navy-900 dark:text-white">3. Materiallar kutubxonasidan test biriktirish</p>
+              <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                Kitoblar, videolar, vazifalar va AI testlar papkasidan tanlash
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowLibraryModal(true)}
+              className="btn btn-soft text-xs flex items-center gap-2 border-cyan-400 text-cyan-700 dark:text-cyan-300"
+            >
+              📂 Kutubxona oynasini ochish (Popup)
+            </button>
+          </div>
+
+          <div className="mt-3 flex gap-2 pt-3 border-t border-line/40 dark:border-white/10">
             <select
               value={libraryType}
               onChange={(e) => setLibraryType(e.target.value)}
               className="rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
             >
-              <option value="book">Kitob testi</option>
-              <option value="video">Video testi</option>
-              <option value="homework">Homework testi</option>
+              <option value="book">Kitob</option>
+              <option value="video">Video</option>
+              <option value="homework">Homework</option>
+              <option value="ai_generated">AI test</option>
             </select>
-            <div className="flex gap-1.5">
-              <input
-                value={librarySearch}
-                onChange={(e) => setLibrarySearch(e.target.value)}
-                className="min-w-0 flex-1 rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-                placeholder="Material nomi bo'yicha qidiring..."
-                onKeyDown={(e) => e.key === "Enter" && void searchLibrary()}
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void searchLibrary()}
-                className="btn btn-soft text-xs"
-              >
-                🔍 Qidirish
-              </button>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs font-bold">Soni:</span>
-              <input
-                value={count}
-                type="number"
-                min="1"
-                max="30"
-                onChange={(e) => setCount(Number(e.target.value))}
-                className="w-16 rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-              />
-            </div>
-          </div>
-
-          {/* Search results picker */}
-          {showPicker ? (
-            <div className="mt-3 max-h-48 overflow-auto rounded-xl border border-line dark:border-white/10 divide-y divide-line dark:divide-white/10">
-              {libraryResults.length ? (
-                libraryResults.map((item, i) => (
-                  <button
-                    key={`${item.content_type}-${item.content_id}-${i}`}
-                    type="button"
-                    onClick={() => void attachLibrary(item.content_id)}
-                    className="flex w-full items-center justify-between p-2.5 text-left text-xs hover:bg-cyan-500/10 transition"
-                  >
-                    <div>
-                      <strong className="text-navy-900 dark:text-white">{item.title}</strong>
-                      <span className="ml-2 text-ink-400">({item.content_type})</span>
-                    </div>
-                    <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
-                      {item.question_count} ta savol
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <p className="p-3 text-center text-xs text-ink-500">Hech qanday test topilmadi. To'g'ridan-to'g'ri ID kiriting:</p>
-              )}
-            </div>
-          ) : null}
-
-          <div className="mt-3 flex gap-2">
             <input
               value={libraryId}
               onChange={(e) => setLibraryId(e.target.value)}
               className="min-w-0 flex-1 rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-              placeholder="Yoki material ID raqamini kiriting (masalan: 15)"
+              placeholder="Yoki to'g'ridan-to'g'ri ID raqamini kiriting (masalan: 12)"
             />
             <button
               type="button"
               disabled={busy || !libraryId.trim()}
-              onClick={() => void attachLibrary()}
+              onClick={() => void attachLibrary(Number(libraryId))}
               className="btn btn-soft text-xs"
             >
-              {count} ta savolni biriktirish
+              Biriktirish
             </button>
           </div>
         </div>
@@ -1445,7 +1518,206 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
           Modulni o'chirish
         </button>
       </div>
+
+      {/* Dedicated Folder-tree Materials Library Popup Modal */}
+      {showLibraryModal ? (
+        <MaterialsLibraryModal
+          apiFetch={apiFetch}
+          onSelect={(contentId, cType, qCount) => void attachLibrary(contentId, cType, qCount)}
+          onClose={() => setShowLibraryModal(false)}
+        />
+      ) : null}
     </details>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   MATERIALS LIBRARY POPUP MODAL — Folder/file picker for tests
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+function MaterialsLibraryModal({
+  apiFetch,
+  onSelect,
+  onClose,
+}: {
+  apiFetch: ApiFetch;
+  onSelect: (contentId: number, contentType: string, count: number) => void;
+  onClose: () => void;
+}) {
+  const [folder, setFolder] = useState<"book" | "video" | "homework" | "ai_generated">("book");
+  const [search, setSearch] = useState("");
+  const [items, setItems] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedItem, setSelectedItem] = useState<Row | null>(null);
+  const [questionCount, setQuestionCount] = useState(10);
+
+  const folders = [
+    { key: "book" as const, label: "📚 Kitoblar", desc: "Kitob boblari va testlari" },
+    { key: "video" as const, label: "🎬 Videolar", desc: "Video darslar testlari" },
+    { key: "homework" as const, label: "📝 Homework", desc: "Uy vazifalari testlari" },
+    { key: "ai_generated" as const, label: "💎 AI Testlar", desc: "Diamondvoy yaratgan testlar" },
+  ];
+
+  const loadMaterials = useCallback(async (cType: string, q = "") => {
+    setLoading(true);
+    setSelectedItem(null);
+    try {
+      const data = await apiFetch(`/staff/materials-search?content_type=${encodeURIComponent(cType)}&q=${encodeURIComponent(q.trim())}`);
+      setItems(Array.isArray(data?.items) ? data.items : []);
+    } catch {
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
+
+  useEffect(() => {
+    void loadMaterials(folder, search);
+  }, [folder]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
+      <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-white/10">
+          <div>
+            <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
+              📂 Materiallar Kutubxonasi Testlari
+            </h3>
+            <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+              Papkalardan kerakli materialni tanlab modulga biriktiring
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Folder navigation tabs */}
+        <div className="flex border-b border-line bg-surface-soft/60 px-4 pt-3 dark:border-white/10 dark:bg-navy-950/40 gap-2 overflow-x-auto">
+          {folders.map((f) => (
+            <button
+              key={f.key}
+              type="button"
+              onClick={() => {
+                setFolder(f.key);
+                setSearch("");
+              }}
+              className={`flex items-center gap-1.5 px-4 py-2.5 rounded-t-2xl text-xs font-black transition border-b-2 whitespace-nowrap ${
+                folder === f.key
+                  ? "border-cyan-500 bg-white text-cyan-700 shadow-sm dark:bg-navy-900 dark:text-cyan-300"
+                  : "border-transparent text-ink-500 hover:text-navy-900 dark:text-navy-300 dark:hover:text-white"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search bar */}
+        <div className="p-4 border-b border-line dark:border-white/10 flex gap-2">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void loadMaterials(folder, search)}
+            placeholder={`${folders.find(f => f.key === folder)?.label} ichidan qidirish...`}
+            className="min-w-0 flex-1 rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
+          />
+          <button
+            type="button"
+            onClick={() => void loadMaterials(folder, search)}
+            className="btn btn-soft text-xs"
+          >
+            🔍 Qidirish
+          </button>
+        </div>
+
+        {/* Items list */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2">
+          {loading ? (
+            <div className="grid min-h-48 place-items-center">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent" />
+            </div>
+          ) : items.length ? (
+            items.map((item) => {
+              const isSelected = selectedItem?.content_id === item.content_id && selectedItem?.content_type === item.content_type;
+              return (
+                <div
+                  key={`${item.content_type}-${item.content_id}`}
+                  onClick={() => setSelectedItem(item)}
+                  className={`flex items-center justify-between p-3 rounded-2xl border-2 transition cursor-pointer ${
+                    isSelected
+                      ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
+                      : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
+                  }`}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-cyan-500/15 text-lg">
+                      {item.content_type === "book" ? "📖" : item.content_type === "video" ? "🎬" : item.content_type === "ai_generated" ? "💎" : "📝"}
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-bold text-sm text-navy-900 dark:text-white truncate">
+                        {item.title}
+                      </p>
+                      <p className="text-xs text-ink-400 dark:text-navy-400 mt-0.5">
+                        ID: {item.content_id} · Turi: {item.content_type}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="rounded-full bg-cyan-500/15 px-2.5 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                      {item.question_count} ta savol
+                    </span>
+                    <input
+                      type="radio"
+                      name="library_item"
+                      checked={isSelected}
+                      onChange={() => setSelectedItem(item)}
+                      className="accent-cyan-500"
+                    />
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400">
+              Bu papkada testlar topilmadi. Qidiruv so'zini o'zgartiring yoki boshqa papkani tanlang.
+            </div>
+          )}
+        </div>
+
+        {/* Selected footer action */}
+        <div className="border-t border-line p-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/40 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-ink-600 dark:text-navy-300">Qo'shiladigan savollar soni:</span>
+            <input
+              type="number"
+              min="1"
+              max={selectedItem ? Math.max(1, selectedItem.question_count) : 30}
+              value={questionCount}
+              onChange={(e) => setQuestionCount(Number(e.target.value))}
+              className="w-20 rounded-xl border border-line bg-transparent p-2 text-xs font-bold text-center dark:border-white/10"
+            />
+          </div>
+          <button
+            type="button"
+            disabled={!selectedItem}
+            onClick={() => {
+              if (selectedItem) {
+                onSelect(selectedItem.content_id, selectedItem.content_type, questionCount);
+              }
+            }}
+            className="btn btn-primary text-xs py-2.5 px-6 disabled:opacity-40"
+          >
+            ✓ Tanlangan testni modulga biriktirish
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

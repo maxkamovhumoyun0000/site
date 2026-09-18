@@ -1196,7 +1196,7 @@ class LearningAiLessonRequest(BaseModel):
 
 
 class LearningLibraryTestAttachRequest(BaseModel):
-    content_type: str = Field(pattern="^(video|book|homework)$")
+    content_type: str = Field(pattern="^(video|book|homework|ai_generated)$")
     content_id: int = Field(gt=0)
     question_count: int = Field(default=10, ge=1, le=50)
 
@@ -1416,45 +1416,201 @@ async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, au
 
 @router.post("/staff/learning-modules/{module_id}/ai-question")
 async def generate_learning_ai_question(module_id: int, payload: LearningAiLessonRequest, authorization: str | None = Header(default=None)):
-    """Generate a reviewable MCQ; teachers must explicitly save it as a lesson."""
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    """Generate AI test questions using Diamondvoy (xAI / Gemini) and auto-save to materials library."""
+    import re
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?",(module_id,)); row=cur.fetchone()
-        if not row: raise HTTPException(status_code=404,detail="Learning module not found")
-        _learning_track_for_manager(int(dict(row)["track_id"]),user)
-    finally: conn.close()
-    callback=_runtime.get("explain")
-    if not callback: raise HTTPException(status_code=503,detail="Diamondvoy is unavailable")
-    prompt=(f"Create exactly {payload.question_count} safe learning questions. Return ONLY a JSON array. Every object must have "
-            "question, options (array of strings, 2 to 4 options), correct_answer, explanation and test_type. "
-            f"Use a varied mix of these compatible exercise types: {', '.join(payload.test_types or ['multiple_choice'])}. "
-            f"Topic: {payload.topic}. Level: {payload.level or 'student'}. Extra instruction: {payload.instruction or 'none'}")
-    raw=await callback(prompt,user)
+        cur = conn.cursor()
+        cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+    finally:
+        conn.close()
+
+    types_list = [str(t).strip() for t in (payload.test_types or ["multiple_choice"]) if str(t).strip()]
+    if not types_list:
+        types_list = ["multiple_choice"]
+    types_str = ", ".join(types_list)
+
+    prompt = (
+        f"Create exactly {payload.question_count} safe, high-quality test questions for students on the topic: '{payload.topic}'.\n"
+        f"Difficulty Level: {payload.level or 'intermediate'}.\n"
+        f"Required Exercise Types: {types_str}.\n"
+        f"Additional Instruction: {payload.instruction or 'none'}.\n\n"
+        "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
+        "Each question object MUST have:\n"
+        "- 'question': clear question text or prompt\n"
+        "- 'test_type': one of ('multiple_choice', 'true_false', 'fill_blank', 'word_order', 'matching')\n"
+        "- 'options': array of string choices (for multiple_choice give 4 options; for true_false ['To\\'g\\'ri', 'Noto\\'g\\'ri']; for fill_blank/word_order 2-4 hints or empty array)\n"
+        "- 'correct_answer': the exact correct answer string (must match one of the options for multiple_choice/true_false)\n"
+        "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
+    )
+
+    raw_text: str = ""
+    # 1. Try direct xAI generation with custom system prompt
     try:
-        source=str(raw); start=source.find("["); end=source.rfind("]")+1
-        parsed=json.loads(source[start:end]) if start>=0 and end>start else [json.loads(source[source.find("{"):source.rfind("}")+1])]
-        if not isinstance(parsed,list) or not parsed: raise ValueError("empty questions")
-        items=[]
-        for index,result in enumerate(parsed[:payload.question_count]):
-            options=result.get("options") if isinstance(result,dict) else None
-            if not isinstance(options,list) or len(options) < 2 or str(result.get("correct_answer") or "") not in [str(item) for item in options]: raise ValueError("invalid choices")
-            items.append({"title":f"{payload.topic} · {index + 1}","source_kind":"ai","question_payload":{"question":str(result.get("question") or ""),"options":[str(item) for item in options],"correct_answer":str(result["correct_answer"]),"explanation":str(result.get("explanation") or ""),"test_type":str(result.get("test_type") or "multiple_choice")}})
-        return items[0] if payload.question_count == 1 else {"items":items, "question_count":len(items)}
+        import aiohttp
+        from ai_generator import _xai_generate_text
+        sys_prompt = (
+            "You are an expert curriculum and assessment designer. Output ONLY a valid JSON array of question objects. "
+            "No markdown code blocks, no backticks, no introduction or greeting."
+        )
+        async with aiohttp.ClientSession() as session:
+            raw_text = await _xai_generate_text(prompt, session=session, system_content=sys_prompt, temperature=0.6)
     except Exception:
-        raise HTTPException(status_code=502,detail="Diamondvoy returned an invalid question; try again")
+        raw_text = ""
+
+    # 2. Fallback to explain runtime callback
+    if not raw_text.strip():
+        callback = _runtime.get("explain")
+        if callback:
+            try:
+                raw_text = str(await callback(prompt, user))
+            except Exception:
+                raw_text = ""
+
+    if not raw_text.strip():
+        raise HTTPException(status_code=503, detail="Diamondvoy test generator is currently unavailable")
+
+    try:
+        source = str(raw_text).strip()
+        # Strip ```json ... ``` markdown if present
+        source = re.sub(r"^```(?:json)?\s*", "", source, flags=re.IGNORECASE)
+        source = re.sub(r"\s*```$", "", source)
+        start = source.find("[")
+        end = source.rfind("]") + 1
+        if start >= 0 and end > start:
+            parsed = json.loads(source[start:end])
+        else:
+            obj_start = source.find("{")
+            obj_end = source.rfind("}") + 1
+            parsed = [json.loads(source[obj_start:obj_end])]
+
+        if not isinstance(parsed, list) or not parsed:
+            raise ValueError("empty questions parsed")
+
+        items = []
+        library_questions = []
+        for index, result in enumerate(parsed[:payload.question_count]):
+            if not isinstance(result, dict):
+                continue
+            q_text = str(result.get("question") or f"{payload.topic} savoli {index + 1}").strip()
+            q_type = str(result.get("test_type") or types_list[index % len(types_list)] or "multiple_choice").strip().lower()
+            raw_opts = result.get("options")
+            options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
+
+            correct = str(result.get("correct_answer") or "").strip()
+            if q_type == "true_false":
+                if not options:
+                    options = ["To'g'ri", "Noto'g'ri"]
+                if correct not in options:
+                    correct = "To'g'ri"
+            elif q_type == "multiple_choice":
+                if len(options) < 2:
+                    options = [correct or "A", "B", "C", "D"]
+                if correct not in options:
+                    options.append(correct)
+            elif not correct and options:
+                correct = options[0]
+
+            explanation = str(result.get("explanation") or "").strip()
+            question_payload = {
+                "question": q_text,
+                "options": options,
+                "correct_answer": correct,
+                "explanation": explanation,
+                "test_type": q_type,
+            }
+            items.append({
+                "title": f"{payload.topic} · {index + 1}",
+                "source_kind": "ai",
+                "question_payload": question_payload,
+            })
+            library_questions.append({**question_payload, "kind": q_type})
+
+        if not items:
+            raise ValueError("No valid questions generated")
+
+        # Auto-save to materials library under content_type='ai_generated'
+        save_cb = _runtime.get("save_library_test")
+        if save_cb and library_questions:
+            try:
+                save_cb(
+                    "ai_generated",
+                    module_id,
+                    json.dumps(library_questions, ensure_ascii=False),
+                    int(user.get("id") or 0),
+                    title=f"💎 AI: {payload.topic} (modul #{module_id})",
+                    created_by_role=str(user.get("role") or "teacher"),
+                    is_active=True,
+                    raw_questions=True,
+                )
+            except Exception:
+                pass  # Non-fatal for module flow
+
+        return items[0] if payload.question_count == 1 else {"items": items, "question_count": len(items)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Diamondvoy returned an invalid test response: {exc}")
 
 
 def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert a content-library test question to the portable path format."""
-    question=str(raw.get("question") or raw.get("prompt") or raw.get("text") or "").strip()
-    options=raw.get("options") or raw.get("choices") or []
-    if not isinstance(options, list): options=[]
-    options=[str(item) for item in options]
-    correct=raw.get("correct_answer", raw.get("correct", raw.get("answer")))
-    index=raw.get("correct_option_index", raw.get("correct_index"))
-    if correct is None and isinstance(index, int) and 0 <= index < len(options): correct=options[index]
-    if not question or len(options) < 2 or correct is None: return None
-    return {"question":question,"options":options,"correct_answer":str(correct),"explanation":str(raw.get("explanation") or ""),"test_type":str(raw.get("kind") or raw.get("test_type") or "multiple_choice")}
+    """Convert a content-library test question to portable module format for all test types."""
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or raw.get("test_type") or "multiple_choice").strip().lower()
+    question = str(raw.get("question") or raw.get("prompt") or raw.get("text") or raw.get("title") or raw.get("sentence") or "").strip()
+
+    raw_opts = raw.get("options") or raw.get("choices") or []
+    options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
+
+    correct = raw.get("correct_answer", raw.get("correct", raw.get("answer")))
+    index = raw.get("correct_option_index", raw.get("correct_index"))
+    if correct is None and isinstance(index, int) and 0 <= index < len(options):
+        correct = options[index]
+
+    explanation = str(raw.get("explanation") or "")
+
+    if kind in {"true_false", "boolean"}:
+        if not options:
+            options = ["To'g'ri", "Noto'g'ri"]
+        if not correct:
+            correct = "To'g'ri"
+    elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice"}:
+        if not correct and raw.get("word"):
+            correct = str(raw.get("word"))
+        if not question and raw.get("sentence"):
+            question = str(raw.get("sentence"))
+    elif kind in {"word_order", "scrambled_sentence"}:
+        if not correct and raw.get("target_sentence"):
+            correct = str(raw.get("target_sentence"))
+    elif kind == "matching":
+        pairs = raw.get("pairs") or raw.get("matches") or []
+        if not question:
+            question = "So'zlarni moslashtiring"
+        return {
+            "question": question,
+            "options": options,
+            "pairs": pairs,
+            "correct_answer": str(correct or ""),
+            "explanation": explanation,
+            "test_type": "matching",
+        }
+
+    if not question:
+        question = "Savol"
+
+    return {
+        "question": question,
+        "options": options,
+        "correct_answer": str(correct if correct is not None else (options[0] if options else "")),
+        "explanation": explanation,
+        "test_type": kind,
+    }
 
 
 @router.post("/staff/learning-modules/{module_id}/library-test")
@@ -1498,7 +1654,8 @@ async def staff_materials_search(q: str = "", content_type: str = "", authorizat
     user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); items=[]
-        search_types = [content_type] if content_type in {"book", "video", "homework"} else ["book", "video", "homework"]
+        all_types = {"book", "video", "homework", "ai_generated"}
+        search_types = [content_type] if content_type in all_types else ["book", "video", "homework", "ai_generated"]
         for ct in search_types:
             try:
                 if ct == "book":
@@ -1511,6 +1668,12 @@ async def staff_materials_search(q: str = "", content_type: str = "", authorizat
                         cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' AND v.title LIKE ? ORDER BY v.title LIMIT 20", (f"%{q.strip()}%",))
                     else:
                         cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' ORDER BY v.title LIMIT 20")
+                elif ct == "ai_generated":
+                    # AI-generated tests stored directly in web_content_tests with content_type='ai_generated'
+                    if q.strip():
+                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.title LIKE ? AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 20", (f"%{q.strip()}%",))
+                    else:
+                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 20")
                 else:
                     if q.strip():
                         cur.execute("SELECT t.content_id, h.title, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' AND h.title LIKE ? ORDER BY h.title LIMIT 20", (f"%{q.strip()}%",))
