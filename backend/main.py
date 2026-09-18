@@ -11267,6 +11267,22 @@ CHAT_IMAGE_MIME_BY_EXT = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+DIAMONDVOY_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
+# Diamondvoy can reason over images and readable study documents.  Deliberately
+# do not add video extensions here: a video cannot be reliably analysed in the
+# chat request and accepting it led users to expect an answer that the model
+# could not provide.
+DIAMONDVOY_ATTACHMENT_MIME_BY_EXT = {
+    **CHAT_IMAGE_MIME_BY_EXT,
+    ".pdf": "application/pdf",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".txt": "text/plain",
+}
 DIAMONDVOY_RETENTION_DAYS = 7
 FEEDBACK_RETENTION_DAYS = 186
 
@@ -11412,6 +11428,39 @@ async def _upload_community_attachment_file(file: UploadFile, user_id: int) -> d
     }
 
 
+async def _upload_diamondvoy_attachment_file(file: UploadFile, user_id: int) -> dict[str, Any]:
+    """Store one readable Diamondvoy attachment.
+
+    This is intentionally separate from community chat uploads.  Community
+    chat may share media, including video; Diamondvoy receives only content it
+    can inspect and has a lower per-file limit.
+    """
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Fayl yuklanmadi")
+    if len(raw) > DIAMONDVOY_ATTACHMENT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Diamondvoy uchun fayl 10 MB dan katta bo‘lmasligi kerak")
+    original_name = Path(str(file.filename or "file")).name
+    ext = Path(original_name).suffix.lower()
+    expected_mime = DIAMONDVOY_ATTACHMENT_MIME_BY_EXT.get(ext)
+    if not expected_mime:
+        if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+            raise HTTPException(status_code=422, detail="Diamondvoy chatida video yuborish mumkin emas")
+        raise HTTPException(status_code=422, detail="Diamondvoy bu fayl turini o‘qiy olmaydi")
+    received_mime = str(file.content_type or "").split(";", 1)[0].strip().lower()
+    if received_mime and received_mime not in {expected_mime, "application/octet-stream", "image/jpg"}:
+        raise HTTPException(status_code=422, detail="Fayl turi uning kengaytmasiga mos emas")
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(original_name).stem).strip("_")[:50] or "file"
+    filename = f"diamondvoy_{int(user_id)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}_{safe_stem}{ext}"
+    (CHAT_UPLOAD_DIR / filename).write_bytes(raw)
+    return {
+        "file_name": original_name[:180],
+        "url": _chat_media_url(filename),
+        "mime_type": expected_mime,
+        "size_bytes": len(raw),
+    }
+
+
 def _validate_community_chat_attachments(attachments: list[CommunityChatAttachmentRequest]) -> list[dict[str, Any]]:
     if len(attachments) > 5:
         raise HTTPException(status_code=422, detail="At most 5 attachments can be sent")
@@ -11432,6 +11481,44 @@ def _validate_community_chat_attachments(attachments: list[CommunityChatAttachme
         size_bytes = int(path.stat().st_size)
         if size_bytes <= 0 or size_bytes > COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES:
             raise HTTPException(status_code=413, detail="Attachment is too large")
+        seen.add(filename)
+        clean.append({
+            "file_name": filename.split("_", 4)[-1][:180] or filename,
+            "url": _chat_media_url(filename),
+            "mime_type": mime_type,
+            "size_bytes": size_bytes,
+        })
+    return clean
+
+
+def _validate_diamondvoy_attachments(attachments: list[CommunityChatAttachmentRequest]) -> list[dict[str, Any]]:
+    """Validate only the readable, 10 MB Diamondvoy attachment contract."""
+    if len(attachments) > 5:
+        raise HTTPException(status_code=422, detail="Bir xabarda 5 tagacha fayl yuborish mumkin")
+    clean: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    image_count = 0
+    for attachment in attachments:
+        raw_url = str(attachment.url or "").strip()
+        parsed = urlparse(raw_url)
+        filename = Path(parsed.path).name
+        signature = (parse_qs(parsed.query or "").get("sig") or [""])[0]
+        if not filename or filename in seen or signature != _chat_media_signature(filename):
+            raise HTTPException(status_code=422, detail="Fayl tekshiruvdan o‘tmadi")
+        path = CHAT_UPLOAD_DIR / filename
+        ext = path.suffix.lower()
+        mime_type = DIAMONDVOY_ATTACHMENT_MIME_BY_EXT.get(ext)
+        if not mime_type or not path.exists() or not path.is_file():
+            if ext in {".mp4", ".mov", ".avi", ".mkv", ".webm"}:
+                raise HTTPException(status_code=422, detail="Diamondvoy chatida video yuborish mumkin emas")
+            raise HTTPException(status_code=422, detail="Diamondvoy bu fayl turini o‘qiy olmaydi")
+        size_bytes = int(path.stat().st_size)
+        if size_bytes <= 0 or size_bytes > DIAMONDVOY_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="Diamondvoy uchun fayl 10 MB dan katta bo‘lmasligi kerak")
+        if ext in CHAT_IMAGE_MIME_BY_EXT:
+            image_count += 1
+            if image_count > 3:
+                raise HTTPException(status_code=422, detail="Bir xabarda 3 tagacha rasm yuborish mumkin")
         seen.add(filename)
         clean.append({
             "file_name": filename.split("_", 4)[-1][:180] or filename,
@@ -20135,15 +20222,22 @@ async def chats_upload_media(
     file: UploadFile = File(...),
     authorization: str | None = Header(default=None),
 ):
-    """Upload a Diamondvoy attachment using the community-chat allow-list.
-
-    This endpoint deliberately accepts only the already reviewed file types
-    and returns a signed URL. Clients must still send that URL back in the
-    next Diamondvoy message, which prevents attaching arbitrary server paths.
-    """
+    """Upload a readable Diamondvoy attachment (10 MB, no video)."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
-    attachment = await _upload_community_attachment_file(file, int(user.get("id") or 0))
+    attachment = await _upload_diamondvoy_attachment_file(file, int(user.get("id") or 0))
+    return {"attachment": attachment}
+
+
+@app.post("/student/diamondvoy/upload")
+async def student_diamondvoy_upload_media(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Mobile-friendly alias for the same Diamondvoy media contract."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    attachment = await _upload_diamondvoy_attachment_file(file, int(user.get("id") or 0))
     return {"attachment": attachment}
 
 
@@ -21359,6 +21453,138 @@ def _get_active_diamondvoy_gen_job_for_chat(chat_id: int) -> dict[str, Any] | No
         conn.close()
 
 
+def _diamondvoy_student_learning_context(user_id: int) -> str:
+    """Return compact, first-party learning context for the owning student.
+
+    The context is never shared across accounts and is deliberately sourced
+    from persisted analyses/mistakes, not from an LLM memory guess.  This lets
+    Diamondvoy answer questions such as “men nimada qiynalyapman?” with the
+    same facts shown on the personal-plan page.
+    """
+    try:
+        from backend import personalization as personalization_api
+        personalization_api.ensure_schema()
+    except Exception:
+        # Chat must remain available even if a legacy installation has not
+        # initialized personalization tables yet.
+        return ""
+
+    conn = get_conn()
+    cur = conn.cursor()
+    parts: list[str] = []
+    try:
+        cur.execute(
+            """
+            SELECT week_start, week_end, analysis_text, weak_topics_json,
+                   recommendations_json, test_stats_json, homework_stats_json
+            FROM weekly_ai_analyses
+            WHERE user_id=? AND status='done'
+            ORDER BY week_start DESC LIMIT 1
+            """,
+            (int(user_id),),
+        )
+        analysis = dict(cur.fetchone() or {})
+        if analysis:
+            weak_topics = str(analysis.get("weak_topics_json") or "[]")[:2200]
+            recommendations = str(analysis.get("recommendations_json") or "[]")[:1600]
+            stats = str(analysis.get("test_stats_json") or "{}")[:1500]
+            homework = str(analysis.get("homework_stats_json") or "{}")[:900]
+            parts.append(
+                "LATEST VERIFIED WEEKLY LEARNING ANALYSIS "
+                f"({analysis.get('week_start')} to {analysis.get('week_end')}):\n"
+                f"Summary: {str(analysis.get('analysis_text') or '')[:2800]}\n"
+                f"Weak topics: {weak_topics}\nRecommendations: {recommendations}\n"
+                f"Test stats: {stats}\nHomework stats: {homework}"
+            )
+        cur.execute(
+            """
+            SELECT COALESCE(subject, ''), COALESCE(topic_key, ''), COUNT(*) AS total
+            FROM mistake_notebook_items
+            WHERE user_id=? AND resolved_at IS NULL
+            GROUP BY COALESCE(subject, ''), COALESCE(topic_key, '')
+            ORDER BY total DESC, subject ASC, topic_key ASC
+            LIMIT 8
+            """,
+            (int(user_id),),
+        )
+        mistakes = [dict(row) for row in (cur.fetchall() or [])]
+        if mistakes:
+            compact = "; ".join(
+                f"{row.get('subject') or 'fan'} / {row.get('topic_key') or 'mavzu'}: {int(row.get('total') or 0)}"
+                for row in mistakes
+            )
+            parts.append(f"OPEN MISTAKE NOTEBOOK TOPICS: {compact}")
+        cur.execute(
+            """
+            SELECT task_type, title, subject, topic_key
+            FROM personalization_plan_tasks t
+            JOIN personalization_plans p ON p.id=t.plan_id
+            WHERE p.user_id=? AND t.completed_at IS NULL
+            ORDER BY t.priority DESC, t.id DESC LIMIT 6
+            """,
+            (int(user_id),),
+        )
+        tasks = [dict(row) for row in (cur.fetchall() or [])]
+        if tasks:
+            compact = "; ".join(
+                f"{row.get('title') or row.get('task_type') or 'practice'}"
+                f" ({row.get('subject') or row.get('topic_key') or 'general'})"
+                for row in tasks
+            )
+            parts.append(f"CURRENT UNFINISHED PERSONAL-PLAN TASKS: {compact}")
+    except Exception:
+        logger.exception("diamondvoy student learning context failed user_id=%s", user_id)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        conn.close()
+    if not parts:
+        return "No verified personal learning analysis is available yet. Say this clearly; invite the student to complete tests and generate the weekly analysis."
+    return "\n\n".join(parts)[:10000]
+
+
+def _diamondvoy_attachment_text(attachment_rows: list[dict[str, Any]]) -> str:
+    """Extract bounded text from Diamondvoy documents for the model prompt."""
+    chunks: list[str] = []
+    for attachment in attachment_rows:
+        url = str(attachment.get("url") or "")
+        filename = _chat_media_filename_from_url(url)
+        if not filename:
+            continue
+        path = CHAT_UPLOAD_DIR / filename
+        ext = path.suffix.lower()
+        if ext in CHAT_IMAGE_MIME_BY_EXT or not path.exists() or not path.is_file():
+            continue
+        try:
+            from backend.library_ai import _extract_any_text
+            text = str(_extract_any_text(path) or "").strip()
+        except Exception:
+            logger.exception("diamondvoy document extraction failed filename=%s", filename)
+            text = ""
+        if text:
+            chunks.append(f"FILE {Path(filename).name}:\n{text[:9000]}")
+        if sum(len(chunk) for chunk in chunks) >= 18000:
+            break
+    return "\n\n".join(chunks)[:18000]
+
+
+def _diamondvoy_is_personal_learning_query(text: str) -> bool:
+    """Whether a student is asking about their own progress/weaknesses.
+
+    Such questions must bypass generic bot-info and answer-cache shortcuts so
+    the response always uses the latest private learning context.
+    """
+    normalized = str(text or "").lower().replace("’", "'").replace("`", "'")
+    return bool(re.search(
+        r"(mening|o'?zim|o‘zim|progressim|natijam|xatolarim|zaif mavzu|qaysi mavzu|"
+        r"my progress|my result|my weakness|my weak topic|my mistakes|about me|"
+        r"мои |мой |мне |мои ошибки|слаб(ые|ая) тем|мой прогресс|мои результаты)",
+        normalized,
+    ))
+
+
 async def _diamondvoy_run_generation_job(
     *,
     job_id: str,
@@ -21368,6 +21594,7 @@ async def _diamondvoy_run_generation_job(
     user: dict,
     user_text: str,
     image_urls: list[str],
+    document_context: str,
     query_lang: str,
     prior_context: list[dict[str, str]],
     subjects: list[str],
@@ -21398,16 +21625,29 @@ async def _diamondvoy_run_generation_job(
                 role_context_hint += f"\nSizning guruhlaringiz: {group_names}."
             else:
                 role_context_hint += "\nSizda hozircha faol guruhlar yo'q."
+        if role == "student":
+            learning_context = _diamondvoy_student_learning_context(user_id)
+            role_context_hint += (
+                "\nThe following is the student's private, verified learning data. "
+                "Use it only to answer this student's education questions. Do not invent missing scores or events.\n"
+                f"{learning_context}"
+            )
         history_lines = []
         for item in prior_context[-8:]:
             history_lines.append(f"{item['role']}: {item['content'][:1200]}")
         image_note = "\nImages are attached. Analyze them only if they are educational." if image_urls else ""
+        document_note = (
+            "\nThe extracted text below comes from the student's attached file. "
+            "If extraction is incomplete, say so instead of inventing content.\n"
+            f"{document_context}"
+            if document_context else ""
+        )
         memory_note = "" if image_urls else _diamondvoy_related_memory_prompt(user_id, user_text, limit=3)
         ai_user_text = (
             f"{role_context_hint}\n"
             f"{style_hint}\n"
             f"Reply in the user's language when possible. Return plain text only.\n"
-            f"{image_note}\n\n"
+            f"{image_note}{document_note}\n\n"
             f"{memory_note}\n\n"
             f"Recent conversation:\n{chr(10).join(history_lines)}\n\n"
             f"User request:\n{user_text or '[image-only educational request]'}"
@@ -21503,7 +21743,7 @@ async def _diamondvoy_stream_events(
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
     user_text = str(payload.message or "").strip()
     legacy_image_urls = _validate_chat_image_urls(payload.image_urls)
-    attachment_rows = _validate_community_chat_attachments(payload.attachments)
+    attachment_rows = _validate_diamondvoy_attachments(payload.attachments)
     attachment_urls = [str(item.get("url") or "") for item in attachment_rows]
     # Keep compatibility with old clients which post `image_urls`, while
     # avoiding duplicate records when a new client includes a photo in both
@@ -21517,6 +21757,8 @@ async def _diamondvoy_stream_events(
         url for url in attachment_urls
         if Path(_chat_media_filename_from_url(url) or "").suffix.lower() in CHAT_IMAGE_MIME_BY_EXT
     ][:3]
+    document_context = _diamondvoy_attachment_text(attachment_rows)
+    personal_learning_query = role == "student" and _diamondvoy_is_personal_learning_query(user_text)
     if not user_text and not attachment_urls:
         raise HTTPException(status_code=400, detail="Xabar yoki fayl yuboring")
 
@@ -21627,7 +21869,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": hw_fsm_reply, "chat_id": int(chat_id), "chat_title": current_chat_title})
                 return
 
-            if not image_urls:
+            if not image_urls and not document_context and not personal_learning_query:
                 info_text = try_diamondvoy_bot_info(
                     user_text,
                     user=user,
@@ -21649,7 +21891,7 @@ async def _diamondvoy_stream_events(
                     return
 
             style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
-            if user_text and not image_urls:
+            if user_text and not image_urls and not document_context and not personal_learning_query:
                 cached = _safe_call(lambda: _diamondvoy_find_cached_answer(user_id, user_text), None)
                 if cached:
                     _safe_call(lambda: _diamondvoy_touch_memory(int(cached.get("id") or 0)), None)
@@ -21721,6 +21963,7 @@ async def _diamondvoy_stream_events(
                     user=user,
                     user_text=user_text,
                     image_urls=image_urls,
+                    document_context=document_context,
                     query_lang=query_lang,
                     prior_context=prior_context,
                     subjects=subjects,
@@ -29487,6 +29730,67 @@ async def competition_runtime_history(
         not in RETIRED_COMPETITION_MODES
     ]
     return {"items": visible_items[: int(limit)]}
+
+
+@app.get("/competition/runtime/history/{session_id}/review")
+async def competition_runtime_history_review(
+    session_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Return a student's own completed Arena/Duel answer review.
+
+    Questions and correct answers are deliberately exposed only after the
+    session is finalized and only when that exact student owns its history
+    record.  The saved session payload plus persisted answers keeps this
+    available after a browser/app restart.
+    """
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    _require_student_learning_access(user)
+    uid = int(user.get("id") or 0)
+    sid = str(session_id or "").strip()
+    if not sid or len(sid) > 160:
+        raise HTTPException(status_code=400, detail="Invalid competition session")
+    _ensure_web_competition_runtime_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT mode,subject,finished_at FROM web_competition_history WHERE session_id=? AND user_id=? LIMIT 1",
+            (sid, uid),
+        )
+        history = dict(cur.fetchone() or {})
+    finally:
+        conn.close()
+    if not history:
+        # Legacy duel entries have an equivalent ownership record.  The
+        # question payload remains in the shared competition session table.
+        try:
+            _ensure_web_duel_runtime_schema()
+            conn = get_conn(); cur = conn.cursor()
+            cur.execute(
+                "SELECT mode,subject,finished_at FROM web_duel_history WHERE session_id=? AND user_id=? LIMIT 1",
+                (sid, uid),
+            )
+            history = dict(cur.fetchone() or {})
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    if not history:
+        raise HTTPException(status_code=404, detail="Competition history not found")
+    session = _competition_load_session_from_db(sid)
+    if not session or not bool(session.get("finalized")):
+        raise HTTPException(status_code=404, detail="Competition review is unavailable")
+    review = _competition_review_for_user(session, uid)
+    return {
+        "session_id": sid,
+        "mode": str(history.get("mode") or session.get("mode") or ""),
+        "subject": str(history.get("subject") or session.get("subject") or ""),
+        "finished_at": history.get("finished_at") or session.get("finished_at"),
+        "items": review,
+    }
 
 
 async def _competition_ensure_session_for_user(session_id: str, user: dict) -> dict[str, Any]:
@@ -52998,6 +53302,41 @@ async def _personalization_notify_plan(user: dict[str, Any], plan: dict[str, Any
         base = str(WEBAPP_URL or "").rstrip("/")
         await _send_telegram_text(bot_token, telegram_id, message, button_text="Rejani ochish", button_url=f"{base}{target}" if base else None, button_web_app=True)
 
+
+async def _personalization_notify_certificate(user: dict[str, Any], certificate: dict[str, Any], track: dict[str, Any]) -> None:
+    """One completion event, delivered consistently to web, mobile and Telegram."""
+    user_id=int(user.get("id") or 0)
+    if user_id <= 0:
+        return
+    certificate_id=str(certificate.get("certificate_id") or "")
+    title="Tabriklaymiz! Sertifikat berildi"
+    message=f"{str(track.get('track_title') or track.get('title') or certificate.get('course_title') or 'Learning Path')} trackini muvaffaqiyatli yakunladingiz."
+    target="/?role=student&section=profile&popup=certificates"
+    _store_browser_notification_for_user(
+        user_id,
+        notification_type="learning_certificate",
+        title=title,
+        message=message,
+        button_text="Sertifikatni ochish",
+        button_url=target,
+        target_screen="profile",
+        source_key=f"learning_certificate:{certificate_id}",
+        meta={"certificate_id":certificate_id,"track_id":int(track.get("track_id") or track.get("id") or 0)},
+    )
+    threading.Thread(
+        target=push_notifications.send_push_to_users,
+        args=([user_id], title, message),
+        kwargs={"data":{"target_screen":"profile","notification_type":"learning_certificate","certificate_id":certificate_id,"open_certificates":True}},
+        daemon=True,
+    ).start()
+    telegram_id=str(user.get("telegram_id") or "").strip()
+    bot_token=str(os.getenv("STUDENT_BOT_TOKEN") or "").strip()
+    share=str(certificate.get("share_token") or "").strip()
+    if telegram_id and bot_token:
+        base=str(WEBAPP_URL or "").rstrip("/")
+        url=f"{base}/certificates/share/{share}/download" if base and share else (f"{base}{target}" if base else None)
+        await _send_telegram_text(bot_token, telegram_id, message, button_text="Sertifikatni yuklash", button_url=url, button_web_app=False)
+
 personalization_api.configure_runtime(
     user_from_bearer=_user_row_from_bearer,
     role_for_user=_personalization_role_for_user,
@@ -53005,6 +53344,10 @@ personalization_api.configure_runtime(
     staff_can_access_student=_personalization_staff_can_access_student,
     explain=_personalization_explain,
     notify_plan=_personalization_notify_plan,
+    notify_certificate=_personalization_notify_certificate,
+    add_test_history=add_test_history,
+    content_test=get_content_test,
+    award_coins=add_dcoins,
 )
 app.include_router(personalization_api.router)
 

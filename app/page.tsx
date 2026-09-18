@@ -63,6 +63,8 @@ import { StudentAttendance } from "./ui/student-attendance";
 import { StudentNotesPanel } from "./ui/student-notes";
 import { PersonalLearningPanel } from "./ui/personal-learning";
 import { WeeklyStudyPlan } from "./ui/weekly-study-plan";
+import { StudyRoomChat } from "./ui/study-room-chat";
+import { StaffLearningPaths, StudentLearningPaths } from "./ui/learning-paths";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
@@ -22973,9 +22975,12 @@ function DashboardShell({
   let content: React.ReactNode = null;
   if (currentSection === "chats" || currentSection === "diamondvoy") {
     content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
+  } else if (currentSection === "study-room") {
+    content = <StudyRoomChat apiFetch={authedApiFetch} role={activeRole} userId={Number(user?.id || 0)} />;
   } else if (activeRole === "student") {
     if (currentSection === "personal-plan") content = <WeeklyStudyPlan apiFetch={authedApiFetch} />;
-    else if (["my-mistakes", "mistake-notebook", "saved", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
+    else if (currentSection === "learning-paths") content = <StudentLearningPaths apiFetch={authedApiFetch} />;
+    else if (["my-mistakes", "mistake-notebook", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
     else if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
     else if (currentSection === "videos") content = <StudentVideos apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "books") content = <StudentBooks apiFetch={authedApiFetch} user={user} />;
@@ -23004,7 +23009,9 @@ function DashboardShell({
     else content = <StudentHome user={user} data={roleData} onNavigate={handleNavigate} />;
 
   } else if (activeRole === "teacher") {
-    if (["student-insights", "saved", "pomodoro"].includes(currentSection)) {
+    if (currentSection === "learning-paths") {
+      content = <StaffLearningPaths apiFetch={authedApiFetch} />;
+    } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="teacher" view={currentSection} />;
     } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
@@ -23014,7 +23021,9 @@ function DashboardShell({
       content = <TeacherSection section={currentSection} data={roleData} user={user} onApiCall={onAdminCall} onNavigate={handleNavigate} />;
     }
   } else if (activeRole === "support") {
-    if (["student-insights", "saved", "pomodoro"].includes(currentSection)) {
+    if (currentSection === "learning-paths") {
+      content = <StaffLearningPaths apiFetch={authedApiFetch} />;
+    } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="support" view={currentSection} />;
     } else if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;

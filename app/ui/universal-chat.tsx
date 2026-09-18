@@ -3,7 +3,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { resolveLocale, useWebT } from "./web-i18n";
 import { SharedTestEditor } from "./shared-test-editor";
-import { StudyRoomChat } from "./study-room-chat";
 import { diamondvoyTestContextKey, type TestReviewItem } from "./test-completion-actions";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -38,10 +37,14 @@ function playDiamondvoyThinkingVideo(video: HTMLVideoElement | null) {
 }
 
 const MAX_IMAGES = 3;
-const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
+const MAX_ATTACHMENTS = 5;
+const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const DIAMONDVOY_FILE_EXTENSIONS = new Set([
+  "jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
+]);
 
-type ActivePane = "diamondvoy" | "community" | "feedback" | "study-room" | null;
+type ActivePane = "diamondvoy" | "community" | "feedback" | null;
 
 type ChatAttachment = {
   id?: number;
@@ -184,6 +187,7 @@ type UploadPreview = {
   url: string;
   preview: string;
   name: string;
+  mime_type?: string | null;
 };
 
 type PreviewMedia = {
@@ -202,6 +206,17 @@ function apiUrl(pathOrUrl: string) {
   if (/^https?:\/\//i.test(raw) || raw.startsWith("data:") || raw.startsWith("blob:")) return raw;
   if (raw.startsWith("/")) return `${API_BASE}${raw}`;
   return `${API_BASE}/${raw}`;
+}
+
+function attachmentIsImage(item: { url?: string; mime_type?: string | null }) {
+  if (String(item.mime_type || "").startsWith("image/")) return true;
+  return /\.(jpe?g|png|webp)(?:$|[?#])/i.test(String(item.url || ""));
+}
+
+function attachmentName(url: string) {
+  const raw = String(url || "").split("?")[0].split("/").pop() || "Fayl";
+  const parts = raw.split("_");
+  return parts.length >= 5 ? parts.slice(4).join("_") : raw;
 }
 
 function formatWhen(raw?: string | null) {
@@ -1328,6 +1343,7 @@ export function UniversalChat({
   const [testReviewContext, setTestReviewContext] = useState<TestReviewContext | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const aiFileInputRef = useRef<HTMLInputElement | null>(null);
   const communityFileInputRef = useRef<HTMLInputElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const chatsLoadingRef = useRef(false);
@@ -1584,7 +1600,7 @@ export function UniversalChat({
   // sessionStorage.  It is consumed once, stays in the student's browser only,
   // and is then sent as an ordinary attributable chat message.
   useEffect(() => {
-    if (!isStudent || typeof window === "undefined") return;
+    if (typeof window === "undefined") return;
     try {
       const raw = window.sessionStorage.getItem(diamondvoyTestContextKey);
       if (!raw) return;
@@ -1600,6 +1616,28 @@ export function UniversalChat({
     }
   // sendDiamondvoyMessage is a function declaration; this effect intentionally
   // runs once to consume a single hand-off from a completed test.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // A private Study-room can hand its shared material names to the student's
+  // own Diamondvoy chat. The assistant remains private to that student; it
+  // never exposes another room member's personal conversation.
+  useEffect(() => {
+    if (!isStudent || typeof window === "undefined") return;
+    try {
+      const raw = window.sessionStorage.getItem("diamondvoy:study-room-context:v1");
+      if (!raw) return;
+      window.sessionStorage.removeItem("diamondvoy:study-room-context:v1");
+      const parsed = JSON.parse(raw) as { roomTitle?: string; materials?: unknown[] };
+      const title = String(parsed?.roomTitle || "Study-room").slice(0, 160);
+      const materials = Array.isArray(parsed?.materials) ? parsed.materials.map((item) => String(item).slice(0, 220)).filter(Boolean).slice(0, 8) : [];
+      setActivePane("diamondvoy");
+      const prompt = `Men "${title}" Study-roomidaman. ${materials.length ? `Umumiy materiallar: ${materials.join(", ")}. ` : ""}Guruhdoshlarim bilan shu mavzuni o‘rganish uchun qisqa tushuntirish, keyin yengil test tuzib ber.`;
+      window.setTimeout(() => sendDiamondvoyMessage(prompt).catch(() => null), 0);
+    } catch {
+      window.sessionStorage.removeItem("diamondvoy:study-room-context:v1");
+    }
+  // sendDiamondvoyMessage is a function declaration and this hand-off runs once.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStudent]);
 
@@ -1673,7 +1711,14 @@ export function UniversalChat({
   async function handleFiles(files: FileList | null) {
     const selected = Array.from(files || []);
     if (!selected.length) return;
-    if (images.length + selected.length > MAX_IMAGES) {
+    const feedbackOnly = activePane === "feedback";
+    if (images.length + selected.length > MAX_ATTACHMENTS) {
+      setError(tt("chat.community.maxFiles", "Bir xabarda 5 tagacha fayl yuborish mumkin."));
+      return;
+    }
+    const incomingImages = selected.filter((file) => IMAGE_TYPES.has(file.type)).length;
+    const existingImages = images.filter((item) => attachmentIsImage(item)).length;
+    if (existingImages + incomingImages > MAX_IMAGES) {
       setError(tt("chat.error.maxImages", "Bir xabarda 3 tagacha rasm yuborish mumkin"));
       return;
     }
@@ -1682,27 +1727,40 @@ export function UniversalChat({
     try {
       const uploaded: UploadPreview[] = [];
       for (const file of selected) {
-        if (!IMAGE_TYPES.has(file.type)) throw new Error(tt("chat.error.imageType", "Rasm turi noto'g'ri"));
-        if (file.size > MAX_IMAGE_SIZE) throw new Error(tt("chat.error.imageSize", "Rasm hajmi juda katta"));
+        const extension = (file.name.split(".").pop() || "").toLowerCase();
+        if (!DIAMONDVOY_FILE_EXTENSIONS.has(extension)) {
+          throw new Error(extension === "mp4" || extension === "mov" ? "Diamondvoy chatida video yuborish mumkin emas" : "Diamondvoy bu fayl turini o‘qiy olmaydi");
+        }
+        if (feedbackOnly && !IMAGE_TYPES.has(file.type)) {
+          throw new Error("Taklif va shikoyat chatida faqat rasm yuborish mumkin");
+        }
+        if (file.size > MAX_ATTACHMENT_SIZE) throw new Error("Fayl 10 MB dan katta bo‘lmasligi kerak");
         const form = new FormData();
         form.append("file", file);
-        const payload = await apiFetch("/chats/upload-image", { method: "POST", body: form });
-        const url = String(payload?.url || "");
+        const payload = await apiFetch("/chats/upload-media", { method: "POST", body: form });
+        const attachment = payload?.attachment as ChatAttachment | undefined;
+        const url = String(attachment?.url || "");
         if (!url) throw new Error(tt("chat.error.imageUpload", "Rasm yuklanmadi. Qayta urinib ko'ring."));
-        uploaded.push({ url, preview: URL.createObjectURL(file), name: file.name });
+        uploaded.push({
+          url,
+          preview: IMAGE_TYPES.has(file.type) ? URL.createObjectURL(file) : "",
+          name: file.name,
+          mime_type: attachment?.mime_type || file.type,
+        });
       }
-      setImages((prev) => [...prev, ...uploaded].slice(0, MAX_IMAGES));
+      setImages((prev) => [...prev, ...uploaded].slice(0, MAX_ATTACHMENTS));
     } catch (err) {
       setError(parseError(err, tt("chat.error.imageUpload", "Rasm yuklanmadi. Qayta urinib ko'ring.")));
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      if (aiFileInputRef.current) aiFileInputRef.current.value = "";
     }
   }
 
   function clearComposerImages() {
     images.forEach((image) => {
-      if (image.preview.startsWith("blob:")) URL.revokeObjectURL(image.preview);
+      if (image.preview?.startsWith("blob:")) URL.revokeObjectURL(image.preview);
     });
     setImages([]);
   }
@@ -1832,7 +1890,7 @@ export function UniversalChat({
           "Content-Type": "application/json",
           "X-Language": language,
         },
-        body: JSON.stringify({ message: text, image_urls: imageUrls }),
+        body: JSON.stringify({ message: text, attachments: imageUrls.map((url) => ({ url })) }),
         signal: controller.signal,
       });
       const finalText = await consumeSse(response, {
@@ -2046,26 +2104,6 @@ export function UniversalChat({
           <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{isAdmin ? tt("chat.feedback.adminReview", "Admin review") : tt("chat.feedback.subtitle", "Anonim yoki anonimmas xabar yuborish")}</p>
         </button>
 
-        {isStudent ? <button
-          type="button"
-          onClick={() => {
-            setActivePane("study-room");
-            setActiveChatId(null);
-            setError("");
-          }}
-          className={cx(
-            "w-full text-left rounded-lg border px-3 py-3 transition",
-            activePane === "study-room"
-              ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
-              : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
-          )}
-        >
-          <div className="flex items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-cyan-600 text-white">👥</span>
-            <div className="min-w-0"><p className="font-black text-sm text-navy-900 dark:text-white">Study-room</p><p className="mt-1 text-xs text-ink-600 dark:text-navy-300">Kod bilan kiring, birga mashq qiling</p></div>
-          </div>
-        </button> : null}
-
         <button
           type="button"
           onClick={() => {
@@ -2159,15 +2197,19 @@ export function UniversalChat({
     if (!items.length) return null;
     return (
       <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
-        {items.map((item, index) => (
+        {items.map((item, index) => attachmentIsImage(item) ? (
           <button
             key={`${item.url}-${index}`}
             type="button"
-            onClick={() => setPreviewMedia({ type: "image", src: apiUrl(item.url), title: tt("chat.image", "Rasm") })}
+            onClick={() => setPreviewMedia({ type: "image", src: apiUrl(item.url), title: attachmentName(item.url) })}
             className="block rounded-lg overflow-hidden border border-line dark:border-white/10 bg-black/5 text-left"
           >
             <img src={apiUrl(item.url)} alt="chat attachment" className="w-full h-24 object-cover" loading="lazy" />
           </button>
+        ) : (
+          <a key={`${item.url}-${index}`} href={apiUrl(item.url)} target="_blank" rel="noreferrer" className="flex min-h-24 items-center gap-2 rounded-lg border border-line bg-white/10 px-3 text-xs font-bold text-inherit dark:border-white/10">
+            <span>📄</span><span className="line-clamp-3">{attachmentName(item.url)}</span>
+          </a>
         ))}
       </div>
     );
@@ -2178,11 +2220,11 @@ export function UniversalChat({
       {images.length > 0 && (
         <div className="flex gap-2 overflow-x-auto pb-2">
           {images.map((image) => (
-            <div key={image.preview} className="relative w-20 h-20 shrink-0 rounded-lg overflow-hidden border border-line dark:border-white/15">
-              <img src={image.preview} alt={image.name} className="w-full h-full object-cover" />
+            <div key={`${image.url}-${image.name}`} className="relative w-20 h-20 shrink-0 rounded-lg overflow-hidden border border-line dark:border-white/15 bg-surface-soft dark:bg-white/5">
+              {attachmentIsImage(image) ? <img src={image.preview} alt={image.name} className="w-full h-full object-cover" /> : <div className="flex h-full flex-col items-center justify-center gap-1 px-1 text-center text-[10px] font-bold text-ink-600 dark:text-navy-200"><span className="text-xl">📄</span><span className="line-clamp-2">{image.name}</span></div>}
               <button
                 type="button"
-                onClick={() => setImages((prev) => prev.filter((item) => item.preview !== image.preview))}
+                onClick={() => setImages((prev) => prev.filter((item) => item.url !== image.url))}
                 className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/70 text-white text-xs"
               >
                 x
@@ -2195,7 +2237,7 @@ export function UniversalChat({
   );
 
   const DiamondvoyPane = (
-    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : "hidden lg:flex")}>
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : activePane === null ? "hidden lg:flex" : "hidden")}>
       <div className="px-3 sm:px-5 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
@@ -2246,6 +2288,15 @@ export function UniversalChat({
             <p className="mt-2 text-sm max-w-sm">
               {tt("chat.ai.emptyMessage", "Savollaringizni yozing yoki rasm/fayl yuklang. Diamondvoy yordam berishga tayyor.")}
             </p>
+            {isStudent && (
+              <button
+                type="button"
+                onClick={() => sendDiamondvoyMessage("Mening oxirgi o‘quv tahlilimni tushuntirib bering: qaysi mavzularda qiynalyapman, nimani avval takrorlashim kerak va bugun qanday yengil mashq qilay?").catch(() => null)}
+                className="mt-5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-black text-cyan-700 transition hover:bg-cyan-500/15 dark:text-cyan-200"
+              >
+                💎 Mening o‘quv tahlilim
+              </button>
+            )}
             {canRegenerate && (userRole === "teacher" || userRole === "support") && (
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 <button
@@ -2365,9 +2416,9 @@ export function UniversalChat({
       >
         {ComposerImages}
         <div className="flex items-end gap-2">
-          <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={(event) => handleFiles(event.target.files).catch(() => null)} />
-          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploading || images.length >= MAX_IMAGES} className="w-11 h-11 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white disabled:opacity-50">
-            +
+          <input ref={aiFileInputRef} type="file" accept="image/jpeg,image/png,image/webp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" multiple className="hidden" onChange={(event) => handleFiles(event.target.files).catch(() => null)} />
+          <button type="button" onClick={() => aiFileInputRef.current?.click()} disabled={uploading || images.length >= MAX_ATTACHMENTS} className="w-11 h-11 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white disabled:opacity-50" title="Rasm yoki o‘qiladigan fayl biriktirish">
+            📎
           </button>
           <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={1} placeholder={tt("chat.inputPlaceholder", "Xabar yozing...")} className="flex-1 max-h-32 resize-none rounded-lg border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-cyan-400" />
           <button type="submit" disabled={sending || uploading || (!input.trim() && images.length === 0)} className="px-4 h-11 rounded-lg bg-cyan-500 text-white font-bold disabled:opacity-50">
@@ -2512,7 +2563,6 @@ export function UniversalChat({
       </form>
     </section>
 
-    {isStudent ? <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "study-room" ? "flex" : "hidden")}><div className="flex min-h-0 flex-1"><StudyRoomChat apiFetch={apiFetch} /></div></section> : null}
     </>
   );
 

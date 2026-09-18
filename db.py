@@ -109,6 +109,23 @@ class _PgCursorCompat:
     def description(self):
         return self._cur.description
 
+    @property
+    def lastrowid(self):
+        """SQLite-compatible id for the most recent BIGSERIAL insert.
+
+        psycopg intentionally has no ``lastrowid``.  Legacy endpoints use it
+        after inserts, so PostgreSQL must obtain the session-scoped sequence id.
+        ``LASTVAL`` stays available after a commit on the same connection.
+        """
+        try:
+            self._cur.execute("SELECT LASTVAL() AS id")
+            row = self._cur.fetchone()
+            if row is None:
+                return None
+            return row.get("id") if hasattr(row, "get") else row[0]
+        except Exception:
+            return None
+
     def __enter__(self):
         self._cur.__enter__()
         return self

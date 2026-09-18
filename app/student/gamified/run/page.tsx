@@ -1,4 +1,5 @@
 "use client";
+import { AiExplanation } from '@/app/ui/ai-explanation';
 
 import { StudentGamified, StudentStandaloneTestShell } from "../../test-views";
 

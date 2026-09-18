@@ -1,10 +1,12 @@
 "use client";
+import { AiExplanation } from '@/app/ui/ai-explanation';
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, usePathname, useSearchParams, useRouter } from "next/navigation";
 import { StudentTestProctoring, useStudentProctoringStatus } from "../../proctoring";
 import { AssetIcon } from "../../../ui/primitives";
 import { resolveLocale, t as translateWeb } from "../../../ui/web-i18n";
+import { TestCompletionActions } from "../../../ui/test-completion-actions";
 
 type GenericRow = Record<string, any>;
 
@@ -799,6 +801,7 @@ function StudentGrammarTopicContent() {
                         {tt("student.dailyTest.reviewAnswers", "Javoblarni ko'rish")}
                       </button>
                     )}
+                    <TestCompletionActions testTitle={String(quizResult.topic_title || "Grammar test")} subject={String(quizResult.subject || "")} review={(((quizResult as GenericRow).details as GenericRow[]) || []).map((item) => { const options = Array.isArray(item.options) ? item.options.map(String) : []; const selectedIndex = item.selected_index; const correctIndex = item.correct_index; return { prompt: String(item.prompt || ""), options, selected_answer: selectedIndex === null || selectedIndex === undefined ? null : options[Number(selectedIndex)], correct_answer: correctIndex === null || correctIndex === undefined ? null : options[Number(correctIndex)], is_correct: Boolean(item.is_correct), explanation: String(item.explanation || "") }; })} />
                     <button
                       className="bg-navy-900 hover:bg-navy-800 text-white dark:bg-cyan-500 dark:hover:bg-cyan-600 px-8 py-4 rounded-2xl font-bold text-lg transition-all shadow-lg shadow-cyan-500/20 hover:-translate-y-1"
                       onClick={() => {
@@ -896,6 +899,7 @@ function StudentGrammarTopicContent() {
                                 })}
                               </div>
                             )}
+                            <AiExplanation question={String(detail.prompt || "")} options={options} selected={options[selectedIdx] || ""} correct={options[correctIdx] || ""} subject="General" />
                             {isSkipped && (
                               <p className="ml-10 text-xs font-bold text-ink-400 dark:text-navy-400">{tt("student.dailyTest.skipped", "O'tkazilgan")}</p>
                             )}

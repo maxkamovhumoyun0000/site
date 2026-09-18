@@ -4097,6 +4097,8 @@ export function StudentCompetitionPage({
   const [duelView, setDuelView] = useState<"setup" | "history">("setup");
   const [duelHistory, setDuelHistory] = useState<GenericRow[]>([]);
   const [duelHistoryLoading, setDuelHistoryLoading] = useState(false);
+  const [historyReview, setHistoryReview] = useState<GenericRow | null>(null);
+  const [historyReviewLoading, setHistoryReviewLoading] = useState(false);
   const [duelBlocked, setDuelBlocked] = useState("");
   const groupArenaSubject = normalizeSubjectLabel(String(selectedGroupArenaOption?.subject || selectedCompetitionGroup?.subject || "")) || studentSubjects[0] || "";
   const subjectPromptRequired = mode !== "group" && studentSubjects.length > 1;
@@ -4136,6 +4138,22 @@ export function StudentCompetitionPage({
       setError(err instanceof Error ? err.message : tt("arena.historyError", "Tarix yuklanmadi"));
     } finally {
       setDuelHistoryLoading(false);
+    }
+  }
+
+  async function openHistoryReview(item: GenericRow) {
+    const token = localStorage.getItem("diamond_token");
+    const sessionId = String(item.session_id || "").trim();
+    if (!token || !sessionId || historyReviewLoading) return;
+    setHistoryReviewLoading(true);
+    setError("");
+    try {
+      const payload = await requestJson<GenericRow>(`/competition/runtime/history/${encodeURIComponent(sessionId)}/review`, { token });
+      setHistoryReview(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : tt("arena.historyError", "Tarix yuklanmadi"));
+    } finally {
+      setHistoryReviewLoading(false);
     }
   }
 
@@ -4760,7 +4778,22 @@ export function StudentCompetitionPage({
                   {tt("duel.back", "Orqaga")}
                 </button>
               </div>
-              {duelHistoryLoading ? (
+              {historyReview ? (
+                <div>
+                  <button className="mb-4 rounded-2xl bg-surface-soft px-4 py-2 text-sm font-bold text-ink-700 transition hover:bg-line dark:bg-white/10 dark:text-navy-100" onClick={() => setHistoryReview(null)}>
+                    ← {tt("duel.back", "Orqaga")}
+                  </button>
+                  <div className="mb-4 rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4">
+                    <p className="text-xs font-black uppercase tracking-wide text-cyan-700 dark:text-cyan-300">{String(historyReview.subject || effectiveSubject)} · {String(historyReview.mode || mode)}</p>
+                    <h3 className="mt-1 text-lg font-black text-navy-900 dark:text-white">{tt("student.dailyTest.reviewAnswers", "Javoblarni ko'rish")}</h3>
+                  </div>
+                  <TestCompletionActions
+                    testTitle={displayTitle}
+                    subject={String(historyReview.subject || effectiveSubject)}
+                    review={testReviewItems((historyReview.items || []) as GenericRow[])}
+                  />
+                </div>
+              ) : duelHistoryLoading || historyReviewLoading ? (
                 <div className="py-12 text-center font-bold text-ink-500 dark:text-navy-200">{tt("common.loading", "Yuklanmoqda...")}</div>
               ) : duelHistory.length ? (
                 <div className="duel-history-grid grid gap-3 sm:grid-cols-2">
@@ -4792,6 +4825,9 @@ export function StudentCompetitionPage({
                             <p className="text-lg font-black text-ink-700 dark:text-navy-100">{Number(item.skipped_count || 0)}</p>
                           </div>
                         </div>
+                        <button type="button" onClick={() => openHistoryReview(item)} className="mt-3 w-full rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-3 py-2 text-sm font-black text-cyan-700 transition hover:bg-cyan-500/15 dark:text-cyan-200">
+                          📋 {tt("student.dailyTest.reviewAnswers", "Javoblarni ko'rish")}
+                        </button>
                       </article>
                     );
                   })}
@@ -4817,6 +4853,9 @@ export function StudentCompetitionPage({
                     <p className="text-sm text-ink-500 dark:text-navy-300 font-medium mt-1">{tt("duel.ready", "Tayyor bo'ling. 5 daqiqalik kutilish vaqti beriladi.")}</p>
                   </div>
                 </div>
+                <button type="button" onClick={loadDuelHistory} disabled={duelHistoryLoading} className="self-start rounded-2xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm font-black text-cyan-700 transition hover:bg-cyan-500/15 disabled:opacity-60 dark:text-cyan-200 sm:self-auto">
+                  📋 {tt("arena.history", "Tarix")}
+                </button>
               </div>
 
               <div className="grid sm:grid-cols-3 gap-5 mb-10 relative z-10">

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -37,6 +38,38 @@ def new_parent_access_token() -> str:
 
 def new_study_room_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
+
+
+# Study rooms are deliberately role-neutral.  A room is still private because
+# every data, message and WebRTC operation verifies active membership; a role
+# alone never reveals a room or its material.
+STUDY_ROOM_ROLES = {"student", "teacher", "support", "admin"}
+DEFAULT_TRACK_PASSING_SCORE = 70
+
+
+def normalize_track_passing_score(value: Any) -> int:
+    """One persistent threshold used by every module in a learning track."""
+    if value is None or value == "":
+        return DEFAULT_TRACK_PASSING_SCORE
+    try:
+        return min(100, max(1, int(float(value))))
+    except (TypeError, ValueError):
+        return DEFAULT_TRACK_PASSING_SCORE
+
+
+def learning_score_passes(score: Any, passing_score: Any = None) -> bool:
+    try:
+        return float(score) >= normalize_track_passing_score(passing_score)
+    except (TypeError, ValueError):
+        return False
+
+
+def next_track_unlocked(module_states: list[Any]) -> bool:
+    return bool(module_states) and all(str(item).lower() == "passed" for item in module_states)
+
+
+def track_certificate_eligible(track_status: Any, *, certificate_required: bool = True) -> bool:
+    return bool(certificate_required) and str(track_status).lower() == "passed"
 
 
 def mistake_next_review_at(now: datetime, correct_streak: int) -> datetime:
@@ -214,6 +247,77 @@ def ensure_schema() -> None:
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(user_id, week_start)
             )""",
+            """CREATE TABLE IF NOT EXISTS personal_practice_attempts (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL,
+              attempt_id TEXT NOT NULL,
+              subject TEXT,
+              total_questions INTEGER NOT NULL DEFAULT 0,
+              completed_at TIMESTAMP,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, attempt_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS personal_practice_attempt_items (
+              id BIGSERIAL PRIMARY KEY,
+              user_id BIGINT NOT NULL,
+              attempt_id TEXT NOT NULL,
+              question_index INTEGER NOT NULL,
+              subject TEXT,
+              topic_key TEXT,
+              prompt TEXT NOT NULL,
+              options_json TEXT,
+              selected_answer TEXT,
+              correct_answer TEXT,
+              explanation TEXT,
+              is_correct INTEGER NOT NULL DEFAULT 0,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(user_id, attempt_id, question_index)
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_tracks (
+              id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL, subject TEXT NOT NULL,
+              title TEXT NOT NULL, description TEXT, cover_key TEXT DEFAULT 'star',
+              status TEXT NOT NULL DEFAULT 'draft', position INTEGER NOT NULL DEFAULT 0,
+              passing_score INTEGER NOT NULL DEFAULT 70, certificate_required INTEGER NOT NULL DEFAULT 1,
+              certificate_template_key TEXT DEFAULT 'english', certificate_layers_json TEXT DEFAULT '[]',
+              version INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, published_at TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_modules (
+              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, title TEXT NOT NULL,
+              description TEXT, cover_key TEXT DEFAULT 'star', position INTEGER NOT NULL DEFAULT 0,
+              topic_keys_json TEXT NOT NULL DEFAULT '[]', passing_score INTEGER, reward_coins INTEGER NOT NULL DEFAULT 0,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_module_lessons (
+              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
+              source_kind TEXT NOT NULL DEFAULT 'manual', source_id TEXT, source_version TEXT,
+              question_payload_json TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0,
+              position INTEGER NOT NULL DEFAULT 0, required INTEGER NOT NULL DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_track_assignments (
+              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+              assigned_by BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+              assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, due_at TIMESTAMP,
+              UNIQUE(track_id, student_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_lesson_attempts (
+              id BIGSERIAL PRIMARY KEY, lesson_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+              score REAL NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0,
+              answers_json TEXT, started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              completed_at TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_module_progress (
+              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'locked', best_score REAL NOT NULL DEFAULT 0,
+              passed_at TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(module_id, student_id)
+            )""",
+            """CREATE TABLE IF NOT EXISTS learning_certificate_shares (
+              id BIGSERIAL PRIMARY KEY, certificate_id TEXT NOT NULL UNIQUE, share_token TEXT NOT NULL UNIQUE,
+              active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              revoked_at TIMESTAMP
+            )""",
         ]
         for sql in statements:
             try:
@@ -231,6 +335,13 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_pomodoro_user ON pomodoro_sessions(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_user_sessions ON user_sessions(user_id, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_weekly_analysis_user ON weekly_ai_analyses(user_id, week_start DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_personal_practice_attempts_user ON personal_practice_attempts(user_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_personal_practice_items_attempt ON personal_practice_attempt_items(user_id, attempt_id, question_index)",
+            "CREATE INDEX IF NOT EXISTS idx_learning_tracks_owner ON learning_tracks(owner_id, subject, status, position)",
+            "CREATE INDEX IF NOT EXISTS idx_learning_modules_track ON learning_modules(track_id, position)",
+            "CREATE INDEX IF NOT EXISTS idx_learning_lessons_module ON learning_module_lessons(module_id, position)",
+            "CREATE INDEX IF NOT EXISTS idx_learning_assignment_student ON learning_track_assignments(student_id, status)",
+            "CREATE INDEX IF NOT EXISTS idx_learning_progress_student ON learning_module_progress(student_id, module_id)",
         ):
             try:
                 cur.execute(sql)
@@ -241,6 +352,20 @@ def ensure_schema() -> None:
         except Exception:
             try:
                 cur.execute("ALTER TABLE study_rooms ADD COLUMN voice_room_id INTEGER")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS reward_coins INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE learning_modules ADD COLUMN reward_coins INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE learning_module_progress ADD COLUMN IF NOT EXISTS rewarded_at TIMESTAMP")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE learning_module_progress ADD COLUMN rewarded_at TIMESTAMP")
             except Exception:
                 pass
         badge_defaults = (
@@ -388,6 +513,23 @@ def _build_plan(student_id: int) -> dict[str, Any]:
         pending = int(dict(cur.fetchone() or {}).get("total") or 0)
         if pending:
             cur.execute("INSERT INTO personalization_plan_tasks(plan_id, task_type, title, target_url, priority, metadata_json) VALUES(?,?,?,?,?,?)", (plan_id, "homework", f"{pending} ta uyga vazifani yakunlang", "/?role=student&section=homework", 90, json.dumps({"pending": pending})))
+        # Learning paths are first-class learning evidence, not a separate
+        # gamification island: unfinished assigned tracks belong in the daily
+        # Diamondvoy plan and therefore weekly advice as well.
+        cur.execute(
+            "SELECT t.id,t.title,t.subject FROM learning_tracks t "
+            "JOIN learning_track_assignments a ON a.track_id=t.id "
+            "WHERE a.student_id=? AND a.status='active' AND t.status='published' "
+            "ORDER BY t.position,t.id LIMIT 1",
+            (student_id,),
+        )
+        learning = cur.fetchone()
+        if learning:
+            learning = dict(learning)
+            cur.execute(
+                "INSERT INTO personalization_plan_tasks(plan_id, task_type, title, subject, target_url, priority, metadata_json) VALUES(?,?,?,?,?,?,?)",
+                (plan_id, "learning_path", f"{learning['title']} trackini davom ettiring", learning.get("subject"), "/?role=student&section=learning-paths", 85, json.dumps({"track_id": int(learning["id"])})),
+            )
         conn.commit()
         cur.execute("SELECT * FROM personalization_plans WHERE id=?", (plan_id,)); plan = dict(cur.fetchone())
         cur.execute("SELECT * FROM personalization_plan_tasks WHERE plan_id=? ORDER BY priority DESC, id", (plan_id,)); plan["tasks"] = _dicts(cur.fetchall())
@@ -673,7 +815,15 @@ def _pomodoro_routes(prefix: str, roles: set[str]):
     async def save_pomodoro(payload: PomodoroRequest, authorization: str | None = Header(default=None)):
         user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
         try:
-            cur=conn.cursor(); cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?)", (int(user["id"]), payload.mode, payload.planned_seconds, payload.completed_seconds, _now().isoformat() if payload.completed else None)); conn.commit(); return {"id": int(cur.lastrowid or 0)}
+            cur=conn.cursor()
+            try:
+                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?) RETURNING id", (int(user["id"]), payload.mode, payload.planned_seconds, payload.completed_seconds, _now().isoformat() if payload.completed else None))
+                row=cur.fetchone()
+                sid=int(dict(row)["id"]) if row else 0
+            except Exception:
+                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?)", (int(user["id"]), payload.mode, payload.planned_seconds, payload.completed_seconds, _now().isoformat() if payload.completed else None))
+                sid=int(getattr(cur, "lastrowid", 0) or 0)
+            conn.commit(); return {"id": sid}
         finally: conn.close()
 
 
@@ -683,7 +833,7 @@ _pomodoro_routes("student", {"student"}); _pomodoro_routes("staff", {"teacher", 
 
 @router.post("/student/study-rooms")
 async def create_study_room(payload: StudyRoomCreate, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, {"student"}); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require(user, STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); code=new_study_room_code()
         for _ in range(8):
@@ -691,15 +841,54 @@ async def create_study_room(payload: StudyRoomCreate, authorization: str | None 
             if not cur.fetchone(): break
             code=new_study_room_code()
         else: raise HTTPException(status_code=503, detail="Could not allocate room code")
-        cur.execute("INSERT INTO study_rooms(room_code, owner_id, title) VALUES(?,?,?)", (code, int(user["id"]), payload.title)); room_id=int(cur.lastrowid or 0)
-        if not room_id: cur.execute("SELECT id FROM study_rooms WHERE room_code=?", (code,)); room_id=int(dict(cur.fetchone())["id"])
-        cur.execute("INSERT INTO study_room_members(room_id,user_id) VALUES(?,?)", (room_id,int(user["id"]))); conn.commit(); return {"id": room_id, "room_code": code, "title": payload.title, "max_members": 4}
+        room_id = 0
+        try:
+            cur.execute("INSERT INTO study_rooms(room_code, owner_id, title) VALUES(?,?,?) RETURNING id", (code, int(user["id"]), payload.title))
+            row = cur.fetchone()
+            if row:
+                room_id = int(row.get("id") if hasattr(row, "get") else row[0])
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            cur.execute("INSERT INTO study_rooms(room_code, owner_id, title) VALUES(?,?,?)", (code, int(user["id"]), payload.title))
+            cur.execute("SELECT id FROM study_rooms WHERE room_code=? ORDER BY id DESC LIMIT 1", (code,))
+            row = cur.fetchone()
+            if row:
+                room_id = int(row.get("id") if hasattr(row, "get") else row[0])
+        if not room_id:
+            raise HTTPException(status_code=500, detail="Xona yaratishda xatolik yuz berdi")
+        cur.execute("INSERT INTO study_room_members(room_id,user_id) VALUES(?,?)", (room_id,int(user["id"])))
+        conn.commit()
+        return {"id": room_id, "room_code": code, "title": payload.title, "max_members": 4}
+    finally: conn.close()
+
+
+@router.get("/student/study-rooms")
+async def list_study_rooms(authorization: str | None = Header(default=None)):
+    """Return only rooms in which the caller is currently a member.
+
+    This is intentionally not a public directory: joining always requires the
+    current six-digit code, and a room closed by its owner disappears here.
+    """
+    user=_user(authorization); _require(user, STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute(
+            "SELECT r.*, COUNT(active.id) AS member_count FROM study_rooms r "
+            "JOIN study_room_members mine ON mine.room_id=r.id AND mine.user_id=? AND mine.left_at IS NULL "
+            "LEFT JOIN study_room_members active ON active.room_id=r.id AND active.left_at IS NULL "
+            "WHERE r.status='open' GROUP BY r.id ORDER BY r.created_at DESC LIMIT 100",
+            (int(user["id"]),),
+        )
+        return {"items": _dicts(cur.fetchall()), "max_members": 4}
     finally: conn.close()
 
 
 @router.post("/student/study-rooms/join/{room_code}")
 async def join_study_room(room_code: str, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, {"student"}); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require(user, STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT * FROM study_rooms WHERE room_code=? AND status='open'", (room_code,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Study-room not found")
@@ -729,7 +918,7 @@ def _room_for_member(room_id: int, user_id: int) -> dict[str, Any]:
 
 @router.get("/student/study-rooms/{room_id}/messages")
 async def study_room_messages(room_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT m.*, u.first_name, u.last_name, u.login_id FROM study_room_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.room_id=? ORDER BY m.id ASC LIMIT 250", (room_id,))
         items=[]
@@ -743,7 +932,7 @@ async def study_room_messages(room_id: int, authorization: str | None = Header(d
 
 @router.post("/student/study-rooms/{room_id}/messages")
 async def post_study_room_message(room_id: int, payload: StudyRoomMessage, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("INSERT INTO study_room_messages(room_id,sender_id,body,attachments_json) VALUES(?,?,?,?)", (room_id,int(user["id"]),payload.body,json.dumps(payload.attachments))); conn.commit(); return {"id":int(cur.lastrowid or 0)}
     finally: conn.close()
@@ -751,7 +940,7 @@ async def post_study_room_message(room_id: int, payload: StudyRoomMessage, autho
 
 @router.post("/student/study-rooms/{room_id}/close")
 async def close_study_room(room_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("UPDATE study_rooms SET status='closed',closed_at=? WHERE id=? AND owner_id=?", (_now().isoformat(),room_id,int(user["id"]))); conn.commit()
         if cur.rowcount==0: raise HTTPException(status_code=403, detail="Only room owner can close this room")
@@ -768,7 +957,7 @@ def _room_owner(room_id: int, user_id: int) -> dict[str, Any]:
 
 @router.get("/student/study-rooms/{room_id}")
 async def study_room_detail(room_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); room=_room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); room=_room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor()
         cur.execute("SELECT m.user_id,m.joined_at,u.first_name,u.last_name,u.login_id FROM study_room_members m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.left_at IS NULL ORDER BY m.joined_at", (room_id,))
@@ -780,7 +969,7 @@ async def study_room_detail(room_id: int, authorization: str | None = Header(def
 
 @router.post("/student/study-rooms/{room_id}/regenerate-code")
 async def regenerate_study_room_code(room_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor(); code=new_study_room_code()
         for _ in range(8):
@@ -795,7 +984,7 @@ async def regenerate_study_room_code(room_id: int, authorization: str | None = H
 
 @router.delete("/student/study-rooms/{room_id}/members/{member_id}")
 async def remove_study_room_member(room_id: int, member_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_owner(room_id,int(user["id"])); conn=get_conn()
     try:
         if int(member_id) == int(user["id"]):
             raise HTTPException(status_code=422, detail="Owner should close the room instead")
@@ -804,9 +993,25 @@ async def remove_study_room_member(room_id: int, member_id: int, authorization: 
     finally: conn.close()
 
 
+@router.post("/student/study-rooms/{room_id}/leave")
+async def leave_study_room(room_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema()
+    room = _room_for_member(room_id, int(user["id"]))
+    if int(room.get("owner_id") or 0) == int(user["id"]):
+        raise HTTPException(status_code=422, detail="Owner should close the room instead")
+    conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute(
+            "UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL",
+            (_now().isoformat(), room_id, int(user["id"])),
+        ); conn.commit()
+        return {"left": cur.rowcount > 0}
+    finally: conn.close()
+
+
 @router.post("/student/study-rooms/{room_id}/materials")
 async def add_study_room_material(room_id: int, payload: StudyRoomMaterial, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("INSERT INTO study_room_materials(room_id,uploaded_by,title,file_url,mime_type,extracted_text) VALUES(?,?,?,?,?,?)", (room_id,int(user["id"]),payload.title,payload.file_url,payload.mime_type,payload.extracted_text)); conn.commit()
         return {"id":int(cur.lastrowid or 0)}
@@ -817,7 +1022,10 @@ async def add_study_room_material(room_id: int, payload: StudyRoomMaterial, auth
 async def create_study_room_voice(room_id: int, authorization: str | None = Header(default=None)):
     """Create a private WebRTC room; the established websocket validates
     study-room membership before admitting a peer."""
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); room=_room_owner(room_id,int(user["id"])); conn=get_conn()
+    # Any active member may start the shared call. Membership is checked again
+    # by the WebRTC websocket, therefore a room code alone never grants voice
+    # access and an owner being offline does not block the group.
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); room=_room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor(); existing=int(room.get("voice_room_id") or 0)
         if existing:
@@ -839,7 +1047,7 @@ async def create_study_room_voice(room_id: int, authorization: str | None = Head
 
 @router.post("/student/study-rooms/{room_id}/reports")
 async def report_study_room(room_id: int, payload: StudyRoomReport, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
         cur=conn.cursor()
         if payload.message_id is not None:
@@ -919,16 +1127,610 @@ async def select_portfolio_badge(payload: BadgeSelectRequest, authorization: str
     finally: conn.close()
 
 
+# ── Learning Paths / Duolingo-style tracks ──────────────────────────────────
+LEARNING_MANAGER_ROLES = {"teacher", "support", "admin"}
+LEARNING_COVERS = {"star", "chest", "dolphin", "jellyfish", "ship", "trophy"}
+
+
+class LearningTrackRequest(BaseModel):
+    # The server derives this from the teacher profile when omitted.
+    subject: str | None = Field(default=None, max_length=80)
+    title: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    cover_key: str = Field(default="star", max_length=30)
+    position: int = Field(default=0, ge=0, le=10000)
+    # Created once as 70; subsequent edits are explicit teacher settings.
+    passing_score: int | None = Field(default=None, ge=1, le=100)
+    certificate_template_key: str | None = Field(default=None, pattern="^(english|russian)$")
+    certificate_layers: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
+
+
+class LearningTrackUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    cover_key: str | None = Field(default=None, max_length=30)
+    position: int | None = Field(default=None, ge=0, le=10000)
+    passing_score: int | None = Field(default=None, ge=1, le=100)
+    status: str | None = Field(default=None, pattern="^(draft|published|archived)$")
+    certificate_template_key: str | None = Field(default=None, pattern="^(english|russian)$")
+    certificate_layers: list[dict[str, Any]] | None = Field(default=None, max_length=24)
+
+
+class LearningModuleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    cover_key: str = Field(default="star", max_length=30)
+    position: int = Field(default=0, ge=0, le=10000)
+    topic_keys: list[str] = Field(default_factory=list, max_length=12)
+    passing_score: int | None = Field(default=None, ge=1, le=100)
+    reward_coins: int = Field(default=0, ge=0, le=10000)
+
+
+class LearningModuleUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=2000)
+    topic_keys: list[str] | None = Field(default=None, max_length=12)
+    passing_score: int | None = Field(default=None, ge=1, le=100)
+    reward_coins: int | None = Field(default=None, ge=0, le=10000)
+
+
+class LearningLessonRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=180)
+    source_kind: str = Field(default="manual", pattern="^(manual|library|homework|ai)$")
+    source_id: str | None = Field(default=None, max_length=120)
+    source_version: str | None = Field(default=None, max_length=80)
+    question_payload: dict[str, Any] | None = None
+    test_type: str = Field(default="multiple_choice", max_length=40)
+    question_count: int = Field(default=1, ge=1, le=50)
+    duration_seconds: int = Field(default=0, ge=0, le=7200)
+    position: int = Field(default=0, ge=0, le=10000)
+    required: bool = True
+
+
+class LearningAiLessonRequest(BaseModel):
+    topic: str = Field(min_length=2, max_length=160)
+    level: str | None = Field(default=None, max_length=80)
+    instruction: str | None = Field(default=None, max_length=1000)
+    question_count: int = Field(default=1, ge=1, le=30)
+    test_types: list[str] = Field(default_factory=lambda: ["multiple_choice"], max_length=8)
+
+
+class LearningLibraryTestAttachRequest(BaseModel):
+    content_type: str = Field(pattern="^(video|book|homework)$")
+    content_id: int = Field(gt=0)
+    question_count: int = Field(default=10, ge=1, le=50)
+
+
+class LearningAssignRequest(BaseModel):
+    student_ids: list[int] = Field(min_length=1, max_length=1000)
+    due_at: str | None = Field(default=None, max_length=64)
+
+
+class LearningLessonSubmit(BaseModel):
+    score: float = Field(ge=0, le=100)
+    answers: list[Any] = Field(default_factory=list, max_length=200)
+
+
+def _learning_track_for_manager(track_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT * FROM learning_tracks WHERE id=?", (track_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Learning track not found")
+        track=dict(row)
+        if _role(user) != "admin" and int(track.get("owner_id") or 0) != int(user["id"]):
+            raise HTTPException(status_code=403, detail="Only the track owner can manage this track")
+        return track
+    finally: conn.close()
+
+
+def _learning_track_subject(user: dict[str, Any], requested: str | None) -> str:
+    """Use the manager's configured subject without making the UI ask again."""
+    explicit = str(requested or "").strip()
+    if explicit:
+        return explicit[:80]
+    for key in ("subject", "primary_subject", "teacher_subject"):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value[:80]
+    raw = user.get("subjects") or user.get("subjects_json") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = [raw]
+    if isinstance(raw, (list, tuple)):
+        for value in raw:
+            text = str(value or "").strip()
+            if text:
+                return text[:80]
+    # Admin users can be cross-subject; teachers are resolved from profile.
+    return "General"
+
+
+def _certificate_template_for_subject(subject: str, requested: str | None) -> str:
+    if requested in {"english", "russian"}:
+        return requested
+    normalized = str(subject or "").lower()
+    return "russian" if any(token in normalized for token in ("russian", "russ", "рус", "rus")) else "english"
+
+
+def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | None = None) -> dict[str, Any]:
+    result=dict(track)
+    try: result["certificate_layers"] = json.loads(str(track.get("certificate_layers_json") or "[]"))
+    except Exception: result["certificate_layers"] = []
+    cur.execute("SELECT * FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(track["id"]),))
+    modules=[]
+    for module in _dicts(cur.fetchall()):
+        try: module["topic_keys"] = json.loads(str(module.get("topic_keys_json") or "[]"))
+        except Exception: module["topic_keys"] = []
+        cur.execute("SELECT id,title,source_kind,source_id,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
+        module["lessons"]=_dicts(cur.fetchall())
+        if student_id:
+            cur.execute("SELECT status,best_score,passed_at FROM learning_module_progress WHERE module_id=? AND student_id=?", (int(module["id"]), int(student_id)))
+            progress=cur.fetchone(); module["progress"] = dict(progress) if progress else {"status":"locked", "best_score":0}
+        modules.append(module)
+    result["modules"]=modules
+    return result
+
+
+@router.get("/staff/learning-tracks")
+async def staff_learning_tracks(authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor()
+        if _role(user) == "admin": cur.execute("SELECT * FROM learning_tracks ORDER BY subject,position,id")
+        else: cur.execute("SELECT * FROM learning_tracks WHERE owner_id=? ORDER BY subject,position,id", (int(user["id"]),))
+        return {"items":[_learning_track_payload(cur, row) for row in _dicts(cur.fetchall())], "default_passing_score":DEFAULT_TRACK_PASSING_SCORE, "covers":sorted(LEARNING_COVERS)}
+    finally: conn.close()
+
+
+@router.post("/staff/learning-tracks")
+async def create_learning_track(payload: LearningTrackRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    cover=payload.cover_key if payload.cover_key in LEARNING_COVERS else "star"
+    try:
+        cur=conn.cursor(); passing=normalize_track_passing_score(payload.passing_score)
+        subject=_learning_track_subject(user, payload.subject)
+        template=_certificate_template_for_subject(subject, payload.certificate_template_key)
+        cur.execute("INSERT INTO learning_tracks(owner_id,subject,title,description,cover_key,position,passing_score,certificate_required,certificate_template_key,certificate_layers_json) VALUES(?,?,?,?,?,?,?,?,?,?)", (int(user["id"]),subject,payload.title,payload.description,cover,payload.position,passing,1,template,json.dumps(payload.certificate_layers,ensure_ascii=False)))
+        conn.commit(); track_id=int(cur.lastrowid or 0)
+        if not track_id: cur.execute("SELECT id FROM learning_tracks WHERE owner_id=? ORDER BY id DESC LIMIT 1", (int(user["id"]),)); track_id=int(dict(cur.fetchone())["id"])
+        cur.execute("SELECT * FROM learning_tracks WHERE id=?", (track_id,)); return _learning_track_payload(cur,dict(cur.fetchone()))
+    finally: conn.close()
+
+
+@router.patch("/staff/learning-tracks/{track_id}")
+async def update_learning_track(track_id: int, payload: LearningTrackUpdate, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); track=_learning_track_for_manager(track_id,user); conn=get_conn()
+    try:
+        values=payload.model_dump(exclude_unset=True)
+        if not values: return track
+        mapping={"certificate_layers":"certificate_layers_json"}; sets=[]; params=[]
+        for key,value in values.items():
+            column=mapping.get(key,key)
+            if key=="passing_score": value=normalize_track_passing_score(value)
+            if key=="cover_key": value=value if value in LEARNING_COVERS else "star"
+            if key=="certificate_layers": value=json.dumps(value,ensure_ascii=False)
+            if key=="status" and value=="published": sets.append("published_at=?"); params.append(_now().isoformat())
+            sets.append(f"{column}=?"); params.append(value)
+        sets.append("updated_at=?"); params.append(_now().isoformat()); params.append(track_id)
+        cur=conn.cursor(); cur.execute(f"UPDATE learning_tracks SET {','.join(sets)} WHERE id=?",params); conn.commit(); cur.execute("SELECT * FROM learning_tracks WHERE id=?",(track_id,)); return _learning_track_payload(cur,dict(cur.fetchone()))
+    finally: conn.close()
+
+
+@router.delete("/staff/learning-tracks/{track_id}")
+async def delete_learning_track(track_id: int, authorization: str | None = Header(default=None)):
+    """Delete a track and all its modules, lessons, assignments and progress.
+
+    Student test-history and mistake-notebook records are intentionally
+    preserved so that academic history is never lost.
+    """
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id, user); conn=get_conn()
+    try:
+        cur=conn.cursor()
+        cur.execute("SELECT id FROM learning_modules WHERE track_id=?", (track_id,))
+        module_ids=[int(dict(r)["id"]) for r in cur.fetchall()]
+        if module_ids:
+            ph=",".join("?" for _ in module_ids)
+            cur.execute(f"SELECT id FROM learning_module_lessons WHERE module_id IN ({ph})", module_ids)
+            lesson_ids=[int(dict(r)["id"]) for r in cur.fetchall()]
+            if lesson_ids:
+                lph=",".join("?" for _ in lesson_ids)
+                cur.execute(f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({lph})", lesson_ids)
+            cur.execute(f"DELETE FROM learning_module_progress WHERE module_id IN ({ph})", module_ids)
+            cur.execute(f"DELETE FROM learning_module_lessons WHERE module_id IN ({ph})", module_ids)
+        cur.execute("DELETE FROM learning_track_assignments WHERE track_id=?", (track_id,))
+        cur.execute("DELETE FROM learning_modules WHERE track_id=?", (track_id,))
+        cur.execute("DELETE FROM learning_tracks WHERE id=?", (track_id,))
+        conn.commit()
+        return {"deleted": True, "track_id": track_id}
+    finally: conn.close()
+
+
+@router.post("/staff/learning-tracks/{track_id}/modules")
+async def add_learning_module(track_id: int, payload: LearningModuleRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
+    try:
+        cur=conn.cursor(); cover=payload.cover_key if payload.cover_key in LEARNING_COVERS else "star"
+        passing=normalize_track_passing_score(payload.passing_score)
+        cur.execute("INSERT INTO learning_modules(track_id,title,description,cover_key,position,topic_keys_json,passing_score,reward_coins) VALUES(?,?,?,?,?,?,?,?)",(track_id,payload.title,payload.description,cover,payload.position,json.dumps(payload.topic_keys,ensure_ascii=False),passing,payload.reward_coins)); conn.commit(); return {"id":int(cur.lastrowid or 0)}
+    finally: conn.close()
+
+
+@router.patch("/staff/learning-modules/{module_id}")
+async def update_learning_module(module_id: int, payload: LearningModuleUpdate, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        values=payload.model_dump(exclude_unset=True)
+        if not values: return {"id":module_id}
+        sets=[]; params=[]
+        for key,value in values.items():
+            if key == "topic_keys": key,value="topic_keys_json",json.dumps(value,ensure_ascii=False)
+            if key == "passing_score": value=normalize_track_passing_score(value)
+            sets.append(f"{key}=?"); params.append(value)
+        sets.append("updated_at=?"); params.append(_now().isoformat()); params.append(module_id)
+        cur.execute(f"UPDATE learning_modules SET {','.join(sets)} WHERE id=?", params); conn.commit(); return {"id":module_id,"updated":True}
+    finally: conn.close()
+
+
+@router.delete("/staff/learning-modules/{module_id}")
+async def delete_learning_module(module_id: int, authorization: str | None = Header(default=None)):
+    """Delete one module and only its dependent learning-path records.
+
+    This is intentionally owner-scoped.  Existing test-history and mistake
+    notebook records are not removed, so a teacher changing a path cannot
+    erase a student's broader academic history.
+    """
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        cur.execute("SELECT id FROM learning_module_lessons WHERE module_id=?", (module_id,)); lesson_ids=[int(dict(item)["id"]) for item in cur.fetchall()]
+        if lesson_ids:
+            placeholders=",".join("?" for _ in lesson_ids)
+            cur.execute(f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({placeholders})", lesson_ids)
+        cur.execute("DELETE FROM learning_module_progress WHERE module_id=?", (module_id,))
+        cur.execute("DELETE FROM learning_module_lessons WHERE module_id=?", (module_id,))
+        cur.execute("DELETE FROM learning_modules WHERE id=?", (module_id,))
+        conn.commit()
+        return {"deleted": True, "module_id": module_id}
+    finally: conn.close()
+
+
+@router.post("/staff/learning-modules/{module_id}/lessons")
+async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?",(module_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]),user)
+        if payload.source_kind in {"manual","ai"} and not payload.question_payload: raise HTTPException(status_code=422,detail="Manual or AI lesson needs a question payload")
+        cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(payload.question_payload,ensure_ascii=False) if payload.question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); conn.commit(); return {"id":int(cur.lastrowid or 0)}
+    finally: conn.close()
+
+
+@router.post("/staff/learning-modules/{module_id}/ai-question")
+async def generate_learning_ai_question(module_id: int, payload: LearningAiLessonRequest, authorization: str | None = Header(default=None)):
+    """Generate a reviewable MCQ; teachers must explicitly save it as a lesson."""
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?",(module_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]),user)
+    finally: conn.close()
+    callback=_runtime.get("explain")
+    if not callback: raise HTTPException(status_code=503,detail="Diamondvoy is unavailable")
+    prompt=(f"Create exactly {payload.question_count} safe learning questions. Return ONLY a JSON array. Every object must have "
+            "question, options (array of strings, 2 to 4 options), correct_answer, explanation and test_type. "
+            f"Use a varied mix of these compatible exercise types: {', '.join(payload.test_types or ['multiple_choice'])}. "
+            f"Topic: {payload.topic}. Level: {payload.level or 'student'}. Extra instruction: {payload.instruction or 'none'}")
+    raw=await callback(prompt,user)
+    try:
+        source=str(raw); start=source.find("["); end=source.rfind("]")+1
+        parsed=json.loads(source[start:end]) if start>=0 and end>start else [json.loads(source[source.find("{"):source.rfind("}")+1])]
+        if not isinstance(parsed,list) or not parsed: raise ValueError("empty questions")
+        items=[]
+        for index,result in enumerate(parsed[:payload.question_count]):
+            options=result.get("options") if isinstance(result,dict) else None
+            if not isinstance(options,list) or len(options) < 2 or str(result.get("correct_answer") or "") not in [str(item) for item in options]: raise ValueError("invalid choices")
+            items.append({"title":f"{payload.topic} · {index + 1}","source_kind":"ai","question_payload":{"question":str(result.get("question") or ""),"options":[str(item) for item in options],"correct_answer":str(result["correct_answer"]),"explanation":str(result.get("explanation") or ""),"test_type":str(result.get("test_type") or "multiple_choice")}})
+        return items[0] if payload.question_count == 1 else {"items":items, "question_count":len(items)}
+    except Exception:
+        raise HTTPException(status_code=502,detail="Diamondvoy returned an invalid question; try again")
+
+
+def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a content-library test question to the portable path format."""
+    question=str(raw.get("question") or raw.get("prompt") or raw.get("text") or "").strip()
+    options=raw.get("options") or raw.get("choices") or []
+    if not isinstance(options, list): options=[]
+    options=[str(item) for item in options]
+    correct=raw.get("correct_answer", raw.get("correct", raw.get("answer")))
+    index=raw.get("correct_option_index", raw.get("correct_index"))
+    if correct is None and isinstance(index, int) and 0 <= index < len(options): correct=options[index]
+    if not question or len(options) < 2 or correct is None: return None
+    return {"question":question,"options":options,"correct_answer":str(correct),"explanation":str(raw.get("explanation") or ""),"test_type":str(raw.get("kind") or raw.get("test_type") or "multiple_choice")}
+
+
+@router.post("/staff/learning-modules/{module_id}/library-test")
+async def attach_learning_library_test(module_id: int, payload: LearningLibraryTestAttachRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id,position FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]),user)
+        resolver=_runtime.get("content_test")
+        if not resolver: raise HTTPException(status_code=503,detail="Material library is unavailable")
+        test=resolver(payload.content_type, payload.content_id)
+        if not test: raise HTTPException(status_code=404,detail="Material test not found")
+        questions=[item for item in (_learning_library_question(dict(raw)) for raw in (test.get("questions") or [])) if item]
+        if not questions: raise HTTPException(status_code=422,detail="This library test has no supported questions")
+        cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,)); position=int(dict(cur.fetchone() or {}).get("value") or -1)+1
+        created=[]
+        for item in questions[:payload.question_count]:
+            cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,str(test.get("title") or "Material testi"),"library",f"{payload.content_type}:{payload.content_id}",str(item.get("test_type") or "multiple_choice"),json.dumps(item,ensure_ascii=False),0,position,1)); created.append(int(cur.lastrowid or 0)); position+=1
+        conn.commit(); return {"created_lesson_ids":created,"question_count":len(created)}
+    finally: conn.close()
+
+
+@router.post("/staff/learning-tracks/{track_id}/assign")
+async def assign_learning_track(track_id: int, payload: LearningAssignRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
+    try:
+        cur=conn.cursor(); assigned=[]
+        for student_id in sorted(set(payload.student_ids)):
+            if int(student_id)<=0 or (_role(user)!="admin" and not _staff_can_access_student(user,int(student_id))): continue
+            try: cur.execute("INSERT INTO learning_track_assignments(track_id,student_id,assigned_by,due_at) VALUES(?,?,?,?) ON CONFLICT(track_id,student_id) DO UPDATE SET status='active',due_at=excluded.due_at",(track_id,int(student_id),int(user["id"]),payload.due_at))
+            except Exception: cur.execute("INSERT OR REPLACE INTO learning_track_assignments(track_id,student_id,assigned_by,due_at,status) VALUES(?,?,?,?, 'active')",(track_id,int(student_id),int(user["id"]),payload.due_at))
+            assigned.append(int(student_id))
+        conn.commit(); return {"assigned_student_ids":assigned}
+    finally: conn.close()
+
+
+@router.get("/staff/materials-search")
+async def staff_materials_search(q: str = "", content_type: str = "", authorization: str | None = Header(default=None)):
+    """Search material library tests that can be attached to learning modules."""
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); items=[]
+        search_types = [content_type] if content_type in {"book", "video", "homework"} else ["book", "video", "homework"]
+        for ct in search_types:
+            try:
+                if ct == "book":
+                    if q.strip():
+                        cur.execute("SELECT t.content_id, b.title, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' AND b.title LIKE ? ORDER BY b.title LIMIT 20", (f"%{q.strip()}%",))
+                    else:
+                        cur.execute("SELECT t.content_id, b.title, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' ORDER BY b.title LIMIT 20")
+                elif ct == "video":
+                    if q.strip():
+                        cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' AND v.title LIKE ? ORDER BY v.title LIMIT 20", (f"%{q.strip()}%",))
+                    else:
+                        cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' ORDER BY v.title LIMIT 20")
+                else:
+                    if q.strip():
+                        cur.execute("SELECT t.content_id, h.title, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' AND h.title LIKE ? ORDER BY h.title LIMIT 20", (f"%{q.strip()}%",))
+                    else:
+                        cur.execute("SELECT t.content_id, h.title, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' ORDER BY h.title LIMIT 20")
+                for row in _dicts(cur.fetchall()):
+                    try: questions=json.loads(str(row.get("questions_json") or "[]"))
+                    except Exception: questions=[]
+                    items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "Nomsiz"), "content_type": ct, "question_count": len(questions) if isinstance(questions, list) else 0})
+            except Exception:
+                pass
+        return {"items": items}
+    finally: conn.close()
+
+
+def _refresh_learning_module_progress(cur: Any, module_id: int, student_id: int, passing_score: int) -> dict[str, Any]:
+    cur.execute("SELECT id,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (module_id,))
+    lessons=_dicts(cur.fetchall())
+    required=[int(row["id"]) for row in lessons if int(row.get("required") or 0)]
+    scores=[]
+    for lesson_id in required:
+        cur.execute("SELECT MAX(score) AS score FROM learning_lesson_attempts WHERE lesson_id=? AND student_id=?",(lesson_id,student_id))
+        row=dict(cur.fetchone() or {}); scores.append(float(row.get("score") or 0))
+    complete=bool(required) and len(scores)==len(required) and all(learning_score_passes(score,passing_score) for score in scores)
+    status="passed" if complete else ("in_progress" if scores else "unlocked")
+    best=round(sum(scores)/len(scores),2) if scores else 0
+    try:
+        cur.execute("INSERT INTO learning_module_progress(module_id,student_id,status,best_score,passed_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(module_id,student_id) DO UPDATE SET status=excluded.status,best_score=MAX(learning_module_progress.best_score,excluded.best_score),passed_at=COALESCE(learning_module_progress.passed_at,excluded.passed_at),updated_at=excluded.updated_at",(module_id,student_id,status,best,_now().isoformat() if complete else None,_now().isoformat()))
+    except Exception:
+        cur.execute("DELETE FROM learning_module_progress WHERE module_id=? AND student_id=?",(module_id,student_id)); cur.execute("INSERT INTO learning_module_progress(module_id,student_id,status,best_score,passed_at,updated_at) VALUES(?,?,?,?,?,?)",(module_id,student_id,status,best,_now().isoformat() if complete else None,_now().isoformat()))
+    return {"status":status,"best_score":best,"passed":complete}
+
+
+def _ensure_track_certificate(cur: Any, track: dict[str, Any], student_id: int) -> dict[str, Any] | None:
+    if not track_certificate_eligible("passed", certificate_required=bool(track.get("certificate_required",1))): return None
+    course_key=f"learning-track:{int(track['id'])}:v{int(track.get('version') or 1)}"
+    cur.execute("SELECT * FROM certificates WHERE user_id=? AND course_key=?",(student_id,course_key)); existing=cur.fetchone()
+    if existing:
+        certificate=dict(existing)
+        cur.execute("SELECT share_token FROM learning_certificate_shares WHERE certificate_id=? AND active=1", (certificate["certificate_id"],))
+        share_row=cur.fetchone()
+        if share_row: certificate["share_token"]=str(dict(share_row).get("share_token") or "")
+        return certificate
+    certificate_id=f"LP-{int(track['id'])}-{student_id}-{secrets.token_hex(5).upper()}"
+    metadata={"source":"learning_path","track_id":int(track["id"]),"template":track.get("certificate_template_key"),"layers":json.loads(str(track.get("certificate_layers_json") or "[]"))}
+    cur.execute("INSERT INTO certificates(certificate_id,user_id,course_key,course_title,metadata_json) VALUES(?,?,?,?,?)",(certificate_id,student_id,course_key,str(track.get("title") or "Learning Path"),json.dumps(metadata,ensure_ascii=False)))
+    share=secrets.token_urlsafe(24).replace("-","").replace("_","")
+    try: cur.execute("INSERT INTO learning_certificate_shares(certificate_id,share_token) VALUES(?,?)",(certificate_id,share))
+    except Exception: pass
+    cur.execute("SELECT * FROM certificates WHERE certificate_id=?",(certificate_id,)); certificate=dict(cur.fetchone()); certificate["share_token"]=share; return certificate
+
+
+@router.get("/student/learning-tracks")
+async def student_learning_tracks(authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT t.* FROM learning_tracks t JOIN learning_track_assignments a ON a.track_id=t.id WHERE a.student_id=? AND a.status='active' AND t.status='published' ORDER BY t.position,t.id",(uid,)); tracks=[]; previous_complete=True
+        for track in _dicts(cur.fetchall()):
+            item=_learning_track_payload(cur,track,uid)
+            states=[str((module.get("progress") or {}).get("status") or "locked") for module in item["modules"]]
+            for index,module in enumerate(item["modules"]):
+                progress=module.get("progress") or {}
+                if not previous_complete or (index>0 and states[index-1] != "passed"):
+                    progress["status"]="locked"; module["progress"]=progress
+                elif progress.get("status") == "locked": progress["status"]="unlocked"; module["progress"]=progress
+            completed=next_track_unlocked(states)
+            item["progress_status"]="passed" if completed else ("unlocked" if previous_complete else "locked")
+            item["locked"]=not previous_complete; item["certificate_eligible"]=completed
+            tracks.append(item); previous_complete = previous_complete and completed
+        return {"items":tracks,"passing_score":DEFAULT_TRACK_PASSING_SCORE}
+    finally: conn.close()
+
+
+@router.get("/student/learning-lessons/{lesson_id}")
+async def student_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,t.passing_score AS track_passing_score,t.status AS track_status FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id JOIN learning_track_assignments a ON a.track_id=t.id AND a.student_id=? AND a.status='active' WHERE l.id=? AND t.status='published'",(uid,lesson_id)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Lesson not assigned")
+        item=dict(row)
+        cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(item["track_id"]),))
+        module_ids=[int(dict(module)["id"]) for module in cur.fetchall()]
+        module_index=module_ids.index(int(item["module_id"]))
+        if module_index:
+            cur.execute("SELECT status FROM learning_module_progress WHERE module_id=? AND student_id=?", (module_ids[module_index - 1], uid))
+            previous=cur.fetchone()
+            if not previous or str(dict(previous).get("status") or "") != "passed":
+                raise HTTPException(status_code=423, detail="Complete the previous module first")
+        try: item["question_payload"]=json.loads(str(item.get("question_payload_json") or "{}"))
+        except Exception: item["question_payload"]={}
+        return item
+    finally: conn.close()
+
+
+@router.post("/student/learning-lessons/{lesson_id}/submit")
+async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,m.reward_coins AS module_reward_coins,t.passing_score AS track_passing_score,t.certificate_required,t.certificate_template_key,t.certificate_layers_json,t.title AS track_title,t.version FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id JOIN learning_track_assignments a ON a.track_id=t.id AND a.student_id=? AND a.status='active' WHERE l.id=? AND t.status='published'",(uid,lesson_id)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Lesson not assigned")
+        lesson=dict(row); threshold=normalize_track_passing_score(lesson.get("module_passing") or lesson.get("track_passing_score")); passed=learning_score_passes(payload.score,threshold)
+        cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(lesson["track_id"]),))
+        module_ids=[int(dict(module)["id"]) for module in cur.fetchall()]
+        module_index=module_ids.index(int(lesson["module_id"]))
+        if module_index:
+            cur.execute("SELECT status FROM learning_module_progress WHERE module_id=? AND student_id=?", (module_ids[module_index - 1], uid))
+            previous=cur.fetchone()
+            if not previous or str(dict(previous).get("status") or "") != "passed":
+                raise HTTPException(status_code=423, detail="Complete the previous module first")
+        cur.execute("INSERT INTO learning_lesson_attempts(lesson_id,student_id,score,passed,answers_json,completed_at) VALUES(?,?,?,?,?,?)",(lesson_id,uid,payload.score,1 if passed else 0,json.dumps(payload.answers,ensure_ascii=False),_now().isoformat()))
+        progress=_refresh_learning_module_progress(cur,int(lesson["module_id"]),uid,threshold)
+        reward_coins=0
+        if progress.get("passed") and int(lesson.get("module_reward_coins") or 0) > 0:
+            cur.execute("UPDATE learning_module_progress SET rewarded_at=? WHERE module_id=? AND student_id=? AND rewarded_at IS NULL", (_now().isoformat(),int(lesson["module_id"]),uid))
+            if cur.rowcount:
+                reward_coins=int(lesson.get("module_reward_coins") or 0)
+        cur.execute("SELECT COALESCE(p.status,'locked') AS status FROM learning_modules m LEFT JOIN learning_module_progress p ON p.module_id=m.id AND p.student_id=? WHERE m.track_id=? ORDER BY m.position,m.id",(uid,int(lesson["track_id"]))); states=[str(dict(r).get("status") or "locked") for r in cur.fetchall()]
+        track_complete=next_track_unlocked(states) if states else False; certificate=None
+        if track_complete:
+            certificate=_ensure_track_certificate(cur,{"id":lesson["track_id"],"version":lesson.get("version"),"certificate_required":lesson.get("certificate_required"),"certificate_template_key":lesson.get("certificate_template_key"),"certificate_layers_json":lesson.get("certificate_layers_json"),"title":lesson.get("track_title")},uid)
+            if certificate:
+                # The certificate and opaque share token must exist before a
+                # push/Telegram action can lead the student to it.
+                conn.commit()
+                callback=_runtime.get("notify_certificate")
+                if callback:
+                    try:
+                        await callback(user, certificate, lesson)
+                    except Exception:
+                        # Delivery may be retried independently; finishing a
+                        # lesson can never be rolled back by a notification
+                        # provider outage.
+                        pass
+        conn.commit()
+        if reward_coins:
+            award=_runtime.get("award_coins")
+            if award:
+                try: award(uid,reward_coins,lesson.get("subject"),change_type="learning_module_reward")
+                except Exception: pass
+        return {"passed":passed,"required_score":threshold,"module_progress":progress,"track_completed":track_complete,"certificate":certificate,"reward_coins":reward_coins}
+    finally: conn.close()
+
+
+@router.get("/certificates/share/{share_token}")
+async def shared_learning_certificate(share_token: str):
+    ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT c.certificate_id,c.course_title,c.issued_at,u.first_name,u.last_name FROM learning_certificate_shares s JOIN certificates c ON c.certificate_id=s.certificate_id JOIN users u ON u.id=c.user_id WHERE s.share_token=? AND s.active=1",(share_token,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Certificate link is invalid")
+        certificate=dict(row); certificate["student_name"]=_student_name(certificate); certificate["download_url"]=f"/certificates/share/{share_token}/download"; return certificate
+    finally: conn.close()
+
+
+def _certificate_pdf(certificate: dict[str, Any]) -> bytes:
+    """Render a centred, brand-colour certificate; share links never expose auth tokens."""
+    from certificate_generator import get_certificate_pdf
+    try:
+        metadata=json.loads(str(certificate.get("metadata_json") or "{}"))
+    except Exception:
+        metadata={}
+    return get_certificate_pdf(
+        str(certificate["certificate_id"]),
+        int(certificate.get("user_id") or 0),
+        None,
+        course_title=str(certificate.get("course_title") or "Diamond Education"),
+        student_name=_student_name(certificate),
+        issued_at=str(certificate.get("issued_at") or ""),
+        template_key=str(metadata.get("template") or "english"),
+        layers=metadata.get("layers") if isinstance(metadata.get("layers"),list) else [],
+    )
+
+
+@router.get("/student/certificates/{certificate_id}/pdf")
+async def download_student_certificate(certificate_id: str, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT c.*,u.first_name,u.last_name FROM certificates c JOIN users u ON u.id=c.user_id WHERE c.certificate_id=? AND c.user_id=?", (certificate_id,int(user["id"])))
+        row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Certificate not found")
+        return Response(_certificate_pdf(dict(row)), media_type="application/pdf", headers={"Content-Disposition":f'attachment; filename="{certificate_id}.pdf"'})
+    finally: conn.close()
+
+
+@router.get("/certificates/share/{share_token}/download")
+async def download_shared_learning_certificate(share_token: str):
+    ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT c.*,u.first_name,u.last_name FROM learning_certificate_shares s JOIN certificates c ON c.certificate_id=s.certificate_id JOIN users u ON u.id=c.user_id WHERE s.share_token=? AND s.active=1", (share_token,))
+        row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404,detail="Certificate link is invalid")
+        certificate=dict(row)
+        return Response(_certificate_pdf(certificate), media_type="application/pdf", headers={"Content-Disposition":f'attachment; filename="{certificate["certificate_id"]}.pdf"'})
+    finally: conn.close()
+
+
 @router.get("/teacher/student-insights")
 async def teacher_student_insights(authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"teacher","support"}); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require(user,{"teacher","support","admin"}); ensure_schema(); conn=get_conn()
     try:
-        visible = _runtime.get("staff_visible_student_ids", lambda _u: set())(user)
-        ids = sorted({int(item) for item in (visible or set()) if int(item or 0) > 0})
+        cur=conn.cursor()
+        ids = set()
+        if _role(user) == "admin":
+            try:
+                cur.execute("SELECT id FROM users WHERE role='student' ORDER BY id DESC LIMIT 500")
+                ids = {int(r["id"]) for r in _dicts(cur.fetchall())}
+            except Exception:
+                pass
+        else:
+            visible = _runtime.get("staff_visible_student_ids", lambda _u: set())(user)
+            ids = {int(item) for item in (visible or set()) if int(item or 0) > 0}
+            if not ids:
+                try:
+                    cur.execute("SELECT gs.student_id FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE g.teacher_id=? OR g.support_id=?", (int(user["id"]), int(user["id"])))
+                    ids = {int(r["student_id"]) for r in _dicts(cur.fetchall())}
+                except Exception:
+                    pass
         if not ids:
             return {"items":[]}
-        placeholders=",".join("?" for _ in ids)
-        cur=conn.cursor(); cur.execute(f"SELECT m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items m JOIN users u ON u.id=m.user_id WHERE m.resolved_at IS NULL AND m.user_id IN ({placeholders}) GROUP BY m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key ORDER BY mistakes DESC LIMIT 100", ids); rows=_dicts(cur.fetchall()); return {"items":rows}
+        placeholders=",".join("?" for _ in sorted(ids))
+        cur.execute(f"SELECT m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items m JOIN users u ON u.id=m.user_id WHERE m.resolved_at IS NULL AND m.user_id IN ({placeholders}) GROUP BY m.user_id,u.first_name,u.last_name,u.login_id,m.subject,m.topic_key ORDER BY mistakes DESC LIMIT 100", sorted(ids)); rows=_dicts(cur.fetchall()); return {"items":rows}
     finally: conn.close()
 
 
@@ -998,6 +1800,29 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
     hw_total = int(hw_row.get("total") or 0)
     hw_completed = int(hw_row.get("completed") or 0)
 
+    # A Learning Path lesson can be manual, library, homework, or AI-created.
+    # Folding every attempted lesson into the same weekly evidence prevents the
+    # advisor from overlooking the work students do in the Duolingo-style map.
+    cur.execute(
+        "SELECT t.subject,t.title AS track_title,m.title AS module_title,l.source_kind,"
+        "a.score,a.passed,a.completed_at "
+        "FROM learning_lesson_attempts a "
+        "JOIN learning_module_lessons l ON l.id=a.lesson_id "
+        "JOIN learning_modules m ON m.id=l.module_id "
+        "JOIN learning_tracks t ON t.id=m.track_id "
+        "WHERE a.student_id=? AND DATE(a.completed_at)>=? AND DATE(a.completed_at)<=? "
+        "ORDER BY a.completed_at DESC",
+        (user_id, week_start, week_end),
+    )
+    learning_path_attempts = _dicts(cur.fetchall())
+    learning_path_total = len(learning_path_attempts)
+    learning_path_passed = sum(1 for item in learning_path_attempts if int(item.get("passed") or 0) == 1)
+    for item in learning_path_attempts:
+        if int(item.get("passed") or 0) != 1:
+            topic = str(item.get("module_title") or item.get("track_title") or "learning_path")
+            topic_errors[topic] = topic_errors.get(topic, 0) + 1
+    weak_by_tests = sorted(topic_errors.items(), key=lambda x: x[1], reverse=True)[:5]
+
     return {
         "tests": tests[:20],
         "test_count": len(tests),
@@ -1011,6 +1836,10 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
         "homework_total": hw_total,
         "homework_completed": hw_completed,
         "homework_completion_pct": round(hw_completed / hw_total * 100, 1) if hw_total > 0 else 0,
+        "learning_path_attempts": learning_path_attempts[:30],
+        "learning_path_count": learning_path_total,
+        "learning_path_passed": learning_path_passed,
+        "learning_path_accuracy_pct": round(learning_path_passed / learning_path_total * 100, 1) if learning_path_total else 0,
     }
 
 
@@ -1038,6 +1867,7 @@ Bu haftadagi statistika:
 - To'g'ri: {stats.get('total_correct', 0)}, Noto'g'ri: {stats.get('total_wrong', 0)}, O'tkazilgan: {stats.get('total_skipped', 0)}
 - Umumiy aniqlik: {stats.get('accuracy_pct', 0)}%
 - Uy vazifalari: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} bajarildi ({stats.get('homework_completion_pct', 0)}%)
+- Learning Path mashqlari: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} muvaffaqiyatli ({stats.get('learning_path_accuracy_pct', 0)}%)
 
 Zaif mavzular:
 {weak_str}
@@ -1342,29 +2172,117 @@ async def check_practice_answer(payload: dict, authorization: str | None = Heade
         except Exception:
             explanation = f"To'g'ri javob: {correct}"
 
-    # Save wrong answers to mistake notebook
-    if not is_correct:
-        ensure_schema(); conn = get_conn()
-        try:
-            cur = conn.cursor()
+    # Keep every answer, not only mistakes, so a full practice attempt can be
+    # reopened later. Wrong answers continue to feed the mistake notebook.
+    ensure_schema()
+    attempt_id = str(payload.get("attempt_id") or secrets.token_urlsafe(16)).strip()[:96]
+    try:
+        question_index = max(1, int(payload.get("question_index") or 1))
+    except (TypeError, ValueError):
+        question_index = 1
+    try:
+        total_questions = max(question_index, int(payload.get("total_questions") or question_index))
+    except (TypeError, ValueError):
+        total_questions = question_index
+    subject = str(payload.get("subject") or "")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO personal_practice_attempts(user_id,attempt_id,subject,total_questions) VALUES(?,?,?,?) "
+            "ON CONFLICT(user_id,attempt_id) DO UPDATE SET subject=excluded.subject,total_questions=excluded.total_questions",
+            (int(user["id"]), attempt_id, subject, total_questions),
+        )
+        cur.execute(
+            "INSERT INTO personal_practice_attempt_items(user_id,attempt_id,question_index,subject,topic_key,prompt,options_json,selected_answer,correct_answer,explanation,is_correct) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(user_id,attempt_id,question_index) DO UPDATE SET selected_answer=excluded.selected_answer,correct_answer=excluded.correct_answer,explanation=excluded.explanation,is_correct=excluded.is_correct,options_json=excluded.options_json",
+            (int(user["id"]), attempt_id, question_index, subject, topic, question,
+             json.dumps(payload.get("options", []), ensure_ascii=False), selected, correct,
+             explanation, 1 if is_correct else 0),
+        )
+        if not is_correct:
             cur.execute(
-                "INSERT INTO mistake_notebook_items(user_id, source_type, subject, topic_key, prompt, "
+                "INSERT INTO mistake_notebook_items(user_id, source_type, source_id, subject, topic_key, prompt, "
                 "options_json, selected_answer, correct_answer, explanation, review_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (int(user["id"]), "weekly_practice", str(payload.get("subject") or ""), topic, question,
-                 json.dumps(payload.get("options", []), ensure_ascii=False),
-                 selected, correct, explanation,
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (int(user["id"]), "weekly_practice", f"{attempt_id}:{question_index}", subject, topic, question,
+                 json.dumps(payload.get("options", []), ensure_ascii=False), selected, correct, explanation,
                  mistake_next_review_at(_now(), 0).isoformat()),
             )
-            conn.commit()
-        finally:
-            conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     return {
         "correct": is_correct,
         "explanation": explanation,
         "correct_answer": correct,
+        "attempt_id": attempt_id,
     }
+
+
+@router.post("/student/personal-plan/practice-test/{attempt_id}/complete")
+async def complete_practice_attempt(attempt_id: str, authorization: str | None = Header(default=None)):
+    """Finalize a personal practice once and write its aggregate to test history."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"]); key = str(attempt_id or "").strip()[:96]
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing practice attempt")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT subject,total_questions,completed_at FROM personal_practice_attempts WHERE user_id=? AND attempt_id=? LIMIT 1", (uid, key))
+        attempt = dict(cur.fetchone() or {})
+        if not attempt:
+            raise HTTPException(status_code=404, detail="Practice attempt not found")
+        cur.execute("SELECT is_correct FROM personal_practice_attempt_items WHERE user_id=? AND attempt_id=?", (uid, key))
+        rows = _dicts(cur.fetchall())
+        correct = sum(1 for row in rows if bool(int(row.get("is_correct") or 0)))
+        wrong = max(0, len(rows) - correct)
+        skipped = max(0, int(attempt.get("total_questions") or len(rows)) - len(rows))
+        first_completion = not attempt.get("completed_at")
+        if first_completion:
+            cur.execute("UPDATE personal_practice_attempts SET completed_at=? WHERE user_id=? AND attempt_id=?", (_now().isoformat(), uid, key))
+        conn.commit()
+    finally:
+        conn.close()
+    if first_completion:
+        callback = _runtime.get("add_test_history")
+        if callback:
+            try:
+                callback(uid, "weekly_practice", str(attempt.get("subject") or ""), correct, wrong, skipped)
+            except Exception:
+                pass
+    return {"attempt_id": key, "correct": correct, "wrong": wrong, "skipped": skipped, "total": max(0, int(attempt.get("total_questions") or len(rows))), "completed": True}
+
+
+@router.get("/student/personal-plan/practice-test/history")
+async def personal_practice_history(limit: int = 20, authorization: str | None = Header(default=None)):
+    """Student-owned practice history, including every question and answer."""
+    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    uid = int(user["id"])
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM personal_practice_attempts WHERE user_id=? ORDER BY created_at DESC LIMIT ?", (uid, max(1, min(50, int(limit or 20)))))
+        attempts = _dicts(cur.fetchall())
+        for attempt in attempts:
+            key = str(attempt.get("attempt_id") or "")
+            cur.execute("SELECT * FROM personal_practice_attempt_items WHERE user_id=? AND attempt_id=? ORDER BY question_index ASC", (uid, key))
+            items = _dicts(cur.fetchall())
+            for item in items:
+                try:
+                    item["options"] = json.loads(str(item.pop("options_json", "[]") or "[]"))
+                except Exception:
+                    item["options"] = []
+            attempt["items"] = items
+            attempt["correct"] = sum(1 for item in items if bool(int(item.get("is_correct") or 0)))
+            attempt["wrong"] = max(0, len(items) - int(attempt["correct"]))
+            attempt["skipped"] = max(0, int(attempt.get("total_questions") or len(items)) - len(items))
+        return {"items": attempts}
+    finally:
+        conn.close()
 
 
 # ── Alias Routes (fix frontend/backend path mismatch) ────────────────────────

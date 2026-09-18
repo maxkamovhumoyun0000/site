@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useWebT } from "./web-i18n";
+import { TestCompletionActions } from "./test-completion-actions";
 
 type Row = Record<string, any>;
 
@@ -15,6 +16,10 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
   const [questionIndex, setQuestionIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [answerResult, setAnswerResult] = useState<Row | null>(null);
+  const [practiceAttemptId, setPracticeAttemptId] = useState("");
+  const [practiceCompleted, setPracticeCompleted] = useState(false);
+  const [practiceHistory, setPracticeHistory] = useState<Row[]>([]);
+  const [selectedPracticeHistory, setSelectedPracticeHistory] = useState<Row | null>(null);
   const [askText, setAskText] = useState("");
   const [askReply, setAskReply] = useState("");
   const [asking, setAsking] = useState(false);
@@ -22,12 +27,14 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
 
   const load = async () => {
     try {
-      const [current, previous] = await Promise.all([
+      const [current, previous, savedPractice] = await Promise.all([
         apiFetch("/student/personal-plan/weekly-analysis"),
         apiFetch("/student/personal-plan/analysis-history"),
+        apiFetch("/student/personal-plan/practice-test/history"),
       ]);
       setAnalysis(current || null);
       setHistory(previous?.items || []);
+      setPracticeHistory(savedPractice?.items || []);
     } finally {
       setLoading(false);
     }
@@ -60,13 +67,26 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
   const currentQuestion = practice[questionIndex];
   const checkAnswer = async () => {
     if (!currentQuestion || !answer || answerResult) return;
+    const attemptId = practiceAttemptId || (typeof crypto !== "undefined" ? crypto.randomUUID() : `practice-${Date.now()}-${Math.random()}`);
+    if (!practiceAttemptId) setPracticeAttemptId(attemptId);
     const result = await apiFetch("/student/personal-plan/practice-test/check", {
       method: "POST",
-      body: { ...currentQuestion, selected: answer, subject: currentQuestion.subject || "" },
+      body: { ...currentQuestion, selected: answer, subject: currentQuestion.subject || "", attempt_id: attemptId, question_index: questionIndex + 1, total_questions: practice.length },
     });
     setAnswerResult(result || {});
+    if (result?.attempt_id) setPracticeAttemptId(String(result.attempt_id));
   };
-  const nextQuestion = () => { setQuestionIndex((value) => Math.min(value + 1, practice.length - 1)); setAnswer(""); setAnswerResult(null); };
+  const nextQuestion = async () => {
+    if (questionIndex + 1 >= practice.length) {
+      if (practiceAttemptId) {
+        await apiFetch(`/student/personal-plan/practice-test/${encodeURIComponent(practiceAttemptId)}/complete`, { method: "POST" });
+        await load();
+      }
+      setPracticeCompleted(true);
+      return;
+    }
+    setQuestionIndex((value) => value + 1); setAnswer(""); setAnswerResult(null);
+  };
   const askDiamondvoy = async (event: FormEvent) => {
     event.preventDefault();
     const question = askText.trim(); if (!question || asking) return;
@@ -99,7 +119,11 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
 
       <section className="grid gap-4 xl:grid-cols-2"><article className="premium-card"><h3 className="text-lg font-black">{tt("plan.weekly.weakTopics", "Tushunib olish kerak bo‘lgan mavzular")}</h3><div className="mt-4 space-y-3">{(shown.weak_topics || []).map((topic: Row, index: number) => <div key={`${topic.topic}-${index}`} className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4"><div className="flex items-center justify-between gap-3"><strong>{topic.topic || tt("plan.weekly.topic", "Mavzu")}</strong><span className="rounded-full bg-amber-500/15 px-2 py-1 text-xs font-black text-amber-700 dark:text-amber-300">{topic.level === "weak" ? tt("plan.weekly.weak", "Zaif") : tt("plan.weekly.practice", "Mashq kerak")}</span></div>{topic.explanation ? <p className="mt-2 text-sm leading-6 text-ink-600 dark:text-navy-200">{topic.explanation}</p> : null}{Array.isArray(topic.rules) && topic.rules.length ? <ul className="mt-3 space-y-1 text-sm text-ink-600 dark:text-navy-200">{topic.rules.map((rule: string, ruleIndex: number) => <li key={ruleIndex}>• {rule}</li>)}</ul> : null}</div>)}{!(shown.weak_topics || []).length ? <p className="text-sm text-ink-500 dark:text-navy-300">{tt("plan.weekly.noWeak", "Hozircha yetarli zaif mavzu aniqlanmadi.")}</p> : null}</div></article><article className="premium-card"><h3 className="text-lg font-black">{tt("plan.weekly.nextSteps", "Keyingi qadamlar")}</h3><ol className="mt-4 space-y-3">{(shown.recommendations || []).map((recommendation: string, index: number) => <li key={index} className="flex gap-3 text-sm leading-6"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-cyan-500/15 text-xs font-black text-cyan-700 dark:text-cyan-300">{index + 1}</span><span>{recommendation}</span></li>)}</ol></article></section>
 
-      {!selectedHistory && currentQuestion ? <section className="premium-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-wide text-cyan-700 dark:text-cyan-300">{tt("plan.weekly.easyPractice", "Sizga mos yengil mashq")}</p><h3 className="mt-1 text-lg font-black">{currentQuestion.topic || tt("plan.weekly.practice", "Mashq")}</h3></div><span className="text-xs font-bold text-ink-500">{questionIndex + 1}/{practice.length}</span></div><p className="mt-4 font-semibold leading-6">{currentQuestion.question}</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{(currentQuestion.options || []).map((option: string, index: number) => <button key={index} disabled={Boolean(answerResult)} onClick={() => setAnswer(option)} className={`rounded-xl border p-3 text-left text-sm font-semibold transition ${answer === option ? "border-cyan-500 bg-cyan-500/10" : "border-line hover:border-cyan-400 dark:border-white/10"}`}>{option}</button>)}</div>{!answerResult ? <button className="btn btn-primary mt-4" disabled={!answer} onClick={checkAnswer}>{tt("plan.weekly.check", "Javobni tekshirish")}</button> : <div className={`mt-4 rounded-xl p-4 text-sm ${answerResult.correct ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200" : "bg-rose-500/10 text-rose-800 dark:text-rose-200"}`}><strong>{answerResult.correct ? tt("plan.weekly.correct", "To‘g‘ri!") : tt("plan.weekly.notCorrect", "Hali to‘g‘ri emas.")}</strong><p className="mt-2 leading-6">{answerResult.explanation}</p><button className="btn btn-soft mt-3 text-xs" onClick={nextQuestion} disabled={questionIndex >= practice.length - 1}>{tt("plan.weekly.next", "Keyingi mashq")}</button></div>}</section> : null}
+      {!selectedHistory && currentQuestion && !practiceCompleted ? <section className="premium-card"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-black uppercase tracking-wide text-cyan-700 dark:text-cyan-300">{tt("plan.weekly.easyPractice", "Sizga mos yengil mashq")}</p><h3 className="mt-1 text-lg font-black">{currentQuestion.topic || tt("plan.weekly.practice", "Mashq")}</h3></div><span className="text-xs font-bold text-ink-500">{questionIndex + 1}/{practice.length}</span></div><p className="mt-4 font-semibold leading-6">{currentQuestion.question}</p><div className="mt-4 grid gap-2 sm:grid-cols-2">{(currentQuestion.options || []).map((option: string, index: number) => <button key={index} disabled={Boolean(answerResult)} onClick={() => setAnswer(option)} className={`rounded-xl border p-3 text-left text-sm font-semibold transition ${answer === option ? "border-cyan-500 bg-cyan-500/10" : "border-line hover:border-cyan-400 dark:border-white/10"}`}>{option}</button>)}</div>{!answerResult ? <button className="btn btn-primary mt-4" disabled={!answer} onClick={checkAnswer}>{tt("plan.weekly.check", "Javobni tekshirish")}</button> : <div className={`mt-4 rounded-xl p-4 text-sm ${answerResult.correct ? "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200" : "bg-rose-500/10 text-rose-800 dark:text-rose-200"}`}><strong>{answerResult.correct ? tt("plan.weekly.correct", "To‘g‘ri!") : tt("plan.weekly.notCorrect", "Hali to‘g‘ri emas.")}</strong><p className="mt-2 leading-6">{answerResult.explanation}</p><button className="btn btn-soft mt-3 text-xs" onClick={nextQuestion}>{questionIndex + 1 >= practice.length ? "Mashqni yakunlash" : tt("plan.weekly.next", "Keyingi mashq")}</button></div>}</section> : null}
+
+      {practiceCompleted ? <section className="premium-card border-emerald-500/25 bg-emerald-500/5"><h3 className="text-lg font-black text-emerald-800 dark:text-emerald-200">✓ Mashq yakunlandi</h3><p className="mt-1 text-sm text-ink-600 dark:text-navy-200">Savol, belgilangan javob va to‘g‘ri javoblar mashq tarixida saqlandi.</p></section> : null}
+
+      {selectedPracticeHistory ? <section className="premium-card"><button type="button" className="btn btn-soft mb-4 text-xs" onClick={() => setSelectedPracticeHistory(null)}>← Orqaga</button><h3 className="text-lg font-black">Mashq javoblari</h3><TestCompletionActions testTitle="Shaxsiy mashq" subject={String(selectedPracticeHistory.subject || "")} review={(selectedPracticeHistory.items || []).map((item: Row) => ({ prompt: String(item.prompt || ""), options: Array.isArray(item.options) ? item.options : [], selected_answer: item.selected_answer, correct_answer: item.correct_answer, is_correct: Boolean(Number(item.is_correct || 0)), explanation: String(item.explanation || "") }))} /></section> : practiceHistory.length ? <section className="premium-card"><h3 className="text-lg font-black">Mashq tarixi</h3><div className="mt-4 grid gap-2 md:grid-cols-2">{practiceHistory.map((item) => <button type="button" key={String(item.attempt_id)} onClick={() => setSelectedPracticeHistory(item)} className="rounded-xl border border-line p-3 text-left transition hover:border-cyan-400 dark:border-white/10"><p className="text-xs font-black text-cyan-700 dark:text-cyan-300">{item.completed_at ? "Yakunlangan mashq" : "Davom etayotgan mashq"}</p><p className="mt-1 text-sm font-bold">{Number(item.correct || 0)} to‘g‘ri · {Number(item.wrong || 0)} xato · {Number(item.skipped || 0)} o‘tkazilgan</p><p className="mt-1 text-xs text-ink-500 dark:text-navy-300">Savollar va javoblarni ochish →</p></button>)}</div></section> : null}
 
       {!selectedHistory ? <section className="premium-card"><h3 className="text-lg font-black">{tt("plan.weekly.askTitle", "Diamondvoydan so‘rang")}</h3><p className="mt-1 text-sm text-ink-500 dark:text-navy-300">{tt("plan.weekly.askHint", "Aynan shu haftadagi zaif mavzular va qoidalardan tushuntirish oling.")}</p><form className="mt-4 flex gap-2" onSubmit={askDiamondvoy}><input className="min-w-0 flex-1 rounded-xl border border-line bg-transparent px-3 py-2 text-sm dark:border-white/10" value={askText} onChange={(event) => setAskText(event.target.value)} placeholder={tt("plan.weekly.askPlaceholder", "Masalan: bu qoidani oddiy misol bilan tushuntir")} /><button className="btn btn-primary" disabled={asking || !askText.trim()}>{asking ? tt("plan.weekly.answering", "Javob yozmoqda…") : tt("plan.weekly.ask", "So‘rash")}</button></form>{askReply ? <div className="mt-4 rounded-xl bg-cyan-500/10 p-4 text-sm leading-6 text-ink-700 dark:text-navy-100">{askReply}</div> : null}</section> : null}
     </> : null}

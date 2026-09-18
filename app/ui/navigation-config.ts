@@ -36,9 +36,9 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   student: [
     "home",
     "personal-plan",
+    "learning-paths",
     "my-mistakes",
     "mistake-notebook",
-    "saved",
     "pomodoro",
     "grammar",
     "vocabulary",
@@ -54,6 +54,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "duel-3v3",
     "duel-5v5",
     "voice-rooms",
+    "study-room",
     "chats",
     "notifications",
     "dcoin",
@@ -64,9 +65,9 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "notes",
     "profile",
   ],
-  teacher: ["home", "student-insights", "saved", "pomodoro", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
-  support: ["home", "student-insights", "saved", "pomodoro", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  support: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
 export const HIDDEN_SECTION_IDS = new Set([
@@ -112,9 +113,9 @@ export const SECTION_ALIAS: Record<string, string> = {
 export const SECTION_LABELS: Record<string, string> = {
   home: "Boshqaruv paneli",
   "personal-plan": "Shaxsiy o‘quv rejam",
+  "learning-paths": "Learning Path",
   "my-mistakes": "Mening xatolarim",
   "mistake-notebook": "Xatolar daftari",
-  saved: "Saqlanganlar",
   pomodoro: "Pomodoro",
   "student-insights": "Student insightlari",
   grammar: "Grammatika Darslari",
@@ -131,6 +132,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "duel-3v3": "Duel 3v3",
   "duel-5v5": "Duel 5v5",
   chats: "Chats",
+  "study-room": "Study-room",
   leaderboard: "Reyting",
   dcoin: "D'Coins",
   gifts: "Sovgalar",
