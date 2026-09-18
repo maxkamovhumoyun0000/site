@@ -19650,15 +19650,20 @@ async def _student_channel_membership_status(user: dict) -> dict:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, params=params) as resp:
                 data = await resp.json(content_type=None)
-        status = str((data or {}).get("result", {}).get("status") or "").lower()
+        member_payload = (data or {}).get("result", {}) or {}
+        status = str(member_payload.get("status") or "").lower()
         is_verified = bool((data or {}).get("ok"))
+        # Telegram can return `restricted` for an account that remains a
+        # member (with `is_member=true`).  Treating every restricted response
+        # as a departure was the source of false "join the channel" gates.
+        restricted_but_member = status == "restricted" and bool(member_payload.get("is_member"))
         result["verified"] = is_verified
         result["subscribed"] = is_verified and status in {
             "member",
             "administrator",
             "creator",
             "owner",
-        }
+        } or (is_verified and restricted_but_member)
         result["verification_state"] = (
             "member" if result["subscribed"] else (status or "not_member")
         ) if is_verified else "unavailable"

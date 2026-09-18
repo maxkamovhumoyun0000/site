@@ -1,6 +1,8 @@
 """Optional forced Telegram channel subscription for the student bot."""
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -8,9 +10,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from config import FORCE_SUBSCRIBE_CHANNEL_ID, FORCE_SUBSCRIBE_CHANNEL_URL
 from i18n import t
 
+logger = logging.getLogger(__name__)
 
-async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
-    """Return True only when no channel is configured or the user joined it.
+async def is_user_subscribed(bot: Bot, user_id: int) -> bool | None:
+    """Return membership state; ``None`` means Telegram could not verify it.
 
     The native student app and bot share this policy: configuring a channel
     enables the gate.  That avoids an old ``FORCE_SUBSCRIBE=false`` setting
@@ -25,9 +28,15 @@ async def is_user_subscribed(bot: Bot, user_id: int) -> bool:
             ChatMemberStatus.MEMBER,
             ChatMemberStatus.ADMINISTRATOR,
             ChatMemberStatus.CREATOR,
+        ) or (
+            member.status == ChatMemberStatus.RESTRICTED
+            and bool(getattr(member, "is_member", False))
         )
     except Exception:
-        return False
+        # Telegram outages/timeouts are not proof that a paying student left.
+        # Do not push a false re-subscribe prompt while verification is down.
+        logger.warning("channel membership check unavailable user_id=%s", user_id, exc_info=True)
+        return None
 
 
 async def check_subscription_and_notify(
@@ -38,7 +47,8 @@ async def check_subscription_and_notify(
     """If not subscribed, send the channel prompt and return False."""
     user_id = event.from_user.id
 
-    if await is_user_subscribed(bot, user_id):
+    membership = await is_user_subscribed(bot, user_id)
+    if membership is not False:
         return True
 
     text = t(lang, "force_subscribe_text")

@@ -23517,8 +23517,19 @@ export default function DiamondEducationApp() {
     if (!token) return;
     requestJson<GenericRow>("/user/subscription-status", { token, timeoutMs: 30000, retries: 0 })
       .then((data) => {
-        if (!cancelled && data && typeof data.subscribed === "boolean") {
-          setIsTelegramSubscribed(data.subscribed);
+        if (cancelled || !data) return;
+        const required = data.required === true;
+        const subscribed = data.subscribed === true;
+        const verified = data.verified === true;
+        const verificationState = String(data.verification_state || "").toLowerCase();
+        // A failed Telegram request is not proof the user left the channel.
+        // Block only for Telegram's explicit departure/unlinked answers.
+        const explicitlyMissing = ["unlinked", "left", "kicked", "not_member"].includes(verificationState);
+        const confirmedMissing = required && !subscribed && (verificationState === "unlinked" || (verified && explicitlyMissing));
+        if (!required || (verified && subscribed)) {
+          setIsTelegramSubscribed(true);
+        } else if (confirmedMissing) {
+          setIsTelegramSubscribed(false);
         }
       })
       .catch(() => {
