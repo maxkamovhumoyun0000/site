@@ -1196,9 +1196,9 @@ class LearningAiLessonRequest(BaseModel):
 
 
 class LearningLibraryTestAttachRequest(BaseModel):
-    content_type: str = Field(pattern="^(video|book|homework|ai_generated)$")
+    content_type: str = Field(pattern="^(video|book|homework|ai_generated|teacher_library|library_node|test)$")
     content_id: int = Field(gt=0)
-    question_count: int = Field(default=10, ge=1, le=50)
+    question_count: int = Field(default=10, ge=1, le=100)
 
 
 class LearningAssignRequest(BaseModel):
@@ -1263,8 +1263,15 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
     for module in _dicts(cur.fetchall()):
         try: module["topic_keys"] = json.loads(str(module.get("topic_keys_json") or "[]"))
         except Exception: module["topic_keys"] = []
-        cur.execute("SELECT id,title,source_kind,source_id,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
-        module["lessons"]=_dicts(cur.fetchall())
+        cur.execute("SELECT id,title,source_kind,source_id,question_payload_json,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
+        lessons = []
+        for l_row in _dicts(cur.fetchall()):
+            try:
+                l_row["question_payload"] = json.loads(str(l_row.pop("question_payload_json", None) or "{}"))
+            except Exception:
+                l_row["question_payload"] = {}
+            lessons.append(l_row)
+        module["lessons"] = lessons
         if student_id:
             cur.execute("SELECT status,best_score,passed_at FROM learning_module_progress WHERE module_id=? AND student_id=?", (int(module["id"]), int(student_id)))
             progress=cur.fetchone(); module["progress"] = dict(progress) if progress else {"status":"locked", "best_score":0}
@@ -1414,6 +1421,110 @@ async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, au
     finally: conn.close()
 
 
+class LearningLessonUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=180)
+    question_payload: dict[str, Any] | None = None
+    position: int | None = Field(default=None, ge=0, le=10000)
+    required: bool | None = None
+
+
+@router.patch("/staff/learning-lessons/{lesson_id}")
+async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, authorization: str | None = Header(default=None)):
+    """Edit an existing lesson/test in a learning module."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT l.id, l.module_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Dars topilmadi")
+        track_id = int(dict(row)["track_id"])
+        _learning_track_for_manager(track_id, user)
+
+        updates = []
+        params = []
+        if payload.title is not None:
+            updates.append("title=?")
+            params.append(payload.title.strip())
+        if payload.question_payload is not None:
+            updates.append("question_payload_json=?")
+            params.append(json.dumps(payload.question_payload, ensure_ascii=False))
+        if payload.position is not None:
+            updates.append("position=?")
+            params.append(payload.position)
+        if payload.required is not None:
+            updates.append("required=?")
+            params.append(1 if payload.required else 0)
+
+        if updates:
+            params.append(lesson_id)
+            cur.execute(f"UPDATE learning_module_lessons SET {', '.join(updates)} WHERE id=?", params)
+            conn.commit()
+
+        return {"updated": True, "lesson_id": lesson_id}
+    finally:
+        conn.close()
+
+
+@router.delete("/staff/learning-lessons/{lesson_id}")
+async def delete_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
+    """Delete a single lesson/test from a learning module."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT l.id, l.module_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Dars topilmadi")
+        track_id = int(dict(row)["track_id"])
+        _learning_track_for_manager(track_id, user)
+
+        cur.execute("DELETE FROM learning_module_lessons WHERE id=?", (lesson_id,))
+        conn.commit()
+        return {"deleted": True, "lesson_id": lesson_id}
+    finally:
+        conn.close()
+
+
+@router.get("/staff/teacher-library-tree")
+async def staff_teacher_library_tree(authorization: str | None = Header(default=None)):
+    """Fetch the real teacher library folders and test nodes for attaching to learning modules."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, parent_id, kind, title, description, subject, level, payload_json FROM library_nodes WHERE kind IN ('folder', 'test') ORDER BY sort_order ASC, id ASC")
+        nodes = []
+        for r in _dicts(cur.fetchall()):
+            try:
+                p_obj = json.loads(str(r.pop("payload_json", None) or "{}"))
+            except Exception:
+                p_obj = {}
+            qs = p_obj.get("questions") or []
+            nodes.append({
+                "id": int(r["id"]),
+                "parent_id": int(r["parent_id"]) if r.get("parent_id") is not None else None,
+                "kind": str(r["kind"]),
+                "title": str(r["title"] or ""),
+                "description": r.get("description"),
+                "subject": r.get("subject"),
+                "level": r.get("level"),
+                "question_count": len(qs) if isinstance(qs, list) else 0,
+                "questions": qs if isinstance(qs, list) else [],
+            })
+        return {"nodes": nodes}
+    finally:
+        conn.close()
+
+
 @router.post("/staff/learning-modules/{module_id}/ai-question")
 async def generate_learning_ai_question(module_id: int, payload: LearningAiLessonRequest, authorization: str | None = Header(default=None)):
     """Generate AI test questions using Diamondvoy (xAI / Gemini) and auto-save to materials library."""
@@ -1559,11 +1670,11 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
 
 
 def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
-    """Convert a content-library test question to portable module format for all test types."""
+    """Convert a content-library test question to portable module format for all test types, preserving audio and extra metadata."""
     if not isinstance(raw, dict):
         return None
     kind = str(raw.get("kind") or raw.get("test_type") or "multiple_choice").strip().lower()
-    question = str(raw.get("question") or raw.get("prompt") or raw.get("text") or raw.get("title") or raw.get("sentence") or "").strip()
+    question = str(raw.get("question") or raw.get("prompt") or raw.get("text") or raw.get("title") or raw.get("sentence") or raw.get("word") or "").strip()
 
     raw_opts = raw.get("options") or raw.get("choices") or []
     options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
@@ -1573,19 +1684,22 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     if correct is None and isinstance(index, int) and 0 <= index < len(options):
         correct = options[index]
 
-    explanation = str(raw.get("explanation") or "")
+    explanation = str(raw.get("explanation") or raw.get("meaning") or "")
+    audio_url = str(raw.get("audio_url") or "").strip()
+    image_url = str(raw.get("image_url") or "").strip()
+    instruction = str(raw.get("instruction") or "").strip()
 
-    if kind in {"true_false", "boolean"}:
+    if kind in {"true_false", "boolean", "listening_tf"}:
         if not options:
             options = ["To'g'ri", "Noto'g'ri"]
         if not correct:
             correct = "To'g'ri"
-    elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice"}:
+    elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice", "listening_gap"}:
         if not correct and raw.get("word"):
             correct = str(raw.get("word"))
         if not question and raw.get("sentence"):
             question = str(raw.get("sentence"))
-    elif kind in {"word_order", "scrambled_sentence"}:
+    elif kind in {"word_order", "scrambled_sentence", "listening_order"}:
         if not correct and raw.get("target_sentence"):
             correct = str(raw.get("target_sentence"))
     elif kind == "matching":
@@ -1598,8 +1712,14 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             "pairs": pairs,
             "correct_answer": str(correct or ""),
             "explanation": explanation,
+            "audio_url": audio_url,
+            "image_url": image_url,
+            "instruction": instruction,
             "test_type": "matching",
         }
+    elif kind in {"listening", "dictation", "listening_dictation", "listening_open", "listening_set"}:
+        if not correct and raw.get("answer"):
+            correct = str(raw.get("answer"))
 
     if not question:
         question = "Savol"
@@ -1609,6 +1729,9 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         "options": options,
         "correct_answer": str(correct if correct is not None else (options[0] if options else "")),
         "explanation": explanation,
+        "audio_url": audio_url,
+        "image_url": image_url,
+        "instruction": instruction,
         "test_type": kind,
     }
 
@@ -1620,12 +1743,28 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
         cur=conn.cursor(); cur.execute("SELECT track_id,position FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]),user)
-        resolver=_runtime.get("content_test")
-        if not resolver: raise HTTPException(status_code=503,detail="Material library is unavailable")
-        test=resolver(payload.content_type, payload.content_id)
-        if not test: raise HTTPException(status_code=404,detail="Material test not found")
+
+        # Support real teacher library test nodes (from library_nodes table)
+        if payload.content_type in {"teacher_library", "library_node", "test"}:
+            cur.execute("SELECT id, title, payload_json FROM library_nodes WHERE id=? AND kind='test'", (payload.content_id,))
+            node_row = cur.fetchone()
+            if not node_row:
+                raise HTTPException(status_code=404, detail="Kutubxona testi topilmadi")
+            n_dict = dict(node_row)
+            try:
+                p_obj = json.loads(str(n_dict.get("payload_json") or "{}"))
+            except Exception:
+                p_obj = {}
+            raw_questions = p_obj.get("questions") or []
+            test = {"title": n_dict.get("title") or "Kutubxona testi", "questions": raw_questions}
+        else:
+            resolver=_runtime.get("content_test")
+            if not resolver: raise HTTPException(status_code=503,detail="Material library is unavailable")
+            test=resolver(payload.content_type, payload.content_id)
+            if not test: raise HTTPException(status_code=404,detail="Material test not found")
+
         questions=[item for item in (_learning_library_question(dict(raw)) for raw in (test.get("questions") or [])) if item]
-        if not questions: raise HTTPException(status_code=422,detail="This library test has no supported questions")
+        if not questions: raise HTTPException(status_code=422,detail="Bu testda qo'llab-quvvatlanadigan savollar topilmadi")
         cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,)); position=int(dict(cur.fetchone() or {}).get("value") or -1)+1
         created=[]
         for item in questions[:payload.question_count]:
