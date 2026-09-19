@@ -12649,7 +12649,7 @@ def update_group_lang(group_id: int, lang: str | None):
 
 
 
-def delete_group(group_id: int):
+def delete_group(group_id: int) -> list[int]:
     with DB_WRITE_LOCK:
         ensure_user_group_membership_log_schema()
         conn = get_conn()
@@ -12657,6 +12657,10 @@ def delete_group(group_id: int):
         gid = int(group_id)
         cur.execute("SELECT DISTINCT user_id FROM user_groups WHERE group_id=?", (gid,))
         affected_user_ids = [int((row or {}).get("user_id") or 0) for row in (cur.fetchall() or [])]
+        cur.execute("SELECT id FROM users WHERE group_id=?", (gid,))
+        direct_user_ids = [int((row or {}).get("id") or 0) for row in (cur.fetchall() or [])]
+        all_affected_user_ids = list({uid for uid in (affected_user_ids + direct_user_ids) if uid > 0})
+
         # Unlink students first
         cur.execute("UPDATE users SET group_id=NULL WHERE group_id=?", (gid,))
 
@@ -12670,37 +12674,48 @@ def delete_group(group_id: int):
             """,
             (gid,),
         )
-        if affected_user_ids:
-            placeholders = ",".join(["?"] * len(affected_user_ids))
+        if all_affected_user_ids:
+            placeholders = ",".join(["?"] * len(all_affected_user_ids))
             cur.execute(
                 f"""
                 UPDATE users
                 SET blocked=1, access_enabled=0, access_expires_at=NULL
                 WHERE login_type IN (1,2)
                   AND id IN ({placeholders})
-                  AND id NOT IN (SELECT DISTINCT user_id FROM user_groups)
+                  AND id NOT IN (SELECT DISTINCT user_id FROM user_groups WHERE left_date IS NULL OR TRIM(CAST(left_date AS TEXT)) = '')
                 """,
-                tuple(affected_user_ids),
+                tuple(all_affected_user_ids),
+            )
+            # Invalidate cached sessions by bumping session_version so student dashboards update immediately
+            cur.execute(
+                f"""
+                UPDATE users
+                SET session_version = COALESCE(session_version, 1) + 1
+                WHERE id IN ({placeholders})
+                """,
+                tuple(all_affected_user_ids),
             )
 
         # Cleanup group-scoped operational tables (best-effort).
-        try:
-            cur.execute("DELETE FROM attendance WHERE group_id=?", (gid,))
-        except Exception:
-            pass
-        try:
-            cur.execute("DELETE FROM attendance_sessions WHERE group_id=?", (gid,))
-        except Exception:
-            pass
-        try:
-            cur.execute("DELETE FROM overdue_penalty_log WHERE group_id=?", (gid,))
-        except Exception:
-            pass
+        for table in (
+            "attendance",
+            "attendance_sessions",
+            "overdue_penalty_log",
+            "learning_track_assignments",
+            "group_temporary_teachers",
+            "group_schedules",
+            "group_arenas",
+        ):
+            try:
+                cur.execute(f"DELETE FROM {table} WHERE group_id=?", (gid,))
+            except Exception:
+                pass
 
         # Finally delete the group row.
         cur.execute("DELETE FROM groups WHERE id=?", (gid,))
         conn.commit()
         conn.close()
+        return all_affected_user_ids
 
 
 def _ym_now():
@@ -22129,13 +22144,7 @@ def purchase_gift_with_tickets_atomic(
             )
             ticket_row = _row_to_dict(cur.fetchone())
             current_tickets = max(0, int((ticket_row or {}).get("ticket_count") or 0))
-            if current_tickets < required_tickets:
-                return {
-                    "ok": False,
-                    "reason": "insufficient_tickets",
-                    "ticket_count": int(current_tickets),
-                    "required_tickets": int(required_tickets),
-                }
+            # Ticket limits removed: students can exchange DCoins directly for gifts
 
             balance_before = float(_visible_dcoin_balance_tx(cur, int(user_id)))
             if price > 0:

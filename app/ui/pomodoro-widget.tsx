@@ -501,9 +501,20 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
           : "p-4 sm:p-7 bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-premium"
       }`}
     >
+      {!isZenMode && (
+        <>
+          <div className={`absolute -right-16 -top-16 h-56 w-56 rounded-full blur-3xl pointer-events-none transition-all duration-1000 ${
+            mode === "work" ? "bg-cyan-500/15" : mode === "short_break" ? "bg-emerald-500/15" : "bg-amber-500/15"
+          }`} />
+          <div className={`absolute -left-16 -bottom-16 h-56 w-56 rounded-full blur-3xl pointer-events-none transition-all duration-1000 ${
+            mode === "work" ? "bg-blue-600/15" : mode === "short_break" ? "bg-teal-500/15" : "bg-orange-500/15"
+          }`} />
+        </>
+      )}
+
       {/* Notice Banner */}
       {notice && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl bg-[#00B8D9]/15 border border-[#00B8D9]/30 p-3 text-xs font-bold text-[#006080] dark:text-[#7EEDFF]">
+        <div className="mb-4 flex items-center justify-between rounded-2xl bg-cyan-500/15 border border-cyan-500/30 p-3 text-xs font-bold text-cyan-800 dark:text-cyan-200">
           <span>{notice}</span>
           <button type="button" onClick={() => setNotice(null)} className="ml-2 hover:opacity-80">✕</button>
         </div>

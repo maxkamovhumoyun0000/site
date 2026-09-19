@@ -29,6 +29,13 @@ def get_certificate_pdf(
     # Standard certificate palette matching artwork
     russian = str(template_key).lower() == "russian"
 
+    bg_image_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "public", "learning-paths", f"certificate-{'russian' if russian else 'english'}.png")
+    if os.path.exists(bg_image_path):
+        try:
+            c.drawImage(bg_image_path, 0, 0, width=width, height=height)
+        except Exception:
+            pass
+
     # 1. Student Name right on the certificate line (y_svg = 354.5 -> y_pdf = 794 - 354.5 + 8 = 447.5)
     c.setFillColorRGB(0.12, 0.16, 0.30)
     c.setFont("Helvetica-Bold", 32)

@@ -620,50 +620,11 @@ def validate_user_session(user_id: int) -> bool:
 
 
 def delete_inactive_accounts():
-    """Delete accounts that have been inactive for 60 days from last_activity"""
-    conn = get_conn()
-    cur = conn.cursor()
-    
-    now = get_current_time()
-    cutoff_date = now - timedelta(days=60)  # 60 days from last_activity
-    
-    # Find users inactive for 60+ days (both logged out and never logged in), exclude accountless students (login_type 6)
-    cur.execute('''
-        SELECT id, telegram_id, first_name, last_name, last_activity 
-        FROM users 
-        WHERE last_activity IS NOT NULL AND last_activity < ? AND (login_type IS NULL OR login_type != 6)
-    ''', (cutoff_date.isoformat(),))
-    
-    inactive_users = cur.fetchall()
-    deleted_count = 0
-    
-    for user in inactive_users:
-        user_id = user['id']
-        # Delete user from all related tables
-        try:
-            # Delete from user_groups
-            cur.execute('DELETE FROM user_groups WHERE user_id=?', (user_id,))
-            # Delete from test_results
-            cur.execute('DELETE FROM test_results WHERE user_id=?', (user_id,))
-            # Delete from attendance
-            cur.execute('DELETE FROM attendance WHERE user_id=?', (user_id,))
-            # Delete from diamonds
-            cur.execute('DELETE FROM diamonds WHERE user_id=?', (user_id,))
-            # Delete from grammar_attempts
-            cur.execute('DELETE FROM grammar_attempts WHERE user_id=?', (user_id,))
-            # Delete from vocabulary_preferences
-            cur.execute('DELETE FROM vocabulary_preferences WHERE user_id=?', (user_id,))
-            # Finally delete user
-            cur.execute('DELETE FROM users WHERE id=?', (user_id,))
-            deleted_count += 1
-            logger.info(f"Deleted inactive user {user_id} (inactive for 60+ days)")
-        except Exception:
-            # If deletion fails, skip this user
-            pass
-    
-    conn.commit()
-    conn.close()
-    return deleted_count
+    """Delete accounts that have been inactive for 60 days from last_activity - DISABLED.
+    Student and teacher accounts must never be automatically deleted.
+    Only explicit admin actions are allowed to delete accounts."""
+    logger.info("Automatic deletion of inactive accounts is permanently disabled to protect student and teacher accounts.")
+    return 0
 
 
 def cleanup_inactive_accounts():

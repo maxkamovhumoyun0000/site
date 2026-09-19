@@ -60,7 +60,6 @@ import { ModalPortal } from "./ui/modal-portal";
 import { StudentVideos } from "./ui/student-videos";
 import { StudentBooks } from "./ui/student-books";
 import { StudentAttendance } from "./ui/student-attendance";
-import { StudentNotesPanel } from "./ui/student-notes";
 import { PersonalLearningPanel } from "./ui/personal-learning";
 import { WeeklyStudyPlan } from "./ui/weekly-study-plan";
 import { StudyRoomChat } from "./ui/study-room-chat";
@@ -716,7 +715,7 @@ async function uploadMultipartWithFriendlyErrors(
 }
 
 async function requestJson<T>(path: string, options?: {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   token?: string | null;
   timeoutMs?: number;
@@ -5473,12 +5472,6 @@ function StudentGifts() {
     const token = localStorage.getItem("diamond_token");
     if (!token || opening) return;
     const price = Number(item.price_dcoin || 0);
-    const tickets = Number(item.ticket_count || 0);
-    const required = Number(item.required_tickets || 1);
-    if (tickets < required) {
-      emitUiToast(tt("gifts.notEnoughTickets", "Bu sovga uchun ticketlar hali yetarli emas"), "error");
-      return;
-    }
     if (wallet < price) {
       emitUiToast(tt("gifts.notEnoughCoinsPurchase", "Sovgani sotib olish uchun D'coin balans yetarli emas"), "error");
       return;
@@ -5653,35 +5646,12 @@ function StudentGifts() {
           <span style={{ fontSize: "14px", fontWeight: 700, opacity: 0.9 }}>{tt("gifts.myGifts", "Mening sovg'alarim")}</span>
         </button>
       </section>
-      {diamondvoyLimit ? (
-        <section className="panel-card" style={{ marginBottom: "24px" }}>
-          <div className="row-between gap-3">
-            <div>
-              <h3>{tt("gifts.diamondvoyLimitTitle", "DiamondVoy xabar limiti")}</h3>
-              <p className="text-sm text-ink-500 dark:text-navy-300">
-                {tt("gifts.diamondvoyLimitDesc", "24 soatlik limit sovga bonuslari bilan avtomatik oshadi.")}
-              </p>
-            </div>
-            <strong className="chip success">
-              {Number(diamondvoyLimit.remaining || 0)} / {Number(diamondvoyLimit.total_limit || 0)} {tt("gifts.messagesRemaining", "xabar qoldi")}
-            </strong>
-          </div>
-          {Number(diamondvoyLimit.bonus_messages || 0) > 0 ? (
-            <p className="text-sm mt-3">
-              {tt("gifts.activeDiamondvoyBonus", "Faol sovga bonusi")}: +{Number(diamondvoyLimit.bonus_messages || 0)}
-              {diamondvoyLimit.boost_expires_at ? ` · ${tt("gifts.bonusUntil", "amal qiladi")}: ${new Date(String(diamondvoyLimit.boost_expires_at)).toLocaleString()}` : ""}
-            </p>
-          ) : null}
-        </section>
-      ) : null}
       <section className="grid gifts-two-col">
         {loading ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("common.loading", "Loading...")}</article> : null}
         {!loading && !items.length ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("gifts.noGiftsYet", "Sovgalar hali qo'shilmagan.")}</article> : null}
         {items.map((item) => {
-          const ticketCount = Number(item.ticket_count || 0);
-          const requiredTickets = Number(item.required_tickets || 1);
           const price = Number(item.price_dcoin || 0);
-          const canPurchase = ticketCount >= requiredTickets && wallet >= price;
+          const canPurchase = wallet >= price;
           return (
             <article className="gift-card-wow" key={item.id} onClick={() => setSelected(item)} style={{ cursor: "pointer" }}>
               <img src={giftImage(item)} alt={item.title || tt("gifts.gift", "gift")} className="gift-thumb" onError={handleGiftImageError} />
@@ -5697,10 +5667,6 @@ function StudentGifts() {
                       {price.toFixed(1)} D'coin
                     </strong>
                   </div>
-                  <div className="row-between" style={{ fontSize: "14px" }}>
-                    <span style={{ opacity: 0.7 }}>Ticket</span>
-                    <strong>{ticketCount} / {requiredTickets}</strong>
-                  </div>
                   {item.is_payment_discount ? (
                     <div className="row-between" style={{ fontSize: "14px" }}>
                       <span style={{ opacity: 0.7 }}>{tt("gifts.monthlyDiscount", "Oylik chegirma")}</span>
@@ -5713,10 +5679,6 @@ function StudentGifts() {
                       <strong>+{Number(item.diamondvoy_bonus_messages || 0)} · {Number(item.diamondvoy_boost_days || 1)} {tt("gifts.days", "kun")}</strong>
                     </div>
                   ) : null}
-                  
-                  <div className="gift-ticket-bar" aria-label={`${ticketCount} / ${requiredTickets}`} style={{ marginTop: "4px", background: "var(--border-color)", borderRadius: "4px", height: "6px", overflow: "hidden" }}>
-                    <span style={{ width: `${Math.min(100, (ticketCount / Math.max(1, requiredTickets)) * 100)}%`, display: "block", height: "100%", background: "linear-gradient(90deg, #3b82f6, #ec4899)" }} />
-                  </div>
                 </div>
               </div>
             </article>
@@ -5765,7 +5727,6 @@ function StudentGifts() {
             <img src={giftImage(selected)} alt={selected.title || tt("gifts.gift", "gift")} className="gift-detail-image" onError={handleGiftImageError} style={{ width: "calc(100% + 40px)", maxWidth: "none", margin: "-20px -20px 16px -20px", borderRadius: "20px 20px 0 0", borderTop: "none", borderLeft: "none", borderRight: "none", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
             <h3 style={{ fontSize: "22px", fontWeight: 800, marginBottom: "8px" }}>{selected.title || tt("gifts.gift", "Sovga")}</h3>
             <p style={{ opacity: 0.8, lineHeight: 1.5, marginBottom: "24px" }}>{selected.description || tt("common.noDesc", "Tavsif yo'q")}</p>
-            <div className="kv"><span>Ticket progress</span><strong>{Number(selected.ticket_count || 0)} / {Number(selected.required_tickets || 1)}</strong></div>
             <div className="kv">
               <span>{tt("common.price", "Narx")}</span>
               <strong className="currency-inline">
@@ -5784,7 +5745,6 @@ function StudentGifts() {
               style={{ width: "100%", marginTop: "16px", padding: "14px", fontSize: "16px" }}
               onClick={() => purchaseGift(selected)}
               disabled={
-                Number(selected.ticket_count || 0) < Number(selected.required_tickets || 1) ||
                 wallet < Number(selected.price_dcoin || 0) ||
                 opening
               }
@@ -9384,6 +9344,69 @@ function StudentProfile({
     }
   }
 
+  const [activeTab, setActiveTab] = useState<"general" | "certificates" | "badges" | "settings">("general");
+  const [portfolio, setPortfolio] = useState<{
+    certificates: any[];
+    badges: any[];
+    selected_badge: any;
+    selected_badge_id: string | null;
+  }>({ certificates: [], badges: [], selected_badge: null, selected_badge_id: null });
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    async function loadPortfolio() {
+      const token = localStorage.getItem("diamond_token");
+      if (!token) {
+        setPortfolioLoading(false);
+        return;
+      }
+      try {
+        const res = await requestJson<{
+          certificates: any[];
+          badges: any[];
+          selected_badge: any;
+          selected_badge_id: string | null;
+        }>("/student/portfolio", { token });
+        if (active && res) {
+          setPortfolio({
+            certificates: Array.isArray(res.certificates) ? res.certificates : [],
+            badges: Array.isArray(res.badges) ? res.badges : [],
+            selected_badge: res.selected_badge || null,
+            selected_badge_id: res.selected_badge_id || null,
+          });
+        }
+      } catch {
+        // ignore
+      } finally {
+        if (active) setPortfolioLoading(false);
+      }
+    }
+    void loadPortfolio();
+    return () => { active = false; };
+  }, []);
+
+  async function handleSelectBadge(badgeId: string) {
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    try {
+      const nextId = portfolio.selected_badge_id === badgeId ? null : badgeId;
+      await requestJson("/student/portfolio/badge", {
+        method: "PUT",
+        token,
+        body: { badge_id: nextId || badgeId },
+      });
+      setPortfolio((prev) => ({
+        ...prev,
+        selected_badge_id: nextId,
+        selected_badge: nextId ? prev.badges.find((b) => b.id === nextId || b.code === nextId) || null : null,
+      }));
+      emitUiToast(nextId ? "Badge faollashtirildi!" : "Badge bekor qilindi", "success");
+    } catch (err: any) {
+      emitUiToast(err?.message || "Badge tanlanmadi", "error");
+    }
+  }
+
   const displayName = userName(user);
   const loginId = user.login_id || t(locale, "profile.telegramLinked", "Telegram ulangan");
   const phone = user.phone || "-";
@@ -9425,214 +9448,402 @@ function StudentProfile({
           <div className="relative mb-4 group">
             <button
               onClick={() => avatarUrl && setAvatarPreviewOpen(true)}
-              className="w-32 h-32 rounded-full overflow-hidden ring-4 ring-white dark:ring-navy-950 shadow-md block transition-transform group-hover:scale-[1.02]"
+              className="w-28 h-28 sm:w-32 sm:h-32 rounded-full overflow-hidden ring-4 ring-white dark:ring-navy-950 shadow-md block transition-transform group-hover:scale-[1.02]"
               title={displayName}
             >
               <SafeAvatarImage
                 src={avatarUrl}
                 alt={displayName}
                 className="w-full h-full object-cover"
-                fallbackClassName="w-full h-full bg-gradient-to-tr from-navy-800 to-navy-950 flex items-center justify-center text-6xl font-black text-white"
+                fallbackClassName="w-full h-full bg-gradient-to-tr from-navy-800 to-navy-950 flex items-center justify-center text-5xl sm:text-6xl font-black text-white"
                 fallback={displayName.slice(0, 1)}
               />
             </button>
-            <label className="absolute -bottom-1 right-2 cursor-pointer rounded-full bg-navy-900 hover:bg-navy-800 text-white px-3 py-1 text-[10px] font-black shadow-md transition-colors border border-white/20">
+            <label className="absolute -bottom-1 right-1 cursor-pointer rounded-full bg-navy-900 hover:bg-navy-800 text-white px-3 py-1 text-[10px] font-black shadow-md transition-colors border border-white/20">
               {avatarBusy ? "..." : t(locale, "profile.photo", "✎ Rasm")}
               <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadStudentAvatar(f); e.target.value = ""; }} disabled={avatarBusy} />
             </label>
           </div>
-          <h2 className="text-3xl font-black text-navy-950 dark:text-white tracking-tight">{displayName}</h2>
+          <div className="flex items-center gap-2 flex-wrap justify-center">
+            <h2 className="text-2xl sm:text-3xl font-black text-navy-950 dark:text-white tracking-tight">{displayName}</h2>
+            {portfolio.selected_badge ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/20 border border-amber-400/40 px-3 py-0.5 text-xs font-bold text-amber-700 dark:text-amber-300">
+                🎖 {portfolio.selected_badge.title || portfolio.selected_badge.code}
+              </span>
+            ) : null}
+          </div>
           <div className="text-xs text-ink-500 dark:text-navy-400 font-mono mt-1 px-3 py-1 bg-surface-soft dark:bg-navy-900/50 rounded-full border border-line dark:border-white/5">@{loginId}</div>
           {phone !== "-" && <div className="text-sm text-ink-600 dark:text-navy-300 mt-2 font-bold">{phone}</div>}
           {user.parent_phone && <div className="text-sm text-ink-600 dark:text-navy-300 mt-1 font-bold">{t(locale, "profile.parent", "Ota-ona")}: {user.parent_phone}</div>}
+
+          {/* Quick summary metrics */}
+          <div className="mt-5 grid grid-cols-3 gap-2 w-full max-w-sm pt-4 border-t border-line/40 dark:border-white/10">
+            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
+              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">Sertifikatlar</span>
+              <strong className="text-base font-black text-navy-900 dark:text-white mt-0.5">🎓 {portfolio.certificates.length}</strong>
+            </div>
+            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
+              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">Nishonlar</span>
+              <strong className="text-base font-black text-navy-900 dark:text-white mt-0.5">🎖 {portfolio.badges.filter(b => b.unlocked).length}</strong>
+            </div>
+            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
+              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">D'Point</span>
+              <strong className="text-base font-black text-cyan-600 dark:text-cyan-400 mt-0.5">💎 {Number((user as any).dpoints || (user as any).dcoins || 0).toFixed(0)}</strong>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Guruh va Fan */}
-      <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-6">
-        <div>
-          <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.subjectLevel", "FAN VA LEVEL")}</div>
-          <div className="flex flex-wrap gap-2">
-            {subjects.length > 0 ? subjects.map((s, i) => (
-              <span key={i} className="px-4 py-2 bg-navy-100/60 dark:bg-navy-800/80 rounded-2xl text-sm font-bold text-navy-950 dark:text-white border border-navy-200/20">
-                📚 {t(locale, `subject.${String(s.subject || s.name || "").toLowerCase()}`, s.subject || s.name)} — <span className="text-cyan-600 dark:text-cyan-400">{s.level}</span>
-              </span>
-            )) : <span className="text-sm text-ink-500">{t(locale, "common.noData", "Ma'lumot yo'q")}</span>}
-          </div>
-        </div>
+      {/* Mobile App Style Tabs */}
+      <div className="flex gap-2 border-b border-line dark:border-white/10 overflow-x-auto pb-1 select-none">
+        {[
+          { id: "general", label: "👤 " + t(locale, "profile.tabGeneral", "Umumiy") },
+          { id: "certificates", label: "🎓 " + t(locale, "profile.tabCertificates", "Sertifikatlarim") + ` (${portfolio.certificates.length})` },
+          { id: "badges", label: "🎖 " + t(locale, "profile.tabBadges", "Badge'larim") + ` (${portfolio.badges.filter(b => b.unlocked).length})` },
+          { id: "settings", label: "🔒 " + t(locale, "profile.tabSettings", "Sozlamalar") },
+        ].map((tItem) => (
+          <button
+            key={tItem.id}
+            type="button"
+            onClick={() => setActiveTab(tItem.id as any)}
+            className={`pb-2.5 px-3.5 text-xs sm:text-sm font-bold transition border-b-2 whitespace-nowrap -mb-px rounded-t-xl ${
+              activeTab === tItem.id
+                ? "border-cyan-500 text-cyan-600 dark:text-cyan-400 bg-cyan-500/5"
+                : "border-transparent text-ink-500 dark:text-navy-400 hover:text-ink-700 dark:hover:text-white"
+            }`}
+          >
+            {tItem.label}
+          </button>
+        ))}
+      </div>
 
-        {Array.isArray(data.groups) && data.groups.length > 0 && (
-          <>
+      {/* ─── TAB 1: UMUMIY ─── */}
+      {activeTab === "general" && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Guruh va Fan */}
+          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-6">
             <div>
-              <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myGroups", "MENING GURUHLARIM")}</div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {data.groups.map((g: any, i: number) => (
-                  <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
-                    <div className="font-bold text-sm text-ink-900 dark:text-white">{g.name}</div>
-                    <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex flex-col gap-1">
-                      <span>{g.lesson_date || ""} {g.lesson_start ? `• ${g.lesson_start}` : ""}</span>
-                      {g.telegram_group_url ? (
-                        <a href={g.telegram_group_url} target="_blank" rel="noreferrer" className="text-cyan-600 dark:text-cyan-400 hover:underline inline-flex items-center gap-1">
-                          <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
-                          {t(locale, "profile.telegramGroup", "Telegram guruh")}
-                        </a>
-                      ) : null}
+              <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.subjectLevel", "FAN VA LEVEL")}</div>
+              <div className="flex flex-wrap gap-2">
+                {subjects.length > 0 ? subjects.map((s, i) => (
+                  <span key={i} className="px-4 py-2 bg-navy-100/60 dark:bg-navy-800/80 rounded-2xl text-sm font-bold text-navy-950 dark:text-white border border-navy-200/20">
+                    📚 {t(locale, `subject.${String(s.subject || s.name || "").toLowerCase()}`, s.subject || s.name)} — <span className="text-cyan-600 dark:text-cyan-400">{s.level}</span>
+                  </span>
+                )) : <span className="text-sm text-ink-500">{t(locale, "common.noData", "Ma'lumot yo'q")}</span>}
+              </div>
+            </div>
+
+            {Array.isArray(data.groups) && data.groups.length > 0 && (
+              <>
+                <div>
+                  <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myGroups", "MENING GURUHLARIM")}</div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {data.groups.map((g: any, i: number) => (
+                      <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
+                        <div className="font-bold text-sm text-ink-900 dark:text-white">{g.name}</div>
+                        <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex flex-col gap-1">
+                          <span>{g.lesson_date || ""} {g.lesson_start ? `• ${g.lesson_start}` : ""}</span>
+                          {g.telegram_group_url ? (
+                            <a href={g.telegram_group_url} target="_blank" rel="noreferrer" className="text-cyan-600 dark:text-cyan-400 hover:underline inline-flex items-center gap-1">
+                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                              {t(locale, "profile.telegramGroup", "Telegram guruh")}
+                            </a>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {data.groups.some((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan") && (
+                  <div>
+                    <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myTeachers", "MENING O'QITUVCHILARIM")}</div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {data.groups.filter((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan").map((g: any, i: number) => (
+                        <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
+                          <div className="font-bold text-sm text-ink-900 dark:text-white">{g.teacher_name}</div>
+                          <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex gap-2">
+                            <span className="font-medium text-ink-700 dark:text-navy-300">{t(locale, `subject.${String(g.subject || "english").toLowerCase()}`, g.subject || "English")} {t(locale, "profile.teacherSuffix", "o'qituvchisi")}</span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-            {data.groups.some((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan") && (
-              <div>
-                <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myTeachers", "MENING O'QITUVCHILARIM")}</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.groups.filter((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan").map((g: any, i: number) => (
-                    <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
-                      <div className="font-bold text-sm text-ink-900 dark:text-white">{g.teacher_name}</div>
-                      <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex gap-2">
-                        <span className="font-medium text-ink-700 dark:text-navy-300">{t(locale, `subject.${String(g.subject || "english").toLowerCase()}`, g.subject || "English")} {t(locale, "profile.teacherSuffix", "o'qituvchisi")}</span>
-                      </div>
-                      {(g.teacher_instagram_url || g.teacher_telegram_url) && (
-                        <div className="flex gap-3 mt-1">
-                          {g.teacher_telegram_url && (
-                            <a href={g.teacher_telegram_url} target="_blank" rel="noreferrer" className="text-cyan-600 dark:text-cyan-400 hover:underline text-xs inline-flex items-center gap-1">
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.19-.08-.05-.19-.02-.27 0-.12.03-1.99 1.25-5.61 3.67-.53.36-1.01.54-1.44.53-.47-.01-1.38-.26-2.06-.48-.83-.27-1.49-.41-1.43-.87.03-.24.36-.49 1.01-.74 3.94-1.7 6.57-2.82 7.89-3.37 3.75-1.56 4.53-1.83 5.04-1.84.11 0 .36.03.52.16.14.12.18.28.2.42.02.13.02.26 0 .44z"/></svg>
-                              Telegram
-                            </a>
-                          )}
-                          {g.teacher_instagram_url && (
-                            <a href={g.teacher_instagram_url} target="_blank" rel="noreferrer" className="text-pink-600 dark:text-pink-400 hover:underline text-xs inline-flex items-center gap-1">
-                              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 100 12.324 6.162 6.162 0 000-12.324zM12 16a4 4 0 110-8 4 4 0 010 8zm6.406-11.845a1.44 1.44 0 100 2.881 1.44 1.44 0 000-2.88z"/></svg>
-                              Instagram
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
-
-      {/* Language & Appearance */}
-      <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
-        <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.languageAppearance", "TIL VA TASHQI KO'RINISH")}</div>
-        <div className="space-y-4">
-          <div>
-            <div className="text-[10px] font-bold text-ink-400 mb-2">{t(locale, "profile.systemLanguage", "TIZIM TILI")}</div>
-            <div className="flex gap-2">
-              {["uz","ru","en"].map(l => (
-                <button
-                  key={l}
-                  onClick={() => { setLanguage(l as any); onSaveLanguage(l as any); }}
-                  className={`px-4 py-2 rounded-2xl text-sm font-bold transition-all border ${language === l ? 'bg-navy-900 text-white border-navy-900 dark:bg-white dark:text-navy-900 dark:border-white shadow-sm' : 'bg-surface border-line text-ink-600 hover:border-line-hover'}`}
-                >
-                  {l.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-          
-          <div className="flex items-center justify-between pt-4 border-t border-line dark:border-white/10">
-            <div>
-              <div className="text-sm font-bold text-ink-700 dark:text-slate-200">{t(locale, "profile.darkMode", "Qorong'u rejim")}</div>
-              <div className="text-[10px] text-ink-400">{t(locale, "profile.darkModeDesc", "Tizim ranglarini o'zgartirish")}</div>
-            </div>
-            <ThemeToggleButton />
-          </div>
-        </div>
-      </div>
-
-      {/* Ommaviy Oferta holati */}
-      {user.public_offer_agreed && (
-        <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm flex items-center justify-between bg-green-50/50 dark:bg-green-500/5">
-          <div className="flex gap-4 items-center">
-            <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-500/20 flex items-center justify-center text-green-600 dark:text-green-400">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            </div>
-            <div>
-              <div className="text-sm font-bold text-ink-900 dark:text-white">{t(locale, "landing.footer.oferta", "Ommaviy Oferta")}</div>
-              <div className="text-xs text-ink-600 dark:text-navy-300 mt-0.5">{t(locale, "public_offer.agreed_message", "Siz bizning ommaviy ofertamizga rozilik bildirgansiz")}</div>
-            </div>
           </div>
         </div>
       )}
 
-      {/* Platform Review / Feedback */}
-      <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
-        <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.leaveReview", "PLATFORMAGA SHARH QOLDIRISH")}</div>
-        {approvedReview ? (
-          <div className="text-sm text-green-600 dark:text-green-400 font-bold bg-green-500/10 p-4 rounded-2xl border border-green-500/20">
-            ✓ {t(locale, "profile.reviewApproved", "Sizning sharhingiz tasdiqlandi. Rahmat!")}
-          </div>
-        ) : pendingReview ? (
-          <div className="text-sm text-amber-600 dark:text-amber-300 font-bold bg-amber-500/10 p-4 rounded-2xl border border-amber-500/20">
-            ⏳ {t(locale, "profile.reviewPending", "Sharhingiz admin moderatsiyasida. Tasdiqlangandan keyin saytda ko'rinadi.")}
-          </div>
-        ) : !policyAllowsReview ? (
-          <div className="text-sm text-ink-600 dark:text-navy-300 font-bold bg-surface-soft p-4 rounded-2xl border">
-            ℹ {String(reviewPolicy.reason || t(locale, "profile.reviewNotAllowed", "Hozircha sharh yuborib bo'lmaydi."))}
-          </div>
-        ) : (
-          <>
-            <div className="flex gap-1 text-3xl">
-              {[1, 2, 3, 4, 5].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => setRating(n)}
-                  className={`transition-transform hover:scale-110 ${rating >= n ? "text-yellow-500" : "text-gray-300 dark:text-gray-600"}`}
-                  aria-label={`${n} star`}
-                >
-                  ★
-                </button>
-              ))}
-            </div>
-            <textarea
-              value={reviewText}
-              onChange={(e) => setReviewText(e.target.value)}
-              placeholder={t(locale, "profile.reviewPlaceholder", "Platforma haqida fikringizni yozing...")}
-              className="w-full rounded-2xl border border-line bg-white dark:bg-navy-900 p-4 text-sm min-h-[100px] focus:ring-2 focus:ring-cyan-500 outline-none"
-            />
-            {reviewError ? <div className="error-box">{reviewError}</div> : null}
-            <button
-              type="button"
-              onClick={() => submitStudentReview().catch(() => null)}
-              className="btn btn-primary w-full py-3 rounded-2xl text-sm font-bold shadow-sm"
-              disabled={!reviewText.trim() || reviewSubmitting}
-            >
-              {reviewSubmitting ? t(locale, "common.sending", "Yuborilmoqda...") : t(locale, "profile.sendReview", "Sharhni yuborish")}
-            </button>
-            <div className="text-[10px] text-ink-500">{t(locale, "profile.reviewNote", "Sharhlar admin tomonidan tasdiqlangandan keyin boshqa studentlarga ko'rinadi.")}</div>
-          </>
-        )}
-        {ownReviews.length > 0 ? (
-          <div className="pt-4 border-t border-line dark:border-white/10 text-xs">
-            <div className="font-bold mb-2 text-ink-500 dark:text-navy-400">{t(locale, "profile.yourReviews", "Sizning sharhlaringiz:")}</div>
-            {ownReviews.slice(0, 3).map((r, i) => (
-              <div key={String(r.id || i)} className="text-ink-600 dark:text-navy-300 mb-2 p-3 bg-surface-soft dark:bg-navy-900/30 rounded-xl border border-line/50">
-                <span className="text-yellow-500 font-bold">★{r.rating || 5}</span> — {String(r.review_text || "").slice(0, 80)}{r.status ? ` (${t(locale, `status.${String(r.status).toLowerCase()}`, r.status)})` : ""}
+      {/* ─── TAB 2: SERTIFIKATLARIM ─── */}
+      {activeTab === "certificates" && (
+        <div className="space-y-4 animate-fade-in">
+          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
+            <div className="flex items-center justify-between border-b border-line/60 pb-3 dark:border-white/10 mb-4">
+              <div>
+                <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
+                  <span>🎓 Mening Sertifikatlarim</span>
+                </h3>
+                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                  Muvaffaqiyatli yakunlangan modullar va kurslar uchun rasmiy sertifikatlar
+                </p>
               </div>
-            ))}
+              <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                {portfolio.certificates.length} ta
+              </span>
+            </div>
+
+            {portfolioLoading ? (
+              <div className="py-12 text-center text-xs font-bold text-ink-400">Yuklanmoqda...</div>
+            ) : portfolio.certificates.length > 0 ? (
+              <div className="space-y-3">
+                {portfolio.certificates.map((cert: any) => {
+                  const certId = cert.certificate_id || cert.id;
+                  const pdfUrl = `/api/student/certificates/${certId}/pdf`;
+                  return (
+                    <div
+                      key={certId}
+                      className="rounded-2xl border border-line p-4 dark:border-white/10 bg-surface-soft/30 dark:bg-white/5 flex flex-wrap items-center justify-between gap-3 hover:border-cyan-400/60 transition"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-cyan-600 to-blue-600 text-white flex items-center justify-center text-2xl shadow-sm">
+                          🎓
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-sm text-navy-900 dark:text-white">
+                            {cert.course_title || cert.title || "Diamond Learning Track Sertifikati"}
+                          </h4>
+                          <p className="text-xs text-ink-500 dark:text-navy-400 mt-0.5">
+                            ID: <strong className="font-mono text-cyan-700 dark:text-cyan-300">{certId}</strong>
+                            {cert.issued_at ? ` · Sana: ${new Date(cert.issued_at).toLocaleDateString()}` : ""}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <a
+                          href={pdfUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn btn-primary text-xs flex items-center gap-1.5 py-2 px-3.5 font-bold shadow-sm"
+                        >
+                          <span>📄 PDF ko'rish / Yuklab olish</span>
+                        </a>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-12 px-4 rounded-2xl bg-surface-soft/40 dark:bg-white/5 border border-dashed border-line dark:border-white/10">
+                <span className="text-5xl block mb-2">🎓</span>
+                <h4 className="font-bold text-sm text-navy-900 dark:text-white">Hozircha sertifikatlar mavjud emas</h4>
+                <p className="text-xs text-ink-500 dark:text-navy-300 mt-1 max-w-sm mx-auto">
+                  Learning Path yoki kurslardagi barcha modullarni muvaffaqiyatli topshirganingizda, bu yerda rasmiy sertifikat beriladi va PDF shaklida yuklab olishingiz mumkin bo'ladi.
+                </p>
+              </div>
+            )}
           </div>
-        ) : null}
-      </div>
+        </div>
+      )}
 
-      <UserSessionsPanel locale={locale} />
+      {/* ─── TAB 3: BADGE'LARIM ─── */}
+      {activeTab === "badges" && (
+        <div className="space-y-4 animate-fade-in">
+          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
+            <div className="flex items-center justify-between border-b border-line/60 pb-3 dark:border-white/10 mb-4">
+              <div>
+                <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
+                  <span>🎖 Mening Nishonlarim (Badge'lar)</span>
+                </h3>
+                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                  Platformadagi yutuqlaringiz uchun berilgan maxsus nishonlar
+                </p>
+              </div>
+            </div>
 
-      {/* Danger Zone / Log Out */}
-      <div className="panel-card border border-red-500/20 bg-red-500/[0.02] dark:bg-red-500/[0.01] rounded-3xl p-6 shadow-sm">
-        <div className="text-xs font-bold text-red-500 mb-2">{t(locale, "profile.logout", "TIZIMDAN CHIQISH")}</div>
-        <p className="text-xs text-ink-500 mb-4">{t(locale, "profile.logoutDesc", "Hisobingizdan chiqib, boshqa qurilmalarda parolingizni xavfsiz saqlang.")}</p>
-        <button onClick={onLogout} className="w-full py-3 rounded-2xl bg-red-500/10 text-red-600 font-bold hover:bg-red-500/15 transition-colors">
-          {t(locale, "common.logout", "Chiqish")}
-        </button>
-      </div>
+            {portfolioLoading ? (
+              <div className="py-12 text-center text-xs font-bold text-ink-400">Yuklanmoqda...</div>
+            ) : portfolio.badges.length > 0 ? (
+              <div className="grid gap-3 sm:grid-cols-2">
+                {portfolio.badges.map((b: any) => {
+                  const isSelected = portfolio.selected_badge_id === b.id || portfolio.selected_badge_id === b.code;
+                  const isUnlocked = Boolean(b.unlocked);
+                  return (
+                    <div
+                      key={b.id || b.code}
+                      className={`rounded-2xl border p-4 transition flex flex-col justify-between ${
+                        isSelected
+                          ? "border-amber-400 bg-amber-500/10 shadow-sm dark:bg-amber-950/20"
+                          : isUnlocked
+                          ? "border-line bg-surface-soft/40 dark:border-white/10 dark:bg-white/5"
+                          : "border-line/40 bg-surface-soft/20 opacity-60 dark:border-white/5 dark:bg-white/5"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-3xl">
+                          {b.asset_url ? <img src={b.asset_url} alt="" className="h-10 w-10 object-contain" /> : "🎖"}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <h4 className="font-bold text-sm text-navy-900 dark:text-white truncate">
+                            {b.title || b.code}
+                          </h4>
+                          <p className="text-xs text-ink-500 dark:text-navy-300 line-clamp-2">
+                            {b.description || "Maxsus topshiriq uchun nishon"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-line/40 flex items-center justify-between">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-ink-400">
+                          {isUnlocked ? "✓ Ochilgan" : "🔒 Qulflangan"}
+                        </span>
+                        {isUnlocked ? (
+                          <button
+                            type="button"
+                            onClick={() => handleSelectBadge(b.id || b.code)}
+                            className={`rounded-xl px-3 py-1 text-xs font-bold transition shadow-sm ${
+                              isSelected
+                                ? "bg-amber-500 text-white"
+                                : "btn btn-soft"
+                            }`}
+                          >
+                            {isSelected ? "Tanlangan ✓" : "Tanlash"}
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-center py-12 text-xs text-ink-400">Hozircha nishonlar mavjud emas.</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ─── TAB 4: SOZLAMALAR ─── */}
+      {activeTab === "settings" && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Language & Appearance */}
+          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
+            <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.languageAppearance", "TIL VA TASHQI KO'RINISH")}</div>
+            <div className="space-y-4">
+              <div>
+                <div className="text-[10px] font-bold text-ink-400 mb-2">{t(locale, "profile.systemLanguage", "TIZIM TILI")}</div>
+                <div className="flex gap-2">
+                  {["uz","ru","en"].map(l => (
+                    <button
+                      key={l}
+                      onClick={() => { setLanguage(l as any); onSaveLanguage(l as any); }}
+                      className={`px-4 py-2 rounded-2xl text-sm font-bold transition-all border ${language === l ? 'bg-navy-900 text-white border-navy-900 dark:bg-white dark:text-navy-900 dark:border-white shadow-sm' : 'bg-surface border-line text-ink-600 hover:border-line-hover'}`}
+                    >
+                      {l.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              
+              <div className="flex items-center justify-between pt-4 border-t border-line dark:border-white/10">
+                <div>
+                  <div className="text-sm font-bold text-ink-700 dark:text-slate-200">{t(locale, "profile.darkMode", "Qorong'u rejim")}</div>
+                  <div className="text-[10px] text-ink-400">{t(locale, "profile.darkModeDesc", "Tizim ranglarini o'zgartirish")}</div>
+                </div>
+                <ThemeToggleButton />
+              </div>
+            </div>
+          </div>
+
+          {/* Ommaviy Oferta holati */}
+          {user.public_offer_agreed && (
+            <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm flex items-center justify-between bg-green-50/50 dark:bg-green-500/5">
+              <div className="flex gap-4 items-center">
+                <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-500/20 flex items-center justify-center text-green-600 dark:text-green-400">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-bold text-ink-900 dark:text-white">{t(locale, "landing.footer.oferta", "Ommaviy Oferta")}</div>
+                  <div className="text-xs text-ink-600 dark:text-navy-300 mt-0.5">{t(locale, "public_offer.agreed_message", "Siz bizning ommaviy ofertamizga rozilik bildirgansiz")}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Platform Review / Feedback */}
+          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
+            <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.leaveReview", "PLATFORMAGA SHARH QOLDIRISH")}</div>
+            {approvedReview ? (
+              <div className="text-sm text-green-600 dark:text-green-400 font-bold bg-green-500/10 p-4 rounded-2xl border border-green-500/20">
+                ✓ {t(locale, "profile.reviewApproved", "Sizning sharhingiz tasdiqlandi. Rahmat!")}
+              </div>
+            ) : pendingReview ? (
+              <div className="text-sm text-amber-600 dark:text-amber-300 font-bold bg-amber-500/10 p-4 rounded-2xl border border-amber-500/20">
+                ⏳ {t(locale, "profile.reviewPending", "Sharhingiz admin moderatsiyasida. Tasdiqlangandan keyin saytda ko'rinadi.")}
+              </div>
+            ) : !policyAllowsReview ? (
+              <div className="text-sm text-ink-600 dark:text-navy-300 font-bold bg-surface-soft p-4 rounded-2xl border">
+                ℹ {String(reviewPolicy.reason || t(locale, "profile.reviewNotAllowed", "Hozircha sharh yuborib bo'lmaydi."))}
+              </div>
+            ) : (
+              <>
+                <div className="flex gap-1 text-3xl">
+                  {[1, 2, 3, 4, 5].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setRating(n)}
+                      className={`transition-transform hover:scale-110 ${rating >= n ? "text-yellow-500" : "text-gray-300 dark:text-gray-600"}`}
+                      aria-label={`${n} star`}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+                <textarea
+                  value={reviewText}
+                  onChange={(e) => setReviewText(e.target.value)}
+                  placeholder={t(locale, "profile.reviewPlaceholder", "Platforma haqida fikringizni yozing...")}
+                  className="w-full rounded-2xl border border-line bg-white dark:bg-navy-900 p-4 text-sm min-h-[100px] focus:ring-2 focus:ring-cyan-500 outline-none"
+                />
+                {reviewError ? <div className="error-box">{reviewError}</div> : null}
+                <button
+                  type="button"
+                  onClick={() => submitStudentReview().catch(() => null)}
+                  className="btn btn-primary w-full py-3 rounded-2xl text-sm font-bold shadow-sm"
+                  disabled={!reviewText.trim() || reviewSubmitting}
+                >
+                  {reviewSubmitting ? t(locale, "common.sending", "Yuborilmoqda...") : t(locale, "profile.sendReview", "Sharhni yuborish")}
+                </button>
+                <div className="text-[10px] text-ink-500">{t(locale, "profile.reviewNote", "Sharhlar admin tomonidan tasdiqlangandan keyin boshqa studentlarga ko'rinadi.")}</div>
+              </>
+            )}
+            {ownReviews.length > 0 ? (
+              <div className="pt-4 border-t border-line dark:border-white/10 text-xs">
+                <div className="font-bold mb-2 text-ink-500 dark:text-navy-400">{t(locale, "profile.yourReviews", "Sizning sharhlaringiz:")}</div>
+                {ownReviews.slice(0, 3).map((r, i) => (
+                  <div key={String(r.id || i)} className="text-ink-600 dark:text-navy-300 mb-2 p-3 bg-surface-soft dark:bg-navy-900/30 rounded-xl border border-line/50">
+                    <span className="text-yellow-500 font-bold">★{r.rating || 5}</span> — {String(r.review_text || "").slice(0, 80)}{r.status ? ` (${t(locale, `status.${String(r.status).toLowerCase()}`, r.status)})` : ""}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <UserSessionsPanel locale={locale} />
+
+          {/* Danger Zone / Log Out */}
+          <div className="panel-card border border-red-500/20 bg-red-500/[0.02] dark:bg-red-500/[0.01] rounded-3xl p-6 shadow-sm">
+            <div className="text-xs font-bold text-red-500 mb-2">{t(locale, "profile.logout", "TIZIMDAN CHIQISH")}</div>
+            <p className="text-xs text-ink-500 mb-4">{t(locale, "profile.logoutDesc", "Hisobingizdan chiqib, boshqa qurilmalarda parolingizni xavfsiz saqlang.")}</p>
+            <button onClick={onLogout} className="w-full py-3 rounded-2xl bg-red-500/10 text-red-600 font-bold hover:bg-red-500/15 transition-colors">
+              {t(locale, "common.logout", "Chiqish")}
+            </button>
+          </div>
+        </div>
+      )}
 
       <ModalPortal open={avatarPreviewOpen && Boolean(avatarUrl)}>
         <div className="overlay-modal-backdrop" onClick={() => setAvatarPreviewOpen(false)}>
@@ -10887,12 +11098,13 @@ function TeacherSection({
   const [teacherCreateGroupLoading, setTeacherCreateGroupLoading] = useState(false);
   const [teacherCreateGroupError, setTeacherCreateGroupError] = useState("");
   const [teacherCoursesList, setTeacherCoursesList] = useState<GenericRow[]>(Array.isArray(data.courses) ? data.courses : []);
+  const teacherDefaultSubject = normalizeSubjectLabel(String(user.subjects?.[0] || (user as any).subject || (Array.isArray(data.groups) ? data.groups[0]?.subject : "") || "English")) || "English";
   const [teacherCreateGroupDraft, setTeacherCreateGroupDraft] = useState({
     name: "",
     course_id: "" as number | string,
     owner_branch: "" as number | string,
     level: "PRE-INTERMEDIATE",
-    subject: "English",
+    subject: teacherDefaultSubject,
     lesson_date: "MWF",
     lesson_start: "09:00",
     lesson_end: "10:30",
@@ -11117,7 +11329,9 @@ function TeacherSection({
   }, [section, selectedGroupId, loadPreparedArenas]);
 
   useEffect(() => {
-    setTeacherGroups(Array.isArray(data.groups) ? data.groups : []);
+    if (Array.isArray(data.groups) && data.groups.length > 0) {
+      setTeacherGroups(data.groups);
+    }
   }, [data.groups]);
 
   useEffect(() => {
@@ -11333,7 +11547,7 @@ function TeacherSection({
           course_id: "",
           owner_branch: "",
           level: "PRE-INTERMEDIATE",
-          subject: "English",
+          subject: teacherDefaultSubject,
           lesson_date: "MWF",
           lesson_start: "09:00",
           lesson_end: "10:30",
@@ -11660,6 +11874,7 @@ function TeacherSection({
               type="button"
               onClick={async () => {
                 setTeacherCreateGroupError("");
+                setTeacherCreateGroupDraft((prev) => ({ ...prev, subject: teacherDefaultSubject }));
                 setTeacherCreateGroupModalOpen(true);
                 await loadTeacherCourses();
               }}
@@ -11718,7 +11933,7 @@ function TeacherSection({
                     </label>
 
                     <label className="admin-form-label">
-                      Fan (Subject) *
+                      Fan (Subject) * <span className="text-xs text-cyan-600 dark:text-cyan-400 font-bold ml-1">✓ Faningiz avtomatik tanlandi</span>
                       <select
                         value={teacherCreateGroupDraft.subject}
                         onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, subject: e.target.value }))}
@@ -11930,6 +12145,7 @@ function TeacherSection({
                           onClick={async () => {
                             if (!window.confirm(`"${group.name}" guruhini o'chirishni tasdiqlaysizmi?`)) return;
                             await onApiCall(`/teacher/groups/${group.id}`, {}, "DELETE", "Guruh o'chirildi");
+                            setTeacherGroups((prev) => prev.filter((g) => Number(g.id) !== Number(group.id)));
                             await loadTeacherGroups();
                           }}
                         >
@@ -12042,7 +12258,11 @@ function TeacherSection({
                             lesson_start: String(teacherGroupDraft.lesson_start || "18:00"),
                             lesson_end: String(teacherGroupDraft.lesson_end || "19:00"),
                           }, "PATCH", "Guruh yangilandi");
-                          if (result) await loadTeacherGroups();
+                          if (result) {
+                            setTeacherGroups((prev) => prev.map((g) => Number(g.id) === Number(selectedGroupId) ? { ...g, ...teacherGroupDraft } : g));
+                            setSelectedGroupId(0);
+                            await loadTeacherGroups();
+                          }
                         }}
                       >
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg>
@@ -15229,8 +15449,6 @@ function AdminSection({
   const [userPage, setUserPage] = useState(1);
   const [groupPage, setGroupPage] = useState(1);
   const [broadcastTarget, setBroadcastTarget] = useState("all_students");
-  useEffect(() => { setAdminUsersFallback(null); }, [data.users]);
-  useEffect(() => { setAdminGroupsFallback(null); }, [data.groups]);
   const [broadcastMessage, setBroadcastMessage] = useState("");
   const [broadcastRecipientQuery, setBroadcastRecipientQuery] = useState("");
   const [broadcastRecipientRows, setBroadcastRecipientRows] = useState<GenericRow[]>([]);
@@ -15386,44 +15604,59 @@ function AdminSection({
     successText?: string,
   ): Promise<GenericRow | null> {
     const result = await onAdminCallRaw(path, payload, method, successText);
-    if (!result || method !== "DELETE") return result;
+    if (!result) return result;
 
     const userMatch = String(path || "").match(/^\/admin\/users\/(\d+)(?:$|[/?])/);
     if (userMatch) {
       const uid = Number(userMatch[1] || 0);
       if (uid > 0) {
-        setAdminUsersFallback((prev) => (prev !== null ? prev : (data.users || [])).filter((row: any) => Number(row.id || 0) !== uid));
-        setAdminUsersTotal((prev) => Math.max(0, Number(prev || 0) - 1));
-        if (Number(selectedUserId || 0) === uid) {
-          setSelectedUserId(null);
-          setUserDetail(null);
+        if (method === "DELETE") {
+          setAdminUsersFallback((prev) => (prev !== null ? prev : (data.users || [])).filter((row: any) => Number(row.id || 0) !== uid));
+          setAdminUsersTotal((prev) => Math.max(0, Number(prev || 0) - 1));
+          if (Number(selectedUserId || 0) === uid) {
+            setSelectedUserId(null);
+            setUserDetail(null);
+          }
+        } else if (method === "PATCH" && payload) {
+          setAdminUsersFallback((prev) => (prev !== null ? prev : (data.users || [])).map((row: any) => Number(row.id || 0) === uid ? { ...row, ...payload } : row));
         }
       }
+    } else if (String(path || "") === "/admin/users" && method === "POST" && result) {
+      setAdminUsersFallback((prev) => prev !== null ? [result, ...prev] : null);
+      setAdminUsersTotal((prev) => Number(prev || 0) + 1);
     }
 
     const groupMatch = String(path || "").match(/^\/admin\/groups\/(\d+)(?:$|[/?])/);
     if (groupMatch) {
       const gid = Number(groupMatch[1] || 0);
       if (gid > 0) {
-        setAdminGroupsFallback((prev) => (prev !== null ? prev : (data.groups || [])).filter((row: any) => Number(row.id || 0) !== gid));
-        setPaymentsGroupsFallback((prev) => (prev ? prev.filter((row) => Number(row.id || 0) !== gid) : prev));
-        setAdminGroupsTotal((prev) => Math.max(0, Number(prev || 0) - 1));
-        if (Number(selectedGroupId || 0) === gid) {
-          setSelectedGroupId(null);
-          setSelectedGroupSnapshot(null);
-          setGroupDraft({});
-          setGroupMemberRows([]);
-          setAvailableStudentRows([]);
-          setTempAssignments([]);
-        }
-        if (Number(paymentsSelectedGroupId || 0) === gid) {
-          setPaymentsSelectedGroupId(0);
-          setPaymentsSelectedStudentId(0);
-          setPaymentsGroupStudents([]);
-          setPaymentsCalcModal(null);
-          setPaymentsCalcPopupOpen(false);
+        if (method === "DELETE") {
+          setAdminGroupsFallback((prev) => (prev !== null ? prev : (data.groups || [])).filter((row: any) => Number(row.id || 0) !== gid));
+          setPaymentsGroupsFallback((prev) => (prev ? prev.filter((row) => Number(row.id || 0) !== gid) : prev));
+          setAdminGroupsTotal((prev) => Math.max(0, Number(prev || 0) - 1));
+          if (Number(selectedGroupId || 0) === gid) {
+            setSelectedGroupId(null);
+            setSelectedGroupSnapshot(null);
+            setGroupDraft({});
+            setGroupMemberRows([]);
+            setAvailableStudentRows([]);
+            setTempAssignments([]);
+          }
+          if (Number(paymentsSelectedGroupId || 0) === gid) {
+            setPaymentsSelectedGroupId(0);
+            setPaymentsSelectedStudentId(0);
+            setPaymentsGroupStudents([]);
+            setPaymentsCalcModal(null);
+            setPaymentsCalcPopupOpen(false);
+          }
+        } else if (method === "PATCH" && payload) {
+          setAdminGroupsFallback((prev) => (prev !== null ? prev : (data.groups || [])).map((row: any) => Number(row.id || 0) === gid ? { ...row, ...payload } : row));
+          setPaymentsGroupsFallback((prev) => (prev ? prev.map((row) => Number(row.id || 0) === gid ? { ...row, ...payload } : row) : prev));
         }
       }
+    } else if (String(path || "") === "/admin/groups" && method === "POST" && result) {
+      setAdminGroupsFallback((prev) => prev !== null ? [result, ...prev] : null);
+      setAdminGroupsTotal((prev) => Number(prev || 0) + 1);
     }
 
     return result;
@@ -22980,7 +23213,7 @@ function DashboardShell({
   } else if (activeRole === "student") {
     if (currentSection === "personal-plan") content = <WeeklyStudyPlan apiFetch={authedApiFetch} />;
     else if (currentSection === "learning-paths") content = <StudentLearningPaths apiFetch={authedApiFetch} />;
-    else if (["my-mistakes", "mistake-notebook", "pomodoro"].includes(currentSection)) content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view={currentSection} />;
+    else if (currentSection === "pomodoro") content = <PersonalLearningPanel apiFetch={authedApiFetch} role="student" view="pomodoro" />;
     else if (currentSection === "grammar") content = <StudentGrammar data={roleData} />;
     else if (currentSection === "videos") content = <StudentVideos apiFetch={authedApiFetch} user={user} />;
     else if (currentSection === "books") content = <StudentBooks apiFetch={authedApiFetch} user={user} />;
@@ -23005,7 +23238,6 @@ function DashboardShell({
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} />;
     }
     else if (currentSection === "attendance") content = <StudentAttendance />;
-    else if (currentSection === "notes") content = <StudentNotesPanel />;
     else content = <StudentHome user={user} data={roleData} onNavigate={handleNavigate} />;
 
   } else if (activeRole === "teacher") {

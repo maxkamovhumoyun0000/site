@@ -1,11 +1,22 @@
 "use client";
 import { FormEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useWebT } from "./web-i18n";
+import { TestCompletionActions, type TestReviewItem } from "./test-completion-actions";
 
 type Row = Record<string, any>;
 type ApiFetch = (path: string, options?: any) => Promise<any>;
-const covers = ["star", "chest", "dolphin", "jellyfish", "ship", "trophy"];
+const TRACKS_CACHE_KEY = "diamond_learning_tracks_cache_v2";
+const covers = ["star", "trophy", "chest", "dolphin", "jellyfish", "ship"];
 const image = (key: string) => `/learning-paths/${covers.includes(key) ? key : "star"}.png`;
+const COVER_LABELS: Record<string, string> = {
+  star: "Yulduz",
+  trophy: "Kubok",
+  chest: "Sandiq",
+  dolphin: "Delfin",
+  jellyfish: "Meduza",
+  ship: "Kema",
+};
 const errorText = (e: unknown, fallback: string) => e instanceof Error ? e.message : fallback;
 
 /* ═══════════════════════════════════════════════════════════════════════════════
@@ -101,73 +112,139 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeModule, setActiveModule] = useState<Row | null>(null);
+  const [activeFinalExamTrack, setActiveFinalExamTrack] = useState<Row | null>(null);
+  const [selectedSubject, setSelectedSubject] = useState<string>("");
 
-  const load = async () => {
-    setLoading(true);
+  // Extract distinct subjects from available tracks (ignoring any "all" / "barchasi")
+  const subjects = useMemo(() => {
+    const list: string[] = [];
+    for (const tr of tracks) {
+      const sub = String(tr.subject || "").trim();
+      if (
+        sub &&
+        !["all", "barchasi", "barcha fanlar", "все"].includes(sub.toLowerCase()) &&
+        !list.some((s) => s.toLowerCase() === sub.toLowerCase())
+      ) {
+        list.push(sub);
+      }
+    }
+    return list;
+  }, [tracks]);
+
+  // Keep selected subject valid (defaults to first subject, never "all")
+  useEffect(() => {
+    if (subjects.length > 0) {
+      setSelectedSubject((curr) => {
+        if (curr && subjects.some((s) => s.toLowerCase() === curr.toLowerCase())) {
+          return curr;
+        }
+        return subjects[0];
+      });
+    }
+  }, [subjects]);
+
+  const load = useCallback(async () => {
     try {
       const data = await apiFetch("/student/learning-tracks");
-      setTracks(Array.isArray(data?.items) ? data.items : []);
+      const items = Array.isArray(data?.items) ? data.items : [];
+      setTracks(items);
+      try {
+        localStorage.setItem(
+          TRACKS_CACHE_KEY,
+          JSON.stringify({ items, timestamp: Date.now() })
+        );
+      } catch {}
     } catch (e) {
-      setError(errorText(e, t("learning.loadError", "O'quv yo'li yuklanmadi.")));
+      if (!tracks.length) {
+        setError(errorText(e, t("learning.loadError", "O'quv yo'li yuklanmadi.")));
+      }
     } finally {
       setLoading(false);
     }
-  };
+  }, [apiFetch, t, tracks.length]);
 
+  // Load from local storage cache immediately for instant render, and preload images
   useEffect(() => {
+    covers.forEach((key) => {
+      try {
+        const img = new Image();
+        img.src = image(key);
+      } catch {}
+    });
+
+    try {
+      const raw = localStorage.getItem(TRACKS_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.items) && parsed.items.length > 0) {
+          setTracks(parsed.items);
+          setLoading(false);
+        }
+      }
+    } catch {}
+
     void load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (loading) {
+  // Filter tracks by selected subject
+  const filteredTracks = useMemo(() => {
+    if (!selectedSubject) {
+      return subjects.length > 0
+        ? tracks.filter((t) => String(t.subject || "").trim().toLowerCase() === subjects[0].toLowerCase())
+        : tracks;
+    }
+    return tracks.filter(
+      (t) => String(t.subject || "").trim().toLowerCase() === selectedSubject.toLowerCase()
+    );
+  }, [tracks, selectedSubject, subjects]);
+
+  if (loading && !tracks.length) {
     return (
       <section className="m-6 flex min-h-72 items-center justify-center">
         <div className="flex flex-col items-center gap-3">
-          <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#58cc02] border-t-transparent" />
-          <p className="text-xs font-black uppercase tracking-wider text-slate-500">Duolingo yo'li yuklanmoqda...</p>
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#002DFF] border-t-transparent" />
+          <p className="text-xs font-black uppercase tracking-wider text-slate-500">O'quv yo'li yuklanmoqda...</p>
         </div>
       </section>
     );
   }
 
-  // Calculate total student stats
-  let totalCoins = 0;
-  let passedModulesCount = 0;
-  for (const tr of tracks) {
-    for (const mod of tr.modules || []) {
-      if (mod.progress?.status === "passed") {
-        passedModulesCount++;
-        totalCoins += Number(mod.reward_coins || 0);
-      }
-    }
-  }
-
   return (
     <section className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-6">
-      {/* Duolingo Top Stats Pill Bar */}
-      <div className="sticky top-2 z-30 mb-5 flex items-center justify-between gap-2 rounded-2xl border-2 border-b-4 border-slate-200 bg-white/95 px-4 py-2.5 shadow-sm backdrop-blur-md dark:border-navy-700 dark:bg-navy-900/95">
-        <div className="flex items-center gap-1.5 font-black text-amber-500">
-          <span className="text-xl">🔥</span>
-          <span className="text-sm font-black text-amber-700 dark:text-amber-400">3 kun</span>
+      {/* ─── Fan Tanlash / Subject Selector Bar (Barchasi olib tashlangan) ─── */}
+      <div className="sticky top-2 z-30 mb-6 flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-b-4 border-slate-200 bg-white/95 p-2.5 shadow-sm backdrop-blur-md dark:border-navy-700 dark:bg-navy-900/95">
+        <div className="flex flex-wrap items-center gap-2">
+          {subjects.map((sub) => {
+            const lower = sub.toLowerCase();
+            const flag = lower.includes("ingliz") || lower.includes("english")
+              ? "🇬🇧"
+              : lower.includes("rus")
+              ? "🇷🇺"
+              : lower.includes("matem")
+              ? "📐"
+              : "📚";
+            const active = selectedSubject.toLowerCase() === lower;
+            return (
+              <button
+                key={sub}
+                type="button"
+                onClick={() => setSelectedSubject(sub)}
+                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black uppercase tracking-wider transition ${
+                  active
+                    ? "border-2 border-b-4 border-[#001A88] bg-[#002DFF] text-white shadow-md shadow-blue-500/25 active:translate-y-0.5 active:border-b-2"
+                    : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-200"
+                }`}
+              >
+                <span>{flag}</span>
+                <span>{sub}</span>
+              </button>
+            );
+          })}
         </div>
 
-        <div className="flex items-center gap-1.5 font-black text-cyan-500">
-          <span className="text-xl">💎</span>
-          <span className="text-sm font-black text-cyan-700 dark:text-cyan-300">
-            {totalCoins} <span className="hidden sm:inline">D'Coin</span>
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1.5 font-black text-emerald-500">
-          <span className="text-xl">⭐</span>
-          <span className="text-sm font-black text-emerald-700 dark:text-emerald-400">
-            {passedModulesCount} ta modul
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1.5 font-black text-rose-500">
-          <span className="text-xl">❤️</span>
-          <span className="text-sm font-black text-rose-700 dark:text-rose-400">5</span>
-        </div>
+        <span className="shrink-0 rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500 dark:bg-navy-800 dark:text-navy-300">
+          {filteredTracks.length} ta track
+        </span>
       </div>
 
       {error ? (
@@ -178,24 +255,35 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
       {/* Tracks List */}
       <div className="space-y-10">
-        {tracks.map((track, i) => (
+        {filteredTracks.map((track, i) => (
           <DuolingoTrack
             key={track.id}
             track={track}
             index={i}
+            apiFetch={apiFetch}
             onStartModule={(mod) => {
               playDuolingoSound("pop");
               setActiveModule(mod);
+            }}
+            onStartFinalExam={(t) => {
+              playDuolingoSound("pop");
+              setActiveFinalExamTrack(t);
             }}
           />
         ))}
       </div>
 
-      {!tracks.length ? (
+      {!filteredTracks.length ? (
         <div className="rounded-3xl border-2 border-dashed border-slate-300 p-12 text-center text-slate-500 dark:border-navy-700 dark:text-navy-300">
           <span className="text-4xl">🌱</span>
-          <p className="mt-3 text-base font-black text-navy-900 dark:text-white">Sizga hali o'quv yo'li biriktirilmagan.</p>
-          <p className="mt-1 text-xs text-slate-500">O'qituvchingiz yangi track va modullarni taqdim etganda shu yerda ko'rinadi.</p>
+          <p className="mt-3 text-base font-black text-navy-900 dark:text-white">
+            {selectedSubject
+              ? `"${selectedSubject}" fani bo'yicha hali o'quv yo'li mavjud emas.`
+              : "O'quv yo'li hali tashkillashtirilmagan."}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            O'qituvchingiz yangi track va modullarni taqdim etganda shu yerda ko'rinadi.
+          </p>
         </div>
       ) : null}
 
@@ -205,6 +293,17 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           apiFetch={apiFetch}
           onClose={() => {
             setActiveModule(null);
+            void load();
+          }}
+        />
+      ) : null}
+
+      {activeFinalExamTrack ? (
+        <FinalExamPlayerModal
+          track={activeFinalExamTrack}
+          apiFetch={apiFetch}
+          onClose={() => {
+            setActiveFinalExamTrack(null);
             void load();
           }}
         />
@@ -220,39 +319,130 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 function DuolingoTrack({
   track,
   index,
+  apiFetch,
   onStartModule,
+  onStartFinalExam,
 }: {
   track: Row;
   index: number;
+  apiFetch: ApiFetch;
   onStartModule: (module: Row) => void;
+  onStartFinalExam: (track: Row) => void;
 }) {
   const locked = Boolean(track.locked);
   const modules = Array.isArray(track.modules) ? track.modules : [];
 
   const passedCount = modules.filter((m: Row) => m.progress?.status === "passed").length;
   const progressPercent = modules.length ? Math.round((passedCount / modules.length) * 100) : 0;
+  const allPassed = modules.length > 0 && passedCount === modules.length;
+  const finalExam = (track as any).final_exam || {};
+  const finalExamPassed = Boolean(finalExam.passed);
+  const examReady = allPassed && !finalExamPassed;
+  const chestUnlocked = allPassed && finalExamPassed;
 
-  // Duolingo Unit Colors by index (Green -> Blue -> Purple -> Orange)
+  const [showChestModal, setShowChestModal] = useState(false);
+  const [claimingCert, setClaimingCert] = useState(false);
+  const [certRewardData, setCertRewardData] = useState<Row | null>(null);
+  const [certError, setCertError] = useState("");
+
+  const handleFinalChestClick = async () => {
+    setShowChestModal(true);
+    setCertError("");
+    if (chestUnlocked && !certRewardData) {
+      setClaimingCert(true);
+      try {
+        const res = await apiFetch(`/student/learning-tracks/${track.id}/certificate`, { method: "POST" });
+        setCertRewardData(res);
+        playDuolingoSound("complete");
+      } catch (err: any) {
+        setCertError(err?.message || "Sertifikat yuklanmadi.");
+      } finally {
+        setClaimingCert(false);
+      }
+    } else if (chestUnlocked) {
+      playDuolingoSound("chest");
+    } else if (examReady) {
+      playDuolingoSound("pop");
+    }
+  };
+
+  // Diamond Education Logo Brand Themes by index (Royal Electric Blue -> Deep Sapphire Navy -> Diamond Cyan -> Royal Cobalt)
   const unitGradients = [
-    { bg: "bg-[#58cc02]", border: "border-[#46a302]", accent: "bg-[#46a302]" },
-    { bg: "bg-[#1cb0f6]", border: "border-[#1899d6]", accent: "bg-[#1899d6]" },
-    { bg: "bg-[#ce82ff]", border: "border-[#a559d8]", accent: "bg-[#a559d8]" },
-    { bg: "bg-[#ff9600]", border: "border-[#d87c00]", accent: "bg-[#d87c00]" },
+    {
+      bg: "bg-gradient-to-r from-[#002DFF] via-[#1429f2] to-[#001A88]",
+      border: "border-[#001A88]",
+      accent: "bg-[#001A88]",
+      badge: "bg-[#000B3B]/40",
+    },
+    {
+      bg: "bg-gradient-to-r from-[#001A88] via-[#000B3B] to-[#0a256e]",
+      border: "border-[#000B3B]",
+      accent: "bg-[#000B3B]",
+      badge: "bg-[#000B3B]/40",
+    },
+    {
+      bg: "bg-gradient-to-r from-[#0284c7] via-[#002DFF] to-[#001A88]",
+      border: "border-[#0369a1]",
+      accent: "bg-[#0369a1]",
+      badge: "bg-[#001A88]/40",
+    },
+    {
+      bg: "bg-gradient-to-r from-[#1d4ed8] via-[#1e40af] to-[#001A88]",
+      border: "border-[#1e3a8a]",
+      accent: "bg-[#1e3a8a]",
+      badge: "bg-[#001A88]/40",
+    },
   ];
   const unitColor = unitGradients[index % unitGradients.length];
 
-  // Sine-wave horizontal offsets for snake trail
-  const OFFSETS = [0, 48, 72, 48, 0, -48, -72, -48];
+  // Sine-wave horizontal offsets for snake trail (chapdan o'ngga, o'ngdan chapga)
+  const OFFSETS = [-68, -34, 0, 34, 68, 34, 0, -34];
+
+  // Continuous winding snake path ("ilon izi") connecting all nodes and chest
+  const snakePathD = useMemo(() => {
+    if (!modules.length) return "";
+    const cx = 192;
+    const stepY = 116;
+    const startY = 56;
+    const points: { x: number; y: number }[] = [];
+
+    modules.forEach((_: any, i: number) => {
+      const xOffset = OFFSETS[i % OFFSETS.length];
+      points.push({ x: cx + xOffset, y: startY + i * stepY });
+    });
+
+    // Final chest center
+    points.push({ x: cx, y: startY + modules.length * stepY + 28 });
+
+    if (points.length < 2) return "";
+
+    let d = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      const dy = (p2.y - p1.y) * 0.55;
+      const cp1x = p1.x;
+      const cp1y = p1.y + dy;
+      const cp2x = p2.x;
+      const cp2y = p2.y - dy;
+      d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+    }
+    return d;
+  }, [modules, OFFSETS]);
+
+  const svgHeight = useMemo(() => {
+    return Math.max(200, modules.length * 116 + 180);
+  }, [modules.length]);
 
   return (
-    <article className={`relative select-none ${locked ? "opacity-55 grayscale" : ""}`}>
-      {/* Duolingo Unit Header Banner */}
+    <article className={`relative select-none`}>
+      {/* Diamond Logo Themed Unit Header Banner */}
       <header
-        className={`relative overflow-hidden rounded-3xl border-2 border-b-[6px] ${unitColor.border} ${unitColor.bg} p-5 text-white shadow-xl`}
+        className={`relative overflow-hidden rounded-3xl border-2 border-b-[6px] ${unitColor.border} ${unitColor.bg} p-5 text-white shadow-xl shadow-blue-950/20`}
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <span className="inline-block rounded-lg bg-black/20 px-2.5 py-1 text-[11px] font-black uppercase tracking-wider text-white">
+            <span className="inline-block rounded-lg bg-black/25 px-2.5 py-1 text-[11px] font-black uppercase tracking-wider text-white backdrop-blur-sm">
               Bo'lim {index + 1} · {track.subject || "Ingliz tili"}
             </span>
             <h2 className="mt-1.5 text-2xl font-black tracking-tight text-white drop-shadow-sm">
@@ -264,17 +454,17 @@ function DuolingoTrack({
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="rounded-2xl bg-white/20 px-3.5 py-1.5 text-xs font-black text-white backdrop-blur-sm">
+            <span className="rounded-2xl bg-white/20 px-3.5 py-1.5 text-xs font-black text-white backdrop-blur-sm shadow-sm">
               {locked ? "🔒 Qulflangan" : `${passedCount}/${modules.length} modul`}
             </span>
           </div>
         </div>
 
-        {/* Unit Progress Bar */}
+        {/* Unit Progress Bar with Diamond Cyan Crystal glow */}
         <div className="mt-4 flex items-center gap-3">
-          <div className="h-3.5 min-w-0 flex-1 overflow-hidden rounded-full bg-black/20 p-0.5">
+          <div className="h-3.5 min-w-0 flex-1 overflow-hidden rounded-full bg-black/30 p-0.5">
             <div
-              className="h-full rounded-full bg-white transition-all duration-500"
+              className="h-full rounded-full bg-gradient-to-r from-[#38bdf8] to-[#00e5ff] transition-all duration-500 shadow-[0_0_10px_rgba(56,189,248,0.5)]"
               style={{ width: `${progressPercent}%` }}
             />
           </div>
@@ -284,11 +474,59 @@ function DuolingoTrack({
 
       {/* Duolingo Winding Stepping Stones Path */}
       <div className="relative mx-auto mt-8 max-w-sm py-4">
+        {/* Continuous Snake Trail SVG ("Ilon Izi") */}
+        {snakePathD ? (
+          <svg
+            className="absolute left-1/2 top-4 -translate-x-1/2 pointer-events-none overflow-visible"
+            width="384"
+            height={svgHeight}
+            viewBox={`0 0 384 ${svgHeight}`}
+            fill="none"
+          >
+            <defs>
+              <linearGradient id={`snake-grad-${track.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" stopColor="#38bdf8" />
+                <stop offset="50%" stopColor="#002DFF" />
+                <stop offset="100%" stopColor="#f59e0b" />
+              </linearGradient>
+            </defs>
+
+            {/* Road Bed / Shadow track */}
+            <path
+              d={snakePathD}
+              stroke="currentColor"
+              className="text-slate-300/80 dark:text-navy-700/80"
+              strokeWidth="22"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+
+            {/* Glowing Brand Gradient Inner Trail */}
+            <path
+              d={snakePathD}
+              stroke={`url(#snake-grad-${track.id})`}
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.85"
+            />
+
+            {/* Stepping Stones / Cobblestones center line */}
+            <path
+              d={snakePathD}
+              stroke="#ffffff"
+              strokeWidth="3.5"
+              strokeDasharray="6 10"
+              strokeLinecap="round"
+              opacity="0.85"
+            />
+          </svg>
+        ) : null}
+
         {/* Winding Trail Column */}
-        <div className="flex flex-col items-center gap-7">
+        <div className="relative z-10 flex flex-col items-center gap-7">
           {modules.map((module: Row, order: number) => {
             const xOffset = OFFSETS[order % OFFSETS.length];
-            const isLast = order === modules.length - 1;
 
             return (
               <div key={module.id} className="relative flex flex-col items-center">
@@ -300,32 +538,297 @@ function DuolingoTrack({
                   xOffset={xOffset}
                   onStart={() => onStartModule(module)}
                 />
-
-                {/* Optional milestone chest after every 3 modules or at the end */}
-                {(order + 1) % 4 === 0 || isLast ? (
-                  <DuolingoChestNode
-                    unlocked={module.progress?.status === "passed"}
-                    rewardCoins={module.reward_coins || 10}
-                    xOffset={0}
-                  />
-                ) : null}
               </div>
             );
           })}
+
+          {/* Final Brand Chest Node at the end of the track */}
+          <div className="relative flex flex-col items-center mt-3">
+            {/* Side speech bubble for Final Chest (tepasida emas yon tarafida) */}
+            {chestUnlocked ? (
+              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+                <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-amber-500 -mr-[1px]" />
+                <div className="rounded-2xl border-2 border-amber-500 bg-gradient-to-r from-amber-400 to-amber-500 px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-amber-950 shadow-lg">
+                  🎁 Sandiqni ochish!
+                </div>
+              </div>
+            ) : examReady ? (
+              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+                <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-blue-500 -mr-[1px]" />
+                <div className="rounded-2xl border-2 border-[#002DFF] bg-gradient-to-r from-[#002DFF] to-indigo-600 px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-white shadow-lg">
+                  ⚡ Yakuniy Imtihon!
+                </div>
+              </div>
+            ) : (
+              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center gap-1 rounded-full bg-slate-900/80 px-2.5 py-1 text-[10px] font-bold text-white backdrop-blur-sm shadow-sm pointer-events-none whitespace-nowrap">
+                <span>🔒</span>
+                <span>Yakuniy Imtihon</span>
+              </div>
+            )}
+
+            {/* Solid Opaque Backing Disc to block snake path underneath */}
+            <div className="absolute h-22 w-22 sm:h-24 sm:w-24 rounded-full bg-white dark:bg-[#070d1e] shadow-md pointer-events-none" />
+
+            {/* 3D Circular Chest Pushable Button - ALWAYS COLORFUL, NEVER GRAY */}
+            <button
+              type="button"
+              onClick={handleFinalChestClick}
+              className={`group relative grid h-20 w-20 sm:h-22 sm:w-22 shrink-0 place-items-center rounded-full border-2 transition-all duration-150 select-none ${
+                chestUnlocked
+                  ? "border-amber-700 border-b-[8px] bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-white shadow-xl shadow-amber-500/30 ring-4 ring-amber-400/50 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer animate-pulse"
+                  : examReady
+                  ? "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#002DFF] text-white shadow-xl shadow-blue-600/30 ring-4 ring-amber-400/60 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer animate-pulse"
+                  : "border-amber-700 border-b-[8px] bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 text-white shadow-lg shadow-amber-600/20 ring-4 ring-amber-400/30 cursor-pointer active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-105"
+              }`}
+            >
+              <div className="relative h-full w-full p-2 flex items-center justify-center">
+                <img
+                  src="/learning-paths/chest.png"
+                  alt="Sandiq"
+                  className="h-full w-full rounded-full object-contain drop-shadow-md transition-all"
+                />
+                {!chestUnlocked && !examReady ? (
+                  <div className="absolute inset-0 grid place-items-center">
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-amber-950 border border-amber-400 text-xs text-amber-300 shadow-md">
+                      🔒
+                    </span>
+                  </div>
+                ) : examReady ? (
+                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-amber-400 text-[11px] text-amber-950 shadow-md">
+                    ⚡
+                  </div>
+                ) : (
+                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-amber-400 text-[11px] text-amber-950 shadow-md">
+                    ✨
+                  </div>
+                )}
+              </div>
+            </button>
+
+            <span className={`mt-2 text-xs font-black uppercase tracking-wider ${
+              chestUnlocked
+                ? "text-amber-600 dark:text-amber-400"
+                : examReady
+                ? "text-[#002DFF] dark:text-blue-400"
+                : "text-amber-600 dark:text-amber-400"
+            }`}>
+              {chestUnlocked ? "🎓 Sertifikat & Mukofot" : examReady ? "⚡ Yakuniy Imtihon" : "Yakuniy Bosqich"}
+            </span>
+          </div>
         </div>
       </div>
 
-      {track.certificate_eligible ? (
-        <div className="mt-6 flex items-center gap-3 rounded-2xl border-2 border-b-4 border-amber-400 bg-amber-50 p-4 font-bold text-amber-900 shadow-sm dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
-          <span className="text-2xl">🎓</span>
-          <div>
-            <p className="text-sm font-black">Bo'lim sertifikati ochildi!</p>
-            <p className="text-xs font-medium text-amber-800 dark:text-amber-300">
-              Siz bu bo'limdagi barcha darslarni a'lo baholarga bajardingiz. Sertifikat Profil sahifangizda tayyor.
-            </p>
-          </div>
-        </div>
-      ) : null}
+      {/* Pop-up Modal for Final Chest / Certificate Celebration via createPortal */}
+      {showChestModal && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/75 p-4 backdrop-blur-md animate-fade-in"
+              onClick={() => setShowChestModal(false)}
+            >
+              <div
+                className="relative w-full max-w-md overflow-hidden rounded-3xl border-2 border-amber-400/50 bg-white p-6 shadow-2xl dark:border-amber-600/40 dark:bg-navy-900 animate-scale-up"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* Close Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowChestModal(false)}
+                  className="absolute right-4 top-4 grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10 dark:hover:text-white transition"
+                >
+                  ✕
+                </button>
+
+                {chestUnlocked ? (
+                  <div className="flex flex-col items-center text-center">
+                    {/* Animated Chest & Sparkles */}
+                    <div className="relative my-2">
+                      <div className="h-28 w-28 rounded-3xl bg-gradient-to-tr from-amber-400 to-amber-200 p-2 shadow-xl ring-4 ring-amber-400/40 flex items-center justify-center animate-bounce">
+                        <img src="/learning-paths/chest.png" alt="Sandiq" className="h-full w-full object-contain" />
+                      </div>
+                      <span className="absolute -top-2 -right-2 text-2xl animate-spin">✨</span>
+                      <span className="absolute -bottom-1 -left-2 text-2xl animate-pulse">🌟</span>
+                    </div>
+
+                    <span className="rounded-full bg-amber-500/15 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                      Bo'lim yakunlandi
+                    </span>
+
+                    <h3 className="mt-2 text-2xl font-black text-navy-900 dark:text-white">
+                      🎉 Tabriklaymiz!
+                    </h3>
+
+                    <p className="mt-1 text-xs text-slate-600 dark:text-navy-200 max-w-sm">
+                      Siz «<strong>{track.title}</strong>» bo'limidagi barcha modullarni a'lo darajada tamomlab, rasmiy sertifikat va mukofotlarni qo'lga kiritdingiz!
+                    </p>
+
+                    {/* Dual Reward Badges */}
+                    <div className="mt-4 grid grid-cols-2 gap-3 w-full">
+                      <div className="rounded-2xl border-2 border-cyan-400/30 bg-cyan-500/10 p-3 text-center">
+                        <span className="text-xl">💎</span>
+                        <p className="text-base font-black text-cyan-700 dark:text-cyan-300 mt-0.5">
+                          +50 D'Point
+                        </p>
+                        <p className="text-[10px] text-cyan-600/80 font-bold">Reyting uchun</p>
+                      </div>
+
+                      <div className="rounded-2xl border-2 border-amber-400/30 bg-amber-500/10 p-3 text-center">
+                        <span className="text-xl">🪙</span>
+                        <p className="text-base font-black text-amber-700 dark:text-amber-300 mt-0.5">
+                          +50 D'Coin
+                        </p>
+                        <p className="text-[10px] text-amber-600/80 font-bold">Sovg'alar uchun</p>
+                      </div>
+                    </div>
+
+                    {/* Certificate Card */}
+                    {claimingCert ? (
+                      <div className="mt-5 flex items-center justify-center gap-2 py-4 text-xs font-bold text-slate-500">
+                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
+                        <span>Sertifikat rasmiylashtirilmoqda...</span>
+                      </div>
+                    ) : certRewardData?.certificate ? (
+                      <div className="mt-4 w-full rounded-2xl border-2 border-amber-400/40 bg-gradient-to-br from-amber-50/70 to-yellow-50/70 p-4 text-left dark:border-amber-600/30 dark:bg-amber-950/20">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-2xl">🎓</span>
+                          <div>
+                            <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                              {certRewardData.certificate.course_title || track.title}
+                            </p>
+                            <p className="text-[10px] font-mono text-amber-700 dark:text-amber-400">
+                              ID: {certRewardData.certificate.certificate_id}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-2">
+                          <a
+                            href={`/api/student/certificates/${certRewardData.certificate.certificate_id}/pdf`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 py-2.5 px-4 text-xs font-black text-white shadow-md hover:from-amber-600 hover:to-amber-700 transition active:scale-98"
+                          >
+                            <span>📄 Sertifikatni PDF ko'rish / Yuklab olish</span>
+                          </a>
+                        </div>
+                      </div>
+                    ) : certError ? (
+                      <p className="mt-3 text-xs text-rose-500">{certError}</p>
+                    ) : null}
+
+                    <p className="mt-3 text-[11px] text-slate-400 dark:text-navy-400">
+                      💡 Sertifikat shuningdek Profilingizning <strong>«🎓 Sertifikatlarim»</strong> bo'limida doimiy saqlandi.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowChestModal(false)}
+                      className="mt-4 w-full rounded-2xl border-2 border-b-4 border-slate-300 bg-slate-100 py-3 text-center text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 active:translate-y-0.5 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-200"
+                    >
+                      Yopish
+                    </button>
+                  </div>
+                ) : examReady ? (
+                  <div className="flex flex-col items-center text-center">
+                    <div className="relative my-2">
+                      <div className="h-24 w-24 rounded-3xl bg-gradient-to-tr from-[#002DFF] via-indigo-600 to-[#001A88] p-2 shadow-xl ring-4 ring-blue-400/40 flex items-center justify-center animate-pulse">
+                        <span className="text-5xl">🏆</span>
+                      </div>
+                    </div>
+
+                    <span className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-black uppercase tracking-wider text-blue-700 dark:text-blue-300">
+                      Yakuniy Bosqich
+                    </span>
+
+                    <h3 className="mt-2 text-2xl font-black text-navy-900 dark:text-white">
+                      🎓 Yakuniy Imtihon
+                    </h3>
+
+                    <p className="mt-2 text-xs text-slate-600 dark:text-navy-200 max-w-sm leading-relaxed">
+                      Siz barcha modullarni muvaffaqiyatli tamomladingiz! Endi rasmiy <strong>Sertifikat</strong> olish va keyingi trackni ochish uchun ushbu yakuniy imtihonni topshiring.
+                    </p>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3 w-full">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-white/10 dark:bg-navy-800">
+                        <p className="text-[10px] font-bold uppercase text-slate-400">O'tish bali</p>
+                        <p className="text-base font-black text-navy-900 dark:text-white mt-0.5">
+                          {track.passing_score || 70}%
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-center dark:border-amber-800/40 dark:bg-amber-950/30">
+                        <p className="text-[10px] font-bold uppercase text-amber-600">Mukofot</p>
+                        <p className="text-base font-black text-amber-700 dark:text-amber-300 mt-0.5">
+                          +50 D'Point & Coin
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 rounded-2xl bg-blue-50 p-3 text-left text-xs font-bold text-blue-900 dark:bg-blue-950/40 dark:text-blue-200 border border-blue-200 dark:border-blue-800/50">
+                      💡 Bu imtihonda oldingi barcha modullardagi savollar <strong>aralash holda</strong> tushadi.
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowChestModal(false);
+                        onStartFinalExam(track);
+                      }}
+                      className="mt-5 w-full rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] py-3.5 text-center text-sm font-black uppercase tracking-wider text-white shadow-xl shadow-blue-600/30 active:translate-y-1 active:border-b-2 hover:bg-[#1429f2] cursor-pointer"
+                    >
+                      🚀 Imtihonni boshlash
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center text-center">
+                    {/* Locked Chest */}
+                    <div className="relative my-2">
+                      <div className="h-24 w-24 rounded-3xl bg-gradient-to-tr from-amber-400 to-amber-200 p-2 shadow-md ring-4 ring-amber-400/40 flex items-center justify-center">
+                        <img src="/learning-paths/chest.png" alt="Sandiq" className="h-full w-full object-contain drop-shadow-md" />
+                      </div>
+                      <div className="absolute inset-0 grid place-items-center">
+                        <span className="grid h-10 w-10 place-items-center rounded-full bg-amber-950 border-2 border-amber-400 text-lg text-amber-300 shadow-lg">
+                          🔒
+                        </span>
+                      </div>
+                    </div>
+
+                    <h3 className="mt-2 text-xl font-black text-navy-900 dark:text-white">
+                      Yakuniy Sandiq Qulflangan
+                    </h3>
+
+                    <p className="mt-2 text-xs text-slate-600 dark:text-navy-200 max-w-sm leading-relaxed">
+                      Ushbu maxsus sandiq ichida siz uchun rasmiy <strong>Sertifikat</strong> hamda <strong>+50 D'Point</strong> va <strong>+50 D'Coin</strong> mukofoti saqlangan.
+                    </p>
+
+                    <div className="mt-4 w-full rounded-2xl bg-slate-50 p-3.5 dark:bg-navy-800/80 border border-slate-100 dark:border-navy-700">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-navy-200 mb-2">
+                        <span>O'tilgan darslar:</span>
+                        <span className="font-black text-[#002DFF]">{passedCount} / {modules.length} modul ({progressPercent}%)</span>
+                      </div>
+                      <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-navy-900">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-300"
+                          style={{ width: `${progressPercent}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                        Sandiqni ochish uchun yana {modules.length - passedCount} ta modulni yakunlang!
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowChestModal(false)}
+                      className="mt-5 w-full rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] py-3 text-center text-xs font-black uppercase tracking-wider text-white shadow-md hover:bg-[#1429f2] active:translate-y-0.5 active:border-b-2"
+                    >
+                      Tushundim, davom etaman →
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
     </article>
   );
 }
@@ -333,6 +836,89 @@ function DuolingoTrack({
 /* ═══════════════════════════════════════════════════════════════════════════════
    DUOLINGO STEPPING STONE (3D Pushable Circular Node with Floating Speech Bubble)
    ═══════════════════════════════════════════════════════════════════════════════ */
+
+function SegmentedProgressRing({
+  total,
+  completed,
+  radius = 46,
+  strokeWidth = 4.5,
+}: {
+  total: number;
+  completed: number;
+  radius?: number;
+  strokeWidth?: number;
+}) {
+  const count = Math.min(5, Math.max(1, total));
+  const size = (radius + strokeWidth) * 2 + 10;
+  const cx = size / 2;
+  const cy = size / 2;
+
+  if (count === 1) {
+    const isDone = completed >= 1;
+    return (
+      <svg
+        width={size}
+        height={size}
+        className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-visible"
+        viewBox={`0 0 ${size} ${size}`}
+      >
+        <circle
+          cx={cx}
+          cy={cy}
+          r={radius}
+          fill="none"
+          stroke={isDone ? "#10b981" : "rgba(148, 163, 184, 0.35)"}
+          strokeWidth={strokeWidth}
+        />
+      </svg>
+    );
+  }
+
+  // Multi-segment circular ring (2 to 5 arcs)
+  const gapDeg = count === 2 ? 18 : count === 3 ? 14 : 12;
+  const segDeg = 360 / count - gapDeg;
+  const segments = [];
+
+  for (let i = 0; i < count; i++) {
+    const startAngle = -90 + i * (360 / count) + gapDeg / 2;
+    const endAngle = startAngle + segDeg;
+
+    const startRad = (startAngle * Math.PI) / 180;
+    const endRad = (endAngle * Math.PI) / 180;
+
+    const x1 = cx + radius * Math.cos(startRad);
+    const y1 = cy + radius * Math.sin(startRad);
+    const x2 = cx + radius * Math.cos(endRad);
+    const y2 = cy + radius * Math.sin(endRad);
+
+    const largeArc = segDeg > 180 ? 1 : 0;
+    const d = `M ${x1} ${y1} A ${radius} ${radius} 0 ${largeArc} 1 ${x2} ${y2}`;
+    const isDone = i < completed;
+
+    segments.push(
+      <path
+        key={i}
+        d={d}
+        fill="none"
+        stroke={isDone ? "#10b981" : "rgba(148, 163, 184, 0.35)"}
+        strokeWidth={isDone ? strokeWidth + 0.5 : strokeWidth}
+        strokeLinecap="round"
+        className="transition-all duration-300"
+      />
+    );
+  }
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-visible"
+      viewBox={`0 0 ${size} ${size}`}
+    >
+      {segments}
+    </svg>
+  );
+}
 
 function DuolingoNode({
   module,
@@ -351,10 +937,25 @@ function DuolingoNode({
   const progress = module.progress || {};
   const isLocked = parentLocked || progress.status === "locked";
   const isPassed = progress.status === "passed";
+  const isFailed = progress.status === "failed";
   const isActive = !isLocked && !isPassed;
   const score = Number(progress.best_score || 0);
   const stars = isPassed ? (score >= 95 ? 3 : score >= 85 ? 2 : 1) : 0;
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
+  const topicKeys = Array.isArray(module.topic_keys) ? module.topic_keys : [];
+  const totalTopics = Math.min(5, Math.max(1, module.total_topics || lessons.length || topicKeys.length || 1));
+  const completedTopics = isLocked
+    ? 0
+    : Math.min(
+        totalTopics,
+        Math.max(
+          0,
+          isPassed
+            ? totalTopics
+            : (module.completed_topics ?? lessons.filter((l: any) => l.passed).length)
+        )
+      );
+  const moduleImage = module.image_url || image(module.cover_key || "star");
 
   const handleNodeClick = () => {
     if (isLocked) return;
@@ -367,14 +968,39 @@ function DuolingoNode({
       className="relative flex flex-col items-center transition-all duration-300"
       style={{ transform: `translateX(${xOffset}px)` }}
     >
-      {/* Floating Animated "START" / "BOSHLASH" Speech Bubble for Active Node */}
-      {isActive ? (
-        <div className="absolute -top-11 z-20 flex flex-col items-center animate-bounce pointer-events-none">
-          <div className="rounded-2xl border-2 border-[#58cc02] bg-white px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-[#58cc02] shadow-lg dark:bg-navy-800">
-            Boshlash
+      {/* Side Animated Speech Bubble for Active/Failed Node (tepasida emas yon tarafida) */}
+      {isFailed ? (
+        xOffset < 0 ? (
+          <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+            <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-rose-500 -mr-[1px]" />
+            <div className="rounded-2xl border-2 border-rose-500 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-600 shadow-lg dark:bg-navy-800">
+              Qayta topshirish
+            </div>
           </div>
-          <div className="h-0 w-0 border-x-4 border-t-4 border-x-transparent border-t-[#58cc02] -mt-[1px]" />
-        </div>
+        ) : (
+          <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+            <div className="rounded-2xl border-2 border-rose-500 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-600 shadow-lg dark:bg-navy-800">
+              Qayta topshirish
+            </div>
+            <div className="h-0 w-0 border-y-4 border-l-4 border-y-transparent border-l-rose-500 -ml-[1px]" />
+          </div>
+        )
+      ) : isActive ? (
+        xOffset < 0 ? (
+          <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+            <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-[#002DFF] -mr-[1px]" />
+            <div className="rounded-2xl border-2 border-[#002DFF] bg-white px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-[#002DFF] shadow-lg dark:bg-navy-800">
+              {completedTopics > 0 ? `${completedTopics + 1}-mavzu` : "Boshlash"}
+            </div>
+          </div>
+        ) : (
+          <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
+            <div className="rounded-2xl border-2 border-[#002DFF] bg-white px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-[#002DFF] shadow-lg dark:bg-navy-800">
+              {completedTopics > 0 ? `${completedTopics + 1}-mavzu` : "Boshlash"}
+            </div>
+            <div className="h-0 w-0 border-y-4 border-l-4 border-y-transparent border-l-[#002DFF] -ml-[1px]" />
+          </div>
+        )
       ) : null}
 
       {/* Floating stars for completed node */}
@@ -386,129 +1012,204 @@ function DuolingoNode({
         </div>
       ) : null}
 
-      {/* Circular 3D Pushable Duolingo Button */}
-      <button
-        type="button"
-        onClick={handleNodeClick}
-        disabled={isLocked}
-        title={isLocked ? "Oldingi modulni tugating" : module.title}
-        className={`group relative grid h-20 w-20 shrink-0 place-items-center rounded-full border-2 transition-all duration-150 select-none ${
-          isPassed
-            ? "border-[#e5a800] border-b-[8px] bg-[#ffc800] text-white shadow-xl active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:brightness-105"
-            : isActive
-            ? "border-[#46a302] border-b-[8px] bg-[#58cc02] text-white shadow-xl shadow-emerald-500/25 ring-4 ring-[#58cc02]/30 ring-offset-2 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:brightness-105"
-            : "border-[#cfcfcf] border-b-[8px] bg-[#e5e5e5] text-slate-400 cursor-not-allowed dark:border-[#1a252b] dark:bg-[#202f36] dark:text-slate-500"
-        }`}
-      >
-        {/* Cover image or iconic icon */}
-        <div className="relative z-10 flex flex-col items-center justify-center">
-          {isLocked ? (
-            <span className="text-2xl drop-shadow">🔒</span>
-          ) : isPassed ? (
-            <span className="text-3xl font-black drop-shadow">👑</span>
-          ) : (
-            <span className="text-3xl font-black drop-shadow">⭐</span>
-          )}
-        </div>
-      </button>
+      <div className="relative grid place-items-center">
+        {/* Solid Opaque Backing Disc to completely block snake path underneath */}
+        <div className="absolute h-[86px] w-[86px] sm:h-[94px] sm:w-[94px] rounded-full bg-white dark:bg-[#070d1e] shadow-md pointer-events-none" />
 
-      {/* Duolingo Popover Card when clicked */}
-      {showPopover && !isLocked ? (
-        <div className="absolute top-24 z-40 w-72 rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-4 shadow-2xl animate-fade-in dark:border-navy-700 dark:bg-navy-900">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2 dark:border-white/10">
-            <span className="text-xs font-black uppercase tracking-wider text-[#58cc02]">
-              Modul #{order + 1}
-            </span>
-            <button
-              type="button"
-              onClick={() => setShowPopover(false)}
-              className="grid h-6 w-6 place-items-center rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
-            >
-              ✕
-            </button>
-          </div>
+        {/* Segmented Circular Progress Ring around the button (1 to 5 topics) */}
+        {!isLocked ? (
+          <SegmentedProgressRing
+            total={totalTopics}
+            completed={completedTopics}
+            radius={46}
+            strokeWidth={4.5}
+          />
+        ) : null}
 
-          <h3 className="mt-2 text-base font-black text-navy-900 dark:text-white">
-            {module.title}
-          </h3>
-
-          <p className="mt-1 text-xs text-slate-500 dark:text-navy-300">
-            {module.description || "Ushbu modul orqali bilimlaringizni sinang."}
-          </p>
-
-          <div className="mt-3 flex items-center justify-between rounded-xl bg-slate-50 p-2.5 text-xs font-bold text-slate-700 dark:bg-navy-800 dark:text-navy-200">
-            <span>📝 {lessons.length} ta savol</span>
-            {module.reward_coins > 0 ? (
-              <span className="text-amber-500 font-black">💰 +{module.reward_coins} coin</span>
+        {/* Circular 3D Pushable Duolingo Button with chosen Brand Cover Image */}
+        <button
+          type="button"
+          onClick={handleNodeClick}
+          disabled={isLocked}
+          title={isLocked ? "Oldingi modulni tugating" : module.title}
+          className={`group relative grid h-20 w-20 sm:h-22 sm:w-22 shrink-0 place-items-center rounded-full border-2 transition-all duration-150 select-none ${
+            isPassed
+              ? "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#001A88] text-white shadow-xl shadow-blue-900/30 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:brightness-110"
+              : isFailed
+              ? "border-rose-700 border-b-[8px] bg-rose-500 text-white shadow-xl shadow-rose-500/25 ring-4 ring-rose-500/30 ring-offset-2 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:brightness-105"
+              : isActive
+              ? "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#002DFF] text-white shadow-xl shadow-blue-600/30 ring-4 ring-[#002DFF]/40 ring-offset-2 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:brightness-110"
+              : "border-slate-400 border-b-[8px] bg-slate-200 text-slate-500 cursor-not-allowed dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
+          }`}
+        >
+          {/* Module circular brand image */}
+          <div className="relative h-full w-full p-1 flex items-center justify-center">
+            <img
+              src={moduleImage}
+              alt={module.title || "Modul"}
+              className="h-full w-full rounded-full object-cover shadow-inner transition"
+            />
+            {/* Status badge overlays */}
+            {isLocked ? (
+              <div className="absolute inset-0 grid place-items-center">
+                <span className="grid h-8 w-8 place-items-center rounded-full bg-slate-900 border-2 border-slate-700 text-xs text-white shadow-md">
+                  🔒
+                </span>
+              </div>
+            ) : isPassed ? (
+              <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-amber-400 text-[11px] text-amber-950 shadow-md dark:border-navy-900">
+                👑
+              </div>
+            ) : isFailed ? (
+              <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-rose-500 text-[11px] text-white shadow-md dark:border-navy-900">
+                ⚠️
+              </div>
             ) : null}
-            {isPassed ? (
-              <span className="text-emerald-600 font-black">✓ {score}%</span>
-            ) : (
-              <span>{module.passing_score || 70}% o'tish</span>
-            )}
           </div>
+        </button>
+      </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              setShowPopover(false);
-              onStart();
-            }}
-            className="mt-4 w-full rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#58cc02] py-3 text-center text-sm font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#4cb802]"
+      {/* Centered Modal Pop-up Dialog via createPortal */}
+      {showPopover && !isLocked && typeof document !== "undefined" ? (
+        createPortal(
+          <div
+            className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm animate-fade-in"
+            onClick={() => setShowPopover(false)}
           >
-            {isPassed ? "Qayta ishlash 🔄" : "Darsni boshlash →"}
-          </button>
-        </div>
+            <div
+              className="relative w-full max-w-sm rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 shadow-2xl dark:border-navy-700 dark:bg-navy-900 animate-scale-up"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-white/10">
+                <div className="flex items-center gap-2.5">
+                  <img src={moduleImage} alt="" className="h-8 w-8 rounded-full object-cover border-2 border-[#002DFF]" />
+                  <span className="text-xs font-black uppercase tracking-wider text-[#002DFF]">
+                    Modul #{order + 1}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPopover(false)}
+                  className="grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10 dark:hover:text-white transition"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-4 flex flex-col items-center text-center">
+                <div className="h-20 w-20 rounded-full p-1 border-4 border-[#002DFF]/20 bg-gradient-to-b from-[#1429f2] to-[#002DFF] shadow-lg mb-3 flex items-center justify-center">
+                  <img src={moduleImage} alt="" className="h-full w-full rounded-full object-cover" />
+                </div>
+                <h3 className="text-lg font-black text-navy-900 dark:text-white">
+                  {module.title}
+                </h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-navy-300 leading-relaxed max-w-xs">
+                  {module.description || "Ushbu modul orqali bilimlaringizni sinang va mustahkamlang."}
+                </p>
+              </div>
+
+              {/* Topics Breakdown List (1 to 5 topics) */}
+              <div className="mt-4 space-y-2 text-left w-full">
+                <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-navy-300">
+                  <span>Modul mavzulari ({completedTopics}/{totalTopics})</span>
+                  <span className="text-[10px] text-emerald-600 font-bold">
+                    {Math.round((completedTopics / totalTopics) * 100)}%
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {Array.from({ length: totalTopics }, (_, tIdx) => {
+                    const lesson = lessons[tIdx];
+                    const topicTitle = lesson?.title || topicKeys[tIdx] || `Mavzu ${tIdx + 1}`;
+                    const isTopPassed = isPassed || tIdx < completedTopics;
+                    const isTopActive = !isLocked && !isPassed && tIdx === completedTopics;
+
+                    return (
+                      <div
+                        key={tIdx}
+                        className={`flex items-center justify-between rounded-xl border p-2 text-xs font-bold transition ${
+                          isTopPassed
+                            ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+                            : isTopActive
+                            ? "border-[#002DFF] bg-blue-50 text-[#002DFF] dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300 shadow-xs"
+                            : "border-slate-200 bg-slate-50 text-slate-400 dark:border-white/10 dark:bg-navy-800/40"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span
+                            className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black ${
+                              isTopPassed
+                                ? "bg-emerald-500 text-white"
+                                : isTopActive
+                                ? "bg-[#002DFF] text-white"
+                                : "bg-slate-200 text-slate-600 dark:bg-navy-700 dark:text-slate-300"
+                            }`}
+                          >
+                            {tIdx + 1}
+                          </span>
+                          <span className="truncate">{topicTitle}</span>
+                        </div>
+                        <span className="shrink-0 text-[11px] font-black">
+                          {isTopPassed ? "✅ Bajarildi" : isTopActive ? "⚡ Joriy" : "🔒"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-700 dark:bg-navy-800 dark:text-navy-200">
+                  <span className="flex items-center gap-1.5">
+                    <span>📝</span>
+                    <span>Jami savollar: {lessons.length} ta</span>
+                  </span>
+                  {isPassed ? (
+                    <span className="text-emerald-600 font-black">✓ {score}% (O'tilgan)</span>
+                  ) : isFailed ? (
+                    <span className="text-rose-600 font-black">✗ {score}% (O'tilmadi)</span>
+                  ) : (
+                    <span>{module.passing_score || 70}% o'tish</span>
+                  )}
+                </div>
+
+                {Number(module.reward_coins || 0) > 0 ? (
+                  <div className="flex items-center justify-between rounded-xl bg-amber-50 px-3 py-2 text-xs font-black text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200 dark:border-amber-800/40">
+                    <span className="flex items-center gap-1.5">
+                      <span>💎</span>
+                      <span>Mukofot:</span>
+                    </span>
+                    <span className="text-amber-600 font-black">+{module.reward_coins} D'Point</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPopover(false);
+                  onStart();
+                }}
+                className={`mt-5 w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 ${
+                  isPassed
+                    ? "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
+                    : isFailed
+                    ? "border-rose-700 bg-rose-600 hover:bg-rose-700"
+                    : "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
+                }`}
+              >
+                {isPassed
+                  ? "Qayta takrorlash 🔄"
+                  : isFailed
+                  ? "Qayta topshirish 🔄"
+                  : completedTopics > 0
+                  ? `${completedTopics + 1}-mavzuni boshlash ➔`
+                  : "Darsni boshlash →"}
+              </button>
+            </div>
+          </div>,
+          document.body
+        )
       ) : null}
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════════
-   DUOLINGO BONUS CHEST NODE (Treasure milestone along the path)
-   ═══════════════════════════════════════════════════════════════════════════════ */
-
-function DuolingoChestNode({
-  unlocked,
-  rewardCoins,
-  xOffset,
-}: {
-  unlocked: boolean;
-  rewardCoins: number;
-  xOffset: number;
-}) {
-  const [opened, setOpened] = useState(false);
-
-  const handleClick = () => {
-    if (!unlocked || opened) return;
-    playDuolingoSound("chest");
-    setOpened(true);
-  };
-
-  return (
-    <div
-      className="relative mt-2 flex flex-col items-center"
-      style={{ transform: `translateX(${xOffset}px)` }}
-    >
-      <button
-        type="button"
-        onClick={handleClick}
-        disabled={!unlocked}
-        title={unlocked ? (opened ? "Mukofot olindi!" : "Sandıqni oching!") : "Oldingi darslarni tugating"}
-        className={`group relative grid h-16 w-16 place-items-center rounded-2xl border-2 transition-all duration-150 select-none ${
-          opened
-            ? "border-slate-300 border-b-4 bg-slate-100 text-slate-400 dark:border-navy-700 dark:bg-navy-800"
-            : unlocked
-            ? "border-amber-500 border-b-[6px] bg-gradient-to-b from-amber-300 to-amber-400 text-white shadow-lg shadow-amber-500/30 animate-pulse active:translate-y-1 active:border-b-2 cursor-pointer"
-            : "border-slate-200 border-b-4 bg-slate-200 text-slate-400 dark:border-navy-800 dark:bg-navy-900 cursor-not-allowed"
-        }`}
-      >
-        <span className="text-2xl">{opened ? "✨" : "🎁"}</span>
-      </button>
-
-      <span className="mt-1 text-[10px] font-black uppercase tracking-wider text-amber-700 dark:text-amber-400">
-        {opened ? "Ochildi" : `+${rewardCoins} D'Coin`}
-      </span>
     </div>
   );
 }
@@ -537,8 +1238,8 @@ function LessonPlayerModal({
   const [finished, setFinished] = useState(false);
   const [moduleResult, setModuleResult] = useState<Row | null>(null);
   const [error, setError] = useState("");
-  const [hearts, setHearts] = useState(5);
   const [audioPlaying, setAudioPlaying] = useState(false);
+  const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
 
   // For Word Order interactive exercise
   const [sentenceWords, setSentenceWords] = useState<string[]>([]);
@@ -546,6 +1247,17 @@ function LessonPlayerModal({
 
   // Hidden Audio Element ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Lock body scroll & hide any sticky topbars / mobile bottom bars
+  useEffect(() => {
+    document.body.classList.add("learning-test-mode");
+    const origOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.classList.remove("learning-test-mode");
+      document.body.style.overflow = origOverflow;
+    };
+  }, []);
 
   const loadLesson = useCallback(async (index: number) => {
     if (index >= lessons.length) {
@@ -638,11 +1350,23 @@ function LessonPlayerModal({
     setScore(newScore);
     setTotal(newTotal);
 
+    setReviewItems((prev) => [
+      ...prev,
+      {
+        prompt: String(question?.question || question?.prompt || lesson?.title || `Savol ${currentIndex + 1}`),
+        selected_answer: selected,
+        correct_answer: question?.correct_answer || "",
+        options: Array.isArray(question?.options) ? question.options : [],
+        is_correct: correct,
+        explanation: String(question?.explanation || ""),
+        question_type: String(question?.test_type || "multiple_choice"),
+      },
+    ]);
+
     if (correct) {
       playDuolingoSound("correct");
     } else {
       playDuolingoSound("wrong");
-      setHearts((h) => Math.max(0, h - 1));
     }
 
     setLoading(true);
@@ -671,8 +1395,10 @@ function LessonPlayerModal({
 
   const progressPercent = lessons.length ? Math.round(((currentIndex + (result ? 1 : 0)) / lessons.length) * 100) : 0;
 
-  return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6 animate-fade-in">
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6 animate-fade-in">
       <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-navy-700 dark:bg-[#131f24]">
         {/* Hidden Audio Player */}
         {question?.audio_url ? (
@@ -702,7 +1428,7 @@ function LessonPlayerModal({
           {/* Duolingo Rounded Glossy Progress Bar */}
           <div className="relative h-4 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-navy-800">
             <div
-              className="h-full rounded-full bg-[#58cc02] transition-all duration-500 relative overflow-hidden"
+              className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-500 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
               style={{ width: `${progressPercent}%` }}
             >
               {/* Glossy shine highlight stripe */}
@@ -710,10 +1436,9 @@ function LessonPlayerModal({
             </div>
           </div>
 
-          <div className="flex items-center gap-1 font-black text-rose-500">
-            <span className="text-lg">❤️</span>
-            <span className="text-sm font-black text-rose-600 dark:text-rose-400">{hearts}</span>
-          </div>
+          <span className="shrink-0 text-xs font-black text-slate-400">
+            {currentIndex + 1} / {lessons.length}
+          </span>
         </div>
 
         {/* ─── Question Content Area ─── */}
@@ -726,63 +1451,154 @@ function LessonPlayerModal({
 
           {loading && !question && !finished ? (
             <div className="grid min-h-64 place-items-center">
-              <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#58cc02] border-t-transparent" />
+              <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#002DFF] border-t-transparent" />
             </div>
           ) : null}
 
           {/* Duolingo Completion Screen */}
           {finished ? (
-            <div className="py-6 text-center animate-fade-in">
-              <div className="relative mx-auto mb-4 grid h-28 w-28 place-items-center rounded-full border-4 border-[#b87d00] bg-gradient-to-b from-[#ffc800] to-[#e5a800] text-5xl shadow-2xl">
-                👑
-              </div>
+            (() => {
+              const finalPercent = total > 0 ? Math.round((score / total) * 100) : 0;
+              const passingScore = Number(module.passing_score || 70);
+              const passed = Boolean(moduleResult?.module_progress?.passed || finalPercent >= passingScore);
 
-              <h2 className="text-3xl font-black text-navy-900 dark:text-white">
-                Dars yakunlandi!
-              </h2>
+              return (
+                <div className="py-6 text-center animate-fade-in">
+                  {passed ? (
+                    <>
+                      <div className="relative mx-auto mb-4 grid h-28 w-28 place-items-center rounded-full border-4 border-[#b87d00] bg-gradient-to-b from-[#ffc800] to-[#e5a800] text-5xl shadow-2xl">
+                        👑
+                      </div>
 
-              <p className="mt-1 text-sm font-semibold text-slate-500 dark:text-navy-300">
-                Ajoyib mehnat qildingiz!
-              </p>
+                      <h2 className="text-3xl font-black text-navy-900 dark:text-white">
+                        Modul muvaffaqiyatli topshirildi!
+                      </h2>
 
-              {/* Stats cards in Duolingo style */}
-              <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border-2 border-b-4 border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
-                  <span className="text-xs font-black uppercase text-amber-700 dark:text-amber-300">Aniqlik</span>
-                  <p className="mt-1 text-2xl font-black text-amber-800 dark:text-amber-200">
-                    {Math.round((score / Math.max(total, 1)) * 100)}%
-                  </p>
+                      <p className="mt-1 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                        Ajoyib natija! Keyingi modul ochildi.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <div className="relative mx-auto mb-4 grid h-28 w-28 place-items-center rounded-full border-4 border-rose-600 bg-gradient-to-b from-rose-500 to-rose-700 text-5xl shadow-2xl text-white">
+                        ❌
+                      </div>
+
+                      <h2 className="text-3xl font-black text-rose-600 dark:text-rose-400">
+                        Moduldan o'ta olmadingiz!
+                      </h2>
+
+                      <p className="mt-1 text-sm font-semibold text-slate-500 dark:text-navy-300">
+                        Keyingi modul ochilishi uchun kamida {passingScore}% to'plashingiz shart.
+                      </p>
+                    </>
+                  )}
+
+                  {/* Clean Result Stats cards */}
+                  <div className="mt-6 grid grid-cols-3 gap-3">
+                    <div className="rounded-2xl border-2 border-b-4 border-slate-200 bg-slate-50 p-3 dark:border-navy-700 dark:bg-navy-900/60">
+                      <span className="text-xs font-black uppercase text-slate-500">Savollar</span>
+                      <p className="mt-1 text-2xl font-black text-slate-800 dark:text-slate-200">
+                        {total} ta
+                      </p>
+                    </div>
+
+                    <div className="rounded-2xl border-2 border-b-4 border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/40">
+                      <span className="text-xs font-black uppercase text-emerald-700 dark:text-emerald-300">To'g'ri</span>
+                      <p className="mt-1 text-2xl font-black text-emerald-800 dark:text-emerald-200">
+                        {score} ta
+                      </p>
+                    </div>
+
+                    <div
+                      className={`rounded-2xl border-2 border-b-4 p-3 ${
+                        passed
+                          ? "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/40"
+                          : "border-rose-300 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/40"
+                      }`}
+                    >
+                      <span
+                        className={`text-xs font-black uppercase ${
+                          passed ? "text-amber-700 dark:text-amber-300" : "text-rose-700 dark:text-rose-300"
+                        }`}
+                      >
+                        Natija
+                      </span>
+                      <p
+                        className={`mt-1 text-2xl font-black ${
+                          passed ? "text-amber-800 dark:text-amber-200" : "text-rose-800 dark:text-rose-200"
+                        }`}
+                      >
+                        {finalPercent}%
+                      </p>
+                    </div>
+                  </div>
+
+                  {passed ? (
+                    <div className="mt-5 rounded-2xl border-2 border-b-4 border-[#001A88] bg-blue-50 p-4 text-sm font-black text-[#001A88] dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-800">
+                      🎉 Tabriklaymiz! O'tish balli ({passingScore}%) bajarildi va keyingi modul ochildi!
+                    </div>
+                  ) : (
+                    <div className="mt-5 rounded-2xl border-2 border-b-4 border-rose-400 bg-rose-50 p-4 text-sm font-black text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">
+                      ⚠️ O'tish balli: {passingScore}%. Sizning ballingiz: {finalPercent}%. Keyingi modul ochilishi uchun modulni qayta topshiring.
+                    </div>
+                  )}
+
+                  {passed && Number(module.reward_coins || 0) > 0 ? (
+                    <div className="mt-3 flex items-center justify-center gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-black text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                      <span>🎁 Mukofot:</span>
+                      <span>💎 +{module.reward_coins} D'Point</span>
+                      <span>va</span>
+                      <span>💰 +{module.reward_coins} D'Coin qo'shildi!</span>
+                    </div>
+                  ) : null}
+
+                  {reviewItems.length > 0 ? (
+                    <TestCompletionActions
+                      testTitle={String(module.title || "Modul testi")}
+                      subject={String(module.subject || "")}
+                      review={reviewItems}
+                      className="mt-5"
+                    />
+                  ) : null}
+
+                  {passed ? (
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="mt-6 w-full rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] py-4 text-base font-black uppercase tracking-wider text-white shadow-xl shadow-blue-600/30 active:translate-y-1 active:border-b-2 hover:bg-[#1429f2]"
+                    >
+                      Davom etish
+                    </button>
+                  ) : (
+                    <div className="mt-6 space-y-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setScore(0);
+                          setTotal(0);
+                          setFinished(false);
+                          setReviewItems([]);
+                          setCurrentIndex(0);
+                          void loadLesson(0);
+                        }}
+                        className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-b-4 border-rose-600 bg-rose-500 py-4 text-base font-black uppercase tracking-wider text-white shadow-xl active:translate-y-1 active:border-b-2 hover:bg-rose-600"
+                      >
+                        <span>🔄</span>
+                        <span>Qayta urinish</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        className="w-full rounded-2xl border border-slate-200 bg-white py-3 text-sm font-bold text-slate-600 transition hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-300"
+                      >
+                        Chiqish
+                      </button>
+                    </div>
+                  )}
                 </div>
-
-                <div className="rounded-2xl border-2 border-b-4 border-cyan-300 bg-cyan-50 p-3 dark:border-cyan-800 dark:bg-cyan-950/40">
-                  <span className="text-xs font-black uppercase text-cyan-700 dark:text-cyan-300">D'Coin</span>
-                  <p className="mt-1 text-2xl font-black text-cyan-800 dark:text-cyan-200">
-                    +{moduleResult?.reward_coins || module.reward_coins || 10} 💎
-                  </p>
-                </div>
-
-                <div className="col-span-2 rounded-2xl border-2 border-b-4 border-emerald-300 bg-emerald-50 p-3 sm:col-span-1 dark:border-emerald-800 dark:bg-emerald-950/40">
-                  <span className="text-xs font-black uppercase text-emerald-700 dark:text-emerald-300">Natija</span>
-                  <p className="mt-1 text-2xl font-black text-emerald-800 dark:text-emerald-200">
-                    {score}/{total}
-                  </p>
-                </div>
-              </div>
-
-              {moduleResult?.module_progress?.passed || Math.round((score / Math.max(total, 1)) * 100) >= (module.passing_score || 70) ? (
-                <div className="mt-5 rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#d7ffb8] p-4 text-sm font-black text-[#2e6b00] dark:bg-[#1c381a] dark:text-[#a0ff6d]">
-                  🎉 Tabriklaymiz! Modul muvaffaqiyatli yakunlandi va keyingi dars ochildi!
-                </div>
-              ) : null}
-
-              <button
-                type="button"
-                onClick={onClose}
-                className="mt-6 w-full rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#58cc02] py-4 text-base font-black uppercase tracking-wider text-white shadow-xl active:translate-y-1 active:border-b-2 hover:bg-[#4cb802]"
-              >
-                Davom etish
-              </button>
-            </div>
+              );
+            })()
           ) : null}
 
           {/* Active Question Render */}
@@ -1027,7 +1843,7 @@ function LessonPlayerModal({
                 disabled={!selected || loading}
                 className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
                   selected && !loading
-                    ? "border-[#46a302] bg-[#58cc02] text-white shadow-lg active:translate-y-1 active:border-b-2 hover:bg-[#4cb802] cursor-pointer"
+                    ? "border-[#001A88] bg-[#002DFF] text-white shadow-lg shadow-blue-600/30 active:translate-y-1 active:border-b-2 hover:bg-[#1429f2] cursor-pointer"
                     : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
                 }`}
               >
@@ -1039,7 +1855,7 @@ function LessonPlayerModal({
                 onClick={next}
                 className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider text-white shadow-lg active:translate-y-1 active:border-b-2 ${
                   result.correct
-                    ? "border-[#46a302] bg-[#58cc02] hover:bg-[#4cb802]"
+                    ? "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
                     : "border-[#d62828] bg-[#ff4b4b] hover:bg-[#ff3333]"
                 }`}
               >
@@ -1049,7 +1865,573 @@ function LessonPlayerModal({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   FINAL EXAM PLAYER MODAL — Comprehensive all-module exam test runner
+   ═══════════════════════════════════════════════════════════════════════════════ */
+
+function FinalExamPlayerModal({
+  track,
+  apiFetch,
+  onClose,
+}: {
+  track: Row;
+  apiFetch: ApiFetch;
+  onClose: () => void;
+}) {
+  const [questions, setQuestions] = useState<Row[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [selected, setSelected] = useState("");
+  const [result, setResult] = useState<Row | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [score, setScore] = useState(0);
+  const [finished, setFinished] = useState(false);
+  const [examResult, setExamResult] = useState<Row | null>(null);
+  const [error, setError] = useState("");
+  const [audioPlaying, setAudioPlaying] = useState(false);
+  const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
+  const [passingScore, setPassingScore] = useState(70);
+
+  const [sentenceWords, setSentenceWords] = useState<string[]>([]);
+  const [bankWords, setBankWords] = useState<{ id: number; text: string; used: boolean }[]>([]);
+
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    document.body.classList.add("learning-test-mode");
+    const origOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.classList.remove("learning-test-mode");
+      document.body.style.overflow = origOverflow;
+    };
+  }, []);
+
+  const loadExam = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await apiFetch(`/student/learning-tracks/${track.id}/final-exam`);
+      const qs = Array.isArray(data?.questions) ? data.questions : [];
+      setQuestions(qs);
+      setPassingScore(Number(data?.passing_score || track.passing_score || 70));
+      if (!qs.length) {
+        setError("Yakuniy imtihon uchun savollar topilmadi.");
+      }
+    } catch (e) {
+      setError(errorText(e, "Yakuniy imtihon savollarini yuklab bo'lmadi."));
+    } finally {
+      setLoading(false);
+    }
+  }, [track.id, track.passing_score, apiFetch]);
+
+  useEffect(() => {
+    void loadExam();
+  }, [loadExam]);
+
+  const currentQuestion = questions[currentIndex] || null;
+
+  useEffect(() => {
+    if (currentQuestion && (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order")) {
+      const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
+      const rawWords = fullText.split(/\s+/).filter(Boolean);
+      const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
+      setBankWords(shuffled.map((w, idx) => ({ id: idx, text: w, used: false })));
+      setSentenceWords([]);
+      setSelected("");
+    } else {
+      setSentenceWords([]);
+      setBankWords([]);
+      setSelected("");
+    }
+    setResult(null);
+  }, [currentIndex, currentQuestion]);
+
+  const handleTileClick = (tileId: number, word: string) => {
+    if (result) return;
+    playDuolingoSound("pop");
+    setBankWords((prev) => prev.map((t) => (t.id === tileId ? { ...t, used: true } : t)));
+    const newWords = [...sentenceWords, word];
+    setSentenceWords(newWords);
+    setSelected(newWords.join(" "));
+  };
+
+  const handleSentenceWordRemove = (wordIdx: number) => {
+    if (result) return;
+    playDuolingoSound("pop");
+    const wordToRemove = sentenceWords[wordIdx];
+    const newWords = sentenceWords.filter((_, idx) => idx !== wordIdx);
+    setSentenceWords(newWords);
+    setSelected(newWords.join(" "));
+    setBankWords((prev) => {
+      let found = false;
+      return prev.map((t) => {
+        if (!found && t.used && t.text === wordToRemove) {
+          found = true;
+          return { ...t, used: false };
+        }
+        return t;
+      });
+    });
+  };
+
+  const playAudio = (rate = 1.0) => {
+    if (!audioRef.current || !currentQuestion?.audio_url) return;
+    audioRef.current.playbackRate = rate;
+    audioRef.current.currentTime = 0;
+    setAudioPlaying(true);
+    audioRef.current.play().catch(() => setAudioPlaying(false));
+  };
+
+  const checkAnswer = () => {
+    if (!selected || result || !currentQuestion) return;
+    const correct = String(currentQuestion.correct_answer || "").trim().toLowerCase() === selected.trim().toLowerCase();
+    const newScore = score + (correct ? 1 : 0);
+    setScore(newScore);
+
+    setReviewItems((prev) => [
+      ...prev,
+      {
+        prompt: String(currentQuestion.question || currentQuestion.prompt || currentQuestion.title || `Savol ${currentIndex + 1}`),
+        selected_answer: selected,
+        correct_answer: String(currentQuestion.correct_answer || ""),
+        options: Array.isArray(currentQuestion.options) ? currentQuestion.options : [],
+        is_correct: correct,
+        explanation: String(currentQuestion.explanation || ""),
+        question_type: String(currentQuestion.test_type || "multiple_choice"),
+      },
+    ]);
+
+    if (correct) {
+      playDuolingoSound("correct");
+    } else {
+      playDuolingoSound("wrong");
+    }
+    setResult({ correct, explanation: currentQuestion.explanation || "" });
+  };
+
+  const handleNext = async () => {
+    if (currentIndex + 1 < questions.length) {
+      setCurrentIndex((prev) => prev + 1);
+    } else {
+      setSubmitting(true);
+      const finalPercent = questions.length ? Math.round((score / questions.length) * 100) : 0;
+      try {
+        const res = await apiFetch(`/student/learning-tracks/${track.id}/final-exam/submit`, {
+          method: "POST",
+          body: {
+            score: finalPercent,
+            answers: reviewItems.map((r) => ({
+              question: r.prompt,
+              selected: r.selected_answer,
+              correct: r.is_correct,
+            })),
+          },
+        });
+        setExamResult(res);
+        if (res?.passed) {
+          playDuolingoSound("complete");
+        }
+      } catch (err: any) {
+        setError(err?.message || "Natija saqlanmadi.");
+      } finally {
+        setSubmitting(false);
+        setFinished(true);
+      }
+    }
+  };
+
+  const progressPercent = questions.length
+    ? Math.round(((currentIndex + (result ? 1 : 0)) / questions.length) * 100)
+    : 0;
+
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6 animate-fade-in">
+      <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-navy-700 dark:bg-[#131f24]">
+        {currentQuestion?.audio_url ? (
+          <audio
+            ref={audioRef}
+            src={currentQuestion.audio_url}
+            onEnded={() => setAudioPlaying(false)}
+            onError={() => setAudioPlaying(false)}
+          />
+        ) : null}
+
+        {/* Top Header */}
+        <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-white/10">
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-navy-800"
+            title="Chiqish"
+          >
+            ✕
+          </button>
+          <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-navy-800">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 transition-all duration-300"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+          <span className="flex items-center gap-1 text-xs font-black text-amber-500">
+            <span>🏆</span>
+            <span>Yakuniy Imtihon</span>
+          </span>
+        </div>
+
+        {/* Main Content Area */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {loading ? (
+            <div className="flex h-64 flex-col items-center justify-center gap-3 text-slate-400">
+              <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#002DFF] border-t-transparent" />
+              <p className="text-xs font-bold">Imtihon savollari tayyorlanmoqda...</p>
+            </div>
+          ) : error && !questions.length ? (
+            <div className="rounded-2xl border-2 border-rose-300 bg-rose-50 p-5 text-center text-sm font-bold text-rose-700 dark:border-rose-900 dark:bg-rose-950/40">
+              <p>{error}</p>
+              <button
+                type="button"
+                onClick={onClose}
+                className="mt-4 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white hover:bg-rose-700"
+              >
+                Chiqish
+              </button>
+            </div>
+          ) : finished ? (
+            (() => {
+              const finalPercent = questions.length ? Math.round((score / questions.length) * 100) : 0;
+              const isPassed = examResult ? Boolean(examResult.passed) : finalPercent >= passingScore;
+
+              return (
+                <div className="flex flex-col items-center py-4 text-center animate-scale-up">
+                  <div className="relative my-2">
+                    <div
+                      className={`grid h-24 w-24 place-items-center rounded-3xl text-4xl shadow-xl ring-4 ${
+                        isPassed
+                          ? "bg-gradient-to-tr from-amber-400 to-amber-200 ring-amber-400/40 animate-bounce"
+                          : "bg-rose-100 text-rose-600 ring-rose-300 dark:bg-rose-950/50 dark:ring-rose-800"
+                      }`}
+                    >
+                      {isPassed ? "🎓" : "⚠️"}
+                    </div>
+                  </div>
+
+                  <h3 className="mt-3 text-2xl font-black text-navy-900 dark:text-white">
+                    {isPassed ? "🎉 Tabriklaymiz!" : "Qayta topshirish kerak"}
+                  </h3>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 w-full max-w-xs">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase">To'g'ri javoblar</p>
+                      <p className="mt-0.5 text-xl font-black text-navy-900 dark:text-white">
+                        {score} / {questions.length}
+                      </p>
+                    </div>
+                    <div
+                      className={`rounded-2xl border p-3 ${
+                        isPassed
+                          ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40"
+                          : "border-rose-300 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/40"
+                      }`}
+                    >
+                      <p className="text-[10px] font-bold uppercase text-slate-500">Natija</p>
+                      <p
+                        className={`mt-0.5 text-xl font-black ${
+                          isPassed ? "text-amber-800 dark:text-amber-200" : "text-rose-800 dark:text-rose-200"
+                        }`}
+                      >
+                        {finalPercent}%
+                      </p>
+                    </div>
+                  </div>
+
+                  {isPassed ? (
+                    <div className="mt-4 rounded-2xl border-2 border-b-4 border-amber-500 bg-amber-50 p-4 text-sm font-black text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-700">
+                      🎓 Yakuniy imtihon muvaffaqiyatli topshirildi ({finalPercent}% ≥ {passingScore}%)! Rasmiy sertifikat berildi va keyingi track ochildi!
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-2xl border-2 border-b-4 border-rose-400 bg-rose-50 p-4 text-sm font-black text-rose-700 dark:bg-rose-950/50 dark:text-rose-300">
+                      ⚠️ O'tish bali: {passingScore}%. Sizning ballingiz: {finalPercent}%. Keyingi track ochilishi va sertifikat olish uchun imtihonni qayta topshiring.
+                    </div>
+                  )}
+
+                  {isPassed ? (
+                    <div className="mt-3 flex items-center justify-center gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-black text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                      <span>🎁 Mukofot:</span>
+                      <span>💎 +50 D'Point</span>
+                      <span>va</span>
+                      <span>💰 +50 D'Coin qo'shildi!</span>
+                    </div>
+                  ) : null}
+
+                  {isPassed && examResult?.certificate ? (
+                    <div className="mt-4 w-full rounded-2xl border-2 border-amber-400/40 bg-gradient-to-br from-amber-50/70 to-yellow-50/70 p-4 text-left dark:border-amber-600/30 dark:bg-amber-950/20">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-2xl">🎓</span>
+                        <div>
+                          <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                            {examResult.certificate.course_title || track.title}
+                          </p>
+                          <p className="text-[10px] font-mono text-amber-700 dark:text-amber-400">
+                            ID: {examResult.certificate.certificate_id}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-3">
+                        <a
+                          href={`/api/student/certificates/${examResult.certificate.certificate_id}/pdf`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 py-2.5 px-4 text-xs font-black text-white shadow-md hover:from-amber-600 hover:to-amber-700 transition"
+                        >
+                          <span>📄 Sertifikatni PDF ko'rish / Yuklab olish</span>
+                        </a>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {reviewItems.length > 0 ? (
+                    <TestCompletionActions
+                      testTitle={String(track.title || "Yakuniy Imtihon")}
+                      subject={String(track.subject || "")}
+                      review={reviewItems}
+                      className="mt-4"
+                    />
+                  ) : null}
+
+                  {isPassed ? (
+                    <button
+                      type="button"
+                      onClick={onClose}
+                      className="mt-6 w-full rounded-2xl border-2 border-b-4 border-amber-700 bg-gradient-to-r from-amber-500 to-amber-600 py-4 text-base font-black uppercase tracking-wider text-white shadow-xl hover:brightness-110 active:translate-y-1 active:border-b-2 cursor-pointer"
+                    >
+                      Tugatish & Davom etish
+                    </button>
+                  ) : (
+                    <div className="mt-6 space-y-3 w-full">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setScore(0);
+                          setFinished(false);
+                          setReviewItems([]);
+                          setCurrentIndex(0);
+                          void loadExam();
+                        }}
+                        className="flex w-full items-center justify-center gap-2 rounded-2xl border-2 border-b-4 border-rose-600 bg-rose-500 py-4 text-base font-black uppercase tracking-wider text-white shadow-xl active:translate-y-1 active:border-b-2 hover:bg-rose-600"
+                      >
+                        <span>🔄</span>
+                        <span>Qayta topshirish</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onClose}
+                        className="w-full rounded-2xl border border-slate-200 bg-white py-3 text-sm font-bold text-slate-600 transition hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-300"
+                      >
+                        Chiqish
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()
+          ) : currentQuestion ? (
+            <div className="space-y-5 animate-fade-in">
+              <div className="flex items-center justify-between">
+                <span className="rounded-xl bg-amber-500/10 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                  {currentQuestion.module_title ? `📌 ${currentQuestion.module_title}` : "🎓 Yakuniy Imtihon"}
+                </span>
+                <span className="text-xs font-bold text-slate-400">
+                  {currentIndex + 1} / {questions.length}
+                </span>
+              </div>
+
+              <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
+                {currentQuestion.question || currentQuestion.prompt || "Savolga javob bering:"}
+              </h2>
+
+              {currentQuestion.audio_url ? (
+                <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
+                  <button
+                    type="button"
+                    onClick={() => playAudio(1.0)}
+                    disabled={audioPlaying}
+                    className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#002DFF] text-white shadow-md hover:bg-[#1429f2] disabled:opacity-50"
+                  >
+                    {audioPlaying ? "🔊" : "▶️"}
+                  </button>
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">Audiolavhani tinglang</p>
+                </div>
+              ) : null}
+
+              {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" ? (
+                <div className="space-y-6">
+                  <div className="min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
+                    {sentenceWords.map((word, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => handleSentenceWordRemove(idx)}
+                        disabled={Boolean(result)}
+                        className="rounded-xl border-2 border-b-4 border-slate-300 bg-white px-3.5 py-2 text-sm font-black text-navy-900 shadow-sm transition active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                      >
+                        {word}
+                      </button>
+                    ))}
+                    {!sentenceWords.length ? (
+                      <span className="text-xs font-bold text-slate-400">Pastdagi so'zlarni ketma-ket bosing</span>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2 justify-center pt-2">
+                    {bankWords.map((tile) => (
+                      <button
+                        key={tile.id}
+                        type="button"
+                        onClick={() => handleTileClick(tile.id, tile.text)}
+                        disabled={tile.used || Boolean(result)}
+                        className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-sm font-black transition ${
+                          tile.used
+                            ? "border-transparent bg-slate-100 text-transparent pointer-events-none dark:bg-navy-900/40"
+                            : "border-slate-300 bg-white text-navy-900 shadow-md active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                        }`}
+                      >
+                        {tile.text}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {(Array.isArray(currentQuestion.options) ? currentQuestion.options : []).map((opt: string, i: number) => {
+                    const isSelected = selected === opt;
+                    const isCorrectChoice =
+                      result &&
+                      String(currentQuestion.correct_answer || "").trim().toLowerCase() === String(opt).trim().toLowerCase();
+                    const isWrongChoice = result && isSelected && !result.correct;
+
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => {
+                          if (result) return;
+                          playDuolingoSound("pop");
+                          setSelected(opt);
+                        }}
+                        disabled={Boolean(result)}
+                        className={`flex w-full items-center justify-between rounded-2xl border-2 border-b-4 p-4 text-left text-sm font-black transition-all ${
+                          isCorrectChoice
+                            ? "border-[#58cc02] bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#152e14] dark:text-[#a0ff6d]"
+                            : isWrongChoice
+                            ? "border-[#ff4b4b] bg-[#ffdfe0] text-[#a01818] dark:bg-[#381517] dark:text-[#ffa0a0]"
+                            : isSelected
+                            ? "border-[#001A88] bg-blue-50/80 text-[#001A88] ring-2 ring-[#002DFF]/40 dark:bg-navy-800 dark:text-blue-300"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800/80 dark:text-navy-100"
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-slate-100 text-xs font-black text-slate-500 dark:bg-navy-700 dark:text-navy-300">
+                            {i + 1}
+                          </span>
+                          <span>{opt}</span>
+                        </span>
+                        {result && isCorrectChoice ? <span className="text-xl">✓</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+
+        {/* Bottom Action Drawer */}
+        {!finished && currentQuestion ? (
+          <div
+            className={`border-t-2 p-4 transition-all duration-300 ${
+              result?.correct
+                ? "border-[#b8f28b] bg-[#d7ffb8] dark:border-[#2b5928] dark:bg-[#152e14]"
+                : result && !result.correct
+                ? "border-[#fba4a6] bg-[#ffdfe0] dark:border-[#6b2528] dark:bg-[#381517]"
+                : "border-slate-100 bg-white dark:border-white/10 dark:bg-[#131f24]"
+            }`}
+          >
+            {result ? (
+              <div className="mb-3 flex items-start gap-3">
+                <div
+                  className={`grid h-10 w-10 shrink-0 place-items-center rounded-full text-xl text-white ${
+                    result.correct ? "bg-[#58cc02]" : "bg-[#ff4b4b]"
+                  }`}
+                >
+                  {result.correct ? "✓" : "✕"}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p
+                    className={`text-base font-black ${
+                      result.correct
+                        ? "text-[#2e6b00] dark:text-[#a0ff6d]"
+                        : "text-[#a01818] dark:text-[#ffa0a0]"
+                    }`}
+                  >
+                    {result.correct ? "Ajoyib! Juda to'g'ri!" : "To'g'ri javob:"}
+                  </p>
+                  {!result.correct ? (
+                    <p className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
+                      {String(currentQuestion.correct_answer || "")}
+                    </p>
+                  ) : null}
+                  {currentQuestion.explanation ? (
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      💡 {currentQuestion.explanation}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+
+            {!result ? (
+              <button
+                type="button"
+                onClick={checkAnswer}
+                disabled={!selected || loading || submitting}
+                className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
+                  selected && !loading && !submitting
+                    ? "border-amber-700 bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-lg active:translate-y-1 active:border-b-2 hover:brightness-110 cursor-pointer"
+                    : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
+                }`}
+              >
+                {loading ? "Yuklanmoqda..." : "Tekshirish"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={submitting}
+                className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider text-white shadow-lg active:translate-y-1 active:border-b-2 ${
+                  result.correct
+                    ? "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
+                    : "border-[#d62828] bg-[#ff4b4b] hover:bg-[#ff3333]"
+                }`}
+              >
+                {submitting
+                  ? "Natija hisoblanmoqda..."
+                  : currentIndex + 1 < questions.length
+                  ? "Keyingi savol →"
+                  : "Natijani ko'rish"}
+              </button>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1061,30 +2443,74 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const t = useWebT();
   const [tracks, setTracks] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Row | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [title, setTitle] = useState("");
+  const [trackSubject, setTrackSubject] = useState("Ingliz tili");
   const [moduleTitle, setModuleTitle] = useState("");
   const [topics, setTopics] = useState("");
-  const [rewardCoins, setRewardCoins] = useState(0);
+  const [rewardCoins, setRewardCoins] = useState<string>("");
   const [cover, setCover] = useState("star");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showCreateTrackModal, setShowCreateTrackModal] = useState(false);
+  const [showAddModuleInline, setShowAddModuleInline] = useState(false);
+  const [showCertModal, setShowCertModal] = useState(false);
+  const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
   const [editModuleId, setEditModuleId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editTopics, setEditTopics] = useState("");
   const [editRewardCoins, setEditRewardCoins] = useState(0);
+  const [editCover, setEditCover] = useState("star");
+
+  const selectedModule = useMemo(() => {
+    if (!selected || !selectedModuleId) return null;
+    return (selected.modules || []).find((m: Row) => m.id === selectedModuleId) || null;
+  }, [selected, selectedModuleId]);
+
+  // Determine previous module's cover key to forbid consecutive duplicates
+  const lastModuleCover = useMemo(() => {
+    const mods = selected?.modules;
+    if (Array.isArray(mods) && mods.length > 0) {
+      return String(mods[mods.length - 1]?.cover_key || "star");
+    }
+    return null;
+  }, [selected]);
+
+  useEffect(() => {
+    if (lastModuleCover && cover === lastModuleCover) {
+      const allowed = covers.find((c) => c !== lastModuleCover) || "trophy";
+      setCover(allowed);
+    }
+  }, [lastModuleCover]);
 
   const load = async () => {
     try {
       const data = await apiFetch("/staff/learning-tracks");
       const items = Array.isArray(data?.items) ? data.items : [];
       setTracks(items);
-      setSelected((value) => items.find((x: Row) => x.id === value?.id) || items[0] || null);
+      setSelected((curr) => (curr ? items.find((x: Row) => x.id === curr.id) || null : null));
     } catch (e) {
       setError(errorText(e, "Tracklar yuklanmadi."));
     }
   };
 
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void load();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const filteredTracks = useMemo(() => {
+    if (!searchQuery.trim()) return tracks;
+    const q = searchQuery.toLowerCase().trim();
+    return tracks.filter(
+      (t) =>
+        String(t.title || "").toLowerCase().includes(q) ||
+        String(t.subject || "").toLowerCase().includes(q)
+    );
+  }, [tracks, searchQuery]);
+
+  const totalModulesCount = useMemo(() => {
+    return tracks.reduce((acc, tr) => acc + (Array.isArray(tr.modules) ? tr.modules.length : 0), 0);
+  }, [tracks]);
 
   const create = async (event: FormEvent) => {
     event.preventDefault();
@@ -1093,9 +2519,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     try {
       await apiFetch("/staff/learning-tracks", {
         method: "POST",
-        body: { title: title.trim(), passing_score: 70 },
+        body: { title: title.trim(), subject: trackSubject.trim() || undefined, passing_score: 70 },
       });
       setTitle("");
+      setShowCreateTrackModal(false);
       await load();
     } catch (e) {
       setError(errorText(e, "Track yaratilmadi."));
@@ -1106,8 +2533,26 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
   const addModule = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selected || !moduleTitle.trim()) return;
+    if (!selected) return;
+    if (!moduleTitle.trim()) {
+      setError("Modul nomini kiritish majburiy.");
+      return;
+    }
+    if (!topics.trim()) {
+      setError("Mavzularni kiritish majburiy.");
+      return;
+    }
+    const coinsNum = parseInt(String(rewardCoins).trim(), 10);
+    if (!rewardCoins || isNaN(coinsNum) || coinsNum <= 0) {
+      setError("D'Point & D'Coin mukofotini kiritish majburiy (musbat son kiriting).");
+      return;
+    }
+    if (lastModuleCover && cover === lastModuleCover) {
+      setError("Ketma-ket ikkita modulga bir xil rasm tanlab bo'lmaydi. Boshqa rasm tanlang.");
+      return;
+    }
     setBusy(true);
+    setError("");
     try {
       await apiFetch(`/staff/learning-tracks/${selected.id}/modules`, {
         method: "POST",
@@ -1116,12 +2561,15 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           cover_key: cover,
           position: (selected.modules || []).length,
           topic_keys: topics.split(",").map((value) => value.trim()).filter(Boolean),
-          reward_coins: rewardCoins,
+          reward_coins: coinsNum,
         },
       });
       setModuleTitle("");
       setTopics("");
-      setRewardCoins(0);
+      setRewardCoins("");
+      const nextCover = covers.find((c) => c !== cover) || "trophy";
+      setCover(nextCover);
+      setShowAddModuleInline(false);
       await load();
     } catch (e) {
       setError(errorText(e, "Modul qo'shilmadi."));
@@ -1130,12 +2578,14 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     }
   };
 
-  const deleteTrack = async () => {
-    if (!selected || !window.confirm(`"${selected.title}" track va barcha unga tegishli modullar o'chirilsinmi?`)) return;
+  const deleteTrack = async (trackId?: number) => {
+    const tr = trackId ? tracks.find((x) => x.id === trackId) : selected;
+    if (!tr) return;
+    if (!window.confirm(`"${tr.title}" track va barcha unga tegishli modullar o'chirilsinmi?`)) return;
     setBusy(true);
     try {
-      await apiFetch(`/staff/learning-tracks/${selected.id}`, { method: "DELETE" });
-      setSelected(null);
+      await apiFetch(`/staff/learning-tracks/${tr.id}`, { method: "DELETE" });
+      if (selected?.id === tr.id) setSelected(null);
       await load();
     } catch (e) {
       setError(errorText(e, "Track o'chirilmadi."));
@@ -1144,8 +2594,30 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     }
   };
 
-  const updateModule = async (moduleId: number) => {
+  const deleteModule = async (moduleId: number) => {
+    if (!window.confirm("Modul va uning barcha savollari o'chirilsinmi?")) return;
     setBusy(true);
+    try {
+      await apiFetch(`/staff/learning-modules/${moduleId}`, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      setError(errorText(e, "Modul o'chirilmadi."));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateModule = async (moduleId: number, prevCover?: string | null, nextCover?: string | null) => {
+    if (prevCover && editCover === prevCover) {
+      setError("Oldingi modul bilan bir xil rasm tanlab bo'lmaydi.");
+      return;
+    }
+    if (nextCover && editCover === nextCover) {
+      setError("Keyingi modul bilan bir xil rasm tanlab bo'lmaydi.");
+      return;
+    }
+    setBusy(true);
+    setError("");
     try {
       await apiFetch(`/staff/learning-modules/${moduleId}`, {
         method: "PATCH",
@@ -1153,6 +2625,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           title: editTitle.trim(),
           topic_keys: editTopics.split(",").map((v) => v.trim()).filter(Boolean),
           reward_coins: editRewardCoins,
+          cover_key: editCover,
         },
       });
       setEditModuleId(null);
@@ -1165,277 +2638,630 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   };
 
   return (
-    <section className="mx-auto w-full max-w-6xl p-4 sm:p-6">
+    <section className="mx-auto w-full max-w-6xl p-4 sm:p-6 space-y-6">
+      {/* Header Bar */}
       <header className="premium-card p-5 sm:p-7">
-        <p className="text-xs font-black uppercase tracking-[.18em] text-cyan-600 dark:text-cyan-300">Diamond Learning Path</p>
-        <h1 className="mt-2 text-2xl font-black text-navy-900 dark:text-white">{t("learning.staff.title", "Learning Path boshqaruvi")}</h1>
-        <p className="mt-2 text-sm text-ink-600 dark:text-navy-300">Duolingo uslubida track, ketma-ket modul va sertifikat yo'lini yarating.</p>
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[.18em] text-cyan-600 dark:text-cyan-300">
+              Diamond Learning Path
+            </p>
+            <h1 className="mt-1.5 text-2xl sm:text-3xl font-black text-navy-900 dark:text-white">
+              {t("learning.staff.title", "Learning Path boshqaruvi")}
+            </h1>
+            <p className="mt-1 text-xs sm:text-sm text-ink-600 dark:text-navy-300">
+              Mavjud tracklar jadvali: har bir trackni tanlab, uning modullari, sertifikati va savollarini popup oynada to'liq boshqaring.
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setShowCreateTrackModal(true)}
+              className="inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-0.5 active:border-b-2 hover:bg-cyan-700"
+            >
+              <span>➕ Yangi Track Yaratish</span>
+            </button>
+          </div>
+        </div>
       </header>
 
-      {error ? <p className="mt-4 rounded-xl bg-rose-500/10 p-3 text-sm text-rose-700">{error}</p> : null}
+      {error ? (
+        <div className="rounded-2xl border border-rose-500/30 bg-rose-500/15 p-4 text-xs font-bold text-rose-700 dark:text-rose-200">
+          ⚠️ {error}
+        </div>
+      ) : null}
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[320px_1fr]">
-        {/* Track sidebar */}
-        <aside className="premium-card p-4">
-          <form onSubmit={create} className="space-y-3">
-            <h2 className="font-black text-navy-900 dark:text-white text-base">Yangi track</h2>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-xl border border-line bg-transparent p-3 text-sm dark:border-white/10"
-              placeholder="Track nomi"
-            />
-            <p className="text-xs text-ink-500 dark:text-navy-300">Fan teacher profilingizdan avtomatik olinadi.</p>
-            <button disabled={busy} className="btn btn-primary w-full">Track yaratish</button>
-          </form>
-
-          <div className="mt-6 border-t border-line pt-4 dark:border-white/10 space-y-2">
-            <p className="text-xs font-black uppercase tracking-wide text-ink-500 dark:text-navy-400 mb-3">Mavjud tracklar</p>
-            {tracks.map((track, index) => (
-              <button
-                key={track.id}
-                onClick={() => setSelected(track)}
-                className={`flex w-full items-center gap-3 rounded-xl border p-3 text-left transition ${
-                  selected?.id === track.id ? "border-cyan-400 bg-cyan-500/10 shadow-sm" : "border-line hover:border-cyan-300 dark:border-white/10"
-                }`}
-              >
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-cyan-500/15 text-sm font-black text-cyan-700 dark:text-cyan-300">
-                  {index + 1}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <b className="block truncate text-sm text-navy-900 dark:text-white">{track.title}</b>
-                  <small className="text-xs text-ink-500 dark:text-navy-300">{track.subject} · {track.passing_score}% o'tish</small>
-                </span>
-              </button>
-            ))}
+      {/* Main Tracks Table Card */}
+      <div className="premium-card overflow-hidden">
+        {/* Table Search & Filter Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line p-4 sm:p-5 dark:border-white/10 bg-surface-soft/40 dark:bg-white/5">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-black text-navy-900 dark:text-white">
+              Mavjud O'quv Yo'llari (Tracklar)
+            </span>
+            <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-bold text-cyan-700 dark:text-cyan-300">
+              {tracks.length} ta track · {totalModulesCount} ta modul
+            </span>
           </div>
-        </aside>
 
-        {/* Selected track main view */}
-        <main className="premium-card p-5 sm:p-6">
-          {selected ? (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 dark:border-white/10">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-cyan-600 dark:text-cyan-300">{selected.subject} · {selected.status}</p>
-                  <h2 className="mt-1 text-2xl font-black text-navy-900 dark:text-white">{selected.title}</h2>
+          <div className="w-full sm:w-72">
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Track yoki fan nomi bo'yicha qidirish..."
+              className="w-full rounded-xl border border-line bg-white px-3.5 py-2 text-xs font-medium text-navy-900 placeholder:text-ink-400 focus:border-cyan-500 focus:outline-none dark:border-white/10 dark:bg-navy-900 dark:text-white"
+            />
+          </div>
+        </div>
+
+        {/* Tracks Table */}
+        {filteredTracks.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-line dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/40 text-[11px] font-black uppercase tracking-wider text-ink-500 dark:text-navy-400">
+                  <th className="py-3.5 px-4 text-center w-12">#</th>
+                  <th className="py-3.5 px-4">Track Nomi</th>
+                  <th className="py-3.5 px-4">Fan</th>
+                  <th className="py-3.5 px-4 text-center">Modullar</th>
+                  <th className="py-3.5 px-4 text-center">O'tish Bali</th>
+                  <th className="py-3.5 px-4 text-center">Holati</th>
+                  <th className="py-3.5 px-4 text-right">Amallar</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line dark:divide-white/10">
+                {filteredTracks.map((track, idx) => {
+                  const mods = Array.isArray(track.modules) ? track.modules : [];
+                  return (
+                    <tr
+                      key={track.id}
+                      onClick={() => setSelected(track)}
+                      className="group cursor-pointer hover:bg-cyan-500/5 dark:hover:bg-white/5 transition"
+                    >
+                      <td className="py-4 px-4 text-center font-mono font-black text-xs text-ink-500 dark:text-navy-400">
+                        {idx + 1}
+                      </td>
+
+                      <td className="py-4 px-4 min-w-[220px]">
+                        <div className="flex items-center gap-3">
+                          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-cyan-500/15 text-lg font-black text-cyan-700 dark:text-cyan-300">
+                            🎓
+                          </span>
+                          <div>
+                            <p className="font-black text-sm text-navy-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition">
+                              {track.title}
+                            </p>
+                            <p className="text-[11px] text-ink-400 dark:text-navy-400 mt-0.5">
+                              ID: #{track.id} · Duolingo Snake Path
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+
+                      <td className="py-4 px-4 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-navy-800 px-3 py-1 text-xs font-bold text-slate-800 dark:text-slate-200 border border-slate-200/60 dark:border-white/10">
+                          <span>📖</span>
+                          <span>{track.subject || "General"}</span>
+                        </span>
+                      </td>
+
+                      <td className="py-4 px-4 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 rounded-xl bg-cyan-500/10 dark:bg-cyan-500/20 px-2.5 py-1 text-xs font-bold text-cyan-700 dark:text-cyan-300">
+                          <span>📦</span>
+                          <span>{mods.length} ta modul</span>
+                        </span>
+                      </td>
+
+                      <td className="py-4 px-4 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 rounded-xl bg-emerald-500/10 px-2.5 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                          <span>🎯</span>
+                          <span>{track.passing_score || 70}%</span>
+                        </span>
+                      </td>
+
+                      <td className="py-4 px-4 text-center whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600 dark:text-emerald-400">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                          <span>Faol</span>
+                        </span>
+                      </td>
+
+                      <td className="py-4 px-4 text-right whitespace-nowrap">
+                        <div
+                          className="flex items-center justify-end gap-2"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setSelected(track)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-bold text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-300 transition"
+                          >
+                            <span>⚙️</span>
+                            <span>Boshqarish</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteTrack(track.id)}
+                            className="grid h-8 w-8 place-items-center rounded-xl text-ink-400 hover:bg-rose-500/15 hover:text-rose-600 transition"
+                            title="Trackni o'chirish"
+                          >
+                            🗑
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="py-16 text-center">
+            <div className="mx-auto mb-3 grid h-16 w-16 place-items-center rounded-3xl bg-cyan-500/10 text-3xl">
+              📚
+            </div>
+            <h3 className="font-black text-lg text-navy-900 dark:text-white">
+              {searchQuery ? "Hech qanday track topilmadi" : "Hali birorta ham track yaratilmagan"}
+            </h3>
+            <p className="mt-1 text-xs text-ink-500 dark:text-navy-300 max-w-sm mx-auto">
+              {searchQuery
+                ? "Qidiruv so'zini o'zgartirib ko'ring yoki filtrni tozalang."
+                : "Talabalaringiz uchun birinchi Duolingo uslubidagi o'quv yo'lini yarating."}
+            </p>
+            {!searchQuery ? (
+              <button
+                type="button"
+                onClick={() => setShowCreateTrackModal(true)}
+                className="mt-4 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow hover:bg-cyan-700"
+              >
+                <span>➕ Yangi Track Yaratish</span>
+              </button>
+            ) : null}
+          </div>
+        )}
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════════════════
+          COMPREHENSIVE POPUP MODAL: Track Details, Modules & Questions Management
+          ═══════════════════════════════════════════════════════════════════════════ */}
+      {selected && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-navy-950/80 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="relative w-full max-w-5xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-cyan-500/15 text-2xl font-black text-cyan-700 dark:text-cyan-300">
+                  🎓
+                </span>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="font-black text-navy-900 dark:text-white text-lg sm:text-xl truncate">
+                      {selected.title}
+                    </h2>
+                    <span className="rounded-xl bg-cyan-500/15 px-2.5 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                      {selected.subject || "General"}
+                    </span>
+                    <span className="rounded-xl bg-emerald-500/15 px-2.5 py-0.5 text-xs font-black text-emerald-700 dark:text-emerald-300">
+                      {selected.passing_score || 70}% o'tish
+                    </span>
+                  </div>
+                  <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                    ID: #{selected.id} · Barcha modullar, test savollari va sertifikat sozlamalari
+                  </p>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2.5">
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={deleteTrack}
-                  className="rounded-xl border border-rose-400/40 px-4 py-2 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
+                  onClick={() => void deleteTrack(selected.id)}
+                  className="rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
                 >
-                  Trackni o'chirish
+                  🗑 Trackni o'chirish
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelected(null)}
+                  className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
+                  title="Yopish"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body (Scrollable) */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
+              {/* Certificate & Passing Score Card (Opens in dedicated Popup Modal) */}
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-cyan-500/10 via-indigo-500/10 to-purple-500/10 p-5 shadow-sm">
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-cyan-500/20 text-2xl shadow-inner">
+                    🎓
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-black text-navy-900 dark:text-white text-base">
+                        Bitiruv Sertifikati Sozlamalari
+                      </h3>
+                      {(() => {
+                        const isRussian = (selected.subject || "").toLowerCase().includes("rus") || (selected.subject || "").toLowerCase().includes("рус");
+                        return (
+                          <span className="rounded-lg bg-cyan-500/20 px-2 py-0.5 text-xs font-bold text-cyan-800 dark:text-cyan-200">
+                            {isRussian ? "🇷🇺 Rus tili shabloni (russian.svg)" : "🇬🇧 Ingliz tili shabloni (english.svg)"}
+                          </span>
+                        );
+                      })()}
+                      <span className="rounded-lg bg-emerald-500/20 px-2 py-0.5 text-xs font-bold text-emerald-800 dark:text-emerald-200">
+                        {selected.passing_score || 70}% o'tish bali
+                      </span>
+                    </div>
+                    <p className="text-xs text-ink-500 dark:text-navy-300 mt-1">
+                      Sertifikat matni, shrift, rang va shablonni alohida popup oynada vizual tahrirlang.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowCertModal(true)}
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md hover:from-cyan-700 hover:to-indigo-700 active:scale-[0.98] transition"
+                >
+                  <span>🎓 Sertifikatni Sozlash (Popup)</span>
                 </button>
               </div>
 
-              {/* Certificate settings */}
-              <TrackSettings track={selected} apiFetch={apiFetch} onSaved={load} />
-
-              {/* Add module form */}
-              <form onSubmit={addModule} className="mt-6 rounded-2xl border border-line p-5 dark:border-white/10 bg-surface-soft/20 dark:bg-white/5">
-                <h3 className="font-black text-navy-900 dark:text-white text-base">+ Yangi Modul qo'shish</h3>
-                <p className="mt-1 text-xs text-ink-500 dark:text-navy-300">Har bir modul Duolingo bosqichidek dumaloq belgi bilan ko'rinadi.</p>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <input
-                    value={moduleTitle}
-                    onChange={(e) => setModuleTitle(e.target.value)}
-                    className="rounded-xl border border-line bg-transparent p-3 text-sm dark:border-white/10"
-                    placeholder="Modul nomi (masalan: 1-bosqich)"
-                  />
-                  <input
-                    value={topics}
-                    onChange={(e) => setTopics(e.target.value)}
-                    className="rounded-xl border border-line bg-transparent p-3 text-sm dark:border-white/10"
-                    placeholder="Mavzular (vergul bilan): Present Simple, Fe'llar"
-                  />
-                </div>
-                <div className="mt-3">
-                  <label className="text-xs font-bold text-ink-600 dark:text-navy-300">
-                    Muvaffaqiyatli tugatilganda beriladigan D'Coinlar soni
-                    <input
-                      value={rewardCoins}
-                      type="number"
-                      min="0"
-                      max="10000"
-                      onChange={(e) => setRewardCoins(Number(e.target.value))}
-                      className="mt-1 w-full sm:w-48 rounded-xl border border-line bg-transparent p-2.5 text-sm dark:border-white/10"
-                      placeholder="0"
-                    />
-                  </label>
-                </div>
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-4 border-t border-line/40 pt-4 dark:border-white/10">
+              {/* Modules Management Section */}
+              <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-white dark:bg-navy-900/60 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 dark:border-white/10">
                   <div>
-                    <p className="text-xs font-bold text-ink-500 mb-2">Modul belgisi (ikonka):</p>
-                    <CoverPicker value={cover} onChange={setCover} />
+                    <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
+                      <span>📦 Modullar Ro'yxati</span>
+                    </h3>
+                    <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                      Jami {(selected.modules || []).length} ta bosqich. Har bir modulni alohida popup oynada to'liq sozlang va testlarini boshqaring.
+                    </p>
                   </div>
-                  <button disabled={busy} className="btn btn-primary self-end">+ Modul yaratish</button>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddModuleInline(!showAddModuleInline)}
+                    className="inline-flex items-center gap-2 rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow transition hover:bg-[#1899d6] active:translate-y-0.5 active:border-b-2"
+                  >
+                    <span>{showAddModuleInline ? "✕ Formani yopish" : "➕ Yangi Modul Qo'shish"}</span>
+                  </button>
                 </div>
-              </form>
 
-              {/* Modules list */}
-              <div className="mt-8 space-y-4">
-                <h3 className="text-lg font-black text-navy-900 dark:text-white">Modullar va Testlar ro'yxati</h3>
-                {(selected.modules || []).map((module: Row, index: number) => (
-                  <div key={module.id} className="rounded-2xl border border-line p-4 dark:border-white/10 transition hover:shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        <img src={image(module.cover_key)} alt="" className="h-14 w-14 rounded-full object-cover border-2 border-cyan-400" />
-                        <div>
-                          <p className="font-black text-navy-900 dark:text-white text-base">
-                            {index + 1}. {module.title}
-                          </p>
-                          <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-                            {(module.topic_keys || []).join(" · ") || "Mavzu kiritilmagan"} · {(module.lessons || []).length} dars/savol
-                            {module.reward_coins > 0 ? ` · 💰 +${module.reward_coins} coin` : ""}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (editModuleId === module.id) {
-                            setEditModuleId(null);
-                          } else {
-                            setEditModuleId(module.id);
-                            setEditTitle(module.title);
-                            setEditTopics((module.topic_keys || []).join(", "));
-                            setEditRewardCoins(Number(module.reward_coins || 0));
-                          }
-                        }}
-                        className="btn btn-soft text-xs"
-                      >
-                        {editModuleId === module.id ? "Bekor qilish" : "✏️ Tahrirlash"}
-                      </button>
+                {/* Inline Add Module Form inside Modal */}
+                {showAddModuleInline ? (
+                  <form
+                    onSubmit={addModule}
+                    className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 p-4 sm:p-5 space-y-4 animate-fade-in"
+                  >
+                    <div>
+                      <h4 className="font-black text-sm text-navy-900 dark:text-white">
+                        + "{selected.title}" ga yangi modul qo'shish
+                      </h4>
+                      <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                        Modul nomi va unga tegishli mavzularni kiriting.
+                      </p>
                     </div>
 
-                    {/* Inline edit form */}
-                    {editModuleId === module.id ? (
-                      <div className="mt-4 rounded-xl bg-surface-soft p-4 dark:bg-white/5 space-y-3">
-                        <div className="grid gap-3 sm:grid-cols-2">
-                          <input
-                            value={editTitle}
-                            onChange={(e) => setEditTitle(e.target.value)}
-                            className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
-                            placeholder="Modul nomi"
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                          Modul nomi
+                        </label>
+                        <input
+                          value={moduleTitle}
+                          onChange={(e) => setModuleTitle(e.target.value)}
+                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                          placeholder="Masalan: 1-bosqich: Basic Grammar"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                          Mavzular (vergul bilan, maksimal 5 ta) *
+                        </label>
+                        <input
+                          value={topics}
+                          onChange={(e) => setTopics(e.target.value)}
+                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                          placeholder="Present Simple, To be, Fe'llar (maksimal 5 ta)"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-ink-600 dark:text-navy-300 block mb-1">
+                        Muvaffaqiyatli topshirilganda beriladigan D'Point & D'Coin mukofoti *
+                      </label>
+                      <input
+                        value={rewardCoins}
+                        type="number"
+                        min="1"
+                        max="10000"
+                        required
+                        onChange={(e) => setRewardCoins(e.target.value)}
+                        className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                        placeholder="Masalan: 50"
+                      />
+                    </div>
+
+                    <div className="border-t border-line/40 pt-3 dark:border-white/10">
+                      <p className="text-xs font-bold text-ink-500 mb-2">Modul belgisi (ikonka):</p>
+                      <CoverPicker value={cover} onChange={setCover} forbiddenKey={lastModuleCover} />
+                    </div>
+
+                    <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddModuleInline(false)}
+                        className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                      >
+                        Bekor qilish
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={busy || !moduleTitle.trim()}
+                        className="rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-5 py-2 text-xs font-black uppercase text-white shadow hover:bg-[#1899d6] disabled:opacity-40"
+                      >
+                        {busy ? "Qo'shilmoqda..." : "+ Modul yaratish"}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+
+                {/* Modules List Cards (Opens each module in dedicated popup) */}
+                <div className="mt-5 space-y-3">
+                  {(selected.modules || []).map((module: Row, index: number) => {
+                    const lessonsCount = (module.lessons || []).length;
+                    return (
+                      <div
+                        key={module.id}
+                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line p-4 dark:border-white/10 transition hover:shadow-md bg-surface-soft/30 dark:bg-white/5"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          <img
+                            src={module.image_url || image(module.cover_key)}
+                            alt=""
+                            className="h-12 w-12 rounded-full object-cover border-2 border-[#002DFF] shadow-sm shrink-0"
                           />
-                          <input
-                            value={editTopics}
-                            onChange={(e) => setEditTopics(e.target.value)}
-                            className="rounded-xl border border-line bg-transparent p-2.5 text-xs dark:border-white/10"
-                            placeholder="Mavzular (vergul bilan)"
-                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="grid h-6 w-6 place-items-center rounded-lg bg-navy-100 dark:bg-navy-800 text-xs font-black text-navy-900 dark:text-white">
+                                {index + 1}
+                              </span>
+                              <p className="font-black text-navy-900 dark:text-white text-base truncate">
+                                {module.title}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap mt-1 text-xs text-ink-500 dark:text-navy-300">
+                              <span>{(module.topic_keys || []).join(" · ") || "Mavzu kiritilmagan"}</span>
+                              <span>•</span>
+                              <span className="font-bold text-cyan-700 dark:text-cyan-300">
+                                🎯 {lessonsCount} ta savol
+                              </span>
+                              {module.reward_coins > 0 ? (
+                                <>
+                                  <span>•</span>
+                                  <span className="font-bold text-amber-600 dark:text-amber-400">
+                                    💎 +{module.reward_coins} D'Point
+                                  </span>
+                                </>
+                              ) : null}
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <label className="text-xs font-bold">
-                            Coin:
-                            <input
-                              value={editRewardCoins}
-                              type="number"
-                              min="0"
-                              onChange={(e) => setEditRewardCoins(Number(e.target.value))}
-                              className="ml-2 w-28 rounded-lg border border-line bg-transparent p-1.5 text-xs dark:border-white/10"
-                            />
-                          </label>
+
+                        <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={() => void updateModule(module.id)}
-                            className="btn btn-primary text-xs ml-auto"
+                            onClick={() => setSelectedModuleId(module.id)}
+                            className="inline-flex items-center gap-2 rounded-xl bg-[#002DFF] hover:bg-blue-700 text-white font-black text-xs px-3.5 py-2 shadow-sm transition"
                           >
-                            Saqlash
+                            <span>⚙️ Modulni Sozlash & Testlar</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void deleteModule(module.id)}
+                            className="grid h-8 w-8 place-items-center rounded-xl text-rose-500 hover:bg-rose-500/15 transition"
+                            title="Modulni o'chirish"
+                          >
+                            🗑
                           </button>
                         </div>
                       </div>
-                    ) : null}
+                    );
+                  })}
 
-                    {/* Lesson editor component */}
-                    <LessonEditor module={module} apiFetch={apiFetch} onSaved={load} />
-                  </div>
-                ))}
-                {!(selected.modules || []).length ? (
-                  <p className="text-sm text-ink-500 dark:text-navy-300 text-center py-6">
-                    Bu trackda hali modul yo'q. Yuqoridagi formadan birinchi modulni qo'shing.
-                  </p>
-                ) : null}
+                  {!(selected.modules || []).length ? (
+                    <div className="py-8 text-center text-xs text-ink-400">
+                      Bu trackda hali birorta modul yo'q. Yuqoridagi <strong>«➕ Yangi Modul Qo'shish»</strong> tugmasi orqali qo'shing.
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </>
-          ) : (
-            <p className="text-sm text-ink-500 py-10 text-center">Track tanlang yoki chap tomondan yangi track yarating.</p>
-          )}
-        </main>
-      </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
+              <span className="text-xs font-bold text-ink-500 dark:text-navy-400">
+                Track ID: #{selected.id} · O'zgarishlar avtomatik sinxronlanadi
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelected(null)}
+                className="btn btn-primary text-xs py-2 px-5 font-bold"
+              >
+                Yopish
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 🎓 Alohida Bitiruv Sertifikati Sozlash Modali (Portal) */}
+      {showCertModal && selected && typeof document !== "undefined" && createPortal(
+        <CertificateSettingsModal
+          track={selected}
+          apiFetch={apiFetch}
+          onSaved={load}
+          onClose={() => setShowCertModal(false)}
+        />,
+        document.body
+      )}
+
+      {/* ⚙️ Alohida Har Bir Modulni Sozlash & Testlar Modali (Portal) */}
+      {selectedModule && selected && typeof document !== "undefined" && createPortal(
+        <ModuleDetailModal
+          track={selected}
+          module={selectedModule}
+          allModules={selected.modules || []}
+          apiFetch={apiFetch}
+          onSaved={load}
+          onClose={() => setSelectedModuleId(null)}
+        />,
+        document.body
+      )}
+
+      {/* Yangi Track Yaratish Modali (Portal) */}
+      {showCreateTrackModal && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 animate-scale-up">
+            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-white/10">
+              <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
+                <span>➕ Yangi Learning Track Yaratish</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowCreateTrackModal(false)}
+                className="grid h-8 w-8 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+              >
+                ✕
+              </button>
+            </div>
+            <form onSubmit={create} className="mt-4 space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-navy-300">Track nomi</label>
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="w-full rounded-2xl border border-line bg-transparent p-3 text-sm font-bold dark:border-white/10"
+                  placeholder="Masalan: General English B1, Matematika Asoslari"
+                  required
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-navy-300">Fanni tanlang</label>
+                <select
+                  value={trackSubject}
+                  onChange={(e) => setTrackSubject(e.target.value)}
+                  className="w-full rounded-2xl border border-line bg-transparent p-3 text-sm font-bold dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                >
+                  <option value="Ingliz tili">🇬🇧 Ingliz tili</option>
+                  <option value="Rus tili">🇷🇺 Rus tili</option>
+                  <option value="Matematika">📐 Matematika</option>
+                  <option value="Ona tili">📖 Ona tili</option>
+                  <option value="General">🌐 Boshqa / Umumiy</option>
+                </select>
+              </div>
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-white/10">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateTrackModal(false)}
+                  className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                >
+                  Bekor qilish
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy || !title.trim()}
+                  className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2.5 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40"
+                >
+                  {busy ? "Yaratilmoqda..." : "Track yaratish"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
     </section>
   );
 }
 
-function TrackSettings({ track, apiFetch, onSaved }: { track: Row; apiFetch: ApiFetch; onSaved: () => Promise<void> }) {
+function CertificateSettingsModal({
+  track,
+  apiFetch,
+  onSaved,
+  onClose,
+}: {
+  track: Row;
+  apiFetch: ApiFetch;
+  onSaved: () => Promise<void>;
+  onClose: () => void;
+}) {
   const layer = (track.certificate_layers || [])[0] || {};
   const [score, setScore] = useState(String(track.passing_score || 70));
 
-  // Auto-detect template matching teacher's subject: Russian if subject contains rus, otherwise English
-  const detectSubjectTemplate = (subj?: string) => {
-    const s = String(subj || "").toLowerCase();
-    if (s.includes("rus") || s.includes("рус")) return "russian";
-    return "english";
-  };
+  // Auto-detect template matching teacher's subject: Russian if subject contains rus / рус, otherwise English
+  const isRussian = (track.subject || "").toLowerCase().includes("rus") || (track.subject || "").toLowerCase().includes("рус");
+  const template = isRussian ? "russian" : "english";
 
-  const initialTemplate = track.certificate_template_key || detectSubjectTemplate(track.subject);
-  const [template, setTemplate] = useState(initialTemplate);
-  const [text, setText] = useState(String(layer.text || ""));
+  // Shablonlar avtomatik kiritilgan bo'lsin
+  const defaultCongratulations = isRussian
+    ? `Поздравляем! Вы успешно завершили курс и освоили программу «${track.title || "Курс"}». Желаем дальнейших академических успехов!`
+    : `Congratulations! Successfully completed the «${track.title || "Course"}» curriculum with outstanding excellence.`;
+
+  const [text, setText] = useState(layer.text ? String(layer.text) : defaultCongratulations);
   const [x, setX] = useState(Number(layer.x ?? 0.5));
-  const [y, setY] = useState(Number(layer.y ?? 0.5));
+  const [y, setY] = useState(Number(layer.y ?? 0.44));
   const [size, setSize] = useState(Number(layer.font_size ?? 16));
   const [color, setColor] = useState(layer.color === "ink" ? "ink" : "blue");
-  const [bold, setBold] = useState(Boolean(layer.bold));
+  const [bold, setBold] = useState(layer.bold !== undefined ? Boolean(layer.bold) : true);
   const [busy, setBusy] = useState(false);
+  const [savedSuccess, setSavedSuccess] = useState(false);
 
   useEffect(() => {
     const next = (track.certificate_layers || [])[0] || {};
     setScore(String(track.passing_score || 70));
-    setTemplate(track.certificate_template_key || detectSubjectTemplate(track.subject));
-    setText(String(next.text || ""));
+    setText(next.text ? String(next.text) : defaultCongratulations);
     setX(Number(next.x ?? 0.5));
-    setY(Number(next.y ?? 0.5));
+    setY(Number(next.y ?? 0.44));
     setSize(Number(next.font_size ?? 16));
     setColor(next.color === "ink" ? "ink" : "blue");
-    setBold(Boolean(next.bold));
-  }, [track]);
+    setBold(next.bold !== undefined ? Boolean(next.bold) : true);
+  }, [track, defaultCongratulations]);
 
-  const applyPreset = (preset: "english" | "russian" | "math" | "professional") => {
-    if (preset === "english") {
-      setTemplate("english");
-      setText("English Language Mastery Track");
-      setSize(18);
-      setColor("blue");
-      setBold(true);
-      setX(0.5);
-      setY(0.44);
-    } else if (preset === "russian") {
-      setTemplate("russian");
-      setText("Курс практического русского языка");
-      setSize(18);
-      setColor("blue");
-      setBold(true);
-      setX(0.5);
-      setY(0.44);
-    } else if (preset === "math") {
-      setTemplate("english");
-      setText("Mathematics & Logic Mastery Track");
-      setSize(18);
-      setColor("ink");
-      setBold(true);
-      setX(0.5);
-      setY(0.44);
-    } else if (preset === "professional") {
-      setTemplate(detectSubjectTemplate(track.subject));
-      setText(`${track.title || "Diamond Track"} · Certified Graduate`);
-      setSize(18);
-      setColor("blue");
-      setBold(true);
-      setX(0.5);
-      setY(0.44);
+  const applyPreset = (presetKey: "default" | "honors" | "specialist" | "short") => {
+    if (isRussian) {
+      if (presetKey === "default") {
+        setText(`Поздравляем! Вы успешно завершили курс и освоили программу «${track.title || "Курс"}». Желаем дальнейших академических успехов!`);
+      } else if (presetKey === "honors") {
+        setText(`За особые академические успехи и блестящее освоение программы курса «${track.title || "Курс"}».`);
+      } else if (presetKey === "specialist") {
+        setText(`Настоящий сертификат подтверждает квалификацию выпускника по программе «${track.title || "Курс"}».`);
+      } else if (presetKey === "short") {
+        setText(`Курс практического русского языка · Выпускник курса`);
+      }
+    } else {
+      if (presetKey === "default") {
+        setText(`Congratulations! Successfully completed the «${track.title || "Course"}» curriculum with outstanding excellence.`);
+      } else if (presetKey === "honors") {
+        setText(`Awarded with Highest Honors for extraordinary mastery and dedication in «${track.title || "Course"}».`);
+      } else if (presetKey === "specialist") {
+        setText(`This certificate acknowledges successful completion and mastery of «${track.title || "Course"}».`);
+      } else if (presetKey === "short") {
+        setText(`English Language Mastery Track · Certified Graduate`);
+      }
     }
   };
 
@@ -1456,7 +3282,11 @@ function TrackSettings({ track, apiFetch, onSaved }: { track: Row; apiFetch: Api
           certificate_layers: text.trim() ? [{ text: text.trim(), x, y, font_size: size, color, bold }] : [],
         },
       });
+      setSavedSuccess(true);
       await onSaved();
+      setTimeout(() => {
+        onClose();
+      }, 700);
     } finally {
       setBusy(false);
     }
@@ -1465,208 +3295,280 @@ function TrackSettings({ track, apiFetch, onSaved }: { track: Row; apiFetch: Api
   const previewColor = color === "blue" ? "#2138b8" : "#1f294d";
 
   return (
-    <section className="mt-5 rounded-2xl border border-cyan-500/20 bg-cyan-500/5 p-4 sm:p-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-black text-navy-900 dark:text-white uppercase tracking-wide">
-          Sertifikat va O'tish Sozlamalari (Faqat butun track tugaganda beriladi)
-        </h3>
-        <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-bold text-cyan-700 dark:text-cyan-300">
-          Fan: {track.subject || "General"}
-        </span>
-      </div>
-
-      {/* Ready Templates / Tayyor shablonlar */}
-      <div className="mt-3 rounded-xl border border-line bg-white/70 p-3 dark:border-white/10 dark:bg-white/5">
-        <p className="text-xs font-black uppercase text-ink-500 dark:text-navy-300 mb-2">
-          ✨ Tayyor shablonlar (bitta bosishda sozlash):
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => applyPreset("english")}
-            className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-bold text-cyan-800 dark:text-cyan-200 hover:bg-cyan-500/20 transition"
-          >
-            🇬🇧 English Track
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset("russian")}
-            className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-bold text-indigo-800 dark:text-indigo-200 hover:bg-indigo-500/20 transition"
-          >
-            🇷🇺 Русский язык
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset("math")}
-            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs font-bold text-amber-800 dark:text-amber-200 hover:bg-amber-500/20 transition"
-          >
-            📐 Matematika / Aniq fanlar
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPreset("professional")}
-            className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-200 hover:bg-emerald-500/20 transition"
-          >
-            🏆 Fan kursi bitiruvchisi
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label className="text-xs font-bold">
-          Track o'tish bali (%)
-          <input
-            value={score}
-            min="1"
-            max="100"
-            type="number"
-            onChange={(e) => setScore(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-line bg-transparent p-2.5 dark:border-white/10"
-          />
-        </label>
-        <label className="text-xs font-bold">
-          Sertifikat tili (O'qituvchi fani: {track.subject || "General"})
-          <select
-            value={template}
-            onChange={(e) => setTemplate(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-line bg-transparent p-2.5 dark:border-white/10 font-medium"
-          >
-            <option value="english">English (Inglizcha sertifikat)</option>
-            <option value="russian">Русский (Ruscha sertifikat)</option>
-          </select>
-        </label>
-      </div>
-
-      <label className="mt-3 block text-xs font-bold">
-        Sertifikatdagi qo'shimcha matn (kurs yo'nalishi)
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          className="mt-1 w-full rounded-lg border border-line bg-transparent p-2.5 dark:border-white/10"
-          placeholder="Masalan: English Language Mastery Track"
-        />
-      </label>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-4">
-        <label className="text-xs font-bold">
-          Shrift o'lchami
-          <input
-            type="number"
-            min="8"
-            max="42"
-            value={size}
-            onChange={(e) => setSize(Number(e.target.value))}
-            className="mt-1 w-full rounded-lg border border-line bg-transparent p-2 dark:border-white/10"
-          />
-        </label>
-        <label className="text-xs font-bold">
-          Matn rangi
-          <select
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-line bg-transparent p-2 dark:border-white/10"
-          >
-            <option value="blue">Ko'k (#2138b8)</option>
-            <option value="ink">Qora-ko'k (#1f294d)</option>
-          </select>
-        </label>
-        <label className="flex items-end gap-2 pb-2 text-xs font-bold">
-          <input type="checkbox" checked={bold} onChange={(e) => setBold(e.target.checked)} />
-          Qalin shrift (Bold)
-        </label>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void save()}
-          className="btn btn-primary text-xs self-end py-2.5"
-        >
-          {busy ? "Saqlanmoqda…" : "Sozlamani saqlash"}
-        </button>
-      </div>
-
-      <div className="mt-4 flex items-center justify-between">
-        <p className="text-xs font-bold text-ink-600 dark:text-navy-300">
-          👇 Sertifikat maketi — uzun chiziq ustiga Ism-familiya, pastiga sana tushadi:
-        </p>
-        <span className="text-xs font-mono font-bold text-cyan-600 dark:text-cyan-300">
-          Qo'shimcha matn o'rni: X: {Math.round(x * 100)}%, Y: {Math.round((1 - y) * 100)}%
-        </span>
-      </div>
-
-      {/* Live Certificate SVG Interactive Canvas */}
+    <div
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+      onClick={onClose}
+    >
       <div
-        onClick={place}
-        role="button"
-        tabIndex={0}
-        className="relative mt-2 aspect-[1123/794] cursor-crosshair overflow-hidden rounded-2xl border-2 border-line bg-white shadow-xl select-none"
+        className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+        onClick={(e) => e.stopPropagation()}
       >
-        <img
-          src={`/learning-paths/certificate-${template}.svg`}
-          alt="Certificate preview"
-          className="pointer-events-none absolute inset-0 h-full w-full object-cover"
-        />
-
-        {/* Long line indicator & Student Full Name Preview (centered right above line x1=249, x2=854, y=354.5) */}
-        <div
-          className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
-          style={{ top: "43.5%" }}
-        >
-          <span className="inline-block rounded-md bg-white/90 px-3 py-1 font-serif text-sm sm:text-base font-black text-navy-950 shadow border border-cyan-500/40 tracking-wide">
-            [ TALABA ISM FAMILIYASI ]
-          </span>
-          <p className="text-[10px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
-            ↑ Uzun chiziq ustidagi ism-familiya joyi
-          </p>
-        </div>
-
-        {/* Course / Track Title directly under the line */}
-        <div
-          className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
-          style={{ top: "50%" }}
-        >
-          <span className="inline-block rounded bg-white/80 px-2 py-0.5 text-xs font-bold text-indigo-900 shadow-sm">
-            {track.title || "Diamond Education Track"}
-          </span>
-        </div>
-
-        {/* Date line preview (bottom-left line x=147.5, y=631) */}
-        <div
-          className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-center"
-          style={{ left: "13.5%", top: "77.5%" }}
-        >
-          <span className="inline-block rounded bg-white/90 px-2 py-0.5 font-mono text-[11px] font-black text-navy-950 border border-cyan-500/40 shadow-sm">
-            {new Date().toLocaleDateString("uz-UZ")}
-          </span>
-          <p className="text-[9px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
-            Sana o'rni
-          </p>
-        </div>
-
-        {/* Live placed custom teacher text */}
-        {text.trim() ? (
-          <span
-            style={{
-              left: `${x * 100}%`,
-              top: `${(1 - y) * 100}%`,
-              color: previewColor,
-              fontSize: `${Math.max(10, size * 0.45)}px`,
-              fontWeight: bold ? 700 : 400,
-            }}
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap drop-shadow bg-white/60 px-1 rounded"
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-cyan-500/15 text-2xl font-black text-cyan-700 dark:text-cyan-300">
+              🎓
+            </span>
+            <div className="min-w-0">
+              <h2 className="font-black text-navy-900 dark:text-white text-base sm:text-lg truncate">
+                Bitiruv Sertifikati Sozlamalari
+              </h2>
+              <p className="text-xs text-ink-500 dark:text-navy-300 truncate">
+                Track: {track.title} · Faqat butun kurs muvaffaqiyatli yakunlanganda beriladi
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
+            title="Yopish"
           >
-            {text}
-          </span>
-        ) : null}
+            ✕
+          </button>
+        </div>
 
-        {/* Target indicator ring */}
-        {text.trim() ? (
-          <span
-            className="pointer-events-none absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-cyan-500 animate-pulse"
-            style={{ left: `${x * 100}%`, top: `${(1 - y) * 100}%` }}
-          />
-        ) : null}
+        {/* Scrollable Body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
+          {/* Auto-detected Subject Banner (NO dropdown!) */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-3.5">
+            <div className="flex items-center gap-2.5">
+              <span className="text-2xl">{isRussian ? "🇷🇺" : "🇬🇧"}</span>
+              <div>
+                <p className="text-xs font-black uppercase text-cyan-900 dark:text-cyan-200">
+                  {isRussian ? "Rus tili sertifikat shabloni (russian.svg)" : "Ingliz tili sertifikat shabloni (english.svg)"}
+                </p>
+                <p className="text-[11px] text-cyan-800 dark:text-cyan-300">
+                  Fan o'qituvchi yo'nalishidan («{track.subject || "General"}») avtomatik aniqlandi.
+                </p>
+              </div>
+            </div>
+            <span className="rounded-lg bg-white/80 dark:bg-navy-900/80 px-2.5 py-1 text-xs font-bold text-navy-900 dark:text-white shadow-xs">
+              {template}.svg
+            </span>
+          </div>
+
+          {/* Quick Preset Buttons (Shablonlar avtomatik kiritilgan) */}
+          <div className="rounded-2xl border border-line bg-surface-soft/40 p-3.5 dark:border-white/10 dark:bg-white/5 space-y-2">
+            <p className="text-xs font-black uppercase text-ink-600 dark:text-navy-300">
+              ✨ Tayyor tabrik va yutuq shablonlari (1 bosishda matnni to'ldirish):
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => applyPreset("default")}
+                className="rounded-xl border border-cyan-500/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-bold text-cyan-800 dark:text-cyan-200 hover:bg-cyan-500/25 transition"
+              >
+                🎓 Standart Tabriknoma
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("honors")}
+                className="rounded-xl border border-amber-500/40 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-800 dark:text-amber-200 hover:bg-amber-500/25 transition"
+              >
+                🌟 A'lo Natija (Honors)
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("specialist")}
+                className="rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-3 py-1.5 text-xs font-bold text-indigo-800 dark:text-indigo-200 hover:bg-indigo-500/25 transition"
+              >
+                🏆 Mutaxassislik Guvohnomasi
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset("short")}
+                className="rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-200 hover:bg-emerald-500/25 transition"
+              >
+                🏅 Qisqa Tabrik
+              </button>
+            </div>
+          </div>
+
+          {/* Settings Fields */}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                Track o'tish bali (%)
+              </label>
+              <input
+                value={score}
+                min="1"
+                max="100"
+                type="number"
+                onChange={(e) => setScore(e.target.value)}
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                Shrift o'lchami (px)
+              </label>
+              <input
+                type="number"
+                min="8"
+                max="42"
+                value={size}
+                onChange={(e) => setSize(Number(e.target.value))}
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                Matn rangi
+              </label>
+              <select
+                value={color}
+                onChange={(e) => setColor(e.target.value)}
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+              >
+                <option value="blue">Ko'k (#2138b8)</option>
+                <option value="ink">To'q qora-ko'k (#1f294d)</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-bold text-ink-600 dark:text-navy-300">
+                Sertifikatdagi tabrik yoki erishilgan natija matni (Avtomatik kiritilgan):
+              </label>
+              <label className="flex items-center gap-1.5 text-xs font-bold text-ink-600 dark:text-navy-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={bold}
+                  onChange={(e) => setBold(e.target.checked)}
+                  className="rounded"
+                />
+                Qalin shrift (Bold)
+              </label>
+            </div>
+            <textarea
+              rows={2}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white resize-none"
+              placeholder="Tabriknoma yoki kurs nomi..."
+            />
+          </div>
+
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs font-bold text-ink-600 dark:text-navy-300">
+              👇 Sertifikat maketi — matnni siljitish uchun rasm ustiga bosing:
+            </p>
+            <span className="text-xs font-mono font-bold text-cyan-700 dark:text-cyan-300">
+              Matn koordinatasi: X: {Math.round(x * 100)}%, Y: {Math.round((1 - y) * 100)}%
+            </span>
+          </div>
+
+          {/* Certificate Live Interactive Canvas */}
+          <div
+            onClick={place}
+            role="button"
+            tabIndex={0}
+            className="relative aspect-[1123/794] cursor-crosshair overflow-hidden rounded-2xl border-2 border-line bg-white shadow-xl select-none"
+          >
+            <img
+              src={`/learning-paths/certificate-${template}.svg`}
+              alt="Certificate preview"
+              className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+            />
+
+            {/* Full name line preview */}
+            <div
+              className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
+              style={{ top: "43.5%" }}
+            >
+              <span className="inline-block rounded-md bg-white/90 px-3 py-1 font-serif text-sm sm:text-base font-black text-navy-950 shadow border border-cyan-500/40 tracking-wide">
+                [ TALABA ISM FAMILIYASI ]
+              </span>
+              <p className="text-[10px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
+                ↑ Uzun chiziq ustidagi ism-familiya joyi
+              </p>
+            </div>
+
+            {/* Course Title */}
+            <div
+              className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
+              style={{ top: "50%" }}
+            >
+              <span className="inline-block rounded bg-white/80 px-2 py-0.5 text-xs font-bold text-indigo-900 shadow-sm">
+                {track.title || "Diamond Education Track"}
+              </span>
+            </div>
+
+            {/* Date line preview */}
+            <div
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-center"
+              style={{ left: "13.5%", top: "77.5%" }}
+            >
+              <span className="inline-block rounded bg-white/90 px-2 py-0.5 font-mono text-[11px] font-black text-navy-950 border border-cyan-500/40 shadow-sm">
+                {new Date().toLocaleDateString("uz-UZ")}
+              </span>
+              <p className="text-[9px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
+                Sana o'rni
+              </p>
+            </div>
+
+            {/* Live placed custom teacher text */}
+            {text.trim() ? (
+              <span
+                style={{
+                  left: `${x * 100}%`,
+                  top: `${(1 - y) * 100}%`,
+                  color: previewColor,
+                  fontSize: `${Math.max(10, size * 0.45)}px`,
+                  fontWeight: bold ? 700 : 400,
+                }}
+                className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap drop-shadow bg-white/70 px-1.5 py-0.5 rounded"
+              >
+                {text}
+              </span>
+            ) : null}
+
+            {/* Target indicator ring */}
+            {text.trim() ? (
+              <span
+                className="pointer-events-none absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-cyan-500 animate-pulse"
+                style={{ left: `${x * 100}%`, top: `${(1 - y) * 100}%` }}
+              />
+            ) : null}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between border-t border-line px-6 py-4 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
+          <div>
+            {savedSuccess ? (
+              <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 animate-fade-in">
+                ✅ Sertifikat sozlamalari muvaffaqiyatli saqlandi!
+              </span>
+            ) : (
+              <span className="text-xs text-ink-500 dark:text-navy-400">
+                Sertifikat {isRussian ? "ruscha" : "inglizcha"} dizaynda avtomatik yaratiladi
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+            >
+              Yopish
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void save()}
+              className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40 active:translate-y-0.5"
+            >
+              {busy ? "Saqlanmoqda…" : "💾 Sozlamalarni Saqlash"}
+            </button>
+          </div>
+        </div>
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1733,6 +3635,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
   const [count, setCount] = useState(5);
   const [types, setTypes] = useState("multiple_choice,true_false,fill_blank");
   const [busy, setBusy] = useState(false);
+  const [showAddTestModal, setShowAddTestModal] = useState(false);
   const [showLibraryModal, setShowLibraryModal] = useState(false);
 
   const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false };
@@ -1891,6 +3794,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
       setCorrect("");
       setExplanation("");
       setAudioUrl("");
+      setShowAddTestModal(false);
       await onSaved();
     } catch (err) {
       alert("Test qo'shishda xatolik: " + (err instanceof Error ? err.message : String(err)));
@@ -1930,6 +3834,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
         });
       }
       setTopic("");
+      setShowAddTestModal(false);
       await onSaved();
     } catch (err) {
       alert("AI test yaratishda xatolik yuz berdi: " + (err instanceof Error ? err.message : String(err)));
@@ -1947,6 +3852,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
         body: { content_type: cType, content_id: contentId, question_count: qCount },
       });
       setShowLibraryModal(false);
+      setShowAddTestModal(false);
       await onSaved();
     } catch (err) {
       alert("Material testini biriktirishda xatolik: " + (err instanceof Error ? err.message : String(err)));
@@ -1970,13 +3876,22 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
     <div className="mt-4 border-t border-line/60 pt-4 dark:border-white/10 space-y-4">
       {/* ─── Moduldagi mavjud testlar ro'yxati (Tahrirlash va O'chirish) ─── */}
       <div className="rounded-2xl border border-line p-4 dark:border-white/10 bg-white/70 dark:bg-navy-900/80">
-        <div className="flex items-center justify-between">
-          <p className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
-            <span>📋 Moduldagi mavjud testlar ({lessons.length} ta)</span>
-          </p>
-          <span className="text-[10px] font-bold text-ink-500 dark:text-navy-300">
-            Har bir testni tahrirlash yoki o'chirish mumkin
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
+              <span>📋 Moduldagi mavjud testlar ({lessons.length} ta)</span>
+            </p>
+            <span className="text-[10px] font-bold text-ink-500 dark:text-navy-300">
+              Har bir testni tahrirlash yoki o'chirish mumkin
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowAddTestModal(true)}
+            className="inline-flex items-center gap-1.5 rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-0.5 active:border-b-2 hover:bg-[#1899d6]"
+          >
+            <span>➕ Test qo'shish (Modal)</span>
+          </button>
         </div>
 
         <div className="mt-3 space-y-2.5">
@@ -2211,382 +4126,415 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
         </div>
       </div>
 
-      {/* ─── Test Qo'shish Markazi (Segmented Tab Bar) ─── */}
-      <div className="rounded-3xl border-2 border-slate-200 bg-white p-5 shadow-sm dark:border-navy-700 dark:bg-navy-900/90">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4 dark:border-white/10">
-          <div>
-            <h4 className="text-sm font-black uppercase tracking-wider text-navy-900 dark:text-white flex items-center gap-2">
-              <span>➕ Modulga Yangi Test Qo'shish</span>
-            </h4>
-            <p className="text-xs text-slate-500 dark:text-navy-300 mt-0.5">
-              Quyidagi 3 xil qulay usuldan birini tanlang:
-            </p>
-          </div>
+      {/* ─── Modul amallari paneli ─── */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface-soft/40 p-4 dark:border-white/10 dark:bg-white/5">
+        <button
+          type="button"
+          onClick={() => setShowAddTestModal(true)}
+          className="inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-5 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-0.5 active:border-b-2 hover:bg-[#1899d6]"
+        >
+          <span>➕ Ushbu modulga yangi test qo'shish (Modal)</span>
+        </button>
 
-          {/* 3-Tab Segmented Controls */}
-          <div className="flex rounded-2xl bg-slate-100 p-1 dark:bg-navy-800">
-            <button
-              type="button"
-              onClick={() => setAddMode("library")}
-              className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black transition-all ${
-                addMode === "library"
-                  ? "bg-white text-[#1cb0f6] shadow-sm dark:bg-navy-900 dark:text-[#1cb0f6]"
-                  : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
-              }`}
-            >
-              <span>📂 Kutubxonadan</span>
-            </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void remove()}
+          className="rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
+        >
+          Modulni to'liq o'chirish
+        </button>
+      </div>
 
-            <button
-              type="button"
-              onClick={() => setAddMode("ai")}
-              className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black transition-all ${
-                addMode === "ai"
-                  ? "bg-white text-emerald-600 shadow-sm dark:bg-navy-900 dark:text-emerald-400"
-                  : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
-              }`}
-            >
-              <span>✨ Diamondvoy AI</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setAddMode("manual")}
-              className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black transition-all ${
-                addMode === "manual"
-                  ? "bg-white text-purple-600 shadow-sm dark:bg-navy-900 dark:text-purple-400"
-                  : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
-              }`}
-            >
-              <span>✍️ Qo'lda kiritish</span>
-            </button>
-          </div>
-        </div>
-
-        {/* ─── TAB 1: Real Materials Library Picker ─── */}
-        {addMode === "library" ? (
-          <div className="mt-5 space-y-4 animate-fade-in">
-            <div className="rounded-2xl border-2 border-dashed border-[#1cb0f6]/40 bg-[#1cb0f6]/5 p-6 text-center dark:border-[#1cb0f6]/20">
-              <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-[#1cb0f6]/15 text-2xl text-[#1cb0f6]">
-                📂
+      {/* ─── Test Qo'shish Qalqib chiquvchi Oynasi (Modal Dialog Portal) ─── */}
+      {showAddTestModal && typeof document !== "undefined" && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-navy-950/80 p-3 sm:p-4 backdrop-blur-sm animate-fade-in">
+          <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-white/10">
+              <div>
+                <h4 className="text-sm font-black uppercase tracking-wider text-navy-900 dark:text-white flex items-center gap-2">
+                  <span>➕ Modulga Yangi Test Qo'shish</span>
+                </h4>
+                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                  "{module.title}" moduli uchun 3 xil usuldan birini tanlang
+                </p>
               </div>
-              <h5 className="text-base font-black text-navy-900 dark:text-white">
-                O'qituvchi Kutubxonasidagi Testlarni Ulash
-              </h5>
-              <p className="mx-auto mt-1 max-w-md text-xs text-slate-500 dark:text-navy-300">
-                Papkalar daraxti orqali avval yaratilgan istalgan test yoki savollar to'plamini bir necha soniyada ushbu modulga biriktiring.
-              </p>
+              <button
+                type="button"
+                onClick={() => setShowAddTestModal(false)}
+                className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 3-Tab Segmented Controls */}
+            <div className="flex border-b border-line bg-surface-soft/40 p-2 dark:border-white/10 dark:bg-white/5 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setAddMode("library")}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
+                  addMode === "library"
+                    ? "bg-white text-[#1cb0f6] shadow-sm dark:bg-navy-800 dark:text-[#1cb0f6]"
+                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                }`}
+              >
+                <span>📂 Kutubxonadan</span>
+              </button>
 
               <button
                 type="button"
-                onClick={() => setShowLibraryModal(true)}
-                className="mt-4 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#1899d6]"
+                onClick={() => setAddMode("ai")}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
+                  addMode === "ai"
+                    ? "bg-white text-emerald-600 shadow-sm dark:bg-navy-800 dark:text-emerald-400"
+                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                }`}
               >
-                <span>📂 Kutubxona papkalarini ochish (Popup)</span>
+                <span>✨ Diamondvoy AI</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setAddMode("manual")}
+                className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
+                  addMode === "manual"
+                    ? "bg-white text-purple-600 shadow-sm dark:bg-navy-800 dark:text-purple-400"
+                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                }`}
+              >
+                <span>✍️ Qo'lda kiritish</span>
               </button>
             </div>
-          </div>
-        ) : null}
 
-        {/* ─── TAB 2: AI Diamondvoy Generator ─── */}
-        {addMode === "ai" ? (
-          <div className="mt-5 space-y-4 animate-fade-in">
-            <div className="rounded-2xl border-2 border-emerald-500/20 bg-emerald-500/5 p-4 sm:p-5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
-                  <span>✨ Diamondvoy AI yordamida test yaratish</span>
-                </span>
-                <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-black text-emerald-800 dark:text-emerald-200">
-                  Modulga to'g'ridan-to'g'ri qo'shiladi va kutubxonada saqlanadi
-                </span>
-              </div>
-
-              {/* Quick Topic Suggestion Pills */}
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-bold text-slate-500">Mavzular:</span>
-                {[
-                  "Present Perfect vs Past Simple",
-                  "Irregular Verbs",
-                  "Travel & Hotel Vocabulary",
-                  "Job Interview Expressions",
-                  "Conditional Sentences (0, 1, 2)",
-                ].map((sug) => (
-                  <button
-                    key={sug}
-                    type="button"
-                    onClick={() => setTopic(sug)}
-                    className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:bg-navy-800 dark:text-emerald-300"
-                  >
-                    + {sug}
-                  </button>
-                ))}
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_130px]">
-                <input
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="Test mavzusi (masalan: English Grammar, Food & Dining, B2 Vocabulary)..."
-                  className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                />
-
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-black text-slate-600 dark:text-navy-300 whitespace-nowrap">
-                    Soni:
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="25"
-                    value={count}
-                    onChange={(e) => setCount(Number(e.target.value))}
-                    className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-center text-xs font-black text-navy-900 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                </div>
-
-                <select
-                  value={types}
-                  onChange={(e) => setTypes(e.target.value)}
-                  className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                >
-                  <option value="multiple_choice,true_false,fill_blank">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
-                  <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
-                  <option value="true_false">Faqat To'g'ri / Noto'g'ri (True / False)</option>
-                  <option value="fill_blank">Faqat Bo'sh joyni to'ldirish (Fill in blank)</option>
-                  <option value="word_order">Faqat So'z tartibi (Word Order)</option>
-                  <option value="matching">Faqat Moslashtirish (Matching Pairs)</option>
-                  <option value="translation">Faqat Tarjima mashqlari</option>
-                  <option value="spelling">Faqat Imlo (Spelling)</option>
-                  <option value="multiple_choice,true_false,fill_blank,word_order,matching">Barcha turlar aralash</option>
-                </select>
-
-                <button
-                  type="button"
-                  disabled={busy || !topic.trim()}
-                  onClick={() => void generate()}
-                  className="sm:col-span-2 rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#58cc02] py-3.5 text-center text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#4cb802] disabled:opacity-40"
-                >
-                  {busy ? "⏳ Diamondvoy testlarni yaratmoqda..." : `💎 Diamondvoy ${count} ta savol yaratib modulga qo'shsin`}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {/* ─── TAB 3: Manual Test Builder ─── */}
-        {addMode === "manual" ? (
-          <div className="mt-5 space-y-4 animate-fade-in">
-            <div className="rounded-2xl border-2 border-purple-500/20 bg-purple-500/5 p-4 sm:p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-black uppercase tracking-wider text-purple-900 dark:text-purple-300">
-                  ✍️ Qo'lda Yangi Test Yaratish
-                </span>
-                <span className="rounded-full bg-purple-500/20 px-2.5 py-0.5 text-[10px] font-black text-purple-800 dark:text-purple-200">
-                  20 ta turli test turi
-                </span>
-              </div>
-
-              {/* Title and Test Kind Selector */}
-              <div className="grid gap-2.5 sm:grid-cols-2">
-                <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Test savoli nomi (masalan: 1-mashq, Vocabulary check)"
-                  className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                />
-
-                <select
-                  value={manualType}
-                  onChange={(e) => {
-                    setManualType(e.target.value);
-                    if (e.target.value === "true_false" || e.target.value === "listening_tf") {
-                      setOptions("To'g'ri | Noto'g'ri");
-                      setCorrect("To'g'ri");
-                    } else if (e.target.value === "matching") {
-                      setOptions("apple = olma | book = kitob | pen = ruchka");
-                      setCorrect("");
-                    }
-                  }}
-                  className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                >
-                  {ALL_TEST_KINDS.map((k) => (
-                    <option key={k.key} value={k.key}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Audio Section for Listening Test Kinds */}
-              {curKindMeta.needsAudio ? (
-                <div className="rounded-2xl border-2 border-cyan-400/40 bg-cyan-500/10 p-4 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-black text-cyan-900 dark:text-cyan-200 flex items-center gap-1.5">
-                      <span>🎧 Audio biriktirish (Majburiy)</span>
-                    </span>
-                    {audioUploading && (
-                      <span className="text-xs text-cyan-600 animate-pulse font-bold">
-                        Yuklanmoqda...
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <label className="cursor-pointer rounded-xl border-2 border-b-4 border-cyan-500 bg-cyan-500 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-cyan-600 active:translate-y-0.5 active:border-b-2">
-                      📁 Audio faylni tanlash (MP3, WAV, M4A)
-                      <input
-                        type="file"
-                        accept="audio/*"
-                        className="hidden"
-                        onChange={async (e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          setAudioUploading(true);
-                          try {
-                            const url = await uploadAudioFile(file);
-                            if (url) setAudioUrl(url);
-                          } finally {
-                            setAudioUploading(false);
-                          }
-                        }}
-                      />
-                    </label>
-
-                    <input
-                      value={audioUrl}
-                      onChange={(e) => setAudioUrl(e.target.value)}
-                      placeholder="Yoki Audio URL (masalan: /homework/files/... yoki https://...)"
-                      className="min-w-0 flex-1 rounded-xl border border-line bg-white p-2 text-xs dark:bg-navy-800 dark:border-white/10"
-                    />
-                  </div>
-
-                  {audioUrl ? (
-                    <div className="pt-2 border-t border-cyan-400/20">
-                      <audio controls src={audioUrl} className="w-full h-8" />
+            {/* Modal Body with Scroll */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+              {/* TAB 1: Real Materials Library Picker */}
+              {addMode === "library" ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="rounded-2xl border-2 border-dashed border-[#1cb0f6]/40 bg-[#1cb0f6]/5 p-6 text-center dark:border-[#1cb0f6]/20">
+                    <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-[#1cb0f6]/15 text-2xl text-[#1cb0f6]">
+                      📂
                     </div>
-                  ) : null}
+                    <h5 className="text-base font-black text-navy-900 dark:text-white">
+                      O'qituvchi Kutubxonasidagi Testlarni Ulash
+                    </h5>
+                    <p className="mx-auto mt-1 max-w-md text-xs text-slate-500 dark:text-navy-300">
+                      Papkalar daraxti yoki kitoblar, videolar va vazifalar orqali avval yaratilgan istalgan testni bir necha soniyada ushbu modulga biriktiring.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowLibraryModal(true)}
+                      className="mt-4 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#1899d6]"
+                    >
+                      <span>📂 Kutubxona papkalari va materiallarini ochish</span>
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
-              {/* Question prompt */}
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                rows={2}
-                placeholder={
-                  manualType === "fill_blank" || manualType === "listening_gap"
-                    ? "Savol matni (bo'sh joy uchun _____ ishlating): He _____ a teacher."
-                    : manualType === "word_order" || manualType === "listening_order"
-                    ? "Aralash so'zlar: teacher / is / He / a"
-                    : manualType === "matching"
-                    ? "Ko'rsatma: So'zlarni o'zbekcha tarjimasi bilan moslashtiring"
-                    : "Savol matni..."
-                }
-                className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-              />
+              {/* TAB 2: AI Diamondvoy Generator */}
+              {addMode === "ai" ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="rounded-2xl border-2 border-emerald-500/20 bg-emerald-500/5 p-4 sm:p-5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                        <span>✨ Diamondvoy AI yordamida test yaratish</span>
+                      </span>
+                      <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-black text-emerald-800 dark:text-emerald-200">
+                        Modulga to'g'ridan-to'g'ri qo'shiladi
+                      </span>
+                    </div>
 
-              {/* Dynamic contextual inputs per test type */}
-              {manualType === "true_false" || manualType === "listening_tf" ? (
-                <div className="flex items-center gap-4 py-1">
-                  <span className="text-xs font-black text-slate-700 dark:text-navy-300">To'g'ri javob:</span>
-                  <label className="flex items-center gap-1.5 text-xs font-black text-emerald-600 cursor-pointer">
-                    <input
-                      type="radio"
-                      name={`tf_${module.id}`}
-                      checked={correct === "To'g'ri"}
-                      onChange={() => setCorrect("To'g'ri")}
-                      className="accent-emerald-500"
+                    {/* Quick Topic Suggestion Pills */}
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-slate-500">Mavzular:</span>
+                      {[
+                        "Present Perfect vs Past Simple",
+                        "Irregular Verbs",
+                        "Travel & Hotel Vocabulary",
+                        "Job Interview Expressions",
+                        "Conditional Sentences (0, 1, 2)",
+                      ].map((sug) => (
+                        <button
+                          key={sug}
+                          type="button"
+                          onClick={() => setTopic(sug)}
+                          className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:bg-navy-800 dark:text-emerald-300"
+                        >
+                          + {sug}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_130px]">
+                      <input
+                        value={topic}
+                        onChange={(e) => setTopic(e.target.value)}
+                        placeholder="Test mavzusi (masalan: English Grammar, Food & Dining, B2 Vocabulary)..."
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs font-black text-slate-600 dark:text-navy-300 whitespace-nowrap">
+                          Soni:
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="25"
+                          value={count}
+                          onChange={(e) => setCount(Number(e.target.value))}
+                          className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-center text-xs font-black text-navy-900 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        />
+                      </div>
+
+                      <select
+                        value={types}
+                        onChange={(e) => setTypes(e.target.value)}
+                        className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      >
+                        <option value="multiple_choice,true_false,fill_blank">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
+                        <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
+                        <option value="true_false">Faqat To'g'ri / Noto'g'ri (True / False)</option>
+                        <option value="fill_blank">Faqat Bo'sh joyni to'ldirish (Fill in blank)</option>
+                        <option value="word_order">Faqat So'z tartibi (Word Order)</option>
+                        <option value="matching">Faqat Moslashtirish (Matching Pairs)</option>
+                        <option value="translation">Faqat Tarjima mashqlari</option>
+                        <option value="spelling">Faqat Imlo (Spelling)</option>
+                        <option value="multiple_choice,true_false,fill_blank,word_order,matching">Barcha turlar aralash</option>
+                      </select>
+
+                      <button
+                        type="button"
+                        disabled={busy || !topic.trim()}
+                        onClick={() => void generate()}
+                        className="sm:col-span-2 rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#58cc02] py-3.5 text-center text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#4cb802] disabled:opacity-40"
+                      >
+                        {busy ? "⏳ Diamondvoy testlarni yaratmoqda..." : `💎 Diamondvoy ${count} ta savol yaratib modulga qo'shsin`}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* TAB 3: Manual Test Builder */}
+              {addMode === "manual" ? (
+                <div className="space-y-4 animate-fade-in">
+                  <div className="rounded-2xl border-2 border-purple-500/20 bg-purple-500/5 p-4 sm:p-5 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-black uppercase tracking-wider text-purple-900 dark:text-purple-300">
+                        ✍️ Qo'lda Yangi Test Yaratish
+                      </span>
+                      <span className="rounded-full bg-purple-500/20 px-2.5 py-0.5 text-[10px] font-black text-purple-800 dark:text-purple-200">
+                        20 ta turli test turi
+                      </span>
+                    </div>
+
+                    {/* Title and Test Kind Selector */}
+                    <div className="grid gap-2.5 sm:grid-cols-2">
+                      <input
+                        value={title}
+                        onChange={(e) => setTitle(e.target.value)}
+                        placeholder="Test savoli nomi (masalan: 1-mashq, Vocabulary check)"
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+
+                      <select
+                        value={manualType}
+                        onChange={(e) => {
+                          setManualType(e.target.value);
+                          if (e.target.value === "true_false" || e.target.value === "listening_tf") {
+                            setOptions("To'g'ri | Noto'g'ri");
+                            setCorrect("To'g'ri");
+                          } else if (e.target.value === "matching") {
+                            setOptions("apple = olma | book = kitob | pen = ruchka");
+                            setCorrect("");
+                          }
+                        }}
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      >
+                        {ALL_TEST_KINDS.map((k) => (
+                          <option key={k.key} value={k.key}>
+                            {k.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Audio Section for Listening Test Kinds */}
+                    {curKindMeta.needsAudio ? (
+                      <div className="rounded-2xl border-2 border-cyan-400/40 bg-cyan-500/10 p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-cyan-900 dark:text-cyan-200 flex items-center gap-1.5">
+                            <span>🎧 Audio biriktirish (Majburiy)</span>
+                          </span>
+                          {audioUploading && (
+                            <span className="text-xs text-cyan-600 animate-pulse font-bold">
+                              Yuklanmoqda...
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="cursor-pointer rounded-xl border-2 border-b-4 border-cyan-500 bg-cyan-500 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-cyan-600 active:translate-y-0.5 active:border-b-2">
+                            📁 Audio faylni tanlash (MP3, WAV, M4A)
+                            <input
+                              type="file"
+                              accept="audio/*"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                setAudioUploading(true);
+                                try {
+                                  const url = await uploadAudioFile(file);
+                                  if (url) setAudioUrl(url);
+                                } finally {
+                                  setAudioUploading(false);
+                                }
+                              }}
+                            />
+                          </label>
+
+                          <input
+                            value={audioUrl}
+                            onChange={(e) => setAudioUrl(e.target.value)}
+                            placeholder="Yoki Audio URL (masalan: /homework/files/... yoki https://...)"
+                            className="min-w-0 flex-1 rounded-xl border border-line bg-white p-2 text-xs dark:bg-navy-800 dark:border-white/10"
+                          />
+                        </div>
+
+                        {audioUrl ? (
+                          <div className="pt-2 border-t border-cyan-400/20">
+                            <audio controls src={audioUrl} className="w-full h-8" />
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {/* Question prompt */}
+                    <textarea
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      rows={2}
+                      placeholder={
+                        manualType === "fill_blank" || manualType === "listening_gap"
+                          ? "Savol matni (bo'sh joy uchun _____ ishlating): He _____ a teacher."
+                          : manualType === "word_order" || manualType === "listening_order"
+                          ? "Aralash so'zlar: teacher / is / He / a"
+                          : manualType === "matching"
+                          ? "Ko'rsatma: So'zlarni o'zbekcha tarjimasi bilan moslashtiring"
+                          : "Savol matni..."
+                      }
+                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                     />
-                    ✓ To'g'ri
-                  </label>
-                  <label className="flex items-center gap-1.5 text-xs font-black text-rose-600 cursor-pointer">
+
+                    {/* Dynamic contextual inputs per test type */}
+                    {manualType === "true_false" || manualType === "listening_tf" ? (
+                      <div className="flex items-center gap-4 py-1">
+                        <span className="text-xs font-black text-slate-700 dark:text-navy-300">To'g'ri javob:</span>
+                        <label className="flex items-center gap-1.5 text-xs font-black text-emerald-600 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`tf_${module.id}`}
+                            checked={correct === "To'g'ri"}
+                            onChange={() => setCorrect("To'g'ri")}
+                            className="accent-emerald-500"
+                          />
+                          ✓ To'g'ri
+                        </label>
+                        <label className="flex items-center gap-1.5 text-xs font-black text-rose-600 cursor-pointer">
+                          <input
+                            type="radio"
+                            name={`tf_${module.id}`}
+                            checked={correct === "Noto'g'ri"}
+                            onChange={() => setCorrect("Noto'g'ri")}
+                            className="accent-rose-500"
+                          />
+                          ✕ Noto'g'ri
+                        </label>
+                      </div>
+                    ) : manualType === "fill_blank" || manualType === "listening_gap" ? (
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        <input
+                          value={correct}
+                          onChange={(e) => setCorrect(e.target.value)}
+                          placeholder="To'g'ri to'ldiriladigan so'z (masalan: is)"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        />
+                        <input
+                          value={options}
+                          onChange={(e) => setOptions(e.target.value)}
+                          placeholder="Qo'shimcha noto'g'ri variantlar (ixtiyoriy, | bilan)"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        />
+                      </div>
+                    ) : manualType === "word_order" || manualType === "listening_order" ? (
+                      <input
+                        value={correct}
+                        onChange={(e) => setCorrect(e.target.value)}
+                        placeholder="To'g'ri tartibdagi to'liq gap: He is a teacher."
+                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+                    ) : manualType === "matching" ? (
+                      <input
+                        value={options}
+                        onChange={(e) => setOptions(e.target.value)}
+                        placeholder="Juftliklar: book = kitob | pen = ruchka | cat = mushuk (| bilan)"
+                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+                    ) : (
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        <input
+                          value={options}
+                          onChange={(e) => setOptions(e.target.value)}
+                          placeholder="Variantlar: A | B | C | D (| bilan ajrating)"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        />
+                        <input
+                          value={correct}
+                          onChange={(e) => setCorrect(e.target.value)}
+                          placeholder="To'g'ri javob matni"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        />
+                      </div>
+                    )}
+
                     <input
-                      type="radio"
-                      name={`tf_${module.id}`}
-                      checked={correct === "Noto'g'ri"}
-                      onChange={() => setCorrect("Noto'g'ri")}
-                      className="accent-rose-500"
+                      value={explanation}
+                      onChange={(e) => setExplanation(e.target.value)}
+                      placeholder="Izoh / Tushuntirish (ixtiyoriy)"
+                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                     />
-                    ✕ Noto'g'ri
-                  </label>
-                </div>
-              ) : manualType === "fill_blank" || manualType === "listening_gap" ? (
-                <div className="grid gap-2.5 sm:grid-cols-2">
-                  <input
-                    value={correct}
-                    onChange={(e) => setCorrect(e.target.value)}
-                    placeholder="To'g'ri to'ldiriladigan so'z (masalan: is)"
-                    className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                  <input
-                    value={options}
-                    onChange={(e) => setOptions(e.target.value)}
-                    placeholder="Qo'shimcha noto'g'ri variantlar (ixtiyoriy, | bilan)"
-                    className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                </div>
-              ) : manualType === "word_order" || manualType === "listening_order" ? (
-                <input
-                  value={correct}
-                  onChange={(e) => setCorrect(e.target.value)}
-                  placeholder="To'g'ri tartibdagi to'liq gap: He is a teacher."
-                  className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                />
-              ) : manualType === "matching" ? (
-                <input
-                  value={options}
-                  onChange={(e) => setOptions(e.target.value)}
-                  placeholder="Juftliklar: book = kitob | pen = ruchka | cat = mushuk (| bilan)"
-                  className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                />
-              ) : (
-                <div className="grid gap-2.5 sm:grid-cols-2">
-                  <input
-                    value={options}
-                    onChange={(e) => setOptions(e.target.value)}
-                    placeholder="Variantlar: A | B | C | D (| bilan ajrating)"
-                    className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                  <input
-                    value={correct}
-                    onChange={(e) => setCorrect(e.target.value)}
-                    placeholder="To'g'ri javob matni"
-                    className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                </div>
-              )}
 
-              <input
-                value={explanation}
-                onChange={(e) => setExplanation(e.target.value)}
-                placeholder="Izoh / Tushuntirish (ixtiyoriy)"
-                className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-              />
-
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void saveManual()}
-                className="rounded-2xl border-2 border-b-4 border-purple-600 bg-purple-600 px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-purple-700 disabled:opacity-40"
-              >
-                + Ushbu test savolini modulga qo'shish
-              </button>
+                    <div className="flex justify-end gap-2.5 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddTestModal(false)}
+                        className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                      >
+                        Bekor qilish
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void saveManual()}
+                        className="rounded-2xl border-2 border-b-4 border-purple-600 bg-purple-600 px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-purple-700 disabled:opacity-40"
+                      >
+                        + Ushbu test savolini modulga qo'shish
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
-        ) : null}
-
-        {/* Delete module button */}
-        <div className="mt-5 flex justify-end border-t border-slate-100 pt-3 dark:border-white/10">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void remove()}
-            className="rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
-          >
-            Modulni to'liq o'chirish
-          </button>
-        </div>
-      </div>
+        </div>,
+        document.body
+      )}
 
       {/* Real Folder-tree Materials Library Popup Modal */}
       {showLibraryModal ? (
@@ -2625,6 +4573,7 @@ function MaterialsLibraryModal({
   onSelect: (contentId: number, contentType: string, count: number) => void;
   onClose: () => void;
 }) {
+  const [modalTab, setModalTab] = useState<"tree" | "materials">("tree");
   const [nodes, setNodes] = useState<LibTreeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -2632,13 +4581,19 @@ function MaterialsLibraryModal({
   const [selectedTest, setSelectedTest] = useState<LibTreeNode | null>(null);
   const [questionCount, setQuestionCount] = useState(10);
 
+  // Materials Library Search State
+  const [matItems, setMatItems] = useState<any[]>([]);
+  const [matLoading, setMatLoading] = useState(false);
+  const [matFilter, setMatFilter] = useState<string>("all");
+  const [matQuery, setMatQuery] = useState("");
+  const [selectedMatItem, setSelectedMatItem] = useState<any | null>(null);
+
   const loadTree = useCallback(async () => {
     setLoading(true);
     try {
       const data = await apiFetch("/staff/teacher-library-tree");
       if (Array.isArray(data?.nodes)) {
         setNodes(data.nodes);
-        // Expand root folders by default
         const rootFolderIds = data.nodes.filter((n: LibTreeNode) => n.kind === "folder" && !n.parent_id).map((n: LibTreeNode) => n.id);
         setExpanded(new Set(rootFolderIds));
       }
@@ -2649,9 +4604,28 @@ function MaterialsLibraryModal({
     }
   }, [apiFetch]);
 
+  const fetchMaterials = useCallback(async (q = "", filter = "all") => {
+    setMatLoading(true);
+    try {
+      const typeParam = filter === "all" ? "" : filter;
+      const res = await apiFetch(`/staff/materials-search?q=${encodeURIComponent(q)}&content_type=${typeParam}`);
+      setMatItems(Array.isArray(res?.items) ? res.items : []);
+    } catch {
+      setMatItems([]);
+    } finally {
+      setMatLoading(false);
+    }
+  }, [apiFetch]);
+
   useEffect(() => {
     void loadTree();
   }, [loadTree]);
+
+  useEffect(() => {
+    if (modalTab === "materials") {
+      void fetchMaterials(matQuery, matFilter);
+    }
+  }, [modalTab, matQuery, matFilter, fetchMaterials]);
 
   const toggle = (id: number) => {
     setExpanded((prev) => {
@@ -2750,16 +4724,16 @@ function MaterialsLibraryModal({
   const roots = childrenOf.get(0) || [];
 
   return (
-    <div className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-[270] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
       <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-white/10">
           <div>
             <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
-              📂 Materiallar Kutubxonasi Testlari
+              <span>📂 Materiallar Kutubxonasi Testlari</span>
             </h3>
             <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-              Papkalar ichidan kerakli testni tanlab modulga biriktiring
+              Papkalar yoki kutubxona materiallaridan kerakli testni tanlab modulga biriktiring
             </p>
           </div>
           <button
@@ -2771,108 +4745,234 @@ function MaterialsLibraryModal({
           </button>
         </div>
 
-        {/* Search bar */}
-        <div className="p-4 border-b border-line dark:border-white/10">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Test nomi bo'yicha qidiring (masalan: Present Simple, Unit 1)..."
-            className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white font-medium"
-          />
+        {/* Dual Tab Bar */}
+        <div className="flex border-b border-line bg-surface-soft/40 px-4 pt-2.5 dark:border-white/10 dark:bg-white/5 gap-2">
+          <button
+            type="button"
+            onClick={() => setModalTab("tree")}
+            className={`pb-2.5 px-3.5 text-xs font-black transition border-b-2 ${
+              modalTab === "tree"
+                ? "border-cyan-500 text-cyan-700 dark:text-cyan-300"
+                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-navy-300"
+            }`}
+          >
+            📁 O'qituvchi Papkalari (Daraxt)
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalTab("materials")}
+            className={`pb-2.5 px-3.5 text-xs font-black transition border-b-2 ${
+              modalTab === "materials"
+                ? "border-cyan-500 text-cyan-700 dark:text-cyan-300"
+                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-navy-300"
+            }`}
+          >
+            📚 Kitoblar, Videolar va Vazifalar
+          </button>
         </div>
 
-        {/* Folder tree or Search results */}
-        <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-1">
-          {loading ? (
-            <div className="grid min-h-48 place-items-center">
-              <div className="h-8 w-8 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent" />
+        {modalTab === "tree" ? (
+          <>
+            {/* Search bar for tree */}
+            <div className="p-4 border-b border-line dark:border-white/10">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Test nomi bo'yicha qidiring (masalan: Present Simple, Unit 1)..."
+                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white font-medium"
+              />
             </div>
-          ) : filteredTests ? (
-            /* Search results mode */
-            filteredTests.length ? (
-              filteredTests.map((test) => {
-                const isSelected = selectedTest?.id === test.id;
-                return (
-                  <div
-                    key={test.id}
-                    onClick={() => {
-                      setSelectedTest(test);
-                      setQuestionCount(test.question_count || 10);
-                    }}
-                    className={`flex items-center justify-between p-3 rounded-2xl border-2 transition cursor-pointer ${
-                      isSelected
-                        ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
-                        : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="text-xl">🧪</span>
-                      <div className="min-w-0">
-                        <p className="font-bold text-xs text-navy-900 dark:text-white truncate">
-                          {test.title}
-                        </p>
-                        <p className="text-[10px] text-ink-400">
-                          {test.subject || "English"} {test.level ? `· ${test.level}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
-                        {test.question_count} ta savol
-                      </span>
-                      <input
-                        type="radio"
-                        name="search_selected_test"
-                        checked={isSelected}
-                        onChange={() => {
+
+            {/* Folder tree or Search results */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-1">
+              {loading ? (
+                <div className="grid min-h-48 place-items-center">
+                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent" />
+                </div>
+              ) : filteredTests ? (
+                filteredTests.length ? (
+                  filteredTests.map((test) => {
+                    const isSelected = selectedTest?.id === test.id;
+                    return (
+                      <div
+                        key={test.id}
+                        onClick={() => {
                           setSelectedTest(test);
                           setQuestionCount(test.question_count || 10);
                         }}
-                        className="accent-cyan-500"
-                      />
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <p className="py-12 text-center text-xs text-ink-500">
-                "{search}" bo'yicha hech qanday test topilmadi.
-              </p>
-            )
-          ) : roots.length ? (
-            /* Folder Tree Mode */
-            roots.map((node) => renderFolderNode(node, 0))
-          ) : (
-            <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400 space-y-2">
-              <p className="font-bold">Kutubxonada testlar topilmadi.</p>
-              <p className="text-[11px]">Avval Materiallar Kutubxonasi bo'limida papka va testlar yarating.</p>
+                        className={`flex items-center justify-between p-3 rounded-2xl border-2 transition cursor-pointer ${
+                          isSelected
+                            ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
+                            : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="text-xl">🧪</span>
+                          <div className="min-w-0">
+                            <p className="font-bold text-xs text-navy-900 dark:text-white truncate">
+                              {test.title}
+                            </p>
+                            <p className="text-[10px] text-ink-400">
+                              {test.subject || "English"} {test.level ? `· ${test.level}` : ""}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                            {test.question_count} ta savol
+                          </span>
+                          <input
+                            type="radio"
+                            name="search_selected_test"
+                            checked={isSelected}
+                            onChange={() => {
+                              setSelectedTest(test);
+                              setQuestionCount(test.question_count || 10);
+                            }}
+                            className="accent-cyan-500"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <p className="py-12 text-center text-xs text-ink-500">
+                    "{search}" bo'yicha hech qanday test topilmadi.
+                  </p>
+                )
+              ) : roots.length ? (
+                roots.map((node) => renderFolderNode(node, 0))
+              ) : (
+                <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400 space-y-2">
+                  <p className="font-bold">Kutubxonada testlar topilmadi.</p>
+                  <p className="text-[11px]">Avval Materiallar Kutubxonasi bo'limida papka va testlar yarating.</p>
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Selected Test Preview Box */}
-        {selectedTest ? (
-          <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-white/10">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-black text-cyan-800 dark:text-cyan-200 flex items-center gap-1.5">
-                <span>🧪 Tanlangan: {selectedTest.title}</span>
-              </span>
-              <span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">
-                {selectedTest.question_count} ta savol mavjud
-              </span>
-            </div>
-            {Array.isArray(selectedTest.questions) && selectedTest.questions.length ? (
-              <div className="mt-2 space-y-1 max-h-24 overflow-y-auto pr-1">
-                {selectedTest.questions.slice(0, 3).map((q: Row, qi: number) => (
-                  <div key={qi} className="text-[11px] text-ink-600 dark:text-navy-200 truncate flex items-center gap-1">
-                    <span className="font-bold text-cyan-600">#{qi + 1}</span>
-                    <span>{q.question || q.prompt || q.text || "Savol"}</span>
-                  </div>
-                ))}
+            {selectedTest ? (
+              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-white/10">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-cyan-800 dark:text-cyan-200 flex items-center gap-1.5">
+                    <span>🧪 Tanlangan: {selectedTest.title}</span>
+                  </span>
+                  <span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">
+                    {selectedTest.question_count} ta savol mavjud
+                  </span>
+                </div>
               </div>
             ) : null}
-          </div>
-        ) : null}
+          </>
+        ) : (
+          /* Materials Library Search View (Books, Videos, Homeworks) */
+          <>
+            <div className="p-4 border-b border-line dark:border-white/10 space-y-2.5">
+              {/* Type Filter Chips */}
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { key: "all", label: "Barchasi" },
+                  { key: "book", label: "📖 Kitoblar" },
+                  { key: "video", label: "🎬 Videolar" },
+                  { key: "homework", label: "📝 Vazifalar" },
+                  { key: "ai_generated", label: "✨ AI Testlar" },
+                ].map((f) => (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => setMatFilter(f.key)}
+                    className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
+                      matFilter === f.key
+                        ? "bg-cyan-500 text-white shadow-sm"
+                        : "bg-surface-soft text-ink-500 hover:bg-cyan-500/10 dark:bg-white/5 dark:text-navy-300"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                value={matQuery}
+                onChange={(e) => setMatQuery(e.target.value)}
+                placeholder="Material nomi bo'yicha qidiring..."
+                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white font-medium"
+              />
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2">
+              {matLoading ? (
+                <div className="grid min-h-48 place-items-center">
+                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-cyan-500 border-t-transparent" />
+                </div>
+              ) : matItems.length ? (
+                matItems.map((item, idx) => {
+                  const isSel = selectedMatItem?.content_id === item.content_id && selectedMatItem?.content_type === item.content_type;
+                  const typeIcon = item.content_type === "book" ? "📖" : item.content_type === "video" ? "🎬" : item.content_type === "homework" ? "📝" : "✨";
+                  const typeLabel = item.content_type === "book" ? "Kitob" : item.content_type === "video" ? "Video" : item.content_type === "homework" ? "Vazifa" : "AI";
+
+                  return (
+                    <div
+                      key={`${item.content_type}_${item.content_id}_${idx}`}
+                      onClick={() => {
+                        setSelectedMatItem(item);
+                        setQuestionCount(item.question_count || 10);
+                      }}
+                      className={`flex items-center justify-between p-3.5 rounded-2xl border-2 transition cursor-pointer ${
+                        isSel
+                          ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
+                          : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-xl">{typeIcon}</span>
+                        <div className="min-w-0">
+                          <p className="font-bold text-xs text-navy-900 dark:text-white truncate">
+                            {item.title}
+                          </p>
+                          <span className="rounded-md bg-cyan-500/10 px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:text-cyan-300">
+                            {typeLabel}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                          {item.question_count} ta savol
+                        </span>
+                        <input
+                          type="radio"
+                          name="mat_selected_test"
+                          checked={isSel}
+                          onChange={() => {
+                            setSelectedMatItem(item);
+                            setQuestionCount(item.question_count || 10);
+                          }}
+                          className="accent-cyan-500"
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400">
+                  Ushbu turkumda material testlari topilmadi.
+                </div>
+              )}
+            </div>
+
+            {selectedMatItem ? (
+              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-white/10">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black text-cyan-800 dark:text-cyan-200">
+                    🧪 Tanlangan: {selectedMatItem.title} ({selectedMatItem.content_type})
+                  </span>
+                  <span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">
+                    {selectedMatItem.question_count} ta savol mavjud
+                  </span>
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
 
         {/* Selected Test Action Footer */}
         <div className="border-t border-line p-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/40 flex flex-wrap items-center justify-between gap-3">
@@ -2883,24 +4983,21 @@ function MaterialsLibraryModal({
             <input
               type="number"
               min="1"
-              max={selectedTest ? Math.max(1, selectedTest.question_count) : 100}
+              max={100}
               value={questionCount}
               onChange={(e) => setQuestionCount(Number(e.target.value))}
               className="w-20 rounded-xl border border-line bg-transparent p-2 text-xs font-bold text-center dark:border-white/10"
             />
-            {selectedTest ? (
-              <span className="text-[11px] text-ink-400">
-                (jami: {selectedTest.question_count} ta)
-              </span>
-            ) : null}
           </div>
 
           <button
             type="button"
-            disabled={!selectedTest}
+            disabled={modalTab === "tree" ? !selectedTest : !selectedMatItem}
             onClick={() => {
-              if (selectedTest) {
+              if (modalTab === "tree" && selectedTest) {
                 onSelect(selectedTest.id, "library_node", questionCount);
+              } else if (modalTab === "materials" && selectedMatItem) {
+                onSelect(selectedMatItem.content_id, selectedMatItem.content_type, questionCount);
               }
             }}
             className="btn btn-primary text-xs py-2.5 px-6 font-bold disabled:opacity-40"
@@ -2913,21 +5010,289 @@ function MaterialsLibraryModal({
   );
 }
 
-function CoverPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+function CoverPicker({
+  value,
+  onChange,
+  forbiddenKey,
+  forbiddenKeys,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  forbiddenKey?: string | null;
+  forbiddenKeys?: (string | null | undefined)[];
+}) {
+  const forbidden = useMemo(() => {
+    const set = new Set<string>();
+    if (forbiddenKey) set.add(forbiddenKey);
+    if (Array.isArray(forbiddenKeys)) {
+      forbiddenKeys.forEach((k) => {
+        if (k) set.add(k);
+      });
+    }
+    return set;
+  }, [forbiddenKey, forbiddenKeys]);
+
+  // Auto-switch to an allowed cover if current selection is forbidden
+  useEffect(() => {
+    if (forbidden.has(value)) {
+      const allowed = covers.find((c) => !forbidden.has(c));
+      if (allowed) onChange(allowed);
+    }
+  }, [value, forbidden, onChange]);
+
   return (
-    <div className="flex flex-wrap gap-2">
-      {covers.map((key) => (
-        <button
-          type="button"
-          onClick={() => onChange(key)}
-          key={key}
-          className={`h-11 w-11 overflow-hidden rounded-full border-2 transition ${
-            key === value ? "border-cyan-400 scale-105 shadow-md" : "border-transparent opacity-65 hover:opacity-100"
-          }`}
-        >
-          <img src={image(key)} alt={key} className="h-full w-full object-cover" />
-        </button>
-      ))}
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-2.5">
+        {covers.map((key) => {
+          const isForbidden = forbidden.has(key);
+          const isSelected = key === value;
+          const label = COVER_LABELS[key] || key;
+
+          return (
+            <button
+              type="button"
+              key={key}
+              disabled={isForbidden}
+              onClick={() => {
+                if (!isForbidden) onChange(key);
+              }}
+              title={
+                isForbidden
+                  ? `${label} (Ketma-ket bir xil rasm tanlash taqiqlangan)`
+                  : `${label} rasmini tanlash`
+              }
+              className={`group relative h-12 w-12 overflow-hidden rounded-full border-2 transition-all select-none ${
+                isSelected
+                  ? "border-[#002DFF] ring-4 ring-[#002DFF]/30 scale-110 shadow-lg"
+                  : isForbidden
+                  ? "border-slate-300 opacity-25 cursor-not-allowed grayscale dark:border-navy-700"
+                  : "border-slate-200 opacity-70 hover:opacity-100 hover:scale-105 dark:border-white/20"
+              }`}
+            >
+              <img src={image(key)} alt={label} className="h-full w-full object-cover" />
+              {isForbidden ? (
+                <div className="absolute inset-0 grid place-items-center bg-slate-900/60 text-xs font-black text-white">
+                  🚫
+                </div>
+              ) : isSelected ? (
+                <div className="absolute bottom-0 inset-x-0 bg-[#002DFF]/85 py-0.5 text-[8px] font-black text-white text-center">
+                  ✓
+                </div>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+      {forbidden.size > 0 ? (
+        <p className="text-[11px] font-semibold text-slate-500 dark:text-navy-300">
+          ℹ️ Qoidaga ko'ra ketma-ket ikkita modulda bir xil rasm bo'lishi mumkin emas.
+        </p>
+      ) : null}
     </div>
   );
 }
+
+function ModuleDetailModal({
+  track,
+  module,
+  allModules,
+  apiFetch,
+  onSaved,
+  onClose,
+}: {
+  track: Row;
+  module: Row;
+  allModules: Row[];
+  apiFetch: ApiFetch;
+  onSaved: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [modTitle, setModTitle] = useState(module.title || "");
+  const [modTopics, setModTopics] = useState((module.topic_keys || []).join(", "));
+  const [modRewardCoins, setModRewardCoins] = useState<number>(Number(module.reward_coins || 0));
+  const [modCover, setModCover] = useState<string>(module.cover_key || "star");
+  const [busy, setBusy] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
+
+  useEffect(() => {
+    setModTitle(module.title || "");
+    setModTopics((module.topic_keys || []).join(", "));
+    setModRewardCoins(Number(module.reward_coins || 0));
+    setModCover(module.cover_key || "star");
+  }, [module]);
+
+  const modIdx = allModules.findIndex((m) => m.id === module.id);
+  const prevCover = modIdx > 0 ? allModules[modIdx - 1]?.cover_key : null;
+  const nextCover = modIdx >= 0 && modIdx < allModules.length - 1 ? allModules[modIdx + 1]?.cover_key : null;
+  const forbiddenEditKeys = [prevCover, nextCover].filter(Boolean) as string[];
+
+  const saveModuleSettings = async () => {
+    setBusy(true);
+    try {
+      await apiFetch(`/staff/learning-modules/${module.id}`, {
+        method: "PATCH",
+        body: {
+          title: modTitle.trim(),
+          topic_keys: modTopics.split(",").map((x) => x.trim()).filter(Boolean),
+          reward_coins: Number(modRewardCoins),
+          cover_key: modCover,
+        },
+      });
+      setSavedNotice(true);
+      setTimeout(() => setSavedNotice(false), 2500);
+      await onSaved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/85 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-5xl max-h-[94vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+          <div className="flex items-center gap-3.5 min-w-0">
+            <img
+              src={module.image_url || image(modCover)}
+              alt=""
+              className="h-11 w-11 rounded-full object-cover border-2 border-[#002DFF] shadow-sm shrink-0"
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="font-black text-navy-900 dark:text-white text-base sm:text-lg truncate">
+                  {module.title}
+                </h2>
+                <span className="rounded-xl bg-cyan-500/15 px-2.5 py-0.5 text-xs font-black text-cyan-700 dark:text-cyan-300">
+                  Modul ID: #{module.id}
+                </span>
+                <span className="rounded-xl bg-indigo-500/15 px-2.5 py-0.5 text-xs font-black text-indigo-700 dark:text-indigo-300">
+                  Track: {track.title}
+                </span>
+              </div>
+              <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5 truncate">
+                Modul parametrlari va test savollarini boshqarish
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
+            title="Yopish"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
+          {/* Module Settings Card */}
+          <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-surface-soft/40 dark:bg-white/5 space-y-4">
+            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-white/10">
+              <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
+                <span>⚙️ Modul Parametrlari</span>
+              </h3>
+              {savedNotice ? (
+                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 animate-fade-in">
+                  ✅ Saqlandi!
+                </span>
+              ) : null}
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                  Modul nomi
+                </label>
+                <input
+                  value={modTitle}
+                  onChange={(e) => setModTitle(e.target.value)}
+                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                  placeholder="Modul nomi"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                  Mavzular (vergul bilan, maksimal 5 ta)
+                </label>
+                <input
+                  value={modTopics}
+                  onChange={(e) => setModTopics(e.target.value)}
+                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                  placeholder="Present Simple, Fe'llar, So'z boyligi (maksimal 5 ta)"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2 items-center">
+              <div>
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+                  Topshirilsa beriladigan D'Point (+ D'Coin):
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  max="10000"
+                  value={modRewardCoins}
+                  onChange={(e) => setModRewardCoins(Number(e.target.value))}
+                  className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex justify-end sm:pt-4">
+                <button
+                  type="button"
+                  disabled={busy || !modTitle.trim()}
+                  onClick={() => void saveModuleSettings()}
+                  className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2.5 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40 transition"
+                >
+                  {busy ? "Saqlanmoqda..." : "💾 Modulni Saqlash"}
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-line/40 pt-3 dark:border-white/10">
+              <p className="text-xs font-bold text-ink-500 mb-2">Modul belgisi (ikonka):</p>
+              <CoverPicker
+                value={modCover}
+                onChange={setModCover}
+                forbiddenKeys={forbiddenEditKeys}
+              />
+            </div>
+          </div>
+
+          {/* Test Questions and Lessons Editor */}
+          <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-white dark:bg-navy-900/60 shadow-xs">
+            <h3 className="text-sm font-black text-navy-900 dark:text-white mb-4 flex items-center gap-2">
+              <span>🎯 Test Savollari va Darslar Boshqaruvi</span>
+            </h3>
+            <LessonEditor module={module} apiFetch={apiFetch} onSaved={onSaved} />
+          </div>
+        </div>
+
+        {/* Modal Footer */}
+        <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
+          <span className="text-xs font-bold text-ink-500 dark:text-navy-400">
+            Jami {(module.lessons || []).length} ta savol mavjud
+          </span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-primary text-xs py-2 px-5 font-bold"
+          >
+            Yopish
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+

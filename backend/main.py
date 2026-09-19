@@ -7361,6 +7361,22 @@ def _clear_user_media_caches(user_id: int) -> None:
             _DIAMONDVOY_CHAT_LIST_CACHE.pop(key, None)
 
 
+def _clear_group_and_student_caches(group_id: int = 0, affected_user_ids: list[int] | None = None) -> None:
+    _APP_STATE_BOOT_CACHE.clear()
+    _STUDENT_GROUP_ACCESS_CACHE.clear()
+    _USER_PAYLOAD_CACHE.clear()
+    _AUTH_USER_ROW_CACHE.clear()
+    _AUTH_USER_BY_ID_CACHE.clear()
+    _AUTH_SESSION_VALIDATION_CACHE.clear()
+    _STUDENT_PAYMENT_ME_CACHE.clear()
+    _STUDENT_OVERVIEW_SUMMARY_CACHE.clear()
+    for uid in (affected_user_ids or []):
+        if uid > 0:
+            _clear_user_media_caches(uid)
+            _STUDENT_GROUP_ACCESS_CACHE.pop(uid, None)
+            _AUTH_USER_BY_ID_CACHE.pop(uid, None)
+
+
 def _clear_video_list_caches() -> None:
     _clear_media_list_caches("videos")
 
@@ -20242,6 +20258,7 @@ async def student_diamondvoy_upload_media(
 
 
 @app.get("/chats/media/{filename}")
+@app.get("/api/chats/media/{filename}")
 async def chats_serve_media(filename: str, sig: str = Query(default="")):
     """Serve signed chat/feedback images."""
     safe = Path(filename).name
@@ -21630,7 +21647,31 @@ async def _diamondvoy_run_generation_job(
             role_context_hint += (
                 "\nThe following is the student's private, verified learning data. "
                 "Use it only to answer this student's education questions. Do not invent missing scores or events.\n"
-                f"{learning_context}"
+                f"{learning_context}\n"
+                "\nTEST TUZISH / QUIZ INSTRUKSIYASI:\n"
+                "Agar o'quvchi biror mavzuni tushuntirishni va test tuzishni so'rasa, yoki test tuzib berishni so'rasa, "
+                "avval mavzuni aniq va sodda tushuntirib bering, so'ngra xabaringiz oxirida albatta quyidagi formatda JSON blok bering:\n"
+                "```quiz_json\n"
+                "{\n"
+                '  "type": "wizard_trigger",\n'
+                '  "wizard": "quiz_runner",\n'
+                '  "title": "Mavzu bo\'yicha 10 ta test",\n'
+                '  "topic": "Mavzu nomi",\n'
+                '  "questions": [\n'
+                '    {\n'
+                '      "prompt": "Savol matni",\n'
+                '      "options": ["A variant", "B variant", "C variant", "D variant"],\n'
+                '      "correct_answer": "A variant",\n'
+                '      "explanation": "Qoida va sababi"\n'
+                '    }\n'
+                '  ]\n'
+                "}\n"
+                "```\n"
+                "QAT'IY QOIDALAR:\n"
+                "1. DOIM ROPPA-ROSA 10 TA SAVOL BO'LISHI SHART.\n"
+                "2. HAR BIR SAVOLDA 4 TA NOYOB VARIANT BO'LISHI SHART. Variantlar orasida hech qanday takrorlanish (dublikat javoblar) bo'lmasin!\n"
+                "3. correct_answer variantlardan biriga to'liq mos kelsin.\n"
+                "4. Agar o'quvchi avvalgi test tahlili bo'yicha ma'lum bir savolning qoidasini so'rasa, nega aynan shu javob to'g'riligini va qoidani chuqur, tushunarli qilib yoritib bering.\n"
             )
         history_lines = []
         for item in prior_context[-8:]:
@@ -22389,6 +22430,41 @@ async def diamondvoy_homework_action(chat_id: int, payload: DiamondVoyWizardActi
     _save_homework_wizard_state(chat_id, user_id, state)
     return {"ok": True, "state": state}
 
+def _clean_and_dedup_quiz_options(options: list[Any], correct_answer: str = "") -> tuple[list[str], str]:
+    """Ensures exactly 4 non-empty unique options with no duplicate choices,
+    and ensures correct_answer is one of them."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for opt in options:
+        text = str(opt or "").strip()
+        norm_text = re.sub(r"^[A-Da-d][\.\)]\s*", "", text).strip()
+        display_text = norm_text if norm_text else text
+        if not display_text:
+            continue
+        key = display_text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(display_text)
+        if len(cleaned) == 4:
+            break
+
+    fallbacks = ["None of the above", "All of the above", "Both A and B", "Neither"]
+    for fb in fallbacks:
+        if len(cleaned) >= 4:
+            break
+        if fb.lower() not in seen:
+            cleaned.append(fb)
+            seen.add(fb.lower())
+
+    norm_correct = re.sub(r"^[A-Da-d][\.\)]\s*", "", str(correct_answer or "")).strip()
+    if norm_correct and any(c.lower() == norm_correct.lower() for c in cleaned):
+        matched = next(c for c in cleaned if c.lower() == norm_correct.lower())
+    else:
+        matched = cleaned[0] if cleaned else "To'g'ri javob"
+
+    return cleaned[:4], matched
+
 @app.post("/chats/diamondvoy/{chat_id}/homework/generate-test")
 async def diamondvoy_homework_generate_test(chat_id: int, payload: DiamondVoyWizardActionRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -22409,10 +22485,12 @@ async def diamondvoy_homework_generate_test(chat_id: int, payload: DiamondVoyWiz
         questions = json.loads(raw_json)
         norm_q = []
         for q in questions:
+            opts, _ = _clean_and_dedup_quiz_options(q.get("options", []), "")
+            coi = max(0, min(len(opts) - 1, int(q.get("correct_option_index", 0))))
             norm_q.append({
                 "question": q.get("question", ""),
-                "options": q.get("options", ["A", "B", "C", "D"])[:4],
-                "correct_option_index": max(0, min(3, int(q.get("correct_option_index", 0))))
+                "options": opts,
+                "correct_option_index": coi
             })
         state["manual_test"] = norm_q
         _save_homework_wizard_state(chat_id, user_id, state)
@@ -22478,10 +22556,12 @@ async def diamondvoy_homework_parse_test(chat_id: int, payload: DiamondVoyWizard
         questions = json.loads(raw_json)
         norm_q = []
         for q in questions:
+            opts, _ = _clean_and_dedup_quiz_options(q.get("options", []), "")
+            coi = max(0, min(len(opts) - 1, int(q.get("correct_option_index", 0))))
             norm_q.append({
                 "question": q.get("question", ""),
-                "options": q.get("options", ["A", "B", "C", "D"])[:4],
-                "correct_option_index": max(0, min(3, int(q.get("correct_option_index", 0))))
+                "options": opts,
+                "correct_option_index": coi
             })
         if not norm_q:
             raise Exception("No questions parsed")
@@ -22490,6 +22570,102 @@ async def diamondvoy_homework_parse_test(chat_id: int, payload: DiamondVoyWizard
     except Exception as e:
         raise HTTPException(status_code=400, detail="Failed to parse test: " + str(e))
     return {"ok": True, "state": state}
+
+class StudentQuizGenerateRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=300)
+    difficulty: str = Field(default="medium")
+
+@app.post("/chats/diamondvoy/{chat_id}/generate-quiz")
+async def diamondvoy_generate_quiz(
+    chat_id: int,
+    payload: StudentQuizGenerateRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    topic = payload.topic.strip()
+    chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
+    current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
+
+    prompt = f"""Quyidagi mavzu bo'yicha O'QUVCHI UCHUN ROPPA-ROSA 10 TA MULTIPLE-CHOICE TEST SAVOLINI TUZING.
+Mavzu: {topic}
+Daraja: {payload.difficulty}
+
+QAT'IY TALABLAR:
+1. SAVOLLAR SONI: Roppa-rosa 10 ta savol bo'lishi SHART.
+2. HAR BIR SAVOLDA ANIQ 4 TA VARIANT BO'LISHI SHART.
+3. DUBLIKATLAR TAQIQLANADI: Variantlar orasida bir xil takrorlanishlar, dublikatlar umuman bo'lmasin! Har bir variant boshqacha va noyob bo'lsin.
+4. TO'G'RI JAVOB: correct_answer maydoni options ichidagi variantlardan biriga to'liq teng bo'lsin.
+5. TUSHUNTIRISH: explanation maydonida qoida va to'g'ri javob sababi 1-2 jumla bilan tushuntirilsin.
+
+Javobni FAQAT quyidagi JSON formatida qaytaring:
+[
+  {{
+    "prompt": "Savol matni",
+    "options": ["Variant 1", "Variant 2", "Variant 3", "Variant 4"],
+    "correct_answer": "Variant 1",
+    "explanation": "Qoida va tushuntirish"
+  }}
+]
+Faqat valid JSON array qaytaring, boshqa hech narsa yozmang."""
+
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        gen = await _xai_generate_text(prompt, session=session, system_content="You are an expert test creator. Output only valid JSON.")
+
+    try:
+        raw_json = str(gen or "").strip()
+        match = re.search(r"\[.*\]", raw_json, re.DOTALL)
+        if match:
+            raw_json = match.group(0)
+        parsed = json.loads(raw_json)
+        if not isinstance(parsed, list):
+            parsed = []
+    except Exception:
+        parsed = []
+
+    norm_questions = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        prompt_txt = str(item.get("prompt") or item.get("question") or "").strip()
+        if not prompt_txt:
+            continue
+        raw_opts = item.get("options") if isinstance(item.get("options"), list) else []
+        corr_raw = str(item.get("correct_answer") or item.get("correct") or "")
+        opts, corr = _clean_and_dedup_quiz_options(raw_opts, corr_raw)
+        expl = str(item.get("explanation") or f"To'g'ri javob: {corr}").strip()
+        norm_questions.append({
+            "prompt": prompt_txt,
+            "options": opts,
+            "correct_answer": corr,
+            "explanation": expl,
+        })
+
+    # Strict requirement: Exactly 10 questions
+    while len(norm_questions) < 10:
+        idx = len(norm_questions) + 1
+        opts = [f"{topic} asosiy qoidasi {idx}", f"{topic} istisno holati {idx}", f"Boshqa qoida {idx}", f"Noto'g'ri qo'llanish {idx}"]
+        norm_questions.append({
+            "prompt": f"{topic} mavzusiga oid {idx}-savol: Quyidagilardan qaysi biri to'g'ri?",
+            "options": opts,
+            "correct_answer": opts[0],
+            "explanation": f"{topic} bo'yicha to'g'ri qoida: {opts[0]}.",
+        })
+    norm_questions = norm_questions[:10]
+
+    quiz_payload = {
+        "type": "wizard_trigger",
+        "wizard": "quiz_runner",
+        "quiz_id": secrets.token_urlsafe(8),
+        "title": f"{topic} bo'yicha 10 ta test",
+        "topic": topic,
+        "questions": norm_questions,
+    }
+    assistant_text = json.dumps(quiz_payload, ensure_ascii=False)
+    _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+
+    return {"ok": True, "quiz": quiz_payload}
 
 @app.post("/chats/diamondvoy/{chat_id}/homework/send")
 async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Header(default=None)):
@@ -47044,8 +47220,26 @@ async def admin_delete_group(group_id: int, authorization: str | None = Header(d
         raise HTTPException(status_code=404, detail="Group not found")
     if not _can_manage_group(admin_ref, group):
         raise HTTPException(status_code=403, detail="You cannot manage this group")
-    delete_group(int(group_id))
+    affected = delete_group(int(group_id))
+    _clear_group_and_student_caches(int(group_id), affected)
     return {"message": "Group deleted", "group_id": int(group_id)}
+
+
+@app.delete("/teacher/groups/{group_id}")
+async def teacher_delete_group(group_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher", "admin"})
+    gid = int(group_id)
+    group = _safe_call(lambda: get_group(gid), None)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    uid = int(user.get("id") or 0)
+    role = _role(user)
+    if role != "admin" and int(group.get("teacher_id") or 0) != uid and int(group.get("support_id") or 0) != uid:
+        raise HTTPException(status_code=403, detail="Siz bu guruhni o'chira olmaysiz")
+    affected = delete_group(gid)
+    _clear_group_and_student_caches(gid, affected)
+    return {"message": "Group deleted", "group_id": gid}
 
 
 @app.delete("/admin/groups/{group_id}/members/{student_id}")
@@ -53483,6 +53677,10 @@ def _delete_voice_room_permanently(room_id: str | int) -> None:
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT subject FROM web_voicerooms WHERE id=%s", (rid,))
+        row = cur.fetchone()
+        if row and str(dict(row).get("subject") or "").startswith("_study_room_"):
+            return
         cur.execute("DELETE FROM web_voiceroom_sessions WHERE room_id=%s", (rid,))
         cur.execute("DELETE FROM web_voicerooms WHERE id=%s", (rid,))
         conn.commit()
@@ -53673,6 +53871,7 @@ def _voice_room_notify_text(lang: str, subject: str, name: str, owner: str) -> s
         return f"🎙 Ovozli xona faol!\n\n📚 Fan: {subject}\n📝 Mavzu: {name}\n👤 Yaratuvchi: {owner}\n\n👉 Qo'shilish uchun platformaga kiring!"
 
 @app.websocket("/voice-room-ws")
+@app.websocket("/api/voice-room-ws")
 async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(default=None)):
     await websocket.accept()
     my_ws_id = str(uuid.uuid4())
@@ -53839,18 +54038,21 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         continue
                         
                     is_host = (int(db_room["owner_id"]) == my_user_id) if not is_homework_room else False
+                    if is_study_room:
+                        is_host = True
                     
                     info = _REDIS_CLIENT.hgetall(f"voice_room_info_{room_id}")
                     if not info:
-                        if is_homework_room:
+                        if is_homework_room or is_study_room:
                             _REDIS_CLIENT.hset(f"voice_room_info_{room_id}", mapping={
-                                "host_id": "",
-                                "host_user_id": "",
-                                "host_name": "",
+                                "host_id": my_ws_id,
+                                "host_user_id": str(my_user_id) if my_user_id else "",
+                                "host_name": my_name,
                                 "subject": db_room["subject"],
                                 "created_at": str(time.time()),
                                 "session_id": "0",
-                                "is_homework": "1"
+                                "is_study_room": "1" if is_study_room else "0",
+                                "is_homework": "1" if is_homework_room else "0"
                             })
                             _REDIS_CLIENT.expire(f"voice_room_info_{room_id}", 14400)
                         elif not is_host:
@@ -53915,7 +54117,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     })
                     _REDIS_CLIENT.expire(f"voice_room_peer_info_{my_ws_id}", 14400)
                     
-                    if is_host or is_homework_room:
+                    if is_host or is_homework_room or is_study_room:
                         _REDIS_CLIENT.sadd(f"voice_room_stage_{room_id}", my_ws_id)
                         _REDIS_CLIENT.expire(f"voice_room_stage_{room_id}", 14400)
                         
@@ -54227,7 +54429,29 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         await _broadcast_room(current_room_id, {"type": "peer_left", "peer_id": my_ws_id})
                         
                         info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
-                        if info.get("host_id") == my_ws_id:
+                        is_study_call = info.get("is_study_room") == "1" or str(info.get("subject") or "").startswith("_study_room_")
+                        if is_study_call:
+                            remaining = _REDIS_CLIENT.smembers(f"voice_room_peers_{current_room_id}") or set()
+                            if remaining:
+                                if info.get("host_id") == my_ws_id:
+                                    next_ws = next(iter(remaining))
+                                    next_info = _REDIS_CLIENT.hgetall(f"voice_room_peer_info_{next_ws}") or {}
+                                    _REDIS_CLIENT.hset(f"voice_room_info_{current_room_id}", mapping={
+                                        "host_id": next_ws,
+                                        "host_user_id": next_info.get("user_id") or "",
+                                        "host_name": next_info.get("name") or "A'zo"
+                                    })
+                                await _send_room_state(current_room_id)
+                            else:
+                                for key in (
+                                    f"voice_room_info_{current_room_id}",
+                                    f"voice_room_stage_{current_room_id}",
+                                    f"voice_room_peers_{current_room_id}",
+                                    f"voice_room_admins_{current_room_id}",
+                                ):
+                                    try: _REDIS_CLIENT.delete(key)
+                                    except Exception: pass
+                        elif info.get("host_id") == my_ws_id:
                             # Host left, close room
                             await _broadcast_room(current_room_id, {"type": "room_closed"})
                             _delete_voice_room_permanently(current_room_id)
@@ -54261,7 +54485,28 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 _REDIS_CLIENT.rpush(f"webrtc_signal_{p}", json.dumps({"type": "peer_left", "peer_id": my_ws_id}))
                 
             info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
-            if info and info.get("host_id") == my_ws_id:
+            is_study_call = info.get("is_study_room") == "1" or str(info.get("subject") or "").startswith("_study_room_")
+            if is_study_call:
+                if peers:
+                    if info.get("host_id") == my_ws_id:
+                        next_ws = next(iter(peers))
+                        next_info = _REDIS_CLIENT.hgetall(f"voice_room_peer_info_{next_ws}") or {}
+                        _REDIS_CLIENT.hset(f"voice_room_info_{current_room_id}", mapping={
+                            "host_id": next_ws,
+                            "host_user_id": next_info.get("user_id") or "",
+                            "host_name": next_info.get("name") or "A'zo"
+                        })
+                    asyncio.create_task(_send_room_state(current_room_id))
+                else:
+                    for key in (
+                        f"voice_room_info_{current_room_id}",
+                        f"voice_room_stage_{current_room_id}",
+                        f"voice_room_peers_{current_room_id}",
+                        f"voice_room_admins_{current_room_id}",
+                    ):
+                        try: _REDIS_CLIENT.delete(key)
+                        except Exception: pass
+            elif info and info.get("host_id") == my_ws_id:
                 for p in peers:
                     _REDIS_CLIENT.rpush(f"webrtc_signal_{p}", json.dumps({"type": "room_closed"}))
                 _delete_voice_room_permanently(current_room_id)

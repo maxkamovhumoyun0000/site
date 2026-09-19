@@ -18,12 +18,14 @@ export function VoiceRoomMiniPlayer() {
   // Determine if we should show the mini player automatically:
   // If we are NOT on /voice-rooms, we should force minimize state to true.
   // Actually, we can just render the mini player if pathname !== "/voice-rooms" OR isMinimized === true.
+  const isStudyRoom = Boolean(roomState.subject?.startsWith("_study_room_"));
   const isVoiceRoomPage = pathname.startsWith("/voice-rooms");
-  const shouldShow = !isVoiceRoomPage || isMinimized;
+  const shouldShow = isStudyRoom ? isMinimized : (!isVoiceRoomPage || isMinimized);
 
   if (!shouldShow) return null;
 
   const isSpeaking = speakingPeers.length > 0;
+  const displayTitle = isStudyRoom ? "STUDY-ROOM OVOZ" : roomState.subject.toUpperCase();
 
   return (
     <div className="fixed bottom-20 right-4 z-50 animate-in slide-in-from-bottom-8 fade-in duration-300">
@@ -31,7 +33,12 @@ export function VoiceRoomMiniPlayer() {
         
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 flex-1 cursor-pointer" onClick={() => router.push("/voice-rooms")}>
+          <div
+            className="flex items-center gap-2 flex-1 cursor-pointer"
+            onClick={() => {
+              if (!isStudyRoom) router.push("/voice-rooms");
+            }}
+          >
             <div className={cx(
               "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all duration-300",
               isSpeaking ? "bg-emerald-500 text-white animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.5)]" : "bg-indigo-600 text-white"
@@ -39,7 +46,7 @@ export function VoiceRoomMiniPlayer() {
               {isSpeaking ? "🎙️" : "🎧"}
             </div>
             <div className="flex-1 min-w-0">
-               <h4 className="text-white font-bold text-xs truncate">{roomState.subject.toUpperCase()}</h4>
+               <h4 className="text-white font-bold text-xs truncate">{displayTitle}</h4>
                <p className="text-slate-400 text-[10px] truncate">{roomState.listenersCount} {t("voiceroom.listeners")?.toLowerCase() || "tinglovchi"}</p>
             </div>
           </div>

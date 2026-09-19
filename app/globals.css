@@ -1247,18 +1247,30 @@ body.proctoring-test-mode .bottom-nav-mobile,
 body.proctoring-test-mode .mobile-drawer-overlay,
 body.proctoring-test-mode .mobile-drawer,
 body.proctoring-test-mode .dashboard-mobile-drawer-overlay,
-body.proctoring-test-mode .dashboard-mobile-drawer {
+body.proctoring-test-mode .dashboard-mobile-drawer,
+body.learning-test-mode .sidebar,
+body.learning-test-mode .topbar,
+body.learning-test-mode .bottom-nav-mobile,
+body.learning-test-mode .mobile-drawer-overlay,
+body.learning-test-mode .mobile-drawer,
+body.learning-test-mode .dashboard-mobile-drawer-overlay,
+body.learning-test-mode .dashboard-mobile-drawer,
+body.learning-test-mode .desktop-side-drawer,
+body.learning-test-mode .desktop-side-drawer-overlay {
   display: none !important;
 }
-body.proctoring-test-mode .app-shell {
+body.proctoring-test-mode .app-shell,
+body.learning-test-mode .app-shell {
   grid-template-columns: 1fr !important;
 }
-body.proctoring-test-mode .workspace {
+body.proctoring-test-mode .workspace,
+body.learning-test-mode .workspace {
   min-height: 100svh;
   margin: 0 !important;
   padding: 0 !important;
 }
-body.proctoring-test-mode .content {
+body.proctoring-test-mode .content,
+body.learning-test-mode .content {
   padding: 0 !important;
   padding-bottom: 0 !important;
 }

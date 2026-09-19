@@ -1,8 +1,19 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { useGlobalVoiceRoom } from "./voice-room/GlobalVoiceRoomContext";
 
 type Row = Record<string, any>;
+
+function normalizeMediaUrl(url?: string | null): string {
+  if (!url) return "";
+  const s = String(url).trim();
+  if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("blob:") || s.startsWith("data:")) {
+    return s;
+  }
+  if (s.startsWith("/")) return s;
+  return `/${s}`;
+}
 
 export function StudyRoomChat({
   apiFetch,
@@ -24,15 +35,60 @@ export function StudyRoomChat({
   const [notice, setNotice] = useState("");
   const [myRooms, setMyRooms] = useState<Row[]>([]);
   const [newTitle, setNewTitle] = useState("");
+  const [copiedCode, setCopiedCode] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"stage" | "chat">("stage");
+  const [reactions, setReactions] = useState<{ id: string; emoji: string }[]>([]);
 
-  // Live voice stream state
-  const [voiceActive, setVoiceActive] = useState(false);
-  const [voiceMuted, setVoiceMuted] = useState(false);
-  const [voiceError, setVoiceError] = useState("");
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const sendReaction = (emoji: string) => {
+    const id = `${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    setReactions((prev) => [...prev, { id, emoji }]);
+    setTimeout(() => {
+      setReactions((prev) => prev.filter((r) => r.id !== id));
+    }, 4000);
+    if (roomId) {
+      void apiFetch(`/student/study-rooms/${roomId}/messages`, {
+        method: "POST",
+        body: { body: emoji },
+      }).catch(() => null);
+    }
+  };
+
+  const handleCopyCode = async (textToCopy: string) => {
+    try {
+      await navigator.clipboard.writeText(textToCopy);
+      setCopiedCode(true);
+      setTimeout(() => setCopiedCode(false), 2000);
+    } catch {
+      // fallback
+    }
+  };
+
+  // Live WebRTC voice room integration
+  const {
+    state: voiceState,
+    roomState: voiceRoomState,
+    isMuted: voiceMuted,
+    speakingPeers,
+    joinRoom: joinVoiceRoom,
+    leaveRoom: leaveVoiceRoom,
+    toggleMute: toggleVoiceMute,
+    errorMsg: voiceContextError,
+    setErrorMsg: setVoiceContextError,
+  } = useGlobalVoiceRoom();
+
+  const [voiceConnecting, setVoiceConnecting] = useState(false);
+  const [voiceLocalError, setVoiceLocalError] = useState("");
+  const activeVoiceRoomIdRef = useRef<string | null>(null);
 
   // File/image floating popup preview modal (qalqib chiquvchi oyna)
   const [previewFile, setPreviewFile] = useState<Row | null>(null);
+
+  // Center Document Stage navigation (independent per user: hamma ozi xohlagandek o'tkaza olsin)
+  const [activeMaterialIndex, setActiveMaterialIndex] = useState(0);
+
+  // 10-second empty room auto-termination timer
+  const [emptyCountdown, setEmptyCountdown] = useState<number | null>(null);
+  const emptyTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const roomId = Number(room?.id || detail?.room?.id || 0);
 
@@ -63,86 +119,100 @@ export function StudyRoomChat({
     return () => window.clearInterval(timer);
   }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Empty room countdown: if 0 members remain, close after 10 seconds
+  useEffect(() => {
+    if (!roomId || !detail) return;
+    const activeCount = Array.isArray(detail?.members) ? detail.members.length : 0;
+    if (activeCount === 0) {
+      if (!emptyTimerRef.current) {
+        let count = 10;
+        setEmptyCountdown(count);
+        emptyTimerRef.current = setInterval(() => {
+          count -= 1;
+          setEmptyCountdown(count);
+          if (count <= 0) {
+            if (emptyTimerRef.current) clearInterval(emptyTimerRef.current);
+            emptyTimerRef.current = null;
+            void leaveOrClose();
+          }
+        }, 1000);
+      }
+    } else {
+      if (emptyTimerRef.current) {
+        clearInterval(emptyTimerRef.current);
+        emptyTimerRef.current = null;
+      }
+      setEmptyCountdown(null);
+    }
+    return () => {
+      if (emptyTimerRef.current) {
+        clearInterval(emptyTimerRef.current);
+        emptyTimerRef.current = null;
+      }
+    };
+  }, [detail?.members, roomId]);
+
+  const joinVoiceCall = useCallback(async () => {
+    if (!roomId) return;
+    setVoiceConnecting(true);
+    setVoiceLocalError("");
+    try {
+      const res = await apiFetch(`/student/study-rooms/${roomId}/voice-room`, { method: "POST" });
+      const voiceId = String(res?.room_id || "");
+      if (voiceId) {
+        activeVoiceRoomIdRef.current = voiceId;
+        joinVoiceRoom(voiceId);
+      } else {
+        throw new Error("Ovozli xona identifikatori olinmadi");
+      }
+    } catch (err: any) {
+      setVoiceLocalError(err instanceof Error ? err.message : "Ovozli xonaga ulanib bo'lmadi");
+    } finally {
+      setVoiceConnecting(false);
+    }
+  }, [roomId, apiFetch, joinVoiceRoom]);
+
   // Auto-connect live voice transmission inside study room when entering
   useEffect(() => {
     if (!roomId) {
-      stopVoice();
+      if (activeVoiceRoomIdRef.current) {
+        leaveVoiceRoom();
+        activeVoiceRoomIdRef.current = null;
+      }
       return;
     }
 
     let isSubscribed = true;
-    const autoJoinVoice = async () => {
+    const initVoice = async () => {
+      setVoiceConnecting(true);
+      setVoiceLocalError("");
       try {
-        // Register/get voice room id in backend
-        await apiFetch(`/student/study-rooms/${roomId}/voice-room`, { method: "POST" });
+        const res = await apiFetch(`/student/study-rooms/${roomId}/voice-room`, { method: "POST" });
         if (!isSubscribed) return;
-
-        // Auto initialize user's microphone stream for live voice chat
-        if (navigator?.mediaDevices?.getUserMedia) {
-          try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            if (!isSubscribed) {
-              stream.getTracks().forEach((t) => t.stop());
-              return;
-            }
-            mediaStreamRef.current = stream;
-            setVoiceActive(true);
-            setVoiceMuted(false);
-            setVoiceError("");
-          } catch (micErr) {
-            // Microphone might be denied by user; voice listening remains active
-            setVoiceActive(true);
-            setVoiceMuted(true);
-            setVoiceError("Mikrofondan foydalanishga ruxsat berilmadi (faqat tinglash)");
-          }
-        } else {
-          setVoiceActive(true);
+        const voiceId = String(res?.room_id || "");
+        if (voiceId) {
+          activeVoiceRoomIdRef.current = voiceId;
+          joinVoiceRoom(voiceId);
         }
-      } catch {
-        setVoiceActive(false);
+      } catch (err: any) {
+        if (isSubscribed) {
+          setVoiceLocalError(err instanceof Error ? err.message : "Ovozli xonaga ulanib bo'lmadi");
+        }
+      } finally {
+        if (isSubscribed) setVoiceConnecting(false);
       }
     };
 
-    autoJoinVoice().catch(() => null);
+    initVoice().catch(() => null);
 
     return () => {
       isSubscribed = false;
-      stopVoice();
+      if (activeVoiceRoomIdRef.current) {
+        leaveVoiceRoom();
+        activeVoiceRoomIdRef.current = null;
+      }
     };
   }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const stopVoice = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((t) => t.stop());
-      mediaStreamRef.current = null;
-    }
-    setVoiceActive(false);
-    setVoiceMuted(false);
-    setVoiceError("");
-  };
-
-  const toggleMic = () => {
-    if (!mediaStreamRef.current) {
-      // Try to acquire mic if not already acquired
-      navigator?.mediaDevices?.getUserMedia({ audio: true })
-        .then((stream) => {
-          mediaStreamRef.current = stream;
-          setVoiceActive(true);
-          setVoiceMuted(false);
-          setVoiceError("");
-        })
-        .catch(() => {
-          setVoiceError("Mikrofon ruxsati berilmadi");
-        });
-      return;
-    }
-
-    const nextMuted = !voiceMuted;
-    mediaStreamRef.current.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
-    setVoiceMuted(nextMuted);
-  };
 
   const create = async () => {
     setBusy(true);
@@ -167,11 +237,19 @@ export function StudyRoomChat({
 
   const join = async (event: FormEvent) => {
     event.preventDefault();
-    if (code.length !== 6) return;
+    const cleanCode = code.trim();
+    if (!cleanCode) {
+      setNotice("Iltimos, 6 xonali xona kodini kiriting");
+      return;
+    }
+    if (cleanCode.length !== 6 || !/^\d{6}$/.test(cleanCode)) {
+      setNotice("Xona kodi aynan 6 ta raqamdan iborat bo'lishi kerak (masalan: 123456)");
+      return;
+    }
     setBusy(true);
     setNotice("");
     try {
-      const joined = await apiFetch(`/student/study-rooms/join/${code}`, { method: "POST" });
+      const joined = await apiFetch(`/student/study-rooms/join/${cleanCode}`, { method: "POST" });
       const next = joined.room || joined;
       setRoom(next);
       await loadRoom(Number(next.id || 0));
@@ -227,6 +305,7 @@ export function StudyRoomChat({
       }
       setAttachments(next);
       setMaterialTitle("");
+      setActiveMaterialIndex(0);
       await loadRoom();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Fayl yuklanmadi");
@@ -255,11 +334,19 @@ export function StudyRoomChat({
   const leaveOrClose = async () => {
     if (!roomId) return;
     const owner = Number(detail?.room?.owner_id || room?.owner_id || 0);
+    const isOwner = userId > 0 && owner === userId;
+    if (isOwner) {
+      if (!window.confirm("Study roomni yopishni tasdiqlaysizmi? Xonaga yuklangan barcha materiallar va fayllar butunlay o'chiriladi.")) {
+        return;
+      }
+    }
     setBusy(true);
     setNotice("");
-    stopVoice();
+    if (activeVoiceRoomIdRef.current) {
+      leaveVoiceRoom();
+      activeVoiceRoomIdRef.current = null;
+    }
     try {
-      const isOwner = userId > 0 && owner === userId;
       await apiFetch(`/student/study-rooms/${roomId}/${isOwner ? "close" : "leave"}`, { method: "POST" });
       setRoom(null);
       setDetail(null);
@@ -275,64 +362,182 @@ export function StudyRoomChat({
   };
 
   // ═════════════════════════════════════════════════════════════════════════════
-  // NO ROOM SELECTED VIEW
+  // NO ROOM SELECTED VIEW — VOICE ROOM STYLED LOBBY
   // ═════════════════════════════════════════════════════════════════════════════
   if (!roomId) {
     return (
-      <section className="flex flex-1 items-center justify-center p-5">
-        <div className="premium-card w-full max-w-2xl">
-          <p className="text-xs font-black uppercase tracking-wide text-cyan-600 dark:text-cyan-300">Study-room</p>
-          <h2 className="mt-2 text-2xl font-black text-navy-900 dark:text-white">Yopiq guruhda jonli o'qing</h2>
-          <p className="mt-2 text-sm text-ink-500 dark:text-navy-300">
-            Maksimum 4 a'zo: Xonada jonli ovozli suhbat avtomatik ulanadi, umumiy materiallarni ko'rish va real vaqtda suhbatlashish mumkin.
-          </p>
-          {notice ? <p className="mt-3 text-sm font-semibold text-rose-600">{notice}</p> : null}
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <div className="flex gap-2">
-              <input
-                className="w-48 rounded-xl border border-line bg-transparent px-3 text-sm dark:border-white/10"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-                placeholder="Xona nomi (ixtiyoriy)"
-              />
-              <button className="btn btn-primary" disabled={busy} onClick={create}>
-                Yangi xona yaratish
-              </button>
+      <section className="flex flex-1 flex-col p-4 sm:p-6 min-h-0 overflow-y-auto">
+        <div className="w-full max-w-4xl mx-auto space-y-6 animate-fade-in my-auto">
+          {/* Voice Room Header Toolbar */}
+          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-5">
+            <div className="flex items-center gap-3.5">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-indigo-600 text-2xl text-white shadow-md shadow-indigo-500/20">
+                🎧
+              </div>
+              <div>
+                <h1 className="text-2xl sm:text-3xl font-black text-slate-800 dark:text-white tracking-tight">
+                  Study Room
+                </h1>
+                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-0.5">
+                  4 kishilik interaktiv o'quv xonalari · Jonli ovoz, markaziy PDF/Kitob ko'rish va real vaqtda chat
+                </p>
+              </div>
             </div>
-            <form onSubmit={join} className="flex gap-2">
-              <input
-                className="w-36 rounded-xl border border-line bg-transparent px-3 text-sm dark:border-white/10 text-center font-mono font-bold tracking-wider"
-                inputMode="numeric"
-                maxLength={6}
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
-                placeholder="6 xonali kod"
-              />
-              <button className="btn btn-soft" disabled={busy || code.length !== 6}>
-                Kod bilan kirish
-              </button>
-            </form>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-indigo-50 dark:bg-indigo-500/10 px-3.5 py-1.5 text-xs font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200/50 dark:border-indigo-500/20 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>{myRooms.length} ta faol xona</span>
+              </span>
+            </div>
           </div>
 
+          {/* Notice / Error Feedback */}
+          {notice ? (
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/15 p-4 text-xs sm:text-sm font-bold text-rose-700 dark:text-rose-200 shadow-sm animate-shake">
+              <div className="flex items-center gap-2.5">
+                <span className="text-base">⚠️</span>
+                <span>{notice}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotice("")}
+                className="grid h-6 w-6 place-items-center rounded-lg hover:bg-rose-500/20 text-rose-600 dark:text-rose-300 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+          ) : null}
+
+          {/* 2-Column Action Cards in Voice Room Style */}
+          <div className="grid gap-5 md:grid-cols-2">
+            {/* Card 1: Yangi xona ochish */}
+            <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm flex flex-col justify-between hover:border-indigo-500/30 transition">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="grid h-12 w-12 place-items-center rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 text-2xl text-indigo-600 dark:text-indigo-400">
+                    🚀
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 dark:text-white text-base">
+                      Yangi xona ochish
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      O'zingiz yangi study room oching va kodini do'stlaringizga yuboring
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-5">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1.5">
+                    Xona nomi (ixtiyoriy)
+                  </label>
+                  <input
+                    className="w-full rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-4 py-3 text-sm font-medium text-slate-800 dark:text-white placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    placeholder="Masalan: IELTS Reading yoki Matematika"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  className="w-full py-3.5 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20 transition flex items-center justify-center gap-2"
+                  disabled={busy}
+                  onClick={create}
+                >
+                  <span>{busy ? "Ochilmoqda..." : "✨ Yangi xona yaratish"}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Card 2: Kod bilan kirish */}
+            <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm flex flex-col justify-between hover:border-indigo-500/30 transition">
+              <div>
+                <div className="flex items-center gap-3">
+                  <div className="grid h-12 w-12 place-items-center rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 text-2xl text-indigo-600 dark:text-indigo-400">
+                    🔑
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-800 dark:text-white text-base">
+                      Kod bilan kirish
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Do'stingiz bergan 6 xonali PIN-kodni kiritib xonaga qo'shiling
+                    </p>
+                  </div>
+                </div>
+
+                <form onSubmit={join} className="mt-5" id="join-room-form">
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-1.5">
+                    6 xonali PIN-kod
+                  </label>
+                  <input
+                    className="w-full text-center font-mono font-black text-2xl tracking-[0.35em] rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 py-3 text-slate-800 dark:text-white placeholder:tracking-normal placeholder:font-sans placeholder:text-sm placeholder:text-slate-400 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+                    placeholder="000000"
+                  />
+                </form>
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="submit"
+                  form="join-room-form"
+                  className="w-full py-3.5 rounded-xl text-sm font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-indigo-600 hover:text-white transition flex items-center justify-center gap-2"
+                  disabled={busy || code.length !== 6}
+                >
+                  <span>{busy ? "Tekshirilmoqda..." : "Kirish →"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Mening faol xonalarim (Voice Room Card Style) */}
           {myRooms.length ? (
-            <div className="mt-7 border-t border-line pt-4 dark:border-white/10">
-              <p className="text-xs font-black uppercase tracking-wide text-ink-500 dark:text-navy-400">Mening faol xonalarim</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            <div className="rounded-3xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/80 p-6 shadow-sm">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-4">
+                Mening faol study roomlarim ({myRooms.length})
+              </p>
+              <div className="grid gap-3.5 sm:grid-cols-2">
                 {myRooms.map((item) => (
-                  <button
+                  <div
                     key={item.id}
                     onClick={() => {
                       setRoom(item);
                       setCode(String(item.room_code || ""));
                     }}
-                    className="rounded-xl border border-line bg-surface-soft p-3 text-left transition hover:border-cyan-400 dark:border-white/10 dark:bg-white/5"
+                    className="group flex items-center justify-between rounded-2xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 p-4 text-left transition hover:shadow-md hover:border-indigo-500/30 dark:bg-slate-800/60 cursor-pointer"
                   >
-                    <p className="font-bold text-navy-900 dark:text-white">{item.title || "Study-room"}</p>
-                    <p className="mt-1 text-xs text-ink-500 dark:text-navy-300">
-                      Kod: {item.room_code} · {item.member_count || 0}/4 a'zo
-                    </p>
-                  </button>
+                    <div className="min-w-0 flex-1 pr-3">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded text-[10px] font-bold uppercase tracking-wider">
+                          Study Room
+                        </span>
+                        <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                          {item.member_count || 1}/4 a'zo
+                        </span>
+                      </div>
+                      <p className="font-bold text-slate-800 dark:text-white truncate text-sm group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition">
+                        {item.title || "Study-room"}
+                      </p>
+                      <div className="mt-1 flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-500/10 px-2 py-0.5 rounded-md">
+                          PIN: {item.room_code}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="w-10 h-10 rounded-full bg-slate-200/70 dark:bg-slate-700 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition">
+                      <svg className="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -344,297 +549,649 @@ export function StudyRoomChat({
 
   const members = detail?.members || [];
   const materials = Array.isArray(detail?.materials) ? detail.materials : [];
+  const safeActiveMaterialIndex = Math.min(Math.max(0, activeMaterialIndex), Math.max(0, materials.length - 1));
+  const currentMaterial = materials[safeActiveMaterialIndex] || null;
+  const currentMaterialUrl = normalizeMediaUrl(currentMaterial?.file_url || currentMaterial?.url);
+  const currentMaterialIsImage =
+    Boolean(currentMaterialUrl) && (
+      String(currentMaterial?.mime_type || "").startsWith("image/") ||
+      /\.(jpg|jpeg|png|webp|gif|svg|bmp)(\?.*)?$/i.test(currentMaterialUrl)
+    );
+  const currentMaterialIsPdf =
+    Boolean(currentMaterialUrl) && (
+      String(currentMaterial?.mime_type || "") === "application/pdf" ||
+      /\.pdf(\?.*)?$/i.test(currentMaterialUrl)
+    );
+
+  const isRoomOwner = userId > 0 && Number(detail?.room?.owner_id || room?.owner_id || 0) === userId;
 
   // ═════════════════════════════════════════════════════════════════════════════
-  // ACTIVE STUDY ROOM VIEW — Integrated real-time voice & floating preview
+  // ACTIVE STUDY ROOM VIEW — VOICE ROOM DESIGN SYSTEM
   // ═════════════════════════════════════════════════════════════════════════════
   return (
-    <section className="relative flex min-h-0 flex-1 flex-col bg-white dark:bg-navy-950 overflow-hidden">
-      {/* Header with Room Info & Controls */}
-      <header className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3 dark:border-white/10 bg-white dark:bg-navy-900">
-        <button
-          className="btn btn-soft text-xs"
-          onClick={() => {
-            setRoom(null);
-            setDetail(null);
-            setMessages([]);
-            stopVoice();
-            loadMyRooms().catch(() => null);
-          }}
-        >
-          ← Xonalar
-        </button>
+    <section className="relative flex min-h-0 flex-1 flex-col bg-slate-950 text-white overflow-hidden">
+      {/* FLOATING REACTIONS ANIMATION */}
+      <div className="pointer-events-none fixed inset-0 z-40 overflow-hidden">
+        {reactions.map((r) => {
+          const sway = Math.random() * 40 - 20;
+          const startRight = 20 + Math.random() * 20;
+          return (
+            <div
+              key={r.id}
+              className="absolute text-4xl"
+              style={{
+                bottom: "80px",
+                right: `${startRight}px`,
+                animation: `floatBubble 4s ease-out forwards`,
+                "--sway": `${sway}px`,
+              } as React.CSSProperties}
+            >
+              {r.emoji}
+            </div>
+          );
+        })}
+      </div>
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `
+        @keyframes floatBubble {
+          0% { transform: translateY(0) translateX(0) scale(0.5); opacity: 0; }
+          15% { transform: translateY(-30px) translateX(calc(var(--sway) * 0.3)) scale(1.1); opacity: 1; }
+          60% { transform: translateY(-180px) translateX(var(--sway)) scale(1); opacity: 0.7; }
+          100% { transform: translateY(-350px) translateX(calc(var(--sway) * -0.5)) scale(0.8); opacity: 0; }
+        }
+      `,
+        }}
+      />
 
-        <div className="min-w-0 flex-1">
-          <p className="font-black text-navy-900 dark:text-white truncate">
-            {String(room?.title || "Study-room")}
-          </p>
-          <p className="text-xs text-ink-500 dark:text-navy-300">
-            Private xona · Kod: <strong className="font-mono text-cyan-600 dark:text-cyan-400">{String(detail?.room?.room_code || room?.room_code || code)}</strong> · {members.length}/4 a'zo
-          </p>
+      {/* Voice Room Top Header Bar */}
+      <header className="z-20 px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-3 shadow-sm">
+        <div className="flex items-center gap-3 min-w-0">
+          <button
+            onClick={() => {
+              if (activeVoiceRoomIdRef.current) {
+                leaveVoiceRoom();
+                activeVoiceRoomIdRef.current = null;
+              }
+              setRoom(null);
+              setDetail(null);
+              setMessages([]);
+              loadMyRooms().catch(() => null);
+            }}
+            className="w-9 h-9 rounded-full bg-slate-800 text-slate-300 hover:text-white flex items-center justify-center border border-slate-700/70 hover:bg-slate-700 transition"
+            title="Orqaga"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-white leading-tight truncate text-sm sm:text-base">
+                {String(room?.title || "Study-room")}
+              </h1>
+              {isRoomOwner ? (
+                <span className="rounded-md bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 border border-amber-500/30">
+                  👑 Egasi
+                </span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5 text-[11px] text-slate-400">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>{members.length}/4 a'zo</span>
+              </span>
+              <span>·</span>
+              <button
+                type="button"
+                onClick={() => handleCopyCode(String(detail?.room?.room_code || room?.room_code || code))}
+                className="inline-flex items-center gap-1 font-mono font-bold text-indigo-400 hover:text-indigo-300"
+                title="Kodni nusxalash"
+              >
+                <span>PIN: {String(detail?.room?.room_code || room?.room_code || code)}</span>
+                <span>{copiedCode ? "✓" : "📋"}</span>
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Live voice bar inside study room */}
+        {/* Live Audio Indicator & Actions */}
         <div className="flex items-center gap-2">
-          {voiceActive ? (
-            <div className="flex items-center gap-2 rounded-xl bg-emerald-500/10 px-3 py-1.5 border border-emerald-500/20">
-              <span className="flex h-2.5 w-2.5 relative">
+          {voiceState === "room" ? (
+            <div className="flex items-center gap-2 rounded-xl bg-emerald-500/10 px-2.5 py-1.5 border border-emerald-500/20">
+              <span className="flex h-2 w-2 relative">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
-                Jonli ovoz faol
+              <span className="text-[11px] font-bold text-emerald-300 hidden sm:inline">
+                {speakingPeers.length > 0 ? "🗣️ Gapirmoqda..." : "Jonli ovoz faol"}
               </span>
               <button
                 type="button"
-                onClick={toggleMic}
-                className={`ml-1 rounded-lg px-2.5 py-1 text-xs font-bold transition ${
+                onClick={toggleVoiceMute}
+                className={`rounded-lg px-2 py-1 text-xs font-bold transition ${
                   voiceMuted
-                    ? "bg-rose-500 text-white"
-                    : "bg-emerald-600 text-white"
+                    ? "bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500 hover:text-white"
+                    : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500 hover:text-white"
                 }`}
-                title={voiceMuted ? "Mikrofonni yoqish" : "Mikrofonni o'chirish (Mute)"}
+                title={voiceMuted ? "Ovozni yoqish" : "Ovozni o'chirish (Mute)"}
               >
-                {voiceMuted ? "🔇 O'chirilgan" : "🎙 Yoqilgan"}
+                {voiceMuted ? "🔇 Muted" : "🎙 Jonli"}
               </button>
+            </div>
+          ) : voiceConnecting ? (
+            <div className="flex items-center gap-1.5 rounded-xl bg-indigo-500/10 px-2.5 py-1.5 border border-indigo-500/20 text-xs font-semibold text-indigo-300">
+              <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent"></span>
+              <span className="hidden sm:inline">Ulanmoqda...</span>
             </div>
           ) : (
             <button
               type="button"
-              onClick={toggleMic}
-              className="btn btn-soft text-xs"
+              onClick={joinVoiceCall}
+              className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 flex items-center gap-1.5 shadow-sm transition"
             >
-              🎙 Ovozni ulash
+              <span>🎙</span>
+              <span>Ovozga ulanish</span>
             </button>
           )}
 
-          <button className="btn btn-soft text-xs text-rose-600 dark:text-rose-300" disabled={busy} onClick={leaveOrClose}>
-            Chiqish/yopish
+          <button
+            className={`rounded-xl px-3 py-1.5 text-xs font-bold transition border ${
+              isRoomOwner
+                ? "border-red-500/30 bg-red-500/15 text-red-400 hover:bg-red-600 hover:text-white"
+                : "border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white"
+            }`}
+            disabled={busy}
+            onClick={leaveOrClose}
+            title={isRoomOwner ? "Xonani yopish" : "Xonadan chiqish"}
+          >
+            {isRoomOwner ? "🔒 Yopish" : "🚪 Chiqish"}
           </button>
         </div>
       </header>
 
-      {voiceError ? (
-        <div className="bg-amber-500/10 px-4 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-200 border-b border-amber-500/20">
-          ⚠️ {voiceError}
+      {/* Auto-termination warning banner */}
+      {emptyCountdown !== null ? (
+        <div className="bg-red-500/20 border-b border-red-500/30 px-4 py-2 text-center text-xs font-bold text-red-300 animate-pulse">
+          ⚠️ Xonada a'zolar qolmadi. Sessiya {emptyCountdown} soniyadan keyin avtomatik yopiladi!
         </div>
       ) : null}
 
-      {notice ? (
-        <p className="mx-4 mt-3 rounded-xl bg-rose-500/10 px-3 py-2 text-sm text-rose-700 dark:text-rose-200">
-          {notice}
-        </p>
-      ) : null}
-
-      {/* Shared materials ribbon */}
-      <div className="border-b border-line px-4 py-2.5 dark:border-white/10 bg-surface-soft/40 dark:bg-white/5">
-        <div className="flex items-center gap-2">
-          <p className="text-xs font-black uppercase tracking-wide text-ink-500 dark:text-navy-300">
-            Umumiy materiallar ({materials.length})
-          </p>
-          <span className="text-[11px] text-ink-400">ustiga bosib oching</span>
+      {(voiceLocalError || voiceContextError) ? (
+        <div className="flex items-center justify-between bg-amber-500/20 px-4 py-2 text-xs font-medium text-amber-200 border-b border-amber-500/30">
+          <span>⚠️ {voiceLocalError || voiceContextError}</span>
           <button
-            className="ml-auto text-xs font-bold text-cyan-700 dark:text-cyan-300"
-            onClick={regenerateCode}
-            disabled={busy}
-          >
-            Kod yangilash
-          </button>
-        </div>
-
-        <div className="mt-2 flex gap-2.5 overflow-x-auto pb-1">
-          {materials.length ? (
-            materials.map((file: Row) => {
-              const isImage = String(file.mime_type || "").startsWith("image/");
-              return (
-                <button
-                  key={file.id || file.file_url}
-                  type="button"
-                  onClick={() => setPreviewFile(file)}
-                  className="flex min-w-32 max-w-44 flex-col rounded-xl border border-line bg-white p-2 text-xs font-bold text-cyan-700 transition hover:border-cyan-400 hover:shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-cyan-300 text-left"
-                >
-                  {isImage ? (
-                    <img
-                      src={file.file_url}
-                      alt={file.title || "Material"}
-                      className="mb-1.5 h-16 w-full rounded-lg object-cover"
-                    />
-                  ) : (
-                    <span className="mb-1.5 text-2xl">📄</span>
-                  )}
-                  <span className="line-clamp-1">{file.title || "Material"}</span>
-                </button>
-              );
-            })
-          ) : (
-            <p className="text-xs text-ink-500 py-1">Hali umumiy material yuklanmagan.</p>
-          )}
-        </div>
-      </div>
-
-      {/* Main chat & active messages */}
-      <div className="min-h-0 flex-1 overflow-y-auto space-y-3 p-4">
-        {messages.map((item) => (
-          <article
-            key={item.id}
-            className="rounded-2xl border border-line bg-surface-soft p-3.5 dark:border-white/10 dark:bg-white/5"
-          >
-            <p className="text-xs font-black text-cyan-700 dark:text-cyan-300">
-              {item.first_name || item.login_id || "A'zo"}
-            </p>
-            <p className="mt-1 whitespace-pre-wrap text-sm text-navy-900 dark:text-white leading-relaxed">
-              {item.body}
-            </p>
-
-            {/* Message attachments with modal preview click */}
-            {Array.isArray(item.attachments) ? (
-              <div className="mt-2.5 flex flex-wrap gap-2">
-                {item.attachments.map((file: Row, index: number) => {
-                  const isImage = String(file.mime_type || "").startsWith("image/");
-                  return (
-                    <button
-                      key={index}
-                      type="button"
-                      onClick={() => setPreviewFile(file)}
-                      className="flex items-center gap-2 rounded-xl border border-line bg-white px-3 py-2 text-xs font-bold text-cyan-700 hover:border-cyan-400 dark:border-white/10 dark:bg-navy-900 dark:text-cyan-300 transition"
-                    >
-                      {isImage ? (
-                        <img
-                          src={file.url}
-                          alt={file.file_name || "Rasm"}
-                          className="h-10 w-10 rounded-lg object-cover"
-                        />
-                      ) : (
-                        <span className="text-base">📎</span>
-                      )}
-                      <span className="max-w-40 truncate">{file.file_name || "Fayl"}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </article>
-        ))}
-
-        {!messages.length ? (
-          <div className="py-12 text-center text-sm text-ink-500 dark:text-navy-300">
-            Xona tayyor. Ovozli suhbat faol, birinchi xabarni yuboring.
-          </div>
-        ) : null}
-      </div>
-
-      {/* Message & attachment input */}
-      <form onSubmit={send} className="border-t border-line p-3 dark:border-white/10 bg-white dark:bg-navy-900">
-        <div className="mb-2 flex items-center gap-2">
-          <input
-            value={materialTitle}
-            onChange={(e) => setMaterialTitle(e.target.value)}
-            className="min-w-0 flex-1 rounded-lg border border-line bg-transparent px-2.5 py-1 text-xs dark:border-white/10"
-            placeholder="Material nomi (ixtiyoriy)"
-          />
-          <label className="btn btn-soft cursor-pointer text-xs">
-            📎 Fayl/Rasm
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
-              onChange={upload}
-            />
-          </label>
-          <span className="text-xs font-bold text-cyan-600 dark:text-cyan-300">
-            {attachments.length ? `${attachments.length} ta fayl biriktirildi` : ""}
-          </span>
-        </div>
-
-        <div className="flex gap-2">
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send(e);
-              }
+            type="button"
+            onClick={() => {
+              setVoiceLocalError("");
+              setVoiceContextError("");
             }}
-            rows={2}
-            className="min-w-0 flex-1 rounded-xl border border-line bg-transparent p-2.5 text-sm dark:border-white/10"
-            placeholder="Xabar yozing (Enter — yuborish, ovozli suhbat faol)…"
-          />
-          <button className="btn btn-primary px-5 self-end" disabled={busy || (!text.trim() && !attachments.length)}>
-            Yuborish
+            className="text-amber-300 hover:text-white ml-2"
+          >
+            ✕
           </button>
         </div>
-      </form>
+      ) : null}
 
-      {/* ═══════════════════════════════════════════════════════════════════════
-          QALQIB CHIQUVCHI OYNA (Floating Preview Modal)
-          Allows examining images/files in real-time without leaving chat or voice
-         ═══════════════════════════════════════════════════════════════════════ */}
-      {previewFile ? (
-        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/75 p-4 backdrop-blur-sm animate-fade-in">
-          <div className="relative flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-line p-4 dark:border-white/10">
-              <div className="min-w-0 flex-1 pr-4">
-                <h3 className="font-black text-navy-900 dark:text-white truncate text-sm sm:text-base">
-                  {previewFile.title || previewFile.file_name || "Material ko'rish"}
-                </h3>
-                <p className="text-xs text-ink-500 dark:text-navy-300">
-                  Study-room jonli suhbati davom etmoqda
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <a
-                  href={previewFile.file_url || previewFile.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="rounded-xl border border-line px-3 py-1.5 text-xs font-bold text-cyan-600 hover:bg-cyan-500/10 dark:border-white/10 dark:text-cyan-300"
-                >
-                  Yuklab olish ↗
-                </a>
+      {/* Mobile Tab Switcher (Visible on small screens) */}
+      <div className="lg:hidden flex border-b border-slate-800 bg-slate-900/90 px-3 py-2 gap-2 z-10">
+        <button
+          type="button"
+          onClick={() => setMobileTab("stage")}
+          className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+            mobileTab === "stage"
+              ? "bg-indigo-600 text-white shadow-sm"
+              : "bg-slate-800 text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <span>📄 Sahna & Hujjat</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setMobileTab("chat")}
+          className={`flex-1 py-1.5 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+            mobileTab === "chat"
+              ? "bg-indigo-600 text-white shadow-sm"
+              : "bg-slate-800 text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <span>💬 Guruh Chat</span>
+          {messages.length > 0 ? (
+            <span className="rounded-full bg-black/30 px-1.5 py-0.2 text-[10px]">
+              {messages.length}
+            </span>
+          ) : null}
+        </button>
+      </div>
+
+      {/* ═════════════════════════════════════════════════════════════════════════
+          SPLIT LAYOUT: LEFT (STAGE & DOCUMENT READER) | RIGHT (CHAT & CONTROLS)
+          ═════════════════════════════════════════════════════════════════════════ */}
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+        {/* ─── LEFT: VOICE STAGE & DOCUMENT READER ─── */}
+        <div
+          className={`flex-1 min-h-0 flex flex-col border-b lg:border-b-0 lg:border-r border-slate-800 bg-slate-950 ${
+            mobileTab === "stage" ? "flex" : "hidden lg:flex"
+          }`}
+        >
+          {/* Voice Room Stage Area (Avatars with Green Glow Ring) */}
+          <div className="border-b border-slate-800 bg-slate-900/60 p-3 sm:p-4">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                Sahnadagi A'zolar ({members.length}/4)
+              </span>
+              {isRoomOwner ? (
                 <button
-                  onClick={() => setPreviewFile(null)}
-                  type="button"
-                  className="grid h-8 w-8 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+                  className="text-xs font-bold text-indigo-400 hover:text-indigo-300 transition"
+                  onClick={regenerateCode}
+                  disabled={busy}
                 >
-                  ✕
+                  Yangi PIN olish
                 </button>
+              ) : null}
+            </div>
+
+            <div className="grid grid-cols-4 gap-2 sm:gap-4 max-w-xl mx-auto">
+              {members.map((m: Row) => {
+                const isSpeaking =
+                  speakingPeers.includes(String(m.user_id)) ||
+                  (voiceState === "room" && speakingPeers.length > 0);
+                const initials = (m.first_name?.[0] || m.login_id?.[0] || "U").toUpperCase();
+                const isOwnerMember =
+                  Number(m.user_id) === Number(detail?.room?.owner_id || room?.owner_id || 0);
+
+                return (
+                  <div key={m.user_id} className="flex flex-col items-center justify-center text-center">
+                    <div
+                      className={`relative w-12 h-12 sm:w-14 sm:h-14 rounded-full flex items-center justify-center text-sm font-black transition-all duration-200 border-2 ${
+                        isSpeaking
+                          ? "border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.5)] scale-105 bg-slate-800"
+                          : "border-slate-700 bg-slate-800"
+                      }`}
+                    >
+                      <span className="text-white font-bold">{initials}</span>
+                      {isOwnerMember ? (
+                        <span className="absolute -top-1 -right-1 text-xs" title="Xona egasi">
+                          👑
+                        </span>
+                      ) : null}
+                      {isSpeaking ? (
+                        <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 border-2 border-slate-900 animate-pulse" />
+                      ) : null}
+                    </div>
+                    <span className="mt-1.5 text-xs font-bold text-slate-200 max-w-[80px] truncate">
+                      {m.first_name || m.login_id}
+                    </span>
+                    <span className="text-[10px] text-slate-400">
+                      {isSpeaking ? "🗣️ Ovozda" : "🎙 Tinglamoqda"}
+                    </span>
+                  </div>
+                );
+              })}
+
+              {Array.from({ length: Math.max(0, 4 - members.length) }, (_, i) => (
+                <div key={`empty-${i}`} className="flex flex-col items-center justify-center text-center">
+                  <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-dashed border-slate-800 flex items-center justify-center text-slate-600 text-xs">
+                    +
+                  </div>
+                  <span className="mt-1.5 text-[11px] text-slate-600 font-medium">Bo'sh</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Central Live Document Reader Stage */}
+          <div className="flex-1 min-h-0 flex flex-col">
+            {/* Document Controls Toolbar */}
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5 bg-slate-900/40">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={safeActiveMaterialIndex <= 0}
+                  onClick={() => setActiveMaterialIndex((prev) => Math.max(0, prev - 1))}
+                  className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Oldingi"
+                >
+                  ←
+                </button>
+                <button
+                  type="button"
+                  disabled={safeActiveMaterialIndex >= materials.length - 1}
+                  onClick={() => setActiveMaterialIndex((prev) => Math.min(materials.length - 1, prev + 1))}
+                  className="rounded-lg bg-slate-800 px-2.5 py-1 text-xs font-bold text-slate-300 hover:bg-slate-700 disabled:opacity-30"
+                  title="Keyingi"
+                >
+                  →
+                </button>
+              </div>
+
+              <div className="text-center px-2 min-w-0 flex-1">
+                <span className="text-xs font-bold text-white truncate block">
+                  {materials.length > 0
+                    ? `Fayl ${safeActiveMaterialIndex + 1} / ${materials.length}: ${
+                        currentMaterial?.title || currentMaterial?.file_name || "Material"
+                      }`
+                    : "Materiallar yuklanmagan"}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                <label className="cursor-pointer rounded-lg bg-indigo-600 hover:bg-indigo-700 px-2.5 py-1 text-xs font-bold text-white transition flex items-center gap-1">
+                  <span>📎</span>
+                  <span className="hidden sm:inline">Yuklash</span>
+                  <input
+                    type="file"
+                    multiple
+                    className="hidden"
+                    accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+                    onChange={upload}
+                  />
+                </label>
+
+                {currentMaterial ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewFile(currentMaterial)}
+                      className="rounded-lg bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-300 font-bold"
+                      title="To'liq ekranda ochish"
+                    >
+                      ⛶
+                    </button>
+                    <a
+                      href={currentMaterialUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      download
+                      className="rounded-lg bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-300 font-bold"
+                      title="Yuklab olish"
+                    >
+                      ⬇
+                    </a>
+                  </>
+                ) : null}
               </div>
             </div>
 
-            {/* Modal Content */}
-            <div className="min-h-0 flex-1 overflow-auto p-4 flex items-center justify-center bg-surface-soft/40 dark:bg-black/20">
-              {String(previewFile.mime_type || "").startsWith("image/") ||
-              String(previewFile.file_url || previewFile.url || "").match(/\.(jpg|jpeg|png|webp|gif|svg)$/i) ? (
-                <img
-                  src={previewFile.file_url || previewFile.url}
-                  alt={previewFile.title || "Preview"}
-                  className="max-h-[65vh] w-auto max-w-full rounded-xl object-contain shadow"
-                />
+            {/* Document Viewer Stage */}
+            <div className="flex-1 min-h-0 flex items-center justify-center p-3 overflow-auto bg-black/30">
+              {currentMaterial ? (
+                currentMaterialIsImage ? (
+                  <div className="flex h-full w-full items-center justify-center p-2">
+                    <img
+                      src={currentMaterialUrl}
+                      alt={currentMaterial.title || "Material"}
+                      className="max-h-[55vh] max-w-full rounded-2xl object-contain shadow-2xl border border-slate-800"
+                    />
+                  </div>
+                ) : currentMaterialIsPdf ? (
+                  <iframe
+                    src={currentMaterialUrl}
+                    className="w-full h-full min-h-[450px] rounded-2xl border border-slate-800 shadow-md bg-white"
+                    title="PDF Viewer"
+                  />
+                ) : (
+                  <div className="p-6 text-center bg-slate-900 rounded-3xl border border-slate-800 max-w-md">
+                    <span className="text-4xl block mb-2">📄</span>
+                    <h4 className="font-bold text-sm text-white mb-1">
+                      {currentMaterial.title || currentMaterial.file_name}
+                    </h4>
+                    <p className="text-xs text-slate-400 mb-4">
+                      Ushbu hujjatni alohida oynada ochishingiz yoki yuklab olishingiz mumkin.
+                    </p>
+                    <div className="flex items-center justify-center gap-2">
+                      <a
+                        href={currentMaterialUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded-xl bg-indigo-600 hover:bg-indigo-700 px-4 py-2 text-xs font-bold text-white shadow"
+                      >
+                        📄 Yangi oynada ochish
+                      </a>
+                    </div>
+                  </div>
+                )
               ) : (
-                <div className="p-8 text-center">
-                  <div className="mx-auto mb-3 text-5xl">📄</div>
-                  <p className="font-bold text-navy-900 dark:text-white text-base">
-                    {previewFile.title || previewFile.file_name || "Hujjat"}
+                <div className="flex flex-col items-center justify-center p-8 text-center">
+                  <div className="w-16 h-16 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center text-3xl mb-3">
+                    📚
+                  </div>
+                  <h4 className="font-bold text-base text-white">Markaziy Materiallar Bo'limi</h4>
+                  <p className="text-xs text-slate-400 max-w-sm mt-1 mb-4 leading-relaxed">
+                    Darslik, PDF kitob yoki konspekt rasmlarini yuklang. Xonadagi barcha talabalar materialni mustaqil varaqlab o'rganadilar.
                   </p>
-                  <p className="text-xs text-ink-500 dark:text-navy-400 mt-1">
-                    Ushbu format to'g'ridan-to'g'ri brauzerda ochiladi yoki yuklanadi
-                  </p>
-                  <a
-                    href={previewFile.file_url || previewFile.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn btn-primary mt-4 inline-block text-xs"
-                  >
-                    Faylni yangi oynada ochish
-                  </a>
+                  <label className="cursor-pointer rounded-xl bg-indigo-600 hover:bg-indigo-700 px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-indigo-500/20 transition flex items-center gap-2">
+                    <span>📎</span>
+                    <span>Fayl yoki PDF yuklash</span>
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+                      onChange={upload}
+                    />
+                  </label>
                 </div>
               )}
             </div>
+
+            {/* Filmstrip Thumbnails Switcher */}
+            {materials.length > 1 ? (
+              <div className="border-t border-slate-800 px-3 py-2 bg-slate-900/60 flex items-center gap-2 overflow-x-auto">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 shrink-0">
+                  Fayllar ({materials.length}):
+                </span>
+                <div className="flex gap-2">
+                  {materials.map((file: Row, idx: number) => {
+                    const isCur = idx === safeActiveMaterialIndex;
+                    const fUrl = normalizeMediaUrl(file.file_url || file.url);
+                    const isImg =
+                      String(file.mime_type || "").startsWith("image/") ||
+                      /\.(jpg|jpeg|png|webp|gif|svg|bmp)(\?.*)?$/i.test(fUrl);
+                    return (
+                      <button
+                        key={file.id || idx}
+                        type="button"
+                        onClick={() => setActiveMaterialIndex(idx)}
+                        className={`flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-xs font-bold transition shrink-0 ${
+                          isCur
+                            ? "border-indigo-500 bg-indigo-500/20 text-indigo-300"
+                            : "border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700"
+                        }`}
+                      >
+                        <span>{isImg ? "🖼️" : "📄"}</span>
+                        <span className="max-w-28 truncate">{file.title || file.file_name || `Fayl #${idx + 1}`}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
-      ) : null}
+
+        {/* ─── RIGHT: LIVE CHAT & VOICE-ROOM CONTROLS DOCK ─── */}
+        <div
+          className={`w-full lg:w-96 flex flex-col min-h-0 bg-slate-900 border-l border-slate-800 shadow-xl ${
+            mobileTab === "chat" ? "flex" : "hidden lg:flex"
+          }`}
+        >
+          {/* Chat Header */}
+          <div className="border-b border-slate-800 px-4 py-3 bg-slate-900/90 flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              Guruh Suhbat ({messages.length})
+            </span>
+            <span className="text-[11px] text-emerald-400 font-bold flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
+              <span>Jonli</span>
+            </span>
+          </div>
+
+          {/* Messages Stream */}
+          <div className="min-h-0 flex-1 overflow-y-auto space-y-3 p-3.5 custom-scrollbar">
+            {messages.map((item) => {
+              const isMe = userId > 0 && Number(item.user_id) === userId;
+              const files = Array.isArray(item.attachments) ? item.attachments : [];
+              return (
+                <div key={item.id} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+                  <span className="text-[10px] text-slate-500 mb-1 px-1">
+                    {item.first_name || item.login_id || "A'zo"} ·{" "}
+                    {item.created_at ? new Date(item.created_at).toLocaleTimeString().slice(0, 5) : ""}
+                  </span>
+
+                  <div
+                    className={`px-3.5 py-2 rounded-2xl max-w-[88%] text-[13px] shadow-sm ${
+                      isMe
+                        ? "bg-indigo-600 text-white rounded-br-sm"
+                        : "bg-slate-800 text-slate-200 border border-slate-700/50 rounded-bl-sm"
+                    }`}
+                  >
+                    <p className="whitespace-pre-wrap leading-relaxed">{item.body}</p>
+
+                    {/* Attachment chips */}
+                    {files.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {files.map((file: Row, index: number) => {
+                          const attUrl = normalizeMediaUrl(file.url || file.file_url);
+                          const isImageAtt =
+                            String(file.mime_type || "").startsWith("image/") ||
+                            /\.(jpg|jpeg|png|webp|gif|svg|bmp)(\?.*)?$/i.test(attUrl);
+                          return (
+                            <button
+                              key={index}
+                              type="button"
+                              onClick={() => setPreviewFile(file)}
+                              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900/80 px-2 py-1 text-[11px] font-bold text-indigo-300 hover:border-indigo-400 transition"
+                            >
+                              <span>{isImageAtt ? "🖼️" : "📎"}</span>
+                              <span className="max-w-32 truncate">{file.file_name || "Fayl"}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+
+            {!messages.length ? (
+              <div className="py-12 text-center text-xs text-slate-500">
+                Suhbat bo'sh. Birinchi xabarni yuboring yoki reaksiyalar bilan fikr bildiring.
+              </div>
+            ) : null}
+          </div>
+
+          {/* VOICE ROOM STYLE BOTTOM CONTROLS DOCK */}
+          <div className="p-3 bg-slate-950 border-t border-slate-800 flex flex-col gap-2">
+            {/* Quick Emoji Reactions & Attachment Toolbar */}
+            <div className="flex items-center justify-between gap-1 px-1">
+              <div className="flex items-center gap-1">
+                {["❤️", "👏", "😂", "🔥", "💡"].map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => sendReaction(emoji)}
+                    className="w-7 h-7 rounded-full bg-slate-800 hover:bg-slate-700 text-xs flex items-center justify-center transition active:scale-90"
+                    title={emoji}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+
+              <label className="cursor-pointer rounded-full bg-slate-800 hover:bg-slate-700 w-7 h-7 flex items-center justify-center text-xs text-slate-300 transition" title="Fayl biriktirish">
+                📎
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"
+                  onChange={upload}
+                />
+              </label>
+            </div>
+
+            {/* Input Form with Send Button */}
+            <form onSubmit={send} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Xabar yozing..."
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-full px-4 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              />
+              <button
+                type="submit"
+                disabled={busy || (!text.trim() && !attachments.length)}
+                className="w-8 h-8 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center disabled:opacity-40 transition shadow-sm shrink-0"
+              >
+                <svg className="w-4 h-4 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                </svg>
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      {/* Floating Preview Modal */}
+      {previewFile ? (() => {
+        const previewUrl = normalizeMediaUrl(previewFile.file_url || previewFile.url);
+        const previewIsImage =
+          Boolean(previewUrl) && (
+            String(previewFile.mime_type || "").startsWith("image/") ||
+            /\.(jpg|jpeg|png|webp|gif|svg|bmp)(\?.*)?$/i.test(previewUrl)
+          );
+        return (
+          <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-fade-in">
+            <div className="relative flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl bg-slate-900 border border-slate-800 shadow-2xl">
+              <div className="flex items-center justify-between border-b border-slate-800 p-4 bg-slate-900">
+                <div className="min-w-0 flex-1 pr-4">
+                  <h3 className="font-bold text-white truncate text-sm sm:text-base">
+                    {previewFile.title || previewFile.file_name || "Material ko'rish"}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={previewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    download
+                    className="rounded-xl bg-indigo-600 hover:bg-indigo-700 px-3 py-1.5 text-xs font-bold text-white"
+                  >
+                    Yuklab olish ↗
+                  </a>
+                  <button
+                    onClick={() => setPreviewFile(null)}
+                    type="button"
+                    className="grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-slate-800 hover:text-white transition"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-auto p-4 flex items-center justify-center bg-black/30">
+                {previewIsImage ? (
+                  <img
+                    src={previewUrl}
+                    alt={previewFile.title || "Preview"}
+                    className="max-h-[65vh] w-auto max-w-full rounded-xl object-contain shadow"
+                  />
+                ) : (
+                  <iframe
+                    src={previewUrl}
+                    className="w-full h-[65vh] rounded-xl border-none shadow bg-white"
+                    title="PDF Modal"
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })() : null}
     </section>
   );
 }

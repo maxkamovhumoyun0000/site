@@ -343,6 +343,32 @@ export default function PersonalPlanPage() {
                         ))}</div>
                       </div>
                     )}
+                    <div className="mt-4 flex flex-wrap gap-2 pt-3 border-t border-gray-100 dark:border-gray-700/60">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof window === "undefined") return;
+                          window.sessionStorage.setItem("diamondvoy:initial-prompt:v1", `Menga “${topic.topic}” mavzusini tushuntirib bering. Men bu mavzuda testlarda qiynalyapman. Qoidalar va misollar bilan tushuntirgach, bilimimni tekshirish uchun 10 ta test tuzib bering.`);
+                          window.location.assign("/?role=student&section=chats&pane=diamondvoy");
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-500 px-3.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-cyan-600 dark:text-navy-950"
+                      >
+                        <span>💬</span>
+                        <span>Diamondvoy bilan o‘rganish</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof window === "undefined") return;
+                          window.sessionStorage.setItem("diamondvoy:initial-prompt:v1", `“${topic.topic}” mavzusi bo‘yicha menga roppa-rosa 10 ta test savolini tuzib bering. Variantlar takrorlanmasin, 4 ta variant bo‘lsin.`);
+                          window.location.assign("/?role=student&section=chats&pane=diamondvoy");
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-50 px-3.5 py-2 text-xs font-bold text-cyan-700 transition hover:bg-cyan-100 dark:bg-cyan-950/30 dark:text-cyan-300 dark:hover:bg-cyan-950/50"
+                      >
+                        <span>🎯</span>
+                        <span>10 ta test ishlash</span>
+                      </button>
+                    </div>
                   </div>
                 </details>
               )) : (

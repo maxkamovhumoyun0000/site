@@ -37,8 +37,6 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "home",
     "personal-plan",
     "learning-paths",
-    "my-mistakes",
-    "mistake-notebook",
     "pomodoro",
     "grammar",
     "vocabulary",
@@ -62,7 +60,6 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "homework",
     "support",
     "attendance",
-    "notes",
     "profile",
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
@@ -81,13 +78,16 @@ export const HIDDEN_SECTION_IDS = new Set([
 
 // Daily and teacher-run group arenas are retired. This protects against a
 // stale section list returned by an older client or backend response.
-export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "arena"]);
+export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "arena", "my-mistakes", "mistake-notebook", "notes"]);
 
 export const SECTION_ALIAS: Record<string, string> = {
   dashboard: "home",
   // Old push/deep links continue to open the most relevant new page after
   // the former all-in-one learning hub was split into separate screens.
   "personal-learning": "personal-plan",
+  "my-mistakes": "home",
+  "mistake-notebook": "home",
+  notes: "home",
   reminders: "home",
   daily: "daily-test",
   "daily-process": "daily-test-process",

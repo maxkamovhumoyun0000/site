@@ -742,6 +742,14 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
       audioContextRef.current.resume().catch(console.error);
     }
     
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {}
+      wsRef.current = null;
+      cleanupWebRTC();
+    }
+
     setRoomState(null);
     await fetchIceServers();
     connectWebSocket(roomId);

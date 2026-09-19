@@ -28,12 +28,34 @@ const nextConfig: NextConfig = {
     keepAlive: true,
   },
 
+  async redirects() {
+    return [
+      {
+        source: "/student/mistakes",
+        destination: "/student/dashboard",
+        permanent: false,
+      },
+    ];
+  },
+
   async rewrites() {
     const backendUrl = process.env.BACKEND_URL || "http://localhost:3001";
     return [
       {
         source: "/api/:path*",
         destination: `${backendUrl}/:path*`,
+      },
+      {
+        source: "/chats/media/:path*",
+        destination: `${backendUrl}/chats/media/:path*`,
+      },
+      {
+        source: "/student/certificates/:id/pdf",
+        destination: `${backendUrl}/student/certificates/:id/pdf`,
+      },
+      {
+        source: "/certificates/:id/pdf",
+        destination: `${backendUrl}/certificates/:id/pdf`,
       },
     ];
   },
