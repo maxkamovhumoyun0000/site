@@ -2513,6 +2513,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const [showAddModuleInline, setShowAddModuleInline] = useState(false);
   const [showCertModal, setShowCertModal] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
+  const [openAddTestOnModuleOpen, setOpenAddTestOnModuleOpen] = useState(false);
   const [editModuleId, setEditModuleId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editTopics, setEditTopics] = useState("");
@@ -3120,7 +3121,21 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         <div className="flex items-center gap-2 shrink-0">
                           <button
                             type="button"
-                            onClick={() => setSelectedModuleId(module.id)}
+                            onClick={() => {
+                              setSelectedModuleId(module.id);
+                              setOpenAddTestOnModuleOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 hover:bg-[#1cb0f6] hover:border-[#1cb0f6] text-cyan-700 dark:text-cyan-300 hover:text-white dark:hover:text-white font-black text-xs px-3 py-2 shadow-xs transition"
+                            title="Ushbu modulga yangi savol qo'shish oynasini ochish"
+                          >
+                            <span>➕ {t("learning_paths.teacher.add_test_btn", "Savol qo'shish")}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedModuleId(module.id);
+                              setOpenAddTestOnModuleOpen(false);
+                            }}
                             className="inline-flex items-center gap-2 rounded-xl bg-[#002DFF] hover:bg-blue-700 text-white font-black text-xs px-3.5 py-2 shadow-sm transition"
                           >
                             <span>⚙️ {t("learning_paths.teacher.edit_module", "Modulni Sozlash & Testlar")}</span>
@@ -3184,7 +3199,11 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           allModules={selected.modules || []}
           apiFetch={apiFetch}
           onSaved={load}
-          onClose={() => setSelectedModuleId(null)}
+          onClose={() => {
+            setSelectedModuleId(null);
+            setOpenAddTestOnModuleOpen(false);
+          }}
+          initialOpenAddTest={openAddTestOnModuleOpen}
         />,
         document.body
       )}
@@ -3694,7 +3713,17 @@ const ALL_TEST_KINDS = [
   { key: "passage_cloze", label: "📃 Matnni to'ldirish (so'zlar banki)", needsAudio: false },
 ];
 
-function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: ApiFetch; onSaved: () => Promise<void> }) {
+function LessonEditor({
+  module,
+  apiFetch,
+  onSaved,
+  initialOpenAddTest = false,
+}: {
+  module: Row;
+  apiFetch: ApiFetch;
+  onSaved: () => Promise<void>;
+  initialOpenAddTest?: boolean;
+}) {
   const t = useWebT();
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
   const [title, setTitle] = useState("");
@@ -3723,7 +3752,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
   const [count, setCount] = useState(5);
   const [types, setTypes] = useState("multiple_choice,true_false,fill_blank");
   const [busy, setBusy] = useState(false);
-  const [showAddTestModal, setShowAddTestModal] = useState(false);
+  const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
+
+  useEffect(() => {
+    if (initialOpenAddTest) {
+      setShowAddTestModal(true);
+    }
+  }, [initialOpenAddTest]);
   const [showLibraryModal, setShowLibraryModal] = useState(false);
 
   const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false };
@@ -4236,8 +4271,14 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
 
       {/* ─── Test Qo'shish Qalqib chiquvchi Oynasi (Modal Dialog Portal) ─── */}
       {showAddTestModal && typeof document !== "undefined" && createPortal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 p-3 sm:p-4 backdrop-blur-sm animate-fade-in">
-          <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800">
+        <div
+          className="fixed inset-0 z-[300] flex items-center justify-center bg-black/75 p-3 sm:p-4 backdrop-blur-sm animate-fade-in"
+          onClick={() => setShowAddTestModal(false)}
+        >
+          <div
+            className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 animate-scale-up"
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-slate-800 dark:bg-[#090d16]/80">
               <div>
@@ -4812,9 +4853,17 @@ function MaterialsLibraryModal({
 
   const roots = childrenOf.get(0) || [];
 
-  return (
-    <div className="fixed inset-0 z-[270] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in">
-      <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800">
+  if (typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[350] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 animate-scale-up"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-slate-800 dark:bg-[#090d16]/80">
           <div>
@@ -5095,7 +5144,8 @@ function MaterialsLibraryModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -5188,6 +5238,7 @@ function ModuleDetailModal({
   apiFetch,
   onSaved,
   onClose,
+  initialOpenAddTest = false,
 }: {
   track: Row;
   module: Row;
@@ -5195,6 +5246,7 @@ function ModuleDetailModal({
   apiFetch: ApiFetch;
   onSaved: () => Promise<void>;
   onClose: () => void;
+  initialOpenAddTest?: boolean;
 }) {
   const t = useWebT();
   const [modTitle, setModTitle] = useState(module.title || "");
@@ -5364,7 +5416,12 @@ function ModuleDetailModal({
             <h3 className="text-sm font-black text-navy-900 dark:text-white mb-4 flex items-center gap-2">
               <span>🎯 {t("learning_paths.teacher.tests_manager")}</span>
             </h3>
-            <LessonEditor module={module} apiFetch={apiFetch} onSaved={onSaved} />
+            <LessonEditor
+              module={module}
+              apiFetch={apiFetch}
+              onSaved={onSaved}
+              initialOpenAddTest={initialOpenAddTest}
+            />
           </div>
         </div>
 

@@ -62,6 +62,7 @@ import { StudentBooks } from "./ui/student-books";
 import { StudentAttendance } from "./ui/student-attendance";
 import { PersonalLearningPanel } from "./ui/personal-learning";
 import { WeeklyStudyPlan } from "./ui/weekly-study-plan";
+import { BadgeAwardModal } from "./ui/badge-award-modal";
 import { StudyRoomChat } from "./ui/study-room-chat";
 import { StaffLearningPaths, StudentLearningPaths } from "./ui/learning-paths";
 import { SupportVideos } from "./ui/support-videos";
@@ -25639,6 +25640,9 @@ export default function DiamondEducationApp() {
       <ErrorBoundary>
         {content}
       </ErrorBoundary>
+      {user && roleFromUser(user) === "student" && (
+        <BadgeAwardModal onNavigateToProfile={() => setSection("profile")} />
+      )}
       <SplashOverlay
         visible={showSplash}
         locale={locale}

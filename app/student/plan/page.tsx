@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { BadgeAwardModal } from "../../ui/badge-award-modal";
 
 /* ─── Types ──────────────────────────────────────────────────────── */
 interface WeakTopic { topic: string; level: string; explanation: string; rules: string[]; }
@@ -13,9 +14,19 @@ interface WeekAnalysis {
 }
 interface HistoryItem extends Omit<WeekAnalysis, "exists" | "status"> { id: number; }
 
+/* ─── Auth Helper ─────────────────────────────────────────────────── */
+function getAuthHeaders(): Record<string, string> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("diamond_token") || "" : "";
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 /* ─── i18n ───────────────────────────────────────────────────────── */
 const T: Record<string, Record<string, string>> = {
   uz: {
+    backDashboard: "Boshqaruv paneli",
     title: "Shaxsiy O'quv Rejam", subtitle: "Diamondvoy sizning haftalik tahlilingizni tayyorlaydi",
     generate: "AI Tahlil Yaratish", refresh: "Yangilash",
     thinking: "Diamondvoy o'ylanmoqda", thinkingDetail: "Sizning test natijalari, xatolar va uy vazifalari tahlil qilinmoqda...",
@@ -31,8 +42,12 @@ const T: Record<string, Record<string, string>> = {
     noData: "Bu hafta uchun ma'lumotlar to'planmoqda",
     noDataHint: "Test ishlang, uy vazifalarini bajaring — Diamondvoy siz uchun tahlil tayyorlaydi",
     question: "savol", topicLabel: "Mavzu", easy: "Oson", medium: "O'rta", hard: "Qiyin",
+    finishPractice: "Mashqni yakunlash", restartPractice: "Qaytadan",
+    congrats: "Ajoyib! Barcha savollarni muvaffaqiyatli bajardingiz!",
+    keepGoing: "Yaxshi natija! Xatolar ustida ishlab, bilimingizni mustahkamlang.",
   },
   ru: {
+    backDashboard: "Панель управления",
     title: "Мой учебный план", subtitle: "Diamondvoy готовит ваш еженедельный анализ",
     generate: "Создать AI анализ", refresh: "Обновить",
     thinking: "Diamondvoy думает", thinkingDetail: "Анализируются результаты тестов, ошибки и задания...",
@@ -47,8 +62,12 @@ const T: Record<string, Record<string, string>> = {
     history: "Предыдущие недели", noHistory: "Анализов пока нет",
     noData: "Данные собираются", noDataHint: "Решайте тесты — Diamondvoy подготовит анализ",
     question: "вопрос", topicLabel: "Тема", easy: "Легко", medium: "Средне", hard: "Сложно",
+    finishPractice: "Завершить практику", restartPractice: "Заново",
+    congrats: "Отлично! Все вопросы выполнены верно!",
+    keepGoing: "Хороший результат! Продолжайте закреплять материал.",
   },
   en: {
+    backDashboard: "Dashboard",
     title: "My Study Plan", subtitle: "Diamondvoy prepares your weekly analysis",
     generate: "Generate AI Analysis", refresh: "Refresh",
     thinking: "Diamondvoy is thinking", thinkingDetail: "Analyzing your test results, errors and homework...",
@@ -63,6 +82,9 @@ const T: Record<string, Record<string, string>> = {
     history: "Previous Weeks", noHistory: "No weekly analyses yet",
     noData: "Data is being collected", noDataHint: "Take tests, do homework — Diamondvoy will prepare your analysis",
     question: "question", topicLabel: "Topic", easy: "Easy", medium: "Medium", hard: "Hard",
+    finishPractice: "Finish Practice", restartPractice: "Restart",
+    congrats: "Awesome! You got every question right!",
+    keepGoing: "Good effort! Keep practicing your weak areas.",
   },
 };
 
@@ -73,8 +95,8 @@ function ThinkingAnimation({ text, detail }: { text: string; detail: string }) {
       <div className="relative w-20 h-20">
         <div className="absolute inset-0 rounded-full border-4 border-blue-200 dark:border-blue-800" />
         <div className="absolute inset-0 rounded-full border-4 border-t-blue-500 dark:border-t-blue-400 animate-spin" />
-        <div className="absolute inset-2 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
-          <span className="text-2xl">💎</span>
+        <div className="absolute inset-2 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+          <span className="text-2xl animate-pulse">💎</span>
         </div>
       </div>
       <div className="text-center">
@@ -116,12 +138,14 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
 
   const q = questions[idx];
   if (!q || done) return (
-    <div className="text-center py-8">
+    <div className="text-center py-8 animate-fade-in">
       <div className="text-5xl mb-4">🎉</div>
       <p className="text-xl font-bold text-gray-900 dark:text-white">{score}/{questions.length} {t.correct}</p>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{score === questions.length ? "Ajoyib! 🏆" : "Davom eting! 💪"}</p>
+      <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">{score === questions.length ? t.congrats : t.keepGoing}</p>
       <button onClick={() => { setIdx(0); setSelected(null); setResult(null); setScore(0); setDone(false); }}
-        className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium transition">↺ Qaytadan</button>
+        className="mt-4 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium transition shadow-md">
+        ↺ {t.restartPractice}
+      </button>
     </div>
   );
 
@@ -129,31 +153,45 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
     if (!selected || checking) return;
     setChecking(true);
     try {
+      const headers = getAuthHeaders();
       const res = await fetch("/api/student/personal-plan/practice-test/check", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q.question, options: q.options, selected, correct: q.correct, topic: q.topic, explanation: q.explanation }),
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          question: q.question,
+          options: q.options,
+          selected,
+          correct: q.correct,
+          topic: q.topic,
+          explanation: q.explanation,
+        }),
       });
       const data = await res.json();
       setResult(data);
-      if (data.correct) setScore(s => s + 1);
+      if (data?.correct) setScore(s => s + 1);
     } catch {
-      const isCorrect = selected === q.correct;
+      const isCorrect = selected.trim() === q.correct.trim();
       setResult({ correct: isCorrect, explanation: q.explanation || "" });
       if (isCorrect) setScore(s => s + 1);
     } finally { setChecking(false); }
   }
 
   function next() {
-    if (idx + 1 >= questions.length) setDone(true);
-    else { setIdx(i => i + 1); setSelected(null); setResult(null); }
+    if (idx + 1 >= questions.length) {
+      setDone(true);
+    } else {
+      setIdx(i => i + 1);
+      setSelected(null);
+      setResult(null);
+    }
   }
 
   return (
-    <div>
+    <div className="animate-fade-in">
       <div className="flex items-center justify-between mb-4">
         <span className="text-xs font-medium text-gray-500 dark:text-gray-400">{idx + 1}/{questions.length} {t.question}</span>
         <div className="flex gap-1">{questions.map((_, i) => (
-          <div key={i} className={`w-2 h-2 rounded-full transition ${i < idx ? "bg-green-500" : i === idx ? "bg-blue-500 scale-125" : "bg-gray-300 dark:bg-gray-600"}`} />
+          <div key={i} className={`w-2 h-2 rounded-full transition-all ${i < idx ? "bg-green-500" : i === idx ? "bg-blue-500 scale-125" : "bg-gray-300 dark:bg-gray-600"}`} />
         ))}</div>
       </div>
       <div className="flex items-center gap-2 mb-3">
@@ -184,7 +222,7 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
         {!result ? (
           <button onClick={check} disabled={!selected || checking} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition shadow-sm">{checking ? "⏳" : t.checkAnswer}</button>
         ) : (
-          <button onClick={next} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold transition shadow-sm">{idx + 1 >= questions.length ? "🏁 Yakunlash" : `${t.nextQuestion} →`}</button>
+          <button onClick={next} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold transition shadow-sm">{idx + 1 >= questions.length ? `🏁 ${t.finishPractice}` : `${t.nextQuestion} →`}</button>
         )}
       </div>
     </div>
@@ -204,28 +242,60 @@ export default function PersonalPlanPage() {
   const [activeTab, setActiveTab] = useState<"overview" | "topics" | "practice" | "history">("overview");
   const [practiceStarted, setPracticeStarted] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null);
+  const autoTriggered = useRef(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      const headers = getAuthHeaders();
       const [aRes, hRes] = await Promise.all([
-        fetch("/api/student/personal-plan/weekly-analysis").then(r => r.json()).catch(() => null),
-        fetch("/api/student/personal-plan/analysis-history").then(r => r.json()).catch(() => ({ items: [] })),
+        fetch("/api/student/personal-plan/weekly-analysis", { headers }).then(r => r.json()).catch(() => null),
+        fetch("/api/student/personal-plan/analysis-history", { headers }).then(r => r.json()).catch(() => ({ items: [] })),
       ]);
-      setAnalysis(aRes); setHistory(hRes.items || []);
-    } finally { setLoading(false); }
+      setAnalysis(aRes);
+      setHistory(hRes?.items || []);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
-  async function generate() {
+  const generate = useCallback(async () => {
+    if (generating) return;
     setGenerating(true);
     try {
-      const res = await fetch("/api/student/personal-plan/weekly-analysis/generate", { method: "POST" });
+      const headers = getAuthHeaders();
+      const res = await fetch("/api/student/personal-plan/weekly-analysis/generate", {
+        method: "POST",
+        headers,
+      });
       const data = await res.json();
-      if (data.success) await load();
-    } finally { setGenerating(false); }
-  }
+      if (data) {
+        setAnalysis(prev => ({ ...(prev || {}), ...data, exists: true }));
+      }
+    } finally {
+      setGenerating(false);
+    }
+  }, [generating]);
+
+  // Polling logic when status is processing or auto trigger if not generated
+  useEffect(() => {
+    if (!analysis || analysis.status === "done" || analysis.status === "failed") return;
+
+    if (analysis.status === "not_generated" && !autoTriggered.current) {
+      autoTriggered.current = true;
+      generate();
+      return;
+    }
+
+    if (analysis.status === "processing") {
+      const timer = setInterval(() => {
+        load();
+      }, 3500);
+      return () => clearInterval(timer);
+    }
+  }, [analysis?.status, generate, load]);
 
   const hasAnalysis = analysis?.exists && analysis?.status === "done";
   const stats = analysis?.test_stats || {};
@@ -239,23 +309,37 @@ export default function PersonalPlanPage() {
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-gray-50 via-white to-gray-50 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950 transition-colors">
+      <BadgeAwardModal onNavigateToProfile={() => { if (typeof window !== "undefined") window.location.assign("/?role=student&section=profile"); }} />
       <div className="max-w-3xl mx-auto px-4 py-6 sm:px-6">
+        {/* Back navigation */}
+        <div className="mb-4">
+          <a
+            href="/?role=student"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 dark:border-gray-800 bg-white/80 dark:bg-gray-800/80 px-3.5 py-1.5 text-xs font-semibold text-gray-700 dark:text-gray-300 backdrop-blur-sm transition-all hover:bg-gray-100 dark:hover:bg-gray-700 shadow-sm"
+          >
+            <span>←</span>
+            <span>{t.backDashboard}</span>
+          </a>
+        </div>
+
         {/* Header */}
         <div className="flex items-start justify-between mb-6">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white flex items-center gap-2">💎 {t.title}</h1>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{t.subtitle}</p>
-            {analysis && <p className="text-xs text-blue-600 dark:text-blue-400 mt-1 font-medium">{t.weekOf}: {analysis.week_start} — {analysis.week_end}</p>}
+            {analysis?.week_start && <p className="text-xs text-blue-600 dark:text-blue-400 mt-1 font-medium">{t.weekOf}: {analysis.week_start} — {analysis.week_end}</p>}
           </div>
-          <button onClick={generate} disabled={generating}
+          <button onClick={generate} disabled={generating || analysis?.status === "processing"}
             className="px-4 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-60 text-white rounded-xl text-sm font-semibold transition-all shadow-md hover:shadow-lg flex items-center gap-2">
-            {generating ? "⏳" : "✨"} {hasAnalysis ? t.refresh : t.generate}
+            {generating || analysis?.status === "processing" ? "⏳" : "✨"} {hasAnalysis ? t.refresh : t.generate}
           </button>
         </div>
 
-        {(generating || (loading && !generating)) && <ThinkingAnimation text={t.thinking} detail={t.thinkingDetail} />}
+        {(generating || analysis?.status === "processing" || (loading && !hasAnalysis)) && (
+          <ThinkingAnimation text={t.thinking} detail={t.thinkingDetail} />
+        )}
 
-        {!loading && !generating && (<>
+        {!loading && !generating && analysis?.status !== "processing" && (<>
           {/* Tab Bar */}
           <div className="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800/60 rounded-xl p-1 overflow-x-auto">
             {tabs.map(tab => (
@@ -298,10 +382,10 @@ export default function PersonalPlanPage() {
                 </div>
               )}
 
-              {hasAnalysis && analysis!.recommendations.length > 0 && (
-                <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl p-5">
+              {hasAnalysis && Array.isArray(analysis?.recommendations) && analysis.recommendations.length > 0 && (
+                <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl p-5 shadow-sm">
                   <h3 className="font-bold text-gray-900 dark:text-white mb-3 flex items-center gap-2">🎯 {t.recommendations}</h3>
-                  <div className="space-y-2">{analysis!.recommendations.map((rec, i) => (
+                  <div className="space-y-2">{analysis.recommendations.map((rec, i) => (
                     <div key={i} className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-gray-700/50 rounded-xl">
                       <span className="text-blue-500 font-bold text-sm mt-0.5">{i + 1}</span>
                       <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">{rec}</p>
@@ -310,7 +394,7 @@ export default function PersonalPlanPage() {
                 </div>
               )}
 
-              {!hasAnalysis && !generating && (
+              {!hasAnalysis && (
                 <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700">
                   <span className="text-5xl block mb-3">🤖</span>
                   <p className="text-gray-600 dark:text-gray-400 font-medium">{t.noData}</p>
@@ -324,7 +408,7 @@ export default function PersonalPlanPage() {
           {/* ═══ Topics ═══ */}
           {activeTab === "topics" && (
             <div className="space-y-4">
-              {hasAnalysis && analysis!.weak_topics.length > 0 ? analysis!.weak_topics.map((topic, i) => (
+              {hasAnalysis && Array.isArray(analysis?.weak_topics) && analysis.weak_topics.length > 0 ? analysis.weak_topics.map((topic, i) => (
                 <details key={i} className="group bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm">
                   <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/50 transition">
                     <div className="flex items-center gap-3">
@@ -336,7 +420,7 @@ export default function PersonalPlanPage() {
                   </summary>
                   <div className="px-4 pb-4 border-t border-gray-100 dark:border-gray-700 pt-3">
                     {topic.explanation && <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 leading-relaxed">{topic.explanation}</p>}
-                    {topic.rules.length > 0 && (
+                    {Array.isArray(topic.rules) && topic.rules.length > 0 && (
                       <div><h4 className="text-xs font-bold text-gray-500 dark:text-gray-400 uppercase mb-2">📖 {t.rules}</h4>
                         <div className="space-y-2">{topic.rules.map((rule, j) => (
                           <div key={j} className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl"><p className="text-sm text-gray-800 dark:text-gray-200 leading-relaxed">{rule}</p></div>
@@ -380,17 +464,17 @@ export default function PersonalPlanPage() {
           {/* ═══ Practice ═══ */}
           {activeTab === "practice" && (
             <div>
-              {hasAnalysis && analysis!.practice_questions.length > 0 ? (
+              {hasAnalysis && Array.isArray(analysis?.practice_questions) && analysis.practice_questions.length > 0 ? (
                 !practiceStarted ? (
                   <div className="text-center py-12 bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700">
                     <span className="text-5xl block mb-3">✍️</span>
                     <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-2">{t.practice}</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">{t.practiceDesc} ({analysis!.practice_questions.length} {t.question})</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 mb-6 max-w-sm mx-auto">{t.practiceDesc} ({analysis.practice_questions.length} {t.question})</p>
                     <button onClick={() => setPracticeStarted(true)} className="px-8 py-3 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-xl font-semibold text-sm shadow-md transition-all">{t.startPractice} →</button>
                   </div>
                 ) : (
                   <div className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 p-5 shadow-sm">
-                    <PracticeTest questions={analysis!.practice_questions} t={t} />
+                    <PracticeTest questions={analysis.practice_questions} t={t} />
                   </div>
                 )
               ) : (
@@ -408,7 +492,7 @@ export default function PersonalPlanPage() {
                   <div className="bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-2xl p-5 shadow-sm">
                     <h3 className="font-bold text-gray-900 dark:text-white mb-1">{t.weekOf}: {selectedHistory.week_start} — {selectedHistory.week_end}</h3>
                     <p className="text-sm text-gray-700 dark:text-gray-300 mt-3 leading-relaxed whitespace-pre-line">{selectedHistory.analysis}</p>
-                    {selectedHistory.recommendations.length > 0 && (
+                    {Array.isArray(selectedHistory.recommendations) && selectedHistory.recommendations.length > 0 && (
                       <div className="mt-4 space-y-2">
                         <h4 className="font-semibold text-sm text-gray-800 dark:text-gray-200">🎯 {t.recommendations}</h4>
                         {selectedHistory.recommendations.map((r, i) => <p key={i} className="text-sm text-gray-600 dark:text-gray-400 pl-4">{i + 1}. {r}</p>)}

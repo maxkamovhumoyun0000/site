@@ -222,6 +222,7 @@ def ensure_schema() -> None:
             """CREATE TABLE IF NOT EXISTS student_badges (
                 id BIGSERIAL PRIMARY KEY, user_id BIGINT NOT NULL, badge_code TEXT NOT NULL,
                 earned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, selected INTEGER DEFAULT 0,
+                notified INTEGER DEFAULT 0,
                 UNIQUE(user_id, badge_code))""",
             """CREATE TABLE IF NOT EXISTS certificates (
                 id BIGSERIAL PRIMARY KEY, certificate_id TEXT NOT NULL UNIQUE, user_id BIGINT NOT NULL,
@@ -402,6 +403,13 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE learning_modules ADD COLUMN image_url TEXT")
             except Exception:
                 pass
+        try:
+            cur.execute("ALTER TABLE student_badges ADD COLUMN IF NOT EXISTS notified INTEGER DEFAULT 0")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE student_badges ADD COLUMN notified INTEGER DEFAULT 0")
+            except Exception:
+                pass
         official_badges = (
             ("flawless_test", "Xatosiz bilimdon", "Test ishlab, unda umuman xato qilmagan o‘quvchiga (100% natija)", "/badges/flawless_test.png", "flawless_test"),
             ("tests_500", "500+ Test giganti", "500 tadan ko‘p test ishlaganga", "/badges/tests_500.png", "tests_500"),
@@ -436,15 +444,11 @@ def ensure_schema() -> None:
                 )
             except Exception:
                 try:
+                    cur.execute("DELETE FROM badge_definitions WHERE code=?", (code,))
                     cur.execute(
-                        "UPDATE badge_definitions SET title=?, description=?, asset_url=?, rule_key=?, active=1 WHERE code=?",
-                        (title, description, asset_url, rule_key, code),
+                        "INSERT INTO badge_definitions(code,title,description,asset_url,rule_key,active) VALUES(?,?,?,?,?,1)",
+                        (code, title, description, asset_url, rule_key),
                     )
-                    if cur.rowcount == 0:
-                        cur.execute(
-                            "INSERT INTO badge_definitions(code,title,description,asset_url,rule_key,active) VALUES(?,?,?,?,?,1)",
-                            (code, title, description, asset_url, rule_key),
-                        )
                 except Exception:
                     pass
         conn.commit()
@@ -487,13 +491,13 @@ def _student_name(row: dict[str, Any]) -> str:
 def _award_badge(cur: Any, user_id: int, badge_code: str) -> None:
     try:
         cur.execute(
-            "INSERT INTO student_badges(user_id,badge_code) VALUES(?,?) ON CONFLICT(user_id,badge_code) DO NOTHING",
+            "INSERT INTO student_badges(user_id,badge_code,notified) VALUES(?,?,0) ON CONFLICT(user_id,badge_code) DO NOTHING",
             (user_id, badge_code),
         )
     except Exception:
         try:
             cur.execute(
-                "INSERT OR IGNORE INTO student_badges(user_id,badge_code) VALUES(?,?)",
+                "INSERT OR IGNORE INTO student_badges(user_id,badge_code,notified) VALUES(?,?,0)",
                 (user_id, badge_code),
             )
         except Exception:
@@ -1651,6 +1655,59 @@ async def select_portfolio_badge(payload: BadgeSelectRequest, authorization: str
             return {"selected_badge_id": target_code}
         conn.commit()
         return {"selected_badge_id": None}
+    finally:
+        conn.close()
+
+
+@router.get("/student/badges/unseen")
+async def get_unseen_badges(authorization: str | None = Header(default=None)):
+    """Check and return badges the student has newly earned but hasn't seen celebration for yet."""
+    user = _user(authorization)
+    _require(user, {"student"})
+    ensure_schema()
+    uid = int(user["id"])
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        _sync_student_badges(cur, uid)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT b.badge_code AS code, d.title, d.description, d.asset_url, b.earned_at
+            FROM student_badges b
+            JOIN badge_definitions d ON d.code = b.badge_code
+            WHERE b.user_id = ? AND COALESCE(b.notified, 0) = 0
+            ORDER BY b.earned_at DESC
+            """,
+            (uid,),
+        )
+        items = _dicts(cur.fetchall())
+        return {"unseen_badges": items, "has_new": len(items) > 0}
+    finally:
+        conn.close()
+
+
+class MarkBadgesSeenRequest(BaseModel):
+    badge_codes: list[str] | None = None
+
+
+@router.post("/student/badges/mark-seen")
+async def mark_badges_seen(payload: MarkBadgesSeenRequest | None = None, authorization: str | None = Header(default=None)):
+    """Mark newly unlocked badges as seen/notified."""
+    user = _user(authorization)
+    _require(user, {"student"})
+    ensure_schema()
+    uid = int(user["id"])
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if payload and payload.badge_codes:
+            ph = ",".join("?" for _ in payload.badge_codes)
+            cur.execute(f"UPDATE student_badges SET notified=1 WHERE user_id=? AND badge_code IN ({ph})", [uid, *payload.badge_codes])
+        else:
+            cur.execute("UPDATE student_badges SET notified=1 WHERE user_id=?", (uid,))
+        conn.commit()
+        return {"success": True}
     finally:
         conn.close()
 
@@ -3075,6 +3132,118 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
     }
 
 
+def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dict[str, Any]:
+    test_cnt = stats.get("test_count", 0)
+    acc = stats.get("accuracy_pct", 0)
+    hw_comp = stats.get("homework_completed", 0)
+    hw_tot = stats.get("homework_total", 0)
+
+    if test_cnt > 0:
+        analysis = (
+            f"Salom, {user_name}! Bu hafta jami {test_cnt} ta test topshirdingiz va umumiy aniqligingiz {acc}% ni tashkil etdi. "
+            f"Uy vazifalaridan {hw_comp}/{hw_tot} tasi bajarildi. "
+            f"O'rganishda davomiylik juda muhim. Zaif mavzular ustida ishlasangiz, natijalaringiz yanada yuqori bo'ladi!"
+        )
+    else:
+        analysis = (
+            f"Salom, {user_name}! Bu hafta yangi mashqlar va testlarni boshlash uchun eng qulay vaqt. "
+            f"Har kuni 10-15 daqiqa Diamondvoy bilan shug'ullanib, grammatika va so'z boyligingizni mustahkamlab boring!"
+        )
+
+    raw_weaks = stats.get("weak_topics_by_tests", []) or []
+    weak_topics = []
+    for item in raw_weaks[:4]:
+        t_name = str(item.get("topic") or "General Grammar")
+        weak_topics.append({
+            "topic": t_name,
+            "level": "medium" if item.get("errors", 0) < 3 else "weak",
+            "explanation": f"Ushbu «{t_name}» mavzusida savollarga javob berishda e'tiborsizlik yoki qoidalarni qayta ko'rib chiqish talab etiladi.",
+            "rules": [
+                f"{t_name} mavzusidagi asosiy grammatik qoidalarni va formulalarni eslab qoling.",
+                "Savolni yechayotganda vaqt ko'rsatkichlari (time markers) va gap tuzilishiga diqqat qiling.",
+            ],
+        })
+
+    if not weak_topics:
+        weak_topics = [
+            {
+                "topic": "Present Simple vs Continuous",
+                "level": "medium",
+                "explanation": "Doimiy takrorlanuvchi harakatlar (Simple) bilan ayni damda sodir bo'layotgan harakatlar (Continuous) farqiga e'tibor bering.",
+                "rules": [
+                    "Har kuni yoki doimiy ishlar uchun: Present Simple (always, usually, every day).",
+                    "Ayni paytda davom etayotgan harakatlar uchun: Present Continuous (now, at the moment).",
+                ],
+            },
+            {
+                "topic": "Past Simple irregular verbs",
+                "level": "weak",
+                "explanation": "Noto'g'ri fe'llarning 2-shaklini (V2) eslab qolish va inkor shaklida did not + V1 qo'llashga diqqat qiling.",
+                "rules": [
+                    "Go -> Went, See -> Saw, Buy -> Bought, Make -> Made.",
+                    "Inkor va so'roqda asosiy fe'l o'zgarishsiz qoladi: Did you see? (Did you saw EMAS).",
+                ],
+            },
+        ]
+
+    recs = [
+        "Quyidagi 5 ta amaliy test mashqini yechib, qoidalarni mustahkamlang.",
+        "Xatolar daftarchasiga (Mistakes Notebook) o'tib, avval adashgan savollaringizni qayta ishlang.",
+        "Har kuni kamida bitta Daily test yoki mini-viktorina yechishni odatga aylantiring.",
+    ]
+
+    practice_qs = [
+        {
+            "question": "She _____ to English classes every Tuesday and Thursday.",
+            "options": ["go", "goes", "is going", "went"],
+            "correct": "goes",
+            "topic": "Present Simple",
+            "difficulty": "easy",
+            "explanation": "Uchinchi shaxs birlik (he, she, it) uchun Present Simple zamonida fe'lga -s / -es qo'shiladi.",
+        },
+        {
+            "question": "Look at the window! It _____ heavily right now.",
+            "options": ["rains", "is raining", "rained", "has rained"],
+            "correct": "is raining",
+            "topic": "Present Continuous",
+            "difficulty": "easy",
+            "explanation": "'right now' va 'Look!' ayni damda sodir bo'layotgan ish-harakatni bildiradi (am/is/are + V-ing).",
+        },
+        {
+            "question": "Yesterday they _____ a great time at the amusement park.",
+            "options": ["have", "had", "having", "has"],
+            "correct": "had",
+            "topic": "Past Simple",
+            "difficulty": "easy",
+            "explanation": "'Yesterday' o'tgan zamon kalit so'zi, 'have' fe'lining o'tgan zamondagi shakli esa 'had'.",
+        },
+        {
+            "question": "He hasn't finished reading the book _____.",
+            "options": ["already", "yet", "just", "since"],
+            "correct": "yet",
+            "topic": "Present Perfect",
+            "difficulty": "medium",
+            "explanation": "Inkor gaplar oxirida odatda 'yet' (hali, hamon) ishlatiladi.",
+        },
+        {
+            "question": "If you study consistently, you _____ the exam easily.",
+            "options": ["pass", "will pass", "passed", "would pass"],
+            "correct": "will pass",
+            "topic": "First Conditional",
+            "difficulty": "medium",
+            "explanation": "1-turdagi shart ergash gaplarida: If + Present Simple, bosh gapda esa Will + V1.",
+        },
+    ]
+
+    return {
+        "analysis": analysis,
+        "weak_topics": weak_topics,
+        "recommendations": recs,
+        "practice_questions": practice_qs,
+        "encouragement": "Har bir qadam sizni maqsadingizga yaqinlashtiradi. O'rganishdan to'xtamang! 🌟",
+    }
+
+
 async def _generate_ai_analysis(stats: dict[str, Any], user_name: str) -> dict[str, Any]:
     """Call AI to produce weekly analysis, explanations, recommendations and practice questions."""
     import aiohttp
@@ -3131,7 +3300,6 @@ Faqat JSON qaytar, boshqa hech narsa yozma."""
         from ai_generator import _xai_generate_text
         async with aiohttp.ClientSession() as session:
             raw = await _xai_generate_text(prompt, session=session, temperature=0.5)
-        # Parse JSON from response
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -3143,18 +3311,19 @@ Faqat JSON qaytar, boshqa hech narsa yozma."""
         result = json.loads(raw)
         if not isinstance(result, dict):
             raise ValueError("AI response is not an object")
-        result["weak_topics"] = result.get("weak_topics") if isinstance(result.get("weak_topics"), list) else []
-        result["recommendations"] = result.get("recommendations") if isinstance(result.get("recommendations"), list) else []
-        result["practice_questions"] = result.get("practice_questions") if isinstance(result.get("practice_questions"), list) else []
+        result["weak_topics"] = result.get("weak_topics") if isinstance(result.get("weak_topics"), list) and result.get("weak_topics") else []
+        result["recommendations"] = result.get("recommendations") if isinstance(result.get("recommendations"), list) and result.get("recommendations") else []
+        result["practice_questions"] = result.get("practice_questions") if isinstance(result.get("practice_questions"), list) and len(result.get("practice_questions")) >= 3 else []
+        if not result.get("practice_questions"):
+            fallback = _build_smart_fallback_analysis(stats, user_name)
+            result["practice_questions"] = fallback["practice_questions"]
+            if not result.get("weak_topics"):
+                result["weak_topics"] = fallback["weak_topics"]
+            if not result.get("recommendations"):
+                result["recommendations"] = fallback["recommendations"]
         return result
     except Exception:
-        return {
-            "analysis": "Bu haftadagi ma’lumotlar tayyor. Diamondvoy tahlili birozdan so‘ng yangilanadi.",
-            "weak_topics": [{"topic": t.get("topic", ""), "level": "weak", "explanation": "", "rules": []} for t in stats.get("weak_topics_by_tests", [])],
-            "recommendations": ["Zaif mavzulardagi testlarni qayta ishlang.", "Mavzularni va darslarni muntazam takrorlab boring.", "Uyga vazifalarni o'z vaqtida topshiring."],
-            "practice_questions": [],
-            "encouragement": "Davom eting, har qanday natija — bu rivojlanish!",
-        }
+        return _build_smart_fallback_analysis(stats, user_name)
 
 
 async def _finish_weekly_analysis(
@@ -3181,17 +3350,110 @@ async def _finish_weekly_analysis(
         finally:
             conn.close()
     except Exception:
-        # Never leave the learner in an endless "thinking" state.
-        conn = get_conn()
+        # Save smart fallback on unexpected error
         try:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE weekly_ai_analyses SET status='failed', updated_at=? WHERE user_id=? AND week_start=?",
-                (_now().isoformat(), user_id, week_start),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+            fallback = _build_smart_fallback_analysis(stats, user_name)
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
+                    "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=?",
+                    (
+                        str(fallback.get("analysis", "")),
+                        json.dumps(fallback.get("weak_topics", []), ensure_ascii=False),
+                        json.dumps(fallback.get("recommendations", []), ensure_ascii=False),
+                        json.dumps(fallback.get("practice_questions", []), ensure_ascii=False),
+                        _now().isoformat(), user_id, week_start,
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+
+
+async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
+    """Batch generator for all active students.
+    Runs every Sunday 12:00 PM - 1:00 PM Tashkent time."""
+    ensure_schema()
+    week_start, week_end = _current_week_range()
+    conn = get_conn()
+    students: list[dict[str, Any]] = []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, username, first_name, last_name, role FROM users WHERE role='student'")
+        students = _dicts(cur.fetchall())
+    finally:
+        conn.close()
+
+    total = len(students)
+    processed = 0
+    skipped = 0
+    errors = 0
+
+    for s in students:
+        uid = int(s["id"])
+        user_name = _student_name(s)
+        try:
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+                row = cur.fetchone()
+                if row and dict(row).get("status") == "done":
+                    skipped += 1
+                    continue
+                stats = _collect_week_stats(cur, uid, week_start, week_end)
+            finally:
+                conn.close()
+
+            result = await _generate_ai_analysis(stats, user_name)
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO weekly_ai_analyses(
+                        user_id, week_start, week_end, analysis_text, weak_topics_json,
+                        recommendations_json, test_stats_json, homework_stats_json,
+                        practice_questions_json, status, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,'done',?)
+                    ON CONFLICT(user_id, week_start) DO UPDATE SET
+                        analysis_text=excluded.analysis_text,
+                        weak_topics_json=excluded.weak_topics_json,
+                        recommendations_json=excluded.recommendations_json,
+                        test_stats_json=excluded.test_stats_json,
+                        homework_stats_json=excluded.homework_stats_json,
+                        practice_questions_json=excluded.practice_questions_json,
+                        status='done',
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        uid, week_start, week_end,
+                        str(result.get("analysis", "")),
+                        json.dumps(result.get("weak_topics", []), ensure_ascii=False),
+                        json.dumps(result.get("recommendations", []), ensure_ascii=False),
+                        json.dumps(stats, ensure_ascii=False),
+                        json.dumps({
+                            "total": stats.get("homework_total", 0),
+                            "completed": stats.get("homework_completed", 0),
+                            "completion_pct": stats.get("homework_completion_pct", 0),
+                        }, ensure_ascii=False),
+                        json.dumps(result.get("practice_questions", []), ensure_ascii=False),
+                        _now().isoformat(),
+                    ),
+                )
+                conn.commit()
+                processed += 1
+            finally:
+                conn.close()
+        except Exception:
+            logger.exception("Error generating weekly analysis for student %s", uid)
+            errors += 1
+
+    return {"total": total, "processed": processed, "skipped": skipped, "errors": errors}
 
 
 def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
@@ -3225,14 +3487,28 @@ async def get_weekly_analysis(authorization: str | None = Header(default=None)):
         row = cur.fetchone()
         if row:
             return _weekly_payload(dict(row))
-        # Collect live stats so the frontend can show partial data
+        # Collect live stats and auto-trigger generation if never generated
         stats = _collect_week_stats(cur, uid, week_start, week_end)
+        user_name = _student_name(user)
+        try:
+            cur.execute(
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) "
+                "VALUES(?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO NOTHING",
+                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                    "total": stats["homework_total"], "completed": stats["homework_completed"],
+                    "completion_pct": stats["homework_completion_pct"],
+                })),
+            )
+            conn.commit()
+            asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats))
+        except Exception:
+            pass
         return {
-            "exists": False,
+            "exists": True,
             "week_start": week_start,
             "week_end": week_end,
-            "status": "not_generated",
-            "analysis": "",
+            "status": "processing",
+            "analysis": "Diamondvoy haftalik natijalaringizni tahlil qilmoqda...",
             "weak_topics": [],
             "recommendations": [],
             "test_stats": stats,
@@ -3261,7 +3537,7 @@ async def generate_weekly_analysis(authorization: str | None = Header(default=No
         cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
         current = cur.fetchone()
         if current and str(dict(current).get("status") or "") == "processing":
-            return {"accepted": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+            return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end}
         # Mark as processing
         try:
             cur.execute(
@@ -3285,7 +3561,7 @@ async def generate_weekly_analysis(authorization: str | None = Header(default=No
     finally:
         conn.close()
     asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats))
-    return {"accepted": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+    return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end}
 
 
 @router.get("/student/personal-plan/analysis-history")

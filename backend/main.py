@@ -841,6 +841,7 @@ domain_email_cleanup_task: asyncio.Task[Any] | None = None
 daily_test_reminder_task: asyncio.Task[Any] | None = None
 homework_deadline_reminder_task: asyncio.Task[Any] | None = None
 weekly_review_task: asyncio.Task[Any] | None = None
+weekly_personal_plan_task: asyncio.Task[Any] | None = None
 competition_stale_lobbies_task: asyncio.Task[Any] | None = None
 study_room_presence_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
@@ -16867,6 +16868,30 @@ def _auto_mark_overdue_homeworks() -> None:
         logger.info("auto_mark_overdue_homeworks marked=%s homework submissions as not_done", marked_count)
 
 
+async def _weekly_personal_plan_analyzer_worker() -> None:
+    """Har yakshanba soat 12:00 PM dan 1:00 PM gacha (Toshkent vaqti) barcha o'quvchilar
+    uchun haftalik Shaxsiy O'quv Rejasi va Diamondvoy AI tahlilini avtomatik to'liq
+    generatsiya qilib, weekly_ai_analyses jadvaliga saqlaydi.
+    """
+    await asyncio.sleep(max(5, int(os.getenv("PERSONAL_PLAN_START_DELAY_SEC", "15") or "15")))
+    dispatch_dow = 6  # Yakshanba (Sunday)
+    dispatch_hour = 12  # 12:00 PM Toshkent time
+    last_run_day = ""
+    while True:
+        try:
+            now_local = datetime.now(TASHKENT_TZ)
+            today_str = now_local.strftime("%Y-%m-%d")
+            if now_local.weekday() == dispatch_dow and now_local.hour == dispatch_hour and last_run_day != today_str:
+                logger.info("weekly_personal_plan_analyzer_worker: starting Sunday 12:00 PM batch...")
+                from personalization import generate_weekly_analysis_for_all_students
+                res = await generate_weekly_analysis_for_all_students()
+                last_run_day = today_str
+                logger.info("weekly_personal_plan_analyzer_worker completed successfully: %s", res)
+        except Exception:
+            logger.exception("weekly_personal_plan_analyzer_worker iteration failed")
+        await asyncio.sleep(300)
+
+
 async def _weekly_review_worker() -> None:
     """Har hafta belgilangan kunda barcha o'quvchilarga majburiy takroriy
     testni homework qilib tarqatadi. WEEKLY_REVIEW_DISPATCH_DOW (0=Dushanba..
@@ -18502,7 +18527,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, competition_stale_lobbies_task, study_room_presence_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -18610,6 +18635,11 @@ async def startup_event() -> None:
             weekly_review_task = asyncio.create_task(
                 _weekly_review_worker(),
                 name="weekly_review_worker",
+            )
+        if weekly_personal_plan_task is None or weekly_personal_plan_task.done():
+            weekly_personal_plan_task = asyncio.create_task(
+                _weekly_personal_plan_analyzer_worker(),
+                name="weekly_personal_plan_analyzer_worker",
             )
         if study_room_presence_task is None or study_room_presence_task.done():
             study_room_presence_task = asyncio.create_task(
@@ -34293,6 +34323,16 @@ async def teacher_support_requests(authorization: str | None = Header(default=No
     rows = _serialize_booking_rows(_filter_bookings_for_support_user(user, bookings or []))
     rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
     return {"items": rows[:120]}
+
+
+@app.post("/admin/personal-plan/trigger-weekly-analysis")
+async def admin_trigger_weekly_analysis(authorization: str | None = Header(default=None)):
+    """Admin endpoint to manually run the Sunday weekly analysis batch for all students."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin", "superadmin"})
+    from personalization import generate_weekly_analysis_for_all_students
+    res = await generate_weekly_analysis_for_all_students()
+    return {"success": True, "result": res}
 
 
 @app.post("/teacher/support-requests/{booking_id}/status")
