@@ -1335,8 +1335,13 @@ function LessonPlayerModal({
       const q = data?.question_payload || data || null;
       setQuestion(q);
 
-      // Initialize word bank if Word Order / Scrambled sentence test
-      if (q && (q.test_type === "word_order" || q.test_type === "listening_order" || q.test_type === "scrambled_sentence")) {
+      // Initialize word bank if Word Order / Scrambled sentence test OR options are chopped words of answer
+      const isWordsOfAnswer =
+        Array.isArray(q?.options) &&
+        q.options.length > 1 &&
+        q.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(q.correct_answer || "").trim().toLowerCase();
+
+      if (q && (q.test_type === "word_order" || q.test_type === "listening_order" || q.test_type === "scrambled_sentence" || isWordsOfAnswer)) {
         const fullText = String(q.correct_answer || q.prompt || q.question || "");
         // Split and shuffle
         const rawWords = fullText.split(/\s+/).filter(Boolean);
@@ -1406,9 +1411,17 @@ function LessonPlayerModal({
       ? question.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
       : [];
     const correctAns = String(question?.correct_answer || "").trim().toLowerCase();
+    const correctParts = correctAns.includes(";")
+      ? correctAns.split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
+      : correctAns.includes("\n")
+      ? correctAns.split("\n").map((p) => p.trim().toLowerCase()).filter(Boolean)
+      : [];
+
     const correct =
       (correctAns ? normSelected === correctAns : false) ||
       acceptable.includes(normSelected) ||
+      correctParts.includes(normSelected) ||
+      (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p))) ||
       (!correctAns && acceptable.length === 0);
     const newScore = score + (correct ? 1 : 0);
     const newTotal = total + 1;
@@ -1740,140 +1753,166 @@ function LessonPlayerModal({
                 </div>
               ) : null}
 
-              {/* ─── Exercise Type 1: Word Order / Scrambled sentence (Duolingo Signature) ─── */}
-              {question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence" ? (
-                <div className="space-y-6 pt-2">
-                  {/* Sentence Slots Line */}
-                  <div className="min-h-24 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/50">
-                    {sentenceWords.length ? (
-                      sentenceWords.map((w, idx) => (
-                        <button
-                          key={idx}
-                          type="button"
-                          disabled={Boolean(result)}
-                          onClick={() => handleSentenceWordRemove(idx)}
-                          className="rounded-xl border-2 border-b-4 border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-navy-900 shadow-sm transition hover:bg-rose-50 active:translate-y-1 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                        >
-                          {w}
-                        </button>
-                      ))
-                    ) : (
-                      <span className="text-xs font-bold text-slate-400 italic">
-                        Quyidagi so'zlarni bosing va gap tuzing...
-                      </span>
-                    )}
-                  </div>
+              {/* ─── Exercise Types Evaluation ─── */}
+              {(() => {
+                const isWordsOfAnswer =
+                  Array.isArray(question.options) &&
+                  question.options.length > 1 &&
+                  question.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(question.correct_answer || "").trim().toLowerCase();
 
-                  {/* Word Bank Chips */}
-                  <div className="flex flex-wrap gap-2.5 justify-center border-t border-slate-100 pt-4 dark:border-white/10">
-                    {bankWords.map((tile) => (
-                      <button
-                        key={tile.id}
-                        type="button"
-                        disabled={tile.used || Boolean(result)}
-                        onClick={() => handleTileClick(tile.id, tile.text)}
-                        className={`rounded-2xl border-2 px-4 py-2.5 text-sm font-black transition-all select-none ${
-                          tile.used
-                            ? "border-slate-200 bg-slate-200/50 text-transparent opacity-30 dark:border-navy-800 dark:bg-navy-900"
-                            : "border-slate-200 border-b-4 bg-white text-navy-900 shadow-sm active:translate-y-1 active:border-b-2 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                        }`}
-                      >
-                        {tile.text}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : question.test_type === "true_false" || question.test_type === "listening_tf" ? (
-                /* ─── Exercise Type 2: True / False ─── */
-                <div className="grid grid-cols-2 gap-4 pt-4">
-                  {["To'g'ri", "Noto'g'ri"].map((opt) => {
-                    const isSelected = selected.toLowerCase() === opt.toLowerCase();
-                    const isCorrectChoice = opt.toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
+                const hasCorrectChoice =
+                  Array.isArray(question.options) &&
+                  question.options.some((opt: string) => opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase());
 
-                    let btnStyle = "border-slate-200 border-b-4 bg-white hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800";
-                    if (isSelected && !result) {
-                      btnStyle = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
-                    } else if (result) {
-                      if (isCorrectChoice) {
-                        btnStyle = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
-                      } else if (isSelected && !isCorrectChoice) {
-                        btnStyle = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
-                      }
-                    }
+                const correctParts = String(question.correct_answer || "").includes(";")
+                  ? String(question.correct_answer || "").split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
+                  : [];
 
-                    return (
-                      <button
-                        key={opt}
-                        type="button"
-                        disabled={Boolean(result)}
-                        onClick={() => {
-                          playDuolingoSound("pop");
-                          setSelected(opt);
-                        }}
-                        className={`flex flex-col items-center justify-center gap-2 rounded-3xl p-6 text-base font-black transition-all active:translate-y-1 active:border-b-2 ${btnStyle}`}
-                      >
-                        <span className="text-3xl">{opt === "To'g'ri" ? "✓" : "✕"}</span>
-                        <span>{opt}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (!question.options || !Array.isArray(question.options) || question.options.length < 2) ? (
-                /* ─── Exercise Type 3: Fill Blank, Dictation, Open, Translation, Spelling (Text Input) ─── */
-                <div className="space-y-3 pt-2">
-                  <input
-                    type="text"
-                    value={selected}
-                    onChange={(e) => setSelected(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && !result && void submit()}
-                    disabled={Boolean(result)}
-                    placeholder="Javobingizni yozing..."
-                    autoFocus
-                    className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                  <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
-                </div>
-              ) : (
-                /* ─── Exercise Type 4: Multiple Choice (Duolingo 3D Cards) ─── */
-                <div className="grid gap-3 pt-2">
-                  {(question.options || []).map((opt: string, i: number) => {
-                    const isSelected = selected === opt;
-                    const isCorrectChoice = opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
-
-                    let cardClass = "border-slate-200 border-b-4 bg-white text-navy-900 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white";
-                    if (isSelected && !result) {
-                      cardClass = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
-                    } else if (result) {
-                      if (isCorrectChoice) {
-                        cardClass = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
-                      } else if (isSelected && !isCorrectChoice) {
-                        cardClass = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
-                      }
-                    }
-
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        disabled={Boolean(result)}
-                        onClick={() => {
-                          playDuolingoSound("pop");
-                          setSelected(opt);
-                        }}
-                        className={`flex items-center justify-between rounded-2xl border-2 p-4 text-left text-sm font-black transition-all active:translate-y-1 active:border-b-2 ${cardClass}`}
-                      >
-                        <span className="flex items-center gap-3">
-                          <span className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-xs font-black text-slate-600 dark:border-navy-700 dark:bg-navy-900 dark:text-navy-300">
-                            {i + 1}
+                if (question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence" || isWordsOfAnswer) {
+                  return (
+                    /* ─── Exercise Type 1: Word Order / Scrambled sentence (Duolingo Signature) ─── */
+                    <div className="space-y-6 pt-2">
+                      {/* Sentence Slots Line */}
+                      <div className="min-h-24 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/50">
+                        {sentenceWords.length ? (
+                          sentenceWords.map((w, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              disabled={Boolean(result)}
+                              onClick={() => handleSentenceWordRemove(idx)}
+                              className="rounded-xl border-2 border-b-4 border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-navy-900 shadow-sm transition hover:bg-rose-50 active:translate-y-1 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                            >
+                              {w}
+                            </button>
+                          ))
+                        ) : (
+                          <span className="text-xs font-bold text-slate-400 italic">
+                            Quyidagi so'zlarni bosing va gap tuzing...
                           </span>
-                          <span>{opt}</span>
-                        </span>
-                        {result && isCorrectChoice ? <span className="text-xl">✓</span> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                        )}
+                      </div>
+
+                      {/* Word Bank Chips */}
+                      <div className="flex flex-wrap gap-2.5 justify-center border-t border-slate-100 pt-4 dark:border-white/10">
+                        {bankWords.map((tile) => (
+                          <button
+                            key={tile.id}
+                            type="button"
+                            disabled={tile.used || Boolean(result)}
+                            onClick={() => handleTileClick(tile.id, tile.text)}
+                            className={`rounded-2xl border-2 px-4 py-2.5 text-sm font-black transition-all select-none ${
+                              tile.used
+                                ? "border-slate-200 bg-slate-200/50 text-transparent opacity-30 dark:border-navy-800 dark:bg-navy-900"
+                                : "border-slate-200 border-b-4 bg-white text-navy-900 shadow-sm active:translate-y-1 active:border-b-2 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                            }`}
+                          >
+                            {tile.text}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                } else if (question.test_type === "true_false" || question.test_type === "listening_tf") {
+                  /* ─── Exercise Type 2: True / False ─── */
+                  return (
+                    <div className="grid grid-cols-2 gap-4 pt-4">
+                      {["To'g'ri", "Noto'g'ri"].map((opt) => {
+                        const isSelected = selected.toLowerCase() === opt.toLowerCase();
+                        const isCorrectChoice = opt.toLowerCase() === String(question.correct_answer || "").trim().toLowerCase();
+
+                        let btnStyle = "border-slate-200 border-b-4 bg-white hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800";
+                        if (isSelected && !result) {
+                          btnStyle = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
+                        } else if (result) {
+                          if (isCorrectChoice) {
+                            btnStyle = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
+                          } else if (isSelected && !isCorrectChoice) {
+                            btnStyle = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
+                          }
+                        }
+
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => {
+                              playDuolingoSound("pop");
+                              setSelected(opt);
+                            }}
+                            className={`flex flex-col items-center justify-center gap-2 rounded-3xl p-6 text-base font-black transition-all active:translate-y-1 active:border-b-2 ${btnStyle}`}
+                          >
+                            <span className="text-3xl">{opt === "To'g'ri" ? "✓" : "✕"}</span>
+                            <span>{opt}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                } else if (!question.options || !Array.isArray(question.options) || question.options.length < 2 || ((question.test_type === "fill_blank" || question.test_type === "gap_fill") && !hasCorrectChoice)) {
+                  /* ─── Exercise Type 3: Fill Blank, Dictation, Open, Translation, Spelling (Text Input) ─── */
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <input
+                        type="text"
+                        value={selected}
+                        onChange={(e) => setSelected(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && !result && void submit()}
+                        disabled={Boolean(result)}
+                        placeholder="Javobingizni yozing..."
+                        autoFocus
+                        className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+                      <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
+                    </div>
+                  );
+                } else {
+                  /* ─── Exercise Type 4: Multiple Choice (Duolingo 3D Cards) ─── */
+                  return (
+                    <div className="grid gap-3 pt-2">
+                      {(question.options || []).map((opt: string, i: number) => {
+                        const isSelected = selected === opt;
+                        const isCorrectChoice =
+                          opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase() ||
+                          correctParts.includes(opt.trim().toLowerCase());
+
+                        let cardClass = "border-slate-200 border-b-4 bg-white text-navy-900 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white";
+                        if (isSelected && !result) {
+                          cardClass = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
+                        } else if (result) {
+                          if (isCorrectChoice) {
+                            cardClass = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
+                          } else if (isSelected && !isCorrectChoice) {
+                            cardClass = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
+                          }
+                        }
+
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => {
+                              playDuolingoSound("pop");
+                              setSelected(opt);
+                            }}
+                            className={`flex items-center justify-between rounded-2xl border-2 p-4 text-left text-sm font-black transition-all active:translate-y-1 active:border-b-2 ${cardClass}`}
+                          >
+                            <span className="flex items-center gap-3">
+                              <span className="grid h-8 w-8 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-xs font-black text-slate-600 dark:border-navy-700 dark:bg-navy-900 dark:text-navy-300">
+                                {i + 1}
+                              </span>
+                              <span>{opt}</span>
+                            </span>
+                            {result && isCorrectChoice ? <span className="text-xl">✓</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                }
+              })()}
             </div>
           ) : null}
         </div>
@@ -2025,13 +2064,24 @@ function FinalExamPlayerModal({
   const currentQuestion = questions[currentIndex] || null;
 
   useEffect(() => {
-    if (currentQuestion && (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence")) {
-      const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
-      const rawWords = fullText.split(/\s+/).filter(Boolean);
-      const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
-      setBankWords(shuffled.map((w, idx) => ({ id: idx, text: w, used: false })));
-      setSentenceWords([]);
-      setSelected("");
+    if (currentQuestion) {
+      const isWordsOfAnswer =
+        Array.isArray(currentQuestion.options) &&
+        currentQuestion.options.length > 1 &&
+        currentQuestion.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(currentQuestion.correct_answer || "").trim().toLowerCase();
+
+      if (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" || isWordsOfAnswer) {
+        const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
+        const rawWords = fullText.split(/\s+/).filter(Boolean);
+        const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
+        setBankWords(shuffled.map((w, idx) => ({ id: idx, text: w, used: false })));
+        setSentenceWords([]);
+        setSelected("");
+      } else {
+        setSentenceWords([]);
+        setBankWords([]);
+        setSelected("");
+      }
     } else {
       setSentenceWords([]);
       setBankWords([]);
@@ -2083,9 +2133,17 @@ function FinalExamPlayerModal({
       ? currentQuestion.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
       : [];
     const correctAns = String(currentQuestion.correct_answer || "").trim().toLowerCase();
+    const correctParts = correctAns.includes(";")
+      ? correctAns.split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
+      : correctAns.includes("\n")
+      ? correctAns.split("\n").map((p) => p.trim().toLowerCase()).filter(Boolean)
+      : [];
+
     const correct =
       (correctAns ? normSelected === correctAns : false) ||
       acceptable.includes(normSelected) ||
+      correctParts.includes(normSelected) ||
+      (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p))) ||
       (!correctAns && acceptable.length === 0);
     const newScore = score + (correct ? 1 : 0);
     setScore(newScore);
@@ -2398,133 +2456,155 @@ function FinalExamPlayerModal({
                 </div>
               ) : null}
 
-              {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" ? (
-                <div className="space-y-6">
-                  <div className="min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
-                    {sentenceWords.map((word, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => handleSentenceWordRemove(idx)}
-                        disabled={Boolean(result)}
-                        className="rounded-xl border-2 border-b-4 border-slate-300 bg-white px-3.5 py-2 text-sm font-black text-navy-900 shadow-sm transition active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
-                      >
-                        {word}
-                      </button>
-                    ))}
-                    {!sentenceWords.length ? (
-                      <span className="text-xs font-bold text-slate-400">Pastdagi so'zlarni ketma-ket bosing</span>
-                    ) : null}
-                  </div>
-                  <div className="flex flex-wrap gap-2 justify-center pt-2">
-                    {bankWords.map((tile) => (
-                      <button
-                        key={tile.id}
-                        type="button"
-                        onClick={() => handleTileClick(tile.id, tile.text)}
-                        disabled={tile.used || Boolean(result)}
-                        className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-sm font-black transition ${
-                          tile.used
-                            ? "border-transparent bg-slate-100 text-transparent pointer-events-none dark:bg-navy-900/40"
-                            : "border-slate-300 bg-white text-navy-900 shadow-md active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
-                        }`}
-                      >
-                        {tile.text}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ) : currentQuestion.test_type === "true_false" || currentQuestion.test_type === "listening_tf" ? (
-                /* ─── True / False ─── */
-                <div className="grid grid-cols-2 gap-4 pt-2">
-                  {["To'g'ri", "Noto'g'ri"].map((opt) => {
-                    const isSelected = selected.toLowerCase() === opt.toLowerCase();
-                    const isCorrectChoice = opt.toLowerCase() === String(currentQuestion.correct_answer || "").trim().toLowerCase();
+              {(() => {
+                const isWordsOfAnswer =
+                  Array.isArray(currentQuestion.options) &&
+                  currentQuestion.options.length > 1 &&
+                  currentQuestion.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(currentQuestion.correct_answer || "").trim().toLowerCase();
 
-                    let btnStyle = "border-slate-200 border-b-4 bg-white hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800";
-                    if (isSelected && !result) {
-                      btnStyle = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
-                    } else if (result) {
-                      if (isCorrectChoice) {
-                        btnStyle = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
-                      } else if (isSelected && !isCorrectChoice) {
-                        btnStyle = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
-                      }
-                    }
+                const hasCorrectChoice =
+                  Array.isArray(currentQuestion.options) &&
+                  currentQuestion.options.some((opt: string) => opt.trim().toLowerCase() === String(currentQuestion.correct_answer || "").trim().toLowerCase());
 
-                    return (
-                      <button
-                        key={opt}
-                        type="button"
-                        disabled={Boolean(result)}
-                        onClick={() => {
-                          playDuolingoSound("pop");
-                          setSelected(opt);
-                        }}
-                        className={`flex flex-col items-center justify-center gap-2 rounded-3xl p-6 text-base font-black transition-all active:translate-y-1 active:border-b-2 ${btnStyle}`}
-                      >
-                        <span className="text-3xl">{opt === "To'g'ri" ? "✓" : "✕"}</span>
-                        <span>{opt}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (!currentQuestion.options || !Array.isArray(currentQuestion.options) || currentQuestion.options.length < 2) ? (
-                /* ─── Text Input for Open, Dictation, Gap Fill, Translation ─── */
-                <div className="space-y-3 pt-2">
-                  <input
-                    type="text"
-                    value={selected}
-                    onChange={(e) => setSelected(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && !result && void checkAnswer()}
-                    disabled={Boolean(result)}
-                    placeholder="Javobingizni yozing..."
-                    autoFocus
-                    className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  />
-                  <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {(Array.isArray(currentQuestion.options) ? currentQuestion.options : []).map((opt: string, i: number) => {
-                    const isSelected = selected === opt;
-                    const isCorrectChoice =
-                      result &&
-                      String(currentQuestion.correct_answer || "").trim().toLowerCase() === String(opt).trim().toLowerCase();
-                    const isWrongChoice = result && isSelected && !result.correct;
+                const correctParts = String(currentQuestion.correct_answer || "").includes(";")
+                  ? String(currentQuestion.correct_answer || "").split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
+                  : [];
 
-                    return (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => {
-                          if (result) return;
-                          playDuolingoSound("pop");
-                          setSelected(opt);
-                        }}
+                if (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" || isWordsOfAnswer) {
+                  return (
+                    <div className="space-y-6">
+                      <div className="min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
+                        {sentenceWords.map((word, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            onClick={() => handleSentenceWordRemove(idx)}
+                            disabled={Boolean(result)}
+                            className="rounded-xl border-2 border-b-4 border-slate-300 bg-white px-3.5 py-2 text-sm font-black text-navy-900 shadow-sm transition active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                          >
+                            {word}
+                          </button>
+                        ))}
+                        {!sentenceWords.length ? (
+                          <span className="text-xs font-bold text-slate-400">Pastdagi so'zlarni ketma-ket bosing</span>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-wrap gap-2 justify-center pt-2">
+                        {bankWords.map((tile) => (
+                          <button
+                            key={tile.id}
+                            type="button"
+                            onClick={() => handleTileClick(tile.id, tile.text)}
+                            disabled={tile.used || Boolean(result)}
+                            className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-sm font-black transition ${
+                              tile.used
+                                ? "border-transparent bg-slate-100 text-transparent pointer-events-none dark:bg-navy-900/40"
+                                : "border-slate-300 bg-white text-navy-900 shadow-md active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                            }`}
+                          >
+                            {tile.text}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                } else if (currentQuestion.test_type === "true_false" || currentQuestion.test_type === "listening_tf") {
+                  return (
+                    <div className="grid grid-cols-2 gap-4 pt-2">
+                      {["To'g'ri", "Noto'g'ri"].map((opt) => {
+                        const isSelected = selected.toLowerCase() === opt.toLowerCase();
+                        const isCorrectChoice = opt.toLowerCase() === String(currentQuestion.correct_answer || "").trim().toLowerCase();
+
+                        let btnStyle = "border-slate-200 border-b-4 bg-white hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800";
+                        if (isSelected && !result) {
+                          btnStyle = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
+                        } else if (result) {
+                          if (isCorrectChoice) {
+                            btnStyle = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
+                          } else if (isSelected && !isCorrectChoice) {
+                            btnStyle = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
+                          }
+                        }
+
+                        return (
+                          <button
+                            key={opt}
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => {
+                              playDuolingoSound("pop");
+                              setSelected(opt);
+                            }}
+                            className={`flex flex-col items-center justify-center gap-2 rounded-3xl p-6 text-base font-black transition-all active:translate-y-1 active:border-b-2 ${btnStyle}`}
+                          >
+                            <span className="text-3xl">{opt === "To'g'ri" ? "✓" : "✕"}</span>
+                            <span>{opt}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                } else if (!currentQuestion.options || !Array.isArray(currentQuestion.options) || currentQuestion.options.length < 2 || ((currentQuestion.test_type === "fill_blank" || currentQuestion.test_type === "gap_fill") && !hasCorrectChoice)) {
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <input
+                        type="text"
+                        value={selected}
+                        onChange={(e) => setSelected(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && !result && void checkAnswer()}
                         disabled={Boolean(result)}
-                        className={`flex w-full items-center justify-between rounded-2xl border-2 border-b-4 p-4 text-left text-sm font-black transition-all ${
-                          isCorrectChoice
-                            ? "border-[#58cc02] bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#152e14] dark:text-[#a0ff6d]"
-                            : isWrongChoice
-                            ? "border-[#ff4b4b] bg-[#ffdfe0] text-[#a01818] dark:bg-[#381517] dark:text-[#ffa0a0]"
-                            : isSelected
-                            ? "border-[#001A88] bg-blue-50/80 text-[#001A88] ring-2 ring-[#002DFF]/40 dark:bg-navy-800 dark:text-blue-300"
-                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800/80 dark:text-navy-100"
-                        }`}
-                      >
-                        <span className="flex items-center gap-3">
-                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-slate-100 text-xs font-black text-slate-500 dark:bg-navy-700 dark:text-navy-300">
-                            {i + 1}
-                          </span>
-                          <span>{opt}</span>
-                        </span>
-                        {result && isCorrectChoice ? <span className="text-xl">✓</span> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                        placeholder="Javobingizni yozing..."
+                        autoFocus
+                        className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+                      <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
+                    </div>
+                  );
+                } else {
+                  return (
+                    <div className="space-y-2.5">
+                      {(Array.isArray(currentQuestion.options) ? currentQuestion.options : []).map((opt: string, i: number) => {
+                        const isSelected = selected === opt;
+                        const isCorrectChoice =
+                          result &&
+                          (String(currentQuestion.correct_answer || "").trim().toLowerCase() === String(opt).trim().toLowerCase() ||
+                           correctParts.includes(String(opt).trim().toLowerCase()));
+                        const isWrongChoice = result && isSelected && !result.correct;
+
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                              if (result) return;
+                              playDuolingoSound("pop");
+                              setSelected(opt);
+                            }}
+                            disabled={Boolean(result)}
+                            className={`flex w-full items-center justify-between rounded-2xl border-2 border-b-4 p-4 text-left text-sm font-black transition-all ${
+                              isCorrectChoice
+                                ? "border-[#58cc02] bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#152e14] dark:text-[#a0ff6d]"
+                                : isWrongChoice
+                                ? "border-[#ff4b4b] bg-[#ffdfe0] text-[#a01818] dark:bg-[#381517] dark:text-[#ffa0a0]"
+                                : isSelected
+                                ? "border-[#001A88] bg-blue-50/80 text-[#001A88] ring-2 ring-[#002DFF]/40 dark:bg-navy-800 dark:text-blue-300"
+                                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800/80 dark:text-navy-100"
+                            }`}
+                          >
+                            <span className="flex items-center gap-3">
+                              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-slate-100 text-xs font-black text-slate-500 dark:bg-navy-700 dark:text-navy-300">
+                                {i + 1}
+                              </span>
+                              <span>{opt}</span>
+                            </span>
+                            {result && isCorrectChoice ? <span className="text-xl">✓</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  );
+                }
+              })()}
             </div>
           ) : null}
         </div>

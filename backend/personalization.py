@@ -2235,8 +2235,13 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt\n"
         "- 'test_type': one of ('multiple_choice', 'true_false', 'fill_blank', 'word_order', 'matching')\n"
-        "- 'options': array of string choices (for multiple_choice give 4 options; for true_false ['To\\'g\\'ri', 'Noto\\'g\\'ri']; for fill_blank/word_order 2-4 hints or empty array; for matching give 3-4 pairs like 'apple = olma')\n"
-        "- 'correct_answer': the exact correct answer string (must match one of the options for multiple_choice/true_false)\n"
+        "- 'options': array of string choices strictly following these rules:\n"
+        "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"
+        "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
+        "   * 'fill_blank': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
+        "   * 'word_order': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
+        "   * 'matching': 4 full choices where ONE is correct, e.g. 'options': ['1-A, 2-B, 3-C', '1-B, 2-A, 3-C', ...]. NEVER list individual true pairs as options with a combined semicolon answer!\n"
+        "- 'correct_answer': the exact single correct answer string (must match one of the choices in 'options' for multiple_choice/true_false/matching)\n"
         "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
     )
 
@@ -2291,18 +2296,41 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             q_text = str(result.get("question") or f"{payload.topic} savoli {index + 1}").strip()
             q_type = str(result.get("test_type") or types_list[index % len(types_list)] or "multiple_choice").strip().lower()
             raw_opts = result.get("options")
-            options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
-
+            options = [str(x).strip() for x in raw_opts] if isinstance(raw_opts, list) else []
             correct = str(result.get("correct_answer") or "").strip()
+
+            # Sanitize question to guarantee valid test behavior
             if q_type == "true_false":
                 if not options:
                     options = ["To'g'ri", "Noto'g'ri"]
                 if correct not in options:
                     correct = "To'g'ri"
-            elif q_type == "multiple_choice":
+            elif q_type in ("fill_blank", "gap_fill"):
+                norm_opts = [o.lower() for o in options]
+                norm_correct = correct.lower()
+                joined = " ".join(norm_opts)
+                # If options were chopped words of the answer (e.g. ['will', 'be', 'traveling'])
+                if joined == norm_correct or (norm_correct not in norm_opts and all(o in norm_correct for o in norm_opts if o)):
+                    options = []  # Render as clean fill-in-the-blank input
+                elif norm_correct not in norm_opts and len(options) >= 2:
+                    options.append(correct)
+            elif q_type in ("multiple_choice", "matching"):
+                # Handle combined semicolon answers
+                if ";" in correct or "\n" in correct:
+                    delim = ";" if ";" in correct else "\n"
+                    parts = [p.strip() for p in correct.split(delim) if p.strip()]
+                    if options and all(any(o.lower() in p.lower() or p.lower() in o.lower() for p in parts) for o in options):
+                        correct = options[0]
+                    elif parts:
+                        for p in parts:
+                            if any(p.lower() == o.lower() for o in options):
+                                correct = p
+                                break
+                        else:
+                            correct = parts[0]
                 if len(options) < 2:
                     options = [correct or "A", "B", "C", "D"]
-                if correct not in options:
+                if correct and not any(o.lower() == correct.lower() for o in options):
                     options.append(correct)
             elif not correct and options:
                 correct = options[0]
@@ -2408,6 +2436,28 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
 
     if kind == "matching" and not res.get("pairs") and raw.get("matches"):
         res["pairs"] = raw["matches"]
+
+    # Sanitize options and answers to avoid broken test UX
+    if kind in {"fill_blank", "gap_fill"}:
+        norm_opts = [o.strip().lower() for o in res["options"]]
+        norm_correct = res["correct_answer"].strip().lower()
+        joined = " ".join(norm_opts)
+        if joined == norm_correct or (norm_correct not in norm_opts and all(o in norm_correct for o in norm_opts if o)):
+            res["options"] = []
+        elif norm_correct not in norm_opts and len(res["options"]) >= 2:
+            res["options"].append(res["correct_answer"])
+    elif kind in {"multiple_choice", "matching"}:
+        if ";" in res["correct_answer"] or "\n" in res["correct_answer"]:
+            delim = ";" if ";" in res["correct_answer"] else "\n"
+            parts = [p.strip() for p in res["correct_answer"].split(delim) if p.strip()]
+            if res["options"] and all(any(o.strip().lower() in p.lower() or p.lower() in o.strip().lower() for p in parts) for o in res["options"]):
+                res["acceptable_answers"] = res["options"]
+                res["correct_answer"] = res["options"][0]
+            elif parts:
+                for p in parts:
+                    if any(p.strip().lower() == o.strip().lower() for o in res["options"]):
+                        res["correct_answer"] = p.strip()
+                        break
 
     return res
 
