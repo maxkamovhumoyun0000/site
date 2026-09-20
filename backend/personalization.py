@@ -480,8 +480,14 @@ def _staff_can_access_student(user: dict[str, Any], student_id: int) -> bool:
         return False
 
 
+def _sanitize_row_value(val: Any) -> Any:
+    if isinstance(val, (datetime, date)):
+        return val.isoformat()
+    return val
+
+
 def _dicts(rows: Any) -> list[dict[str, Any]]:
-    return [dict(row) for row in (rows or [])]
+    return [{k: _sanitize_row_value(v) for k, v in dict(row).items()} for row in (rows or [])]
 
 
 def _student_name(row: dict[str, Any]) -> str:
@@ -3457,18 +3463,23 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
 
 
 def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
+    created_at = row.get("created_at")
+    if hasattr(created_at, "isoformat"):
+        created_at = created_at.isoformat()
+    elif created_at is not None:
+        created_at = str(created_at)
     return {
         "exists": True,
-        "week_start": row["week_start"],
-        "week_end": row["week_end"],
-        "status": row.get("status", "done"),
+        "week_start": str(row["week_start"]),
+        "week_end": str(row["week_end"]),
+        "status": str(row.get("status") or "done"),
         "analysis": row.get("analysis_text", ""),
         "weak_topics": json.loads(row.get("weak_topics_json") or "[]"),
         "recommendations": json.loads(row.get("recommendations_json") or "[]"),
         "test_stats": json.loads(row.get("test_stats_json") or "{}"),
         "homework_stats": json.loads(row.get("homework_stats_json") or "{}"),
         "practice_questions": json.loads(row.get("practice_questions_json") or "[]"),
-        "created_at": row.get("created_at"),
+        "created_at": created_at,
     }
 
 
@@ -3583,17 +3594,22 @@ async def get_analysis_history(authorization: str | None = Header(default=None))
         items = []
         for row in cur.fetchall():
             r = dict(row)
+            created_at = r.get("created_at")
+            if hasattr(created_at, "isoformat"):
+                created_at = created_at.isoformat()
+            elif created_at is not None:
+                created_at = str(created_at)
             items.append({
                 "id": r["id"],
-                "week_start": r["week_start"],
-                "week_end": r["week_end"],
+                "week_start": str(r["week_start"]),
+                "week_end": str(r["week_end"]),
                 "analysis": r.get("analysis_text", ""),
                 "weak_topics": json.loads(r.get("weak_topics_json") or "[]"),
                 "recommendations": json.loads(r.get("recommendations_json") or "[]"),
                 "test_stats": json.loads(r.get("test_stats_json") or "{}"),
                 "homework_stats": json.loads(r.get("homework_stats_json") or "{}"),
                 "practice_questions": json.loads(r.get("practice_questions_json") or "[]"),
-                "created_at": r.get("created_at"),
+                "created_at": created_at,
             })
         return {"items": items}
     finally:
