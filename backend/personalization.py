@@ -1403,18 +1403,17 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
 
         # Determine total_topics and completed_topics for segmented circular ring (1 to 5)
         mod_status = str((module.get("progress") or {}).get("status") or "locked").lower()
-        if lessons:
-            total_topics = min(5, len(lessons))
-            if mod_status == "passed":
-                completed_topics = total_topics
-            else:
-                completed_topics = sum(1 for l in lessons[:total_topics] if l.get("passed"))
-        elif module["topic_keys"]:
-            total_topics = min(5, max(1, len(module["topic_keys"])))
-            completed_topics = total_topics if mod_status == "passed" else 0
+        topic_count = len(module.get("topic_keys") or [])
+        lesson_count = len(lessons)
+        total_topics = min(5, max(1, max(lesson_count, topic_count)))
+
+        if mod_status == "passed":
+            completed_topics = total_topics
+        elif lesson_count > 0:
+            passed_lessons = sum(1 for l in lessons if l.get("passed"))
+            completed_topics = min(total_topics, max(0, passed_lessons))
         else:
-            total_topics = 1
-            completed_topics = 1 if mod_status == "passed" else 0
+            completed_topics = 0
 
         module["total_topics"] = total_topics
         module["completed_topics"] = completed_topics

@@ -36,26 +36,29 @@ def get_certificate_pdf(
         except Exception:
             pass
 
+    # Signature certificate palette matching artwork (#0C188B / Royal Sapphire Blue)
+    CERT_COLOR_RGB = (12 / 255.0, 24 / 255.0, 139 / 255.0)
+
     # 1. Student Name right on the certificate line (y_svg = 354.5 -> y_pdf = 794 - 354.5 + 8 = 447.5)
-    c.setFillColorRGB(0.12, 0.16, 0.30)
+    c.setFillColorRGB(*CERT_COLOR_RGB)
     c.setFont("Helvetica-Bold", 32)
     c.drawCentredString(width / 2.0, 447.5, student_name)
 
     # 2. Course / Track title directly below the line
-    c.setFillColorRGB(0.13, 0.22, 0.72)
+    c.setFillColorRGB(*CERT_COLOR_RGB)
     c.setFont("Helvetica-Bold", 18)
     c.drawCentredString(width / 2.0, 395.0, course_title)
 
     # 3. Issued Date at the date placeholder line (x=147.5, y_svg=631 -> y_pdf = 794 - 631 + 6 = 169)
     date_str = str(issued_at)[:10] if issued_at else ""
     if date_str:
-        c.setFillColorRGB(0.12, 0.16, 0.30)
-        c.setFont("Helvetica", 14)
+        c.setFillColorRGB(*CERT_COLOR_RGB)
+        c.setFont("Helvetica-Bold", 14)
         c.drawCentredString(147.5, 169.0, date_str)
 
     # 4. Certificate ID footer
-    c.setFillColorRGB(0.40, 0.45, 0.55)
-    c.setFont("Helvetica", 10)
+    c.setFillColorRGB(*CERT_COLOR_RGB)
+    c.setFont("Helvetica-Bold", 11)
     c.drawCentredString(width / 2.0, 110.0, f"ID: {cert_id}")
 
     # 5. Teacher editor custom layers

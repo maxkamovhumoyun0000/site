@@ -9296,21 +9296,63 @@ function StudentProfile({
   locale: Locale;
 }) {
   const [language, setLanguage] = useState<"uz" | "ru" | "en">((String(user.language || "uz").toLowerCase() as "uz" | "ru" | "en") || "uz");
+  const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [rating, setRating] = useState(5);
   const [reviewText, setReviewText] = useState("");
   const [reviewSubmitting, setReviewSubmitting] = useState(false);
   const [reviewError, setReviewError] = useState("");
   const [localReviews, setLocalReviews] = useState<GenericRow[]>((data.reviews || []) as GenericRow[]);
+
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(userAvatarUrl(user));
   const [avatarBusy, setAvatarBusy] = useState(false);
-  const [avatarError, setAvatarError] = useState("");
-  const reviewPolicy = data.review_policy || {};
-  const ownReviews = localReviews;
-  const approvedReview = ownReviews.find((row) => String(row.status || "").toLowerCase() === "approved");
-  const pendingReview = ownReviews.find((row) => String(row.status || "").toLowerCase() === "pending");
-  const policyAllowsReview = reviewPolicy.can_submit !== false;
-  const canSubmitReview = policyAllowsReview;
+
+  // Modals state
+  const [faqModalOpen, setFaqModalOpen] = useState(false);
+  const [faqCategory, setFaqCategory] = useState<number>(0);
+  const [faqExpanded, setFaqExpanded] = useState<Record<string, boolean>>({});
+  const [blockedModalOpen, setBlockedModalOpen] = useState(false);
+  const [blockedUsers, setBlockedUsers] = useState<any[]>([]);
+  const [blockedLoading, setBlockedLoading] = useState(false);
+  const [portfolioModalOpen, setPortfolioModalOpen] = useState(false);
+  const [portfolioTab, setPortfolioTab] = useState<"certificates" | "badges">("certificates");
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [publicOfferModalOpen, setPublicOfferModalOpen] = useState(false);
+  const [deleteAccountModalOpen, setDeleteAccountModalOpen] = useState(false);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [sessionsModalOpen, setSessionsModalOpen] = useState(false);
+  const [logoutModalOpen, setLogoutModalOpen] = useState(false);
+
+  const [portfolio, setPortfolio] = useState<{
+    certificates: any[];
+    badges: any[];
+    selected_badge: any;
+    selected_badge_id: string | null;
+  }>({ certificates: [], badges: [], selected_badge: null, selected_badge_id: null });
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+
+  // Theme detection
+  const [isDark, setIsDark] = useState(false);
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      const theme = document.documentElement.getAttribute("data-theme");
+      setIsDark(theme === "dark" || document.documentElement.classList.contains("dark"));
+    }
+  }, []);
+
+  const handleToggleTheme = () => {
+    const next = isDark ? "light" : "dark";
+    setIsDark(!isDark);
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", next);
+      if (next === "dark") {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
+      localStorage.setItem("diamond_theme", next);
+    }
+  };
 
   useEffect(() => {
     setLocalReviews((data.reviews || []) as GenericRow[]);
@@ -9325,7 +9367,6 @@ function StudentProfile({
     const token = localStorage.getItem("diamond_token");
     if (!token) return;
     setAvatarBusy(true);
-    setAvatarError("");
     try {
       const payload = await uploadMultipartWithFriendlyErrors(
         "/user/profile/avatar",
@@ -9338,20 +9379,11 @@ function StudentProfile({
       window.dispatchEvent(new CustomEvent("diamond:profile-avatar-updated", { detail: { avatar_url: next } }));
       emitUiToast(t(locale, "profile.avatar.updated", "Profil rasmi yangilandi"), "success");
     } catch (err) {
-      setAvatarError(err instanceof Error ? err.message : t(locale, "profile.avatar.uploadFailed", "Rasm yuklanmadi. Qayta urinib ko'ring."));
+      emitUiToast(err instanceof Error ? err.message : t(locale, "profile.avatar.uploadFailed", "Rasm yuklanmadi. Qayta urinib ko'ring."), "error");
     } finally {
       setAvatarBusy(false);
     }
   }
-
-  const [activeTab, setActiveTab] = useState<"general" | "certificates" | "badges" | "settings">("general");
-  const [portfolio, setPortfolio] = useState<{
-    certificates: any[];
-    badges: any[];
-    selected_badge: any;
-    selected_badge_id: string | null;
-  }>({ certificates: [], badges: [], selected_badge: null, selected_badge_id: null });
-  const [portfolioLoading, setPortfolioLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
@@ -9407,14 +9439,58 @@ function StudentProfile({
     }
   }
 
+  const loadBlockedUsers = async () => {
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    setBlockedLoading(true);
+    try {
+      const res = await requestJson<{ items: any[] }>("/user/safety/blocks", { token });
+      setBlockedUsers(res.items || []);
+    } catch {
+      setBlockedUsers([]);
+    } finally {
+      setBlockedLoading(false);
+    }
+  };
+
+  const handleUnblock = async (targetId: number) => {
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    try {
+      await requestJson(`/user/safety/blocks/${targetId}`, { method: "DELETE", token });
+      setBlockedUsers((prev) => prev.filter((u) => u.user_id !== targetId && u.id !== targetId));
+      emitUiToast("Foydalanuvchi blokdan chiqarildi", "success");
+    } catch (e: any) {
+      emitUiToast(e.message || "Xatolik", "error");
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    setDeletingAccount(true);
+    try {
+      await requestJson("/user/account", { method: "DELETE", token });
+      localStorage.removeItem("diamond_token");
+      localStorage.removeItem("diamond_user");
+      window.location.href = "/";
+    } catch (e: any) {
+      emitUiToast(e.message || "Hisobni o'chirishda xatolik", "error");
+      setDeletingAccount(false);
+    }
+  };
+
   const displayName = userName(user);
   const loginId = user.login_id || t(locale, "profile.telegramLinked", "Telegram ulangan");
   const phone = user.phone || "-";
-  const subjects = ((data.subject_levels || data.subjects || []) as GenericRow[]);
+
+  const ownReviews = localReviews;
+  const approvedReview = ownReviews.find((row) => String(row.status || "").toLowerCase() === "approved");
+  const pendingReview = ownReviews.find((row) => String(row.status || "").toLowerCase() === "pending");
 
   async function submitStudentReview() {
     const text = reviewText.trim();
-    if (!text || reviewSubmitting || !canSubmitReview) return;
+    if (!text || reviewSubmitting) return;
     setReviewSubmitting(true);
     setReviewError("");
     try {
@@ -9433,6 +9509,8 @@ function StudentProfile({
         ...prev.filter((row) => Number(row.id || 0) !== Number(nextReview.id || 0)),
       ]);
       setReviewText("");
+      setReviewModalOpen(false);
+      emitUiToast("Sharhingiz qabul qilindi!", "success");
     } catch (err) {
       setReviewError(err instanceof Error ? err.message : t(locale, "profile.reviewFailed", "Sharh yuborilmadi. Qayta urinib ko'ring."));
     } finally {
@@ -9440,363 +9518,709 @@ function StudentProfile({
     }
   }
 
-  return (
-    <div className="max-w-2xl mx-auto space-y-6 px-4 sm:px-0 pb-10">
-      {/* Premium Header Card */}
-      <div className="panel-card relative overflow-hidden bg-gradient-to-br from-navy-900/5 via-cyan-500/5 to-transparent dark:from-navy-950/20 dark:via-cyan-300/5 dark:to-transparent border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
-        <div className="flex flex-col items-center text-center">
-          <div className="relative mb-4 group">
-            <button
-              onClick={() => avatarUrl && setAvatarPreviewOpen(true)}
-              className="w-28 h-28 sm:w-32 sm:h-32 rounded-full overflow-hidden ring-4 ring-white dark:ring-navy-950 shadow-md block transition-transform group-hover:scale-[1.02]"
-              title={displayName}
-            >
-              <SafeAvatarImage
-                src={avatarUrl}
-                alt={displayName}
-                className="w-full h-full object-cover"
-                fallbackClassName="w-full h-full bg-gradient-to-tr from-navy-800 to-navy-950 flex items-center justify-center text-5xl sm:text-6xl font-black text-white"
-                fallback={displayName.slice(0, 1)}
-              />
-            </button>
-            <label className="absolute -bottom-1 right-1 cursor-pointer rounded-full bg-navy-900 hover:bg-navy-800 text-white px-3 py-1 text-[10px] font-black shadow-md transition-colors border border-white/20">
-              {avatarBusy ? "..." : t(locale, "profile.photo", "✎ Rasm")}
-              <input type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadStudentAvatar(f); e.target.value = ""; }} disabled={avatarBusy} />
-            </label>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap justify-center">
-            <h2 className="text-2xl sm:text-3xl font-black text-navy-950 dark:text-white tracking-tight">{displayName}</h2>
-            {portfolio.selected_badge ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/20 border border-amber-400/40 px-3 py-0.5 text-xs font-bold text-amber-700 dark:text-amber-300">
-                🎖 {portfolio.selected_badge.title || portfolio.selected_badge.code}
-              </span>
-            ) : null}
-          </div>
-          <div className="text-xs text-ink-500 dark:text-navy-400 font-mono mt-1 px-3 py-1 bg-surface-soft dark:bg-navy-900/50 rounded-full border border-line dark:border-white/5">@{loginId}</div>
-          {phone !== "-" && <div className="text-sm text-ink-600 dark:text-navy-300 mt-2 font-bold">{phone}</div>}
-          {user.parent_phone && <div className="text-sm text-ink-600 dark:text-navy-300 mt-1 font-bold">{t(locale, "profile.parent", "Ota-ona")}: {user.parent_phone}</div>}
+  // Static FAQ items matching mobile FaqScreen
+  const FAQ_DATA = [
+    {
+      title: "Arena",
+      emoji: "🏟️",
+      items: [
+        {
+          q: "Arena nima va unda qanday qatnashish mumkin?",
+          a: "Arena — barcha o'quvchilar o'rtasida real vaqt rejimida o'tkaziladigan intellektual test musobaqasi. Belgilangan vaqtlarda Arena bo'limiga kirib musobaqaga qo'shilishingiz mumkin.",
+        },
+        {
+          q: "Arena ballari va yutuqlari qanday hisoblanadi?",
+          a: "Har bir to'g'ri va tezkor javob uchun XP (tajriba ballari) va D'Coin beriladi. Yuqori o'rinlarni egallagan o'quvchilar qo'shimcha sovg'alar bilan taqdirlanadi.",
+        },
+      ],
+    },
+    {
+      title: "Duel",
+      emoji: "⚔️",
+      items: [
+        {
+          q: "1v1, 3v3 va 5v5 duellar qanday ishlaydi?",
+          a: "Siz boshqa o'quvchini yakkama-yakka (1v1) yoki do'stlaringiz bilan guruh bo'lib (3v3, 5v5) intellektual jangga chorlashingiz mumkin. Savollarga ko'proq to'g'ri javob bergan tomon g'olib bo'ladi.",
+        },
+        {
+          q: "Duelda yutqazsam D'Coinim kamayadimi?",
+          a: "Yo'q, duellarda faqat g'alaba uchun qo'shimcha rag'bat va D'Coin beriladi, bilim sinovi mutlaqo xavfsiz.",
+        },
+      ],
+    },
+    {
+      title: "D'Coin va D'Point",
+      emoji: "💎",
+      items: [
+        {
+          q: "D'Coin nima va uni qanday to'plash mumkin?",
+          a: "D'Coin — Diamond Education platformasining yutuq valyutasi. Testlarni a'lo bahoga topshirish, kunlik streak, uy vazifalari va arenada g'alaba qozonish orqali to'planadi.",
+        },
+        {
+          q: "D'Coinlarni qayerda ishlatish mumkin?",
+          a: "To'plangan D'Coinlar evaziga maxsus kitoblar, audio-video darslar, foydali materiallar hamda maxsus sovg'alarni olishingiz mumkin.",
+        },
+      ],
+    },
+    {
+      title: "Platforma va Ta'lim",
+      emoji: "📚",
+      items: [
+        {
+          q: "Sertifikatni qanday olaman?",
+          a: "O'quv yo'nalishidagi barcha modullarni va testlarni muvaffaqiyatli topshirganingizdan so'ng, tizim avtomatik rasmiy PDF sertifikat beradi. Uni Portfolio bo'limidan yuklab olishingiz mumkin.",
+        },
+        {
+          q: "Mening o'quv rejam nima?",
+          a: "Diamondvoy AI sizning xatolaringiz, test natijalaringiz va zaif mavzularingizni avtomatik tahlil qilib, haftalik shaxsiy reja va mashqlarni tayyorlab beradi.",
+        },
+      ],
+    },
+  ];
 
-          {/* Quick summary metrics */}
-          <div className="mt-5 grid grid-cols-3 gap-2 w-full max-w-sm pt-4 border-t border-line/40 dark:border-white/10">
-            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
-              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">Sertifikatlar</span>
-              <strong className="text-base font-black text-navy-900 dark:text-white mt-0.5">🎓 {portfolio.certificates.length}</strong>
-            </div>
-            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
-              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">Nishonlar</span>
-              <strong className="text-base font-black text-navy-900 dark:text-white mt-0.5">🎖 {portfolio.badges.filter(b => b.unlocked).length}</strong>
-            </div>
-            <div className="flex flex-col items-center p-2 rounded-2xl bg-surface-soft/60 dark:bg-white/5">
-              <span className="text-xs text-ink-500 dark:text-navy-400 font-medium">D'Point</span>
-              <strong className="text-base font-black text-cyan-600 dark:text-cyan-400 mt-0.5">💎 {Number((user as any).dpoints || (user as any).dcoins || 0).toFixed(0)}</strong>
-            </div>
+  return (
+    <div className="max-w-md mx-auto space-y-6 px-4 py-4 sm:py-6 pb-20 select-none animate-fade-in">
+      {/* ─── 1. CENTERED AVATAR & USER INFO HEADER ─── */}
+      <div className="flex flex-col items-center text-center">
+        <div className="relative mb-3.5 group">
+          <button
+            type="button"
+            onClick={() => avatarUrl && setAvatarPreviewOpen(true)}
+            className="w-24 h-24 sm:w-28 sm:h-28 rounded-full overflow-hidden ring-4 ring-white dark:ring-[#0c143b] shadow-lg block transition-transform active:scale-95"
+            title={displayName}
+          >
+            <SafeAvatarImage
+              src={avatarUrl}
+              alt={displayName}
+              className="w-full h-full object-cover"
+              fallbackClassName="w-full h-full bg-gradient-to-tr from-navy-800 to-navy-950 flex items-center justify-center text-4xl sm:text-5xl font-black text-white"
+              fallback={displayName.slice(0, 1)}
+            />
+          </button>
+
+          {/* Camera overlay button at bottom-right */}
+          <label
+            className="absolute -bottom-1 -right-1 w-8 h-8 rounded-full bg-cyan-600 hover:bg-cyan-500 text-white flex items-center justify-center shadow-md border-2 border-white dark:border-[#0c143b] cursor-pointer transition-transform active:scale-90"
+            title={t(locale, "profile.photo", "Rasmni o'zgartirish")}
+          >
+            {avatarBusy ? (
+              <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M4 4h3l2-2h6l2 2h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm8 3a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 2a3 3 0 1 1 0 6 3 3 0 0 1 0-6z"/>
+              </svg>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) uploadStudentAvatar(f);
+                e.target.value = "";
+              }}
+              disabled={avatarBusy}
+            />
+          </label>
+        </div>
+
+        <h2 className="text-2xl font-black text-navy-950 dark:text-white tracking-tight">
+          {displayName}
+        </h2>
+
+        <div className="text-xs text-ink-500 dark:text-navy-400 font-mono mt-0.5">
+          @{loginId}
+        </div>
+
+        {phone !== "-" && (
+          <div className="text-xs font-bold text-ink-600 dark:text-navy-300 mt-1">
+            {phone}
           </div>
+        )}
+
+        <div className="mt-2.5">
+          <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-cyan-500/10 dark:bg-cyan-400/10 border border-cyan-500/20 text-[11px] font-extrabold text-cyan-700 dark:text-cyan-300 tracking-wide uppercase">
+            ✨ {t(locale, "common.student", "TALABA")}
+          </span>
         </div>
       </div>
 
-      {/* Mobile App Style Tabs */}
-      <div className="flex gap-2 border-b border-line dark:border-white/10 overflow-x-auto pb-1 select-none">
-        {[
-          { id: "general", label: "👤 " + t(locale, "profile.tabGeneral", "Umumiy") },
-          { id: "certificates", label: "🎓 " + t(locale, "profile.tabCertificates", "Sertifikatlarim") + ` (${portfolio.certificates.length})` },
-          { id: "badges", label: "🎖 " + t(locale, "profile.tabBadges", "Badge'larim") + ` (${portfolio.badges.filter(b => b.unlocked).length})` },
-          { id: "settings", label: "🔒 " + t(locale, "profile.tabSettings", "Sozlamalar") },
-        ].map((tItem) => (
-          <button
-            key={tItem.id}
-            type="button"
-            onClick={() => setActiveTab(tItem.id as any)}
-            className={`pb-2.5 px-3.5 text-xs sm:text-sm font-bold transition border-b-2 whitespace-nowrap -mb-px rounded-t-xl ${
-              activeTab === tItem.id
-                ? "border-cyan-500 text-cyan-600 dark:text-cyan-400 bg-cyan-500/5"
-                : "border-transparent text-ink-500 dark:text-navy-400 hover:text-ink-700 dark:hover:text-white"
-            }`}
-          >
-            {tItem.label}
-          </button>
-        ))}
+      {/* ─── 2. PREMIUM MENU CARD (10 LIST ITEMS) ─── */}
+      <div className="rounded-3xl border border-gray-200/80 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm overflow-hidden divide-y divide-gray-100 dark:divide-white/5">
+        {/* Item 1: FAQ */}
+        <button
+          type="button"
+          onClick={() => setFaqModalOpen(true)}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-blue-500/10 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "profile.faq", "Ko'p beriladigan savollar (FAQ)")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 2: Feedback */}
+        <button
+          type="button"
+          onClick={() => { window.location.href = "/?role=student&section=chats"; }}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 dark:bg-sky-500/20 flex items-center justify-center text-sky-600 dark:text-sky-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "profile.feedback", "Fikr va mulohaza")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 3: Blocked Users */}
+        <button
+          type="button"
+          onClick={() => { setBlockedModalOpen(true); loadBlockedUsers(); }}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "profile.blockedUsers", "Bloklangan foydalanuvchilar")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 4: Portfolio va badge'lar */}
+        <button
+          type="button"
+          onClick={() => setPortfolioModalOpen(true)}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-yellow-500/10 dark:bg-yellow-500/20 flex items-center justify-center text-yellow-600 dark:text-yellow-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            Portfolio va badge’lar
+          </span>
+          {portfolio.certificates.length > 0 || portfolio.badges.some(b => b.unlocked) ? (
+            <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-700 dark:text-yellow-300">
+              🎓 {portfolio.certificates.length} · 🎖 {portfolio.badges.filter(b => b.unlocked).length}
+            </span>
+          ) : null}
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 5: Pomodoro */}
+        <button
+          type="button"
+          onClick={() => { window.location.href = "/?role=student&section=pomodoro"; }}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-rose-500/10 dark:bg-rose-500/20 flex items-center justify-center text-rose-600 dark:text-rose-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            Pomodoro
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 6: Mening o'quv rejam */}
+        <button
+          type="button"
+          onClick={() => { window.location.href = "/student/plan"; }}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-purple-500/10 dark:bg-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            Mening o‘quv rejam
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 7: Sharh qoldirish */}
+        <button
+          type="button"
+          onClick={() => setReviewModalOpen(true)}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-emerald-500/10 dark:bg-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "profile.leaveReview", "Sharh qoldirish")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 8: Ommaviy oferta */}
+        <button
+          type="button"
+          onClick={() => setPublicOfferModalOpen(true)}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-indigo-500/10 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "auth.publicOfferTitle", "Ommaviy oferta")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+
+        {/* Item 9: Maxfiylik siyosati */}
+        <a
+          href="/privacy"
+          target="_blank"
+          rel="noreferrer"
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-teal-500/10 dark:bg-teal-500/20 flex items-center justify-center text-teal-600 dark:text-teal-400 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+            {t(locale, "profile.privacyPolicy", "Maxfiylik siyosati")}
+          </span>
+          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </a>
+
+        {/* Item 10: Hisobni o'chirish */}
+        <button
+          type="button"
+          onClick={() => setDeleteAccountModalOpen(true)}
+          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-xl bg-red-500/10 dark:bg-red-500/20 flex items-center justify-center text-red-500 flex-shrink-0">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </div>
+          <span className="text-sm font-bold text-red-600 dark:text-red-400 flex-1">
+            {t(locale, "profile.deleteAccount", "Hisobni o'chirish")}
+          </span>
+          <svg className="w-4 h-4 text-red-400 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
       </div>
 
-      {/* ─── TAB 1: UMUMIY ─── */}
-      {activeTab === "general" && (
-        <div className="space-y-6 animate-fade-in">
-          {/* Guruh va Fan */}
-          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-6">
-            <div>
-              <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.subjectLevel", "FAN VA LEVEL")}</div>
-              <div className="flex flex-wrap gap-2">
-                {subjects.length > 0 ? subjects.map((s, i) => (
-                  <span key={i} className="px-4 py-2 bg-navy-100/60 dark:bg-navy-800/80 rounded-2xl text-sm font-bold text-navy-950 dark:text-white border border-navy-200/20">
-                    📚 {t(locale, `subject.${String(s.subject || s.name || "").toLowerCase()}`, s.subject || s.name)} — <span className="text-cyan-600 dark:text-cyan-400">{s.level}</span>
-                  </span>
-                )) : <span className="text-sm text-ink-500">{t(locale, "common.noData", "Ma'lumot yo'q")}</span>}
-              </div>
-            </div>
-
-            {Array.isArray(data.groups) && data.groups.length > 0 && (
-              <>
-                <div>
-                  <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myGroups", "MENING GURUHLARIM")}</div>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {data.groups.map((g: any, i: number) => (
-                      <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
-                        <div className="font-bold text-sm text-ink-900 dark:text-white">{g.name}</div>
-                        <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex flex-col gap-1">
-                          <span>{g.lesson_date || ""} {g.lesson_start ? `• ${g.lesson_start}` : ""}</span>
-                          {g.telegram_group_url ? (
-                            <a href={g.telegram_group_url} target="_blank" rel="noreferrer" className="text-cyan-600 dark:text-cyan-400 hover:underline inline-flex items-center gap-1">
-                              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
-                              {t(locale, "profile.telegramGroup", "Telegram guruh")}
-                            </a>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                {data.groups.some((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan") && (
-                  <div>
-                    <div className="text-[10px] font-black text-ink-500 dark:text-navy-400 tracking-wider mb-2">{t(locale, "profile.myTeachers", "MENING O'QITUVCHILARIM")}</div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      {data.groups.filter((g: any) => g.teacher_name && g.teacher_name !== "Not assigned" && g.teacher_name !== "Biriktirilmagan").map((g: any, i: number) => (
-                        <div key={i} className="p-3 bg-surface-soft dark:bg-navy-900/50 rounded-2xl border border-line dark:border-white/5 flex flex-col gap-1">
-                          <div className="font-bold text-sm text-ink-900 dark:text-white">{g.teacher_name}</div>
-                          <div className="text-xs text-ink-500 dark:text-navy-400 mt-1 flex gap-2">
-                            <span className="font-medium text-ink-700 dark:text-navy-300">{t(locale, `subject.${String(g.subject || "english").toLowerCase()}`, g.subject || "English")} {t(locale, "profile.teacherSuffix", "o'qituvchisi")}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
+      {/* ─── 3. PUBLIC OFFER AGREED BANNER ─── */}
+      {user.public_offer_agreed && (
+        <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center gap-3">
+          <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xs font-black">
+            ✓
           </div>
+          <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+            {t(locale, "public_offer.agreed_message", "Siz bizning ommaviy ofertamizga rozilik bildirgansiz")}
+          </p>
         </div>
       )}
 
-      {/* ─── TAB 2: SERTIFIKATLARIM ─── */}
-      {activeTab === "certificates" && (
-        <div className="space-y-4 animate-fade-in">
-          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between border-b border-line/60 pb-3 dark:border-white/10 mb-4">
-              <div>
-                <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
-                  <span>🎓 Mening Sertifikatlarim</span>
-                </h3>
-                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-                  Muvaffaqiyatli yakunlangan modullar va kurslar uchun rasmiy sertifikatlar
-                </p>
-              </div>
-              <span className="rounded-full bg-cyan-500/15 px-3 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">
-                {portfolio.certificates.length} ta
-              </span>
+      {/* ─── 4. SETTINGS POPOVER BAR (4 CIRCULAR BUTTONS) ─── */}
+      <div className="flex items-center justify-center gap-3.5 pt-2">
+        {/* Button 1: Theme */}
+        <button
+          type="button"
+          onClick={handleToggleTheme}
+          className="w-11 h-11 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition text-cyan-600 dark:text-cyan-400"
+          title={isDark ? "Yorug' rejim" : "Qorong'u rejim"}
+        >
+          {isDark ? (
+            <svg className="w-5 h-5 text-amber-400" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/>
+            </svg>
+          ) : (
+            <svg className="w-5 h-5 text-amber-500" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0V3a1 1 0 0 1 1-1zm0 18a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1zm10-8a1 1 0 0 1-1 1h-2a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zM5 12a1 1 0 0 1-1 1H2a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zm14.071-7.071a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zm-12.728 12.728a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 0 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zm12.728 0a1 1 0 0 1-1.414 0l-1.414-1.414a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414zM6.343 6.343a1 1 0 0 1-1.414 0L3.515 4.929a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414z"/>
+            </svg>
+          )}
+        </button>
+
+        {/* Button 2: Language */}
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setLangMenuOpen(!langMenuOpen)}
+            className="w-11 h-11 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition text-base"
+            title="Tilni tanlash"
+          >
+            {language === "uz" ? "🇺🇿" : language === "ru" ? "🇷🇺" : "🇬🇧"}
+          </button>
+
+          {langMenuOpen && (
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 w-36 rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-xl p-1.5 z-50 animate-fade-in flex flex-col gap-1">
+              {[
+                { code: "uz", label: "O'zbek", flag: "🇺🇿" },
+                { code: "ru", label: "Русский", flag: "🇷🇺" },
+                { code: "en", label: "English", flag: "🇬🇧" },
+              ].map((l) => (
+                <button
+                  key={l.code}
+                  type="button"
+                  onClick={() => {
+                    setLanguage(l.code as any);
+                    onSaveLanguage(l.code as any);
+                    setLangMenuOpen(false);
+                  }}
+                  className={`w-full px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition ${
+                    language === l.code
+                      ? "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400"
+                      : "text-slate-700 dark:text-slate-300 hover:bg-gray-100 dark:hover:bg-white/5"
+                  }`}
+                >
+                  <span>{l.flag}</span>
+                  <span>{l.label}</span>
+                  {language === l.code && <span className="ml-auto text-cyan-500">✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Button 3: Active Sessions / Devices */}
+        <button
+          type="button"
+          onClick={() => setSessionsModalOpen(true)}
+          className="w-11 h-11 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition text-cyan-600 dark:text-cyan-400"
+          title={t(locale, "profile.sessions", "Mening qurilmalarim")}
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+          </svg>
+        </button>
+
+        {/* Button 4: Logout */}
+        <button
+          type="button"
+          onClick={() => setLogoutModalOpen(true)}
+          className="w-11 h-11 rounded-full border border-gray-200 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm flex items-center justify-center hover:scale-105 active:scale-95 transition text-red-500"
+          title={t(locale, "auth.logout", "Chiqish")}
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+        </button>
+      </div>
+
+      {/* ─── MODAL 1: FAQ ─── */}
+      <ModalPortal open={faqModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setFaqModalOpen(false)}>
+          <div className="panel-card max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>❓ Ko'p beriladigan savollar</span>
+              </h3>
+              <button onClick={() => setFaqModalOpen(false)} className="modal-icon-close">✕</button>
             </div>
 
-            {portfolioLoading ? (
-              <div className="py-12 text-center text-xs font-bold text-ink-400">Yuklanmoqda...</div>
-            ) : portfolio.certificates.length > 0 ? (
-              <div className="space-y-3">
-                {portfolio.certificates.map((cert: any) => {
-                  const certId = cert.certificate_id || cert.id;
-                  const pdfUrl = `/api/student/certificates/${certId}/pdf`;
-                  return (
-                    <div
-                      key={certId}
-                      className="rounded-2xl border border-line p-4 dark:border-white/10 bg-surface-soft/30 dark:bg-white/5 flex flex-wrap items-center justify-between gap-3 hover:border-cyan-400/60 transition"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="h-12 w-12 rounded-2xl bg-gradient-to-tr from-cyan-600 to-blue-600 text-white flex items-center justify-center text-2xl shadow-sm">
-                          🎓
-                        </div>
-                        <div>
-                          <h4 className="font-bold text-sm text-navy-900 dark:text-white">
-                            {cert.course_title || cert.title || "Diamond Learning Track Sertifikati"}
-                          </h4>
-                          <p className="text-xs text-ink-500 dark:text-navy-400 mt-0.5">
-                            ID: <strong className="font-mono text-cyan-700 dark:text-cyan-300">{certId}</strong>
-                            {cert.issued_at ? ` · Sana: ${new Date(cert.issued_at).toLocaleDateString()}` : ""}
-                          </p>
-                        </div>
-                      </div>
+            {/* Category tabs */}
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {FAQ_DATA.map((cat, idx) => (
+                <button
+                  key={cat.title}
+                  onClick={() => setFaqCategory(idx)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap flex items-center gap-1.5 ${
+                    faqCategory === idx
+                      ? "bg-cyan-600 text-white shadow-sm"
+                      : "bg-gray-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-white/10"
+                  }`}
+                >
+                  <span>{cat.emoji}</span>
+                  <span>{cat.title}</span>
+                </button>
+              ))}
+            </div>
 
-                      <div className="flex items-center gap-2">
+            {/* Questions accordion */}
+            <div className="space-y-2.5 pt-2">
+              {FAQ_DATA[faqCategory].items.map((item, qIdx) => {
+                const key = `${faqCategory}-${qIdx}`;
+                const open = Boolean(faqExpanded[key]);
+                return (
+                  <div key={qIdx} className="rounded-2xl border border-gray-200 dark:border-white/10 overflow-hidden bg-gray-50/50 dark:bg-white/5">
+                    <button
+                      type="button"
+                      onClick={() => setFaqExpanded((prev) => ({ ...prev, [key]: !open }))}
+                      className="w-full p-3.5 text-left text-xs font-bold text-navy-900 dark:text-white flex items-center justify-between gap-2 hover:bg-gray-100/60 dark:hover:bg-white/10 transition"
+                    >
+                      <span>{item.q}</span>
+                      <span className={`text-slate-400 transform transition-transform ${open ? "rotate-180" : ""}`}>▼</span>
+                    </button>
+                    {open && (
+                      <div className="p-3.5 pt-0 text-xs text-slate-600 dark:text-slate-300 border-t border-gray-200/50 dark:border-white/5 bg-white dark:bg-[#080d28]">
+                        {item.a}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 2: BLOCKED USERS ─── */}
+      <ModalPortal open={blockedModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setBlockedModalOpen(false)}>
+          <div className="panel-card max-w-md w-full max-h-[85vh] overflow-y-auto rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>🚫 Bloklangan foydalanuvchilar</span>
+              </h3>
+              <button onClick={() => setBlockedModalOpen(false)} className="modal-icon-close">✕</button>
+            </div>
+
+            {blockedLoading ? (
+              <div className="py-12 text-center text-xs font-bold text-slate-400">Yuklanmoqda...</div>
+            ) : blockedUsers.length === 0 ? (
+              <div className="text-center py-10 text-xs text-slate-500 dark:text-slate-400">
+                Bloklangan foydalanuvchilar mavjud emas.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {blockedUsers.map((item) => {
+                  const targetId = Number(item.user_id || item.id || 0);
+                  const name = item.name || item.display_name || item.username || `Foydalanuvchi #${targetId}`;
+                  return (
+                    <div key={targetId} className="p-3 rounded-2xl border border-gray-200 dark:border-white/10 bg-gray-50/50 dark:bg-white/5 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-bold text-xs text-navy-900 dark:text-white">{name}</div>
+                        {item.login_id && <div className="text-[10px] text-slate-400">@{item.login_id}</div>}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleUnblock(targetId)}
+                        className="btn btn-soft small text-xs font-bold px-3 py-1.5 text-red-600 hover:bg-red-500/10"
+                      >
+                        Blokdan chiqarish
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 3: PORTFOLIO VA BADGE'LAR ─── */}
+      <ModalPortal open={portfolioModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setPortfolioModalOpen(false)}>
+          <div className="panel-card max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>🎖 Portfolio va badge’lar</span>
+              </h3>
+              <button onClick={() => setPortfolioModalOpen(false)} className="modal-icon-close">✕</button>
+            </div>
+
+            {/* Sub-tabs */}
+            <div className="flex gap-2 border-b border-gray-200 dark:border-white/10 pb-2">
+              <button
+                type="button"
+                onClick={() => setPortfolioTab("certificates")}
+                className={`pb-1.5 px-4 text-xs font-bold transition border-b-2 -mb-2 ${
+                  portfolioTab === "certificates"
+                    ? "border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                    : "border-transparent text-slate-500 dark:text-slate-400"
+                }`}
+              >
+                🎓 Sertifikatlarim ({portfolio.certificates.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setPortfolioTab("badges")}
+                className={`pb-1.5 px-4 text-xs font-bold transition border-b-2 -mb-2 ${
+                  portfolioTab === "badges"
+                    ? "border-cyan-500 text-cyan-600 dark:text-cyan-400"
+                    : "border-transparent text-slate-500 dark:text-slate-400"
+                }`}
+              >
+                🎖 Badge'larim ({portfolio.badges.filter(b => b.unlocked).length})
+              </button>
+            </div>
+
+            {/* Sub-tab 1: Certificates */}
+            {portfolioTab === "certificates" && (
+              <div className="space-y-3 pt-2">
+                {portfolioLoading ? (
+                  <div className="py-12 text-center text-xs font-bold text-slate-400">Yuklanmoqda...</div>
+                ) : portfolio.certificates.length > 0 ? (
+                  portfolio.certificates.map((cert: any) => {
+                    const certId = cert.certificate_id || cert.id;
+                    const pdfUrl = `/api/student/certificates/${certId}/pdf`;
+                    return (
+                      <div
+                        key={certId}
+                        className="rounded-2xl border border-gray-200 dark:border-white/10 p-4 bg-gray-50/50 dark:bg-white/5 flex flex-wrap items-center justify-between gap-3"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="h-10 w-10 rounded-2xl bg-gradient-to-tr from-cyan-600 to-blue-600 text-white flex items-center justify-center text-xl shadow-sm">
+                            🎓
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-xs text-navy-900 dark:text-white">
+                              {cert.course_title || cert.title || "Diamond Track Sertifikati"}
+                            </h4>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                              ID: <strong className="font-mono text-cyan-600 dark:text-cyan-400">{certId}</strong>
+                              {cert.issued_at ? ` · ${new Date(cert.issued_at).toLocaleDateString()}` : ""}
+                            </p>
+                          </div>
+                        </div>
                         <a
                           href={pdfUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="btn btn-primary text-xs flex items-center gap-1.5 py-2 px-3.5 font-bold shadow-sm"
+                          className="btn btn-primary text-xs font-bold py-1.5 px-3.5 shadow-sm"
                         >
-                          <span>📄 PDF ko'rish / Yuklab olish</span>
+                          📄 PDF
                         </a>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-12 px-4 rounded-2xl bg-surface-soft/40 dark:bg-white/5 border border-dashed border-line dark:border-white/10">
-                <span className="text-5xl block mb-2">🎓</span>
-                <h4 className="font-bold text-sm text-navy-900 dark:text-white">Hozircha sertifikatlar mavjud emas</h4>
-                <p className="text-xs text-ink-500 dark:text-navy-300 mt-1 max-w-sm mx-auto">
-                  Learning Path yoki kurslardagi barcha modullarni muvaffaqiyatli topshirganingizda, bu yerda rasmiy sertifikat beriladi va PDF shaklida yuklab olishingiz mumkin bo'ladi.
-                </p>
+                    );
+                  })
+                ) : (
+                  <div className="text-center py-10 px-4 rounded-2xl bg-gray-50/50 dark:bg-white/5 border border-dashed border-gray-200 dark:border-white/10">
+                    <span className="text-4xl block mb-2">🎓</span>
+                    <h4 className="font-bold text-xs text-navy-900 dark:text-white">Hozircha sertifikatlar mavjud emas</h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto">
+                      Learning Path modullarini to'liq topshirganingizda rasmiy sertifikat taqdim etiladi.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
-          </div>
-        </div>
-      )}
 
-      {/* ─── TAB 3: BADGE'LARIM ─── */}
-      {activeTab === "badges" && (
-        <div className="space-y-4 animate-fade-in">
-          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
-            <div className="flex items-center justify-between border-b border-line/60 pb-3 dark:border-white/10 mb-4">
-              <div>
-                <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
-                  <span>🎖 Mening Nishonlarim (Badge'lar)</span>
-                </h3>
-                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-                  Platformadagi yutuqlaringiz uchun berilgan maxsus nishonlar
+            {/* Sub-tab 2: Badges */}
+            {portfolioTab === "badges" && (
+              <div className="pt-2">
+                <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">
+                  Badge ustiga bosib, uni ismingiz yonida ko'rsatish uchun tanlang:
                 </p>
-              </div>
-            </div>
-
-            {portfolioLoading ? (
-              <div className="py-12 text-center text-xs font-bold text-ink-400">Yuklanmoqda...</div>
-            ) : portfolio.badges.length > 0 ? (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {portfolio.badges.map((b: any) => {
-                  const isSelected = portfolio.selected_badge_id === b.id || portfolio.selected_badge_id === b.code;
-                  const isUnlocked = Boolean(b.unlocked);
-                  return (
-                    <div
-                      key={b.id || b.code}
-                      className={`rounded-2xl border p-4 transition flex flex-col justify-between ${
-                        isSelected
-                          ? "border-amber-400 bg-amber-500/10 shadow-sm dark:bg-amber-950/20"
-                          : isUnlocked
-                          ? "border-line bg-surface-soft/40 dark:border-white/10 dark:bg-white/5"
-                          : "border-line/40 bg-surface-soft/20 opacity-60 dark:border-white/5 dark:bg-white/5"
-                      }`}
-                    >
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="text-3xl">
-                          {b.asset_url ? <img src={b.asset_url} alt="" className="h-10 w-10 object-contain" /> : "🎖"}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <h4 className="font-bold text-sm text-navy-900 dark:text-white truncate">
+                {portfolioLoading ? (
+                  <div className="py-12 text-center text-xs font-bold text-slate-400">Yuklanmoqda...</div>
+                ) : portfolio.badges.length > 0 ? (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    {portfolio.badges.map((b: any) => {
+                      const isSelected = portfolio.selected_badge_id === b.id || portfolio.selected_badge_id === b.code;
+                      const isUnlocked = Boolean(b.unlocked);
+                      return (
+                        <div
+                          key={b.id || b.code}
+                          onClick={() => isUnlocked && handleSelectBadge(b.id || b.code)}
+                          className={`p-3 rounded-2xl border transition text-center cursor-pointer flex flex-col justify-between ${
+                            isSelected
+                              ? "border-amber-400 bg-amber-500/10 shadow-sm dark:bg-amber-950/20"
+                              : isUnlocked
+                              ? "border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-amber-300"
+                              : "border-gray-100 dark:border-white/5 bg-gray-50 dark:bg-white/5 opacity-50 cursor-not-allowed"
+                          }`}
+                        >
+                          <div className="text-2xl mb-1">
+                            {b.asset_url ? <img src={b.asset_url} alt="" className="h-8 w-8 object-contain mx-auto" /> : "🎖"}
+                          </div>
+                          <h4 className="font-bold text-xs text-navy-900 dark:text-white truncate mb-0.5">
                             {b.title || b.code}
                           </h4>
-                          <p className="text-xs text-ink-500 dark:text-navy-300 line-clamp-2">
-                            {b.description || "Maxsus topshiriq uchun nishon"}
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">
+                            {b.description || "Maxsus yutuq nishoni"}
                           </p>
+                          <div>
+                            {isSelected ? (
+                              <span className="inline-block px-2 py-0.5 text-[9px] font-black bg-amber-500 text-white rounded-full">
+                                Tanlangan ✓
+                              </span>
+                            ) : isUnlocked ? (
+                              <span className="inline-block px-2 py-0.5 text-[9px] font-bold bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 rounded-full">
+                                Ochiq
+                              </span>
+                            ) : (
+                              <span className="inline-block px-2 py-0.5 text-[9px] font-medium bg-gray-200 dark:bg-gray-800 text-slate-500 rounded-full">
+                                Qulflangan
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-
-                      <div className="pt-2 border-t border-line/40 flex items-center justify-between">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-ink-400">
-                          {isUnlocked ? "✓ Ochilgan" : "🔒 Qulflangan"}
-                        </span>
-                        {isUnlocked ? (
-                          <button
-                            type="button"
-                            onClick={() => handleSelectBadge(b.id || b.code)}
-                            className={`rounded-xl px-3 py-1 text-xs font-bold transition shadow-sm ${
-                              isSelected
-                                ? "bg-amber-500 text-white"
-                                : "btn btn-soft"
-                            }`}
-                          >
-                            {isSelected ? "Tanlangan ✓" : "Tanlash"}
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="text-center py-10 text-xs text-slate-400">Nishonlar mavjud emas.</div>
+                )}
               </div>
-            ) : (
-              <div className="text-center py-12 text-xs text-ink-400">Hozircha nishonlar mavjud emas.</div>
             )}
           </div>
         </div>
-      )}
+      </ModalPortal>
 
-      {/* ─── TAB 4: SOZLAMALAR ─── */}
-      {activeTab === "settings" && (
-        <div className="space-y-6 animate-fade-in">
-          {/* Language & Appearance */}
-          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
-            <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.languageAppearance", "TIL VA TASHQI KO'RINISH")}</div>
-            <div className="space-y-4">
-              <div>
-                <div className="text-[10px] font-bold text-ink-400 mb-2">{t(locale, "profile.systemLanguage", "TIZIM TILI")}</div>
-                <div className="flex gap-2">
-                  {["uz","ru","en"].map(l => (
-                    <button
-                      key={l}
-                      onClick={() => { setLanguage(l as any); onSaveLanguage(l as any); }}
-                      className={`px-4 py-2 rounded-2xl text-sm font-bold transition-all border ${language === l ? 'bg-navy-900 text-white border-navy-900 dark:bg-white dark:text-navy-900 dark:border-white shadow-sm' : 'bg-surface border-line text-ink-600 hover:border-line-hover'}`}
-                    >
-                      {l.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              
-              <div className="flex items-center justify-between pt-4 border-t border-line dark:border-white/10">
-                <div>
-                  <div className="text-sm font-bold text-ink-700 dark:text-slate-200">{t(locale, "profile.darkMode", "Qorong'u rejim")}</div>
-                  <div className="text-[10px] text-ink-400">{t(locale, "profile.darkModeDesc", "Tizim ranglarini o'zgartirish")}</div>
-                </div>
-                <ThemeToggleButton />
-              </div>
+      {/* ─── MODAL 4: SHARH QOLDIRISH ─── */}
+      <ModalPortal open={reviewModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setReviewModalOpen(false)}>
+          <div className="panel-card max-w-md w-full rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>✍️ Platformaga sharh qoldirish</span>
+              </h3>
+              <button onClick={() => setReviewModalOpen(false)} className="modal-icon-close">✕</button>
             </div>
-          </div>
 
-          {/* Ommaviy Oferta holati */}
-          {user.public_offer_agreed && (
-            <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm flex items-center justify-between bg-green-50/50 dark:bg-green-500/5">
-              <div className="flex gap-4 items-center">
-                <div className="w-10 h-10 rounded-full bg-green-100 dark:bg-green-500/20 flex items-center justify-center text-green-600 dark:text-green-400">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <div>
-                  <div className="text-sm font-bold text-ink-900 dark:text-white">{t(locale, "landing.footer.oferta", "Ommaviy Oferta")}</div>
-                  <div className="text-xs text-ink-600 dark:text-navy-300 mt-0.5">{t(locale, "public_offer.agreed_message", "Siz bizning ommaviy ofertamizga rozilik bildirgansiz")}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Platform Review / Feedback */}
-          <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
-            <div className="text-xs font-black text-ink-500 dark:text-navy-400">{t(locale, "profile.leaveReview", "PLATFORMAGA SHARH QOLDIRISH")}</div>
             {approvedReview ? (
-              <div className="text-sm text-green-600 dark:text-green-400 font-bold bg-green-500/10 p-4 rounded-2xl border border-green-500/20">
-                ✓ {t(locale, "profile.reviewApproved", "Sizning sharhingiz tasdiqlandi. Rahmat!")}
+              <div className="text-xs text-green-600 dark:text-green-400 font-bold bg-green-500/10 p-3 rounded-2xl border border-green-500/20">
+                ✓ Sizning sharhingiz tasdiqlangan. Rahmat!
               </div>
             ) : pendingReview ? (
-              <div className="text-sm text-amber-600 dark:text-amber-300 font-bold bg-amber-500/10 p-4 rounded-2xl border border-amber-500/20">
-                ⏳ {t(locale, "profile.reviewPending", "Sharhingiz admin moderatsiyasida. Tasdiqlangandan keyin saytda ko'rinadi.")}
-              </div>
-            ) : !policyAllowsReview ? (
-              <div className="text-sm text-ink-600 dark:text-navy-300 font-bold bg-surface-soft p-4 rounded-2xl border">
-                ℹ {String(reviewPolicy.reason || t(locale, "profile.reviewNotAllowed", "Hozircha sharh yuborib bo'lmaydi."))}
+              <div className="text-xs text-amber-600 dark:text-amber-300 font-bold bg-amber-500/10 p-3 rounded-2xl border border-amber-500/20">
+                ⏳ Sharhingiz moderatsiyada. Tasdiqlangandan keyin saytda ko'rinadi.
               </div>
             ) : (
-              <>
-                <div className="flex gap-1 text-3xl">
+              <div className="space-y-3">
+                <div className="flex justify-center gap-1.5 text-2xl">
                   {[1, 2, 3, 4, 5].map((n) => (
                     <button
                       key={n}
                       type="button"
                       onClick={() => setRating(n)}
-                      className={`transition-transform hover:scale-110 ${rating >= n ? "text-yellow-500" : "text-gray-300 dark:text-gray-600"}`}
-                      aria-label={`${n} star`}
+                      className={`transition-transform hover:scale-110 ${rating >= n ? "text-amber-400" : "text-gray-300 dark:text-gray-600"}`}
                     >
                       ★
                     </button>
@@ -9805,49 +10229,151 @@ function StudentProfile({
                 <textarea
                   value={reviewText}
                   onChange={(e) => setReviewText(e.target.value)}
-                  placeholder={t(locale, "profile.reviewPlaceholder", "Platforma haqida fikringizni yozing...")}
-                  className="w-full rounded-2xl border border-line bg-white dark:bg-navy-900 p-4 text-sm min-h-[100px] focus:ring-2 focus:ring-cyan-500 outline-none"
+                  placeholder="Platforma va darslar haqida fikringiz..."
+                  className="w-full rounded-2xl border border-gray-200 dark:border-white/10 bg-white dark:bg-[#080d28] p-3 text-xs min-h-[90px] focus:ring-2 focus:ring-cyan-500 outline-none"
                 />
-                {reviewError ? <div className="error-box">{reviewError}</div> : null}
+                {reviewError ? <div className="text-xs text-red-500 font-semibold">{reviewError}</div> : null}
                 <button
                   type="button"
                   onClick={() => submitStudentReview().catch(() => null)}
-                  className="btn btn-primary w-full py-3 rounded-2xl text-sm font-bold shadow-sm"
+                  className="btn btn-primary w-full py-2.5 rounded-2xl text-xs font-bold shadow-sm"
                   disabled={!reviewText.trim() || reviewSubmitting}
                 >
-                  {reviewSubmitting ? t(locale, "common.sending", "Yuborilmoqda...") : t(locale, "profile.sendReview", "Sharhni yuborish")}
+                  {reviewSubmitting ? "Yuborilmoqda..." : "Sharhni yuborish"}
                 </button>
-                <div className="text-[10px] text-ink-500">{t(locale, "profile.reviewNote", "Sharhlar admin tomonidan tasdiqlangandan keyin boshqa studentlarga ko'rinadi.")}</div>
-              </>
-            )}
-            {ownReviews.length > 0 ? (
-              <div className="pt-4 border-t border-line dark:border-white/10 text-xs">
-                <div className="font-bold mb-2 text-ink-500 dark:text-navy-400">{t(locale, "profile.yourReviews", "Sizning sharhlaringiz:")}</div>
-                {ownReviews.slice(0, 3).map((r, i) => (
-                  <div key={String(r.id || i)} className="text-ink-600 dark:text-navy-300 mb-2 p-3 bg-surface-soft dark:bg-navy-900/30 rounded-xl border border-line/50">
-                    <span className="text-yellow-500 font-bold">★{r.rating || 5}</span> — {String(r.review_text || "").slice(0, 80)}{r.status ? ` (${t(locale, `status.${String(r.status).toLowerCase()}`, r.status)})` : ""}
-                  </div>
-                ))}
               </div>
-            ) : null}
-          </div>
-
-          <UserSessionsPanel locale={locale} />
-
-          {/* Danger Zone / Log Out */}
-          <div className="panel-card border border-red-500/20 bg-red-500/[0.02] dark:bg-red-500/[0.01] rounded-3xl p-6 shadow-sm">
-            <div className="text-xs font-bold text-red-500 mb-2">{t(locale, "profile.logout", "TIZIMDAN CHIQISH")}</div>
-            <p className="text-xs text-ink-500 mb-4">{t(locale, "profile.logoutDesc", "Hisobingizdan chiqib, boshqa qurilmalarda parolingizni xavfsiz saqlang.")}</p>
-            <button onClick={onLogout} className="w-full py-3 rounded-2xl bg-red-500/10 text-red-600 font-bold hover:bg-red-500/15 transition-colors">
-              {t(locale, "common.logout", "Chiqish")}
-            </button>
+            )}
           </div>
         </div>
-      )}
+      </ModalPortal>
 
+      {/* ─── MODAL 5: OMMAVIY OFERTA ─── */}
+      <ModalPortal open={publicOfferModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setPublicOfferModalOpen(false)}>
+          <div className="panel-card max-w-lg w-full max-h-[85vh] overflow-y-auto rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>📄 Ommaviy oferta</span>
+              </h3>
+              <button onClick={() => setPublicOfferModalOpen(false)} className="modal-icon-close">✕</button>
+            </div>
+            <div className="text-xs text-slate-700 dark:text-slate-300 space-y-3 leading-relaxed">
+              <h4 className="font-bold text-navy-950 dark:text-white text-sm">Diamond Education Ommaviy Oferta Shartnomasi</h4>
+              <p>
+                Mazkur hujjat «Diamond Education» ta'lim markazi hamda xizmatlardan foydalanuvchi talaba (o'quvchi) o'rtasidagi rasmiy ommaviy oferta hisoblanadi.
+              </p>
+              <h5 className="font-bold text-navy-900 dark:text-white">1. Umumiy qoidalar</h5>
+              <p>
+                1.1. Foydalanuvchi ro'yxatdan o'tish orqali ushbu kelishuvning barcha shartlarini to'liq va so'zsiz qabul qilgan hisoblanadi.
+              </p>
+              <p>
+                1.2. Platformada taqdim etiladigan o'quv materiallari, darsliklar, video va testlar mualliflik huquqi bilan himoyalangan bo'lib, ularni uchinchi shaxslarga tarqatish taqiqlanadi.
+              </p>
+              <h5 className="font-bold text-navy-900 dark:text-white">2. Tomonlarning huquq va majburiyatlari</h5>
+              <p>
+                2.1. O'quvchi platforma qoidalariga rioya qilishi, boshqa foydalanuvchilar va o'qituvchilarga hurmat bilan munosabatda bo'lishi shart.
+              </p>
+              <p>
+                2.2. Axloq qoidalarini buzgan, noqonuniy xatti-harakat sodir etgan akkauntlar ogohlantirishsiz cheklanishi yoki bloklanishi mumkin.
+              </p>
+            </div>
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 6: HISOBNI O'CHIRISH (DELETE ACCOUNT) ─── */}
+      <ModalPortal open={deleteAccountModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => !deletingAccount && setDeleteAccountModalOpen(false)}>
+          <div className="panel-card max-w-sm w-full rounded-3xl p-6 shadow-2xl relative space-y-4 border border-red-500/20" onClick={(e) => e.stopPropagation()}>
+            <div className="text-center">
+              <div className="w-12 h-12 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center mx-auto mb-3">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <h3 className="text-base font-black text-navy-950 dark:text-white">
+                Hisobni o'chirishni tasdiqlaysizmi?
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                Barcha test natijalaringiz, yutuqlaringiz va o'quv tarixingiz butunlay o'chiriladi. Ushbu amalni qaytarib bo'lmaydi.
+              </p>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteAccountModalOpen(false)}
+                className="btn btn-soft flex-1 py-2 text-xs font-bold"
+                disabled={deletingAccount}
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteAccount}
+                className="btn btn-danger flex-1 py-2 text-xs font-bold"
+                disabled={deletingAccount}
+              >
+                {deletingAccount ? "O'chirilmoqda..." : "Ha, o'chirish"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 7: SESSIONS / ACTIVE DEVICES ─── */}
+      <ModalPortal open={sessionsModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setSessionsModalOpen(false)}>
+          <div className="panel-card max-w-md w-full max-h-[85vh] overflow-y-auto rounded-3xl p-6 shadow-2xl relative space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-100 dark:border-white/10 pb-3">
+              <h3 className="text-lg font-black text-navy-950 dark:text-white flex items-center gap-2">
+                <span>📱 Faol sessiyalar</span>
+              </h3>
+              <button onClick={() => setSessionsModalOpen(false)} className="modal-icon-close">✕</button>
+            </div>
+            <UserSessionsPanel locale={locale} />
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 8: LOGOUT CONFIRMATION ─── */}
+      <ModalPortal open={logoutModalOpen}>
+        <div className="overlay-modal-backdrop" onClick={() => setLogoutModalOpen(false)}>
+          <div className="panel-card max-w-xs w-full rounded-3xl p-6 shadow-2xl relative space-y-4 text-center" onClick={(e) => e.stopPropagation()}>
+            <div className="w-12 h-12 rounded-full bg-red-500/10 text-red-500 flex items-center justify-center mx-auto">
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+            </div>
+            <h3 className="text-base font-black text-navy-950 dark:text-white">
+              {t(locale, "auth.logoutConfirm", "Tizimdan chiqishni tasdiqlaysizmi?")}
+            </h3>
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setLogoutModalOpen(false)}
+                className="btn btn-soft flex-1 py-2 text-xs font-bold"
+              >
+                {t(locale, "common.cancel", "Bekor qilish")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLogoutModalOpen(false);
+                  onLogout();
+                }}
+                className="btn btn-danger flex-1 py-2 text-xs font-bold"
+              >
+                {t(locale, "auth.logout", "Chiqish")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL 9: AVATAR VIEWER ─── */}
       <ModalPortal open={avatarPreviewOpen && Boolean(avatarUrl)}>
         <div className="overlay-modal-backdrop" onClick={() => setAvatarPreviewOpen(false)}>
-          <div className="profile-image-preview-modal" onClick={e => e.stopPropagation()}>
+          <div className="profile-image-preview-modal" onClick={(e) => e.stopPropagation()}>
             <img src={avatarUrl} alt="" className="max-h-[70vh] rounded-2xl" />
             <button onClick={() => setAvatarPreviewOpen(false)} className="modal-icon-close" aria-label={t(locale, "common.close", "Yopish")}>✕</button>
           </div>

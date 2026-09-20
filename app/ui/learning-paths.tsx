@@ -853,6 +853,8 @@ function SegmentedProgressRing({
   const cx = size / 2;
   const cy = size / 2;
 
+  // Ishlangan mavzu: to'qroq zumrad yashil (#059669 / dark: #10b981)
+  // Ishlanmagan mavzu: ochroq pastel yashil (#6ee7b7 / dark: rgba(16, 185, 129, 0.35))
   if (count === 1) {
     const isDone = completed >= 1;
     return (
@@ -867,15 +869,16 @@ function SegmentedProgressRing({
           cy={cy}
           r={radius}
           fill="none"
-          stroke={isDone ? "#10b981" : "rgba(148, 163, 184, 0.35)"}
-          strokeWidth={strokeWidth}
+          stroke={isDone ? "#059669" : "#6ee7b7"}
+          strokeWidth={isDone ? strokeWidth + 0.8 : strokeWidth}
+          className={isDone ? "stroke-[#059669] dark:stroke-[#10b981]" : "stroke-[#6ee7b7] dark:stroke-[#10b981]/35"}
         />
       </svg>
     );
   }
 
   // Multi-segment circular ring (2 to 5 arcs)
-  const gapDeg = count === 2 ? 18 : count === 3 ? 14 : 12;
+  const gapDeg = count === 2 ? 24 : count === 3 ? 18 : count === 4 ? 14 : 12;
   const segDeg = 360 / count - gapDeg;
   const segments = [];
 
@@ -900,10 +903,12 @@ function SegmentedProgressRing({
         key={i}
         d={d}
         fill="none"
-        stroke={isDone ? "#10b981" : "rgba(148, 163, 184, 0.35)"}
-        strokeWidth={isDone ? strokeWidth + 0.5 : strokeWidth}
+        stroke={isDone ? "#059669" : "#6ee7b7"}
+        strokeWidth={isDone ? strokeWidth + 0.8 : strokeWidth}
         strokeLinecap="round"
-        className="transition-all duration-300"
+        className={`transition-all duration-300 ${
+          isDone ? "stroke-[#059669] dark:stroke-[#10b981]" : "stroke-[#6ee7b7] dark:stroke-[#10b981]/35"
+        }`}
       />
     );
   }
@@ -1017,14 +1022,12 @@ function DuolingoNode({
         <div className="absolute h-[86px] w-[86px] sm:h-[94px] sm:w-[94px] rounded-full bg-white dark:bg-[#070d1e] shadow-md pointer-events-none" />
 
         {/* Segmented Circular Progress Ring around the button (1 to 5 topics) */}
-        {!isLocked ? (
-          <SegmentedProgressRing
-            total={totalTopics}
-            completed={completedTopics}
-            radius={46}
-            strokeWidth={4.5}
-          />
-        ) : null}
+        <SegmentedProgressRing
+          total={totalTopics}
+          completed={completedTopics}
+          radius={46}
+          strokeWidth={4.5}
+        />
 
         {/* Circular 3D Pushable Duolingo Button with chosen Brand Cover Image */}
         <button
@@ -3479,10 +3482,10 @@ function CertificateSettingsModal({
               className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
               style={{ top: "43.5%" }}
             >
-              <span className="inline-block rounded-md bg-white/90 px-3 py-1 font-serif text-sm sm:text-base font-black text-navy-950 shadow border border-cyan-500/40 tracking-wide">
+              <span className="inline-block rounded-md bg-white/90 px-3 py-1 font-serif text-sm sm:text-base font-black text-[#0C188B] shadow border border-[#0C188B]/30 tracking-wide">
                 [ TALABA ISM FAMILIYASI ]
               </span>
-              <p className="text-[10px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
+              <p className="text-[10px] font-bold text-[#0C188B]/80 mt-0.5">
                 ↑ Uzun chiziq ustidagi ism-familiya joyi
               </p>
             </div>
@@ -3492,7 +3495,7 @@ function CertificateSettingsModal({
               className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
               style={{ top: "50%" }}
             >
-              <span className="inline-block rounded bg-white/80 px-2 py-0.5 text-xs font-bold text-indigo-900 shadow-sm">
+              <span className="inline-block rounded bg-white/80 px-2 py-0.5 text-xs font-bold text-[#0C188B] shadow-sm">
                 {track.title || "Diamond Education Track"}
               </span>
             </div>
@@ -3502,10 +3505,10 @@ function CertificateSettingsModal({
               className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-center"
               style={{ left: "13.5%", top: "77.5%" }}
             >
-              <span className="inline-block rounded bg-white/90 px-2 py-0.5 font-mono text-[11px] font-black text-navy-950 border border-cyan-500/40 shadow-sm">
+              <span className="inline-block rounded bg-white/90 px-2 py-0.5 font-mono text-[11px] font-black text-[#0C188B] border border-[#0C188B]/30 shadow-sm">
                 {new Date().toLocaleDateString("uz-UZ")}
               </span>
-              <p className="text-[9px] font-bold text-cyan-800 dark:text-cyan-800 mt-0.5">
+              <p className="text-[9px] font-bold text-[#0C188B]/80 mt-0.5">
                 Sana o'rni
               </p>
             </div>
