@@ -17,7 +17,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse, unquote
 
 from fastapi import APIRouter, Header, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -402,46 +402,49 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE learning_modules ADD COLUMN image_url TEXT")
             except Exception:
                 pass
-        badge_defaults = (
-            ("first_lesson", "Birinchi dars", "Birinchi darsga qatnashdingiz", "lesson_count"),
-            ("lesson_streak_3", "3 kunlik dars seriyasi", "3 kun ketma-ket dars", "lesson_streak_3"),
-            ("lesson_streak_7", "7 kunlik dars seriyasi", "7 kun ketma-ket dars", "lesson_streak_7"),
-            ("lesson_streak_30", "30 kunlik dars seriyasi", "30 kun ketma-ket dars", "lesson_streak_30"),
-            ("perfect_attendance_month", "Namunali davomat", "Bir oy dars qoldirmang", "perfect_attendance_month"),
-            ("first_homework", "Birinchi vazifa", "Birinchi uy vazifangizni topshiring", "homework_count"),
-            ("homework_streak_3", "Homework seriyasi", "3 vazifani ketma-ket topshiring", "homework_streak_3"),
-            ("homework_streak_10", "Homework ustasi", "10 vazifani ketma-ket topshiring", "homework_streak_10"),
-            ("all_homework_month", "Vazifalar oyining g‘olibi", "Bir oy barcha vazifalarni topshiring", "all_homework_month"),
-            ("early_submitter", "Erta topshiruvchi", "Vazifani deadline dan oldin topshiring", "early_submitter"),
-            ("first_test", "Birinchi test", "Birinchi testni tugating", "test_count"),
-            ("test_streak_7", "Test seriyasi", "7 kun test ishlang", "test_streak_7"),
-            ("perfect_test", "Mukammal test", "100% natija oling", "perfect_test"),
-            ("mistake_notebook_master", "Xatolar ustasi", "20 xatoni qayta to‘g‘ri yoping", "mistakes_resolved"),
-            ("daily_plan_streak_7", "Reja seriyasi", "7 kunlik reja vazifalarini yoping", "daily_plan_streak_7"),
-            ("daily_plan_streak_30", "Reja marafoni", "30 kunlik reja vazifalarini yoping", "daily_plan_streak_30"),
-            ("word_collector", "So‘z to‘plovchi", "Yangi so‘zlarni mashq qiling", "word_collector"),
-            ("vocabulary_master", "Lug‘at ustasi", "Lug‘at mashqlarini tugating", "vocabulary_master"),
-            ("grammar_master", "Grammatika ustasi", "Grammatika mavzularini yoping", "grammar_master"),
-            ("bookworm", "Kitobxon", "Kutubxona materiallarini tugating", "book_complete"),
-            ("video_finisher", "Video ustasi", "Video darslarni tugating", "video_complete"),
-            ("first_arena", "Arena jangchisi", "Arenada qatnashing", "arena_count"),
-            ("arena_winner", "Arena g‘olibi", "Arenada g‘olib bo‘ling", "arena_win"),
-            ("arena_streak_3", "Arena seriyasi", "3 arena g‘alabasi", "arena_streak_3"),
-            ("duel_winner", "Duel g‘olibi", "Duelda g‘olib bo‘ling", "duel_win"),
-            ("duel_streak_3", "Duel seriyasi", "3 duel g‘alabasi", "duel_streak_3"),
-            ("study_room_host", "Study-room host", "Study-room yarating", "study_room_host"),
-            ("study_room_partner", "Study-room sherigi", "Study-roomga qo‘shiling", "study_room_partner"),
-            ("helpful_learner", "Yordamchi o‘quvchi", "Study-roomda foydali yordam bering", "helpful_learner"),
-            ("first_certificate", "Birinchi sertifikat", "Kurs/modulni yakunlang", "certificate_count"),
-            ("course_graduate", "Kurs bitiruvchisi", "Kursni tugating", "course_complete"),
-            ("skill_builder", "Ko‘nikma quruvchisi", "Kuchli ko‘nikma yarating", "skill_builder"),
+        official_badges = (
+            ("flawless_test", "Xatosiz bilimdon", "Test ishlab, unda umuman xato qilmagan o‘quvchiga (100% natija)", "/badges/flawless_test.png", "flawless_test"),
+            ("tests_500", "500+ Test giganti", "500 tadan ko‘p test ishlaganga", "/badges/tests_500.png", "tests_500"),
+            ("books_10_tests", "10+ Kitob ustasi", "10 tadan ko‘p kitob sotib olib, ularning testlarini ishlab tugatgan o‘quvchiga", "/badges/books_10_tests.png", "books_10_tests"),
+            ("daily_test_7", "7 kunlik odat", "7 kun davomida har kuni test ishlasa kunlik testni", "/badges/daily_test_7.png", "daily_test_7"),
+            ("daily_test_30", "30 kunlik intizom", "30 kun davomida har kuni daily test ishlaganga", "/badges/daily_test_30.png", "daily_test_30"),
+            ("arena_duel_streak_5", "Arena yengilmasi", "Arena va duellarda qatnashib, ketma-ket 5 marta yutgan o‘quvchiga", "/badges/arena_duel_streak_5.png", "arena_duel_streak_5"),
+            ("learning_tracks_10", "10 Track zabt etuvchisi", "Learning path trackidan 10 tasini muvaffaqiyatli tugatgan o‘quvchiga", "/badges/learning_tracks_10.png", "learning_tracks_10"),
         )
-        for code, title, description, rule_key in badge_defaults:
+        official_codes = [b[0] for b in official_badges]
+        ph_off = ",".join("?" for _ in official_codes)
+        try:
+            cur.execute(f"UPDATE badge_definitions SET active=0 WHERE code NOT IN ({ph_off})", official_codes)
+            cur.execute(f"DELETE FROM student_badges WHERE badge_code NOT IN ({ph_off})", official_codes)
+        except Exception:
+            pass
+
+        for code, title, description, asset_url, rule_key in official_badges:
             try:
-                cur.execute("INSERT INTO badge_definitions(code,title,description,rule_key,active) VALUES(?,?,?,?,1) ON CONFLICT(code) DO NOTHING", (code, title, description, rule_key))
+                cur.execute(
+                    """
+                    INSERT INTO badge_definitions(code,title,description,asset_url,rule_key,active)
+                    VALUES(?,?,?,?,?,1)
+                    ON CONFLICT(code) DO UPDATE SET
+                        title=excluded.title,
+                        description=excluded.description,
+                        asset_url=excluded.asset_url,
+                        rule_key=excluded.rule_key,
+                        active=1
+                    """,
+                    (code, title, description, asset_url, rule_key),
+                )
             except Exception:
                 try:
-                    cur.execute("INSERT OR IGNORE INTO badge_definitions(code,title,description,rule_key,active) VALUES(?,?,?,?,1)", (code, title, description, rule_key))
+                    cur.execute(
+                        "UPDATE badge_definitions SET title=?, description=?, asset_url=?, rule_key=?, active=1 WHERE code=?",
+                        (title, description, asset_url, rule_key, code),
+                    )
+                    if cur.rowcount == 0:
+                        cur.execute(
+                            "INSERT INTO badge_definitions(code,title,description,asset_url,rule_key,active) VALUES(?,?,?,?,?,1)",
+                            (code, title, description, asset_url, rule_key),
+                        )
                 except Exception:
                     pass
         conn.commit()
@@ -481,24 +484,203 @@ def _student_name(row: dict[str, Any]) -> str:
     return " ".join(part for part in (str(row.get("first_name") or "").strip(), str(row.get("last_name") or "").strip()) if part).strip() or str(row.get("login_id") or "Student")
 
 
-def _sync_student_badges(cur: Any, user_id: int) -> None:
-    """Award only facts that are already persisted; future badge assets/rules stay additive."""
-    checks = (
-        ("first_test", "SELECT COUNT(*) AS n FROM test_history WHERE user_id=?", 1),
-        ("first_homework", "SELECT COUNT(*) AS n FROM web_homeworks WHERE student_id=?", 1),
-        ("study_room_host", "SELECT COUNT(*) AS n FROM study_rooms WHERE owner_id=?", 1),
-        ("first_certificate", "SELECT COUNT(*) AS n FROM certificates WHERE user_id=?", 1),
-        ("perfect_test", "SELECT COUNT(*) AS n FROM test_history WHERE user_id=? AND correct_count > 0 AND wrong_count = 0 AND skipped_count = 0", 1),
-        ("mistake_notebook_master", "SELECT COUNT(*) AS n FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NOT NULL", 20),
-    )
-    for code, sql, threshold in checks:
+def _award_badge(cur: Any, user_id: int, badge_code: str) -> None:
+    try:
+        cur.execute(
+            "INSERT INTO student_badges(user_id,badge_code) VALUES(?,?) ON CONFLICT(user_id,badge_code) DO NOTHING",
+            (user_id, badge_code),
+        )
+    except Exception:
         try:
-            cur.execute(sql, (user_id,)); count=int(dict(cur.fetchone() or {}).get("n") or 0)
-            if count >= threshold:
-                try: cur.execute("INSERT INTO student_badges(user_id,badge_code) VALUES(?,?) ON CONFLICT(user_id,badge_code) DO NOTHING", (user_id,code))
-                except Exception: cur.execute("INSERT OR IGNORE INTO student_badges(user_id,badge_code) VALUES(?,?)", (user_id,code))
+            cur.execute(
+                "INSERT OR IGNORE INTO student_badges(user_id,badge_code) VALUES(?,?)",
+                (user_id, badge_code),
+            )
         except Exception:
-            continue
+            pass
+
+
+def _sync_student_badges(cur: Any, user_id: int) -> None:
+    """Award badges based on student accomplishments for the 7 official visual badges."""
+    # 1. flawless_test: Test with 100% correct answers (0 wrong, 0 skipped)
+    try:
+        cur.execute(
+            """
+            SELECT 1 FROM test_history
+            WHERE user_id = ? AND correct_count > 0 AND COALESCE(wrong_count, 0) = 0 AND COALESCE(skipped_count, 0) = 0
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        if cur.fetchone():
+            _award_badge(cur, user_id, "flawless_test")
+    except Exception:
+        pass
+
+    # 2. tests_500: 500+ tests taken or 500+ questions answered
+    try:
+        cur.execute(
+            "SELECT COUNT(*) AS c, SUM(COALESCE(correct_count, 0) + COALESCE(wrong_count, 0)) AS q FROM test_history WHERE user_id = ?",
+            (user_id,),
+        )
+        t_row = dict(cur.fetchone() or {})
+        if int(t_row.get("c") or 0) >= 500 or int(t_row.get("q") or 0) >= 500:
+            _award_badge(cur, user_id, "tests_500")
+    except Exception:
+        pass
+
+    # 3. books_10_tests: 10+ books purchased and tested
+    try:
+        b_cnt = 0
+        try:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM student_book_purchases WHERE user_id = ? AND status IN ('test_passed', 'completed', 'finished')",
+                (user_id,),
+            )
+            b_cnt = int(dict(cur.fetchone() or {}).get("n") or 0)
+        except Exception:
+            pass
+        if b_cnt < 10:
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM test_history WHERE user_id = ? AND test_type IN ('book', 'content_book')",
+                    (user_id,),
+                )
+                b_cnt = max(b_cnt, int(dict(cur.fetchone() or {}).get("n") or 0))
+            except Exception:
+                pass
+        if b_cnt >= 10:
+            _award_badge(cur, user_id, "books_10_tests")
+    except Exception:
+        pass
+
+    # 4 & 5. daily_test_7 and daily_test_30: Daily test streaks of 7 and 30 days
+    try:
+        streak = 0
+        daily_days = 0
+        try:
+            cur.execute("SELECT consecutive_qualifying_days FROM user_dcoin_streak WHERE user_id = ?", (user_id,))
+            s_row = cur.fetchone()
+            if s_row:
+                streak = int(dict(s_row).get("consecutive_qualifying_days") or 0)
+        except Exception:
+            pass
+        try:
+            cur.execute(
+                "SELECT COUNT(DISTINCT substr(created_at, 1, 10)) AS d FROM test_history WHERE user_id = ? AND test_type = 'daily'",
+                (user_id,),
+            )
+            d_row = cur.fetchone()
+            if d_row:
+                daily_days = int(dict(d_row).get("d") or 0)
+        except Exception:
+            pass
+
+        max_daily = max(streak, daily_days)
+        if max_daily >= 7:
+            _award_badge(cur, user_id, "daily_test_7")
+        if max_daily >= 30:
+            _award_badge(cur, user_id, "daily_test_30")
+    except Exception:
+        pass
+
+    # 6. arena_duel_streak_5: 5 streak in arena or duels
+    try:
+        has_arena_streak = False
+        try:
+            cur.execute("SELECT win_streak FROM user_dcoin_streak WHERE user_id = ?", (user_id,))
+            w_row = cur.fetchone()
+            if w_row and int(dict(w_row).get("win_streak") or 0) >= 5:
+                has_arena_streak = True
+        except Exception:
+            pass
+        if not has_arena_streak:
+            try:
+                cur.execute("SELECT 1 FROM diamond_history WHERE user_id = ? AND change_type = 'streak_duel_5wins' LIMIT 1", (user_id,))
+                if cur.fetchone():
+                    has_arena_streak = True
+            except Exception:
+                pass
+        if not has_arena_streak:
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM diamond_history WHERE user_id = ? AND (change_type LIKE '%duel%' OR change_type LIKE '%arena%') AND dcoin_change > 0",
+                    (user_id,),
+                )
+                a_row = cur.fetchone()
+                if a_row and int(dict(a_row).get("n") or 0) >= 5:
+                    has_arena_streak = True
+            except Exception:
+                pass
+        if has_arena_streak:
+            _award_badge(cur, user_id, "arena_duel_streak_5")
+    except Exception:
+        pass
+
+    # 7. learning_tracks_10: 10 learning tracks or modules completed
+    try:
+        track_cnt = 0
+        try:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n FROM learning_tracks t
+                WHERE EXISTS (SELECT 1 FROM learning_modules m WHERE m.track_id = t.id)
+                AND NOT EXISTS (
+                    SELECT 1 FROM learning_modules m
+                    LEFT JOIN learning_module_progress p ON p.module_id = m.id AND p.student_id = ?
+                    WHERE m.track_id = t.id AND (p.status IS NULL OR p.status != 'completed')
+                )
+                """,
+                (user_id,),
+            )
+            t_row = cur.fetchone()
+            if t_row:
+                track_cnt = int(dict(t_row).get("n") or 0)
+        except Exception:
+            pass
+        if track_cnt < 10:
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM learning_module_progress WHERE student_id = ? AND status = 'completed'",
+                    (user_id,),
+                )
+                m_row = cur.fetchone()
+                if m_row:
+                    track_cnt = max(track_cnt, int(dict(m_row).get("n") or 0))
+            except Exception:
+                pass
+        if track_cnt >= 10:
+            _award_badge(cur, user_id, "learning_tracks_10")
+    except Exception:
+        pass
+
+    # Auto-select the first unlocked badge if student doesn't have any selected badge
+    try:
+        cur.execute(
+            """
+            SELECT 1 FROM student_badges sb
+            JOIN badge_definitions bd ON bd.code = sb.badge_code
+            WHERE sb.user_id = ? AND sb.selected = 1 AND bd.active = 1
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        if not cur.fetchone():
+            cur.execute(
+                """
+                UPDATE student_badges SET selected = 1
+                WHERE id = (
+                    SELECT sb.id FROM student_badges sb
+                    JOIN badge_definitions bd ON bd.code = sb.badge_code
+                    WHERE sb.user_id = ? AND bd.active = 1
+                    ORDER BY sb.id ASC
+                    LIMIT 1
+                )
+                """,
+                (user_id,),
+            )
+    except Exception:
+        pass
 
 
 def _get_or_create_parent_token(student_id: int, created_by: int | None = None) -> str:
@@ -1357,26 +1539,133 @@ async def staff_regenerate_parent_access(student_id: int, authorization: str | N
     finally: conn.close()
 
 
+def get_users_selected_badges(user_ids: list[int]) -> dict[int, dict[str, Any]]:
+    clean_ids = [int(u) for u in user_ids if int(u or 0) > 0]
+    if not clean_ids:
+        return {}
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        ph = ",".join("?" for _ in clean_ids)
+        cur.execute(
+            f"""
+            SELECT sb.user_id, sb.badge_code, sb.selected, bd.title, bd.description, bd.asset_url
+            FROM student_badges sb
+            JOIN badge_definitions bd ON bd.code = sb.badge_code
+            WHERE sb.user_id IN ({ph}) AND bd.active = 1
+            ORDER BY sb.selected DESC, sb.unlocked_at DESC
+            """,
+            clean_ids,
+        )
+        res: dict[int, dict[str, Any]] = {}
+        for r in cur.fetchall() or []:
+            row = dict(r)
+            uid = int(row.get("user_id") or 0)
+            if uid not in res or int(row.get("selected") or 0) == 1:
+                res[uid] = {
+                    "code": str(row.get("badge_code") or ""),
+                    "title": str(row.get("title") or ""),
+                    "description": str(row.get("description") or ""),
+                    "asset_url": str(row.get("asset_url") or ""),
+                }
+        return res
+    finally:
+        conn.close()
+
+
+def get_user_badges_and_certificates(user_id: int) -> dict[str, Any]:
+    uid = int(user_id)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        _sync_student_badges(cur, uid)
+        conn.commit()
+        cur.execute(
+            "SELECT *, course_title AS title, ('/certificates/' || certificate_id || '/pdf') AS pdf_url FROM certificates WHERE user_id=? ORDER BY issued_at DESC",
+            (uid,),
+        )
+        certificates = _dicts(cur.fetchall())
+        cur.execute(
+            """
+            SELECT d.code AS id, d.code, d.title, d.description, d.asset_url,
+                   CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS unlocked,
+                   COALESCE(b.selected, 0) AS selected
+            FROM badge_definitions d
+            LEFT JOIN student_badges b ON b.badge_code = d.code AND b.user_id = ?
+            WHERE d.active = 1
+            ORDER BY d.code
+            """,
+            (uid,),
+        )
+        badges = _dicts(cur.fetchall())
+        selected = next((x for x in badges if int(x.get("selected") or 0) == 1), None)
+        if not selected:
+            unlocked = next((x for x in badges if int(x.get("unlocked") or 0) == 1), None)
+            if unlocked:
+                cur.execute("UPDATE student_badges SET selected = 1 WHERE user_id = ? AND badge_code = ?", (uid, unlocked["code"]))
+                conn.commit()
+                unlocked["selected"] = 1
+                selected = unlocked
+        return {
+            "certificates": certificates,
+            "badges": badges,
+            "selected_badge": selected,
+            "selected_badge_id": selected.get("id") if selected else None,
+            "badge_asset_url": selected.get("asset_url") if selected else None,
+            "badge_title": selected.get("title") if selected else None,
+        }
+    finally:
+        conn.close()
+
+
 @router.get("/student/portfolio")
 async def portfolio(authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
-    try:
-        cur=conn.cursor(); uid=int(user["id"]); _sync_student_badges(cur, uid); conn.commit(); cur.execute("SELECT *, course_title AS title, ('/certificates/' || certificate_id || '/pdf') AS pdf_url FROM certificates WHERE user_id=? ORDER BY issued_at DESC",(uid,)); certificates=_dicts(cur.fetchall()); cur.execute("SELECT d.code AS id,d.code,d.title,d.description,d.asset_url,CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END AS unlocked,COALESCE(b.selected,0) AS selected FROM badge_definitions d LEFT JOIN student_badges b ON b.badge_code=d.code AND b.user_id=? WHERE d.active=1 ORDER BY d.code",(uid,)); badges=_dicts(cur.fetchall()); selected=next((x for x in badges if int(x.get("selected") or 0)==1),None); return {"certificates":certificates,"badges":badges,"selected_badge":selected,"selected_badge_id":selected.get("id") if selected else None}
-    finally: conn.close()
+    user = _user(authorization)
+    _require(user, {"student"})
+    return get_user_badges_and_certificates(int(user["id"]))
 
 
 class BadgeSelectRequest(BaseModel):
-    badge_id: str = Field(min_length=1, max_length=120)
+    badge_id: str | None = Field(default=None, max_length=120)
 
 
 @router.put("/student/portfolio/badge")
 async def select_portfolio_badge(payload: BadgeSelectRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
+    user = _user(authorization)
+    _require(user, {"student"})
+    ensure_schema()
+    conn = get_conn()
     try:
-        cur=conn.cursor(); uid=int(user["id"]); cur.execute("SELECT 1 FROM student_badges WHERE user_id=? AND badge_code=?",(uid,payload.badge_id))
-        if not cur.fetchone(): raise HTTPException(status_code=403, detail="Badge is not unlocked")
-        cur.execute("UPDATE student_badges SET selected=0 WHERE user_id=?",(uid,)); cur.execute("UPDATE student_badges SET selected=1 WHERE user_id=? AND badge_code=?",(uid,payload.badge_id)); conn.commit(); return {"selected_badge_id":payload.badge_id}
-    finally: conn.close()
+        cur = conn.cursor()
+        uid = int(user["id"])
+        target_code = (payload.badge_id or "").strip()
+        cur.execute("UPDATE student_badges SET selected=0 WHERE user_id=?", (uid,))
+        if target_code and target_code.lower() not in {"null", "none"}:
+            cur.execute("SELECT 1 FROM student_badges WHERE user_id=? AND badge_code=?", (uid, target_code))
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="Badge is not unlocked")
+            cur.execute("UPDATE student_badges SET selected=1 WHERE user_id=? AND badge_code=?", (uid, target_code))
+            conn.commit()
+            return {"selected_badge_id": target_code}
+        conn.commit()
+        return {"selected_badge_id": None}
+    finally:
+        conn.close()
+
+
+BADGES_DIR = Path(__file__).resolve().parent.parent / "public" / "badges"
+
+
+@router.get("/badges/{filename}")
+@router.get("/api/badges/{filename}")
+async def serve_badge_file(filename: str):
+    clean_name = Path(filename).name
+    file_path = BADGES_DIR / clean_name
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Badge asset not found")
+    return FileResponse(file_path, media_type="image/png")
 
 
 # ── Learning Paths / Duolingo-style tracks ──────────────────────────────────

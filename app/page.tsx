@@ -1035,11 +1035,24 @@ function SmallUserAvatar({
 
 function UserNameCell({ row, name, sub }: { row?: GenericRow | ApiUser | null; name?: string; sub?: string }) {
   const label = String(name || rowDisplayName(row, "User"));
+  const badgeAssetUrl = (row as any)?.selected_badge?.asset_url || (row as any)?.badge_asset_url;
+  const badgeTitle = (row as any)?.selected_badge?.title || (row as any)?.badge_title;
   return (
     <span className="user-name-cell" title={sub ? `${label} · ${sub}` : label}>
       <SmallUserAvatar row={row} name={label} />
       <span className="user-name-cell-text">
-        <strong>{label}</strong>
+        <strong className="inline-flex items-center gap-1.5 flex-wrap">
+          <span>{label}</span>
+          {badgeAssetUrl ? (
+            <img
+              src={resolveAssetUrl(badgeAssetUrl)}
+              alt={badgeTitle || "Badge"}
+              title={badgeTitle || "Badge"}
+              className="inline-block w-4 h-4 object-contain align-middle shrink-0"
+              loading="lazy"
+            />
+          ) : null}
+        </strong>
         {sub ? <small>{sub}</small> : null}
       </span>
     </span>
@@ -1517,7 +1530,7 @@ function resolveAssetUrl(url?: string | null) {
   const cleaned = String(url).trim();
   if (!cleaned) return "";
   if (/^(https?:|data:|blob:)/i.test(cleaned)) return cleaned;
-  if (cleaned.startsWith("/assets/")) return cleaned;
+  if (cleaned.startsWith("/assets/") || cleaned.startsWith("/badges/")) return cleaned;
   if (API_BASE && API_BASE !== "/" && (cleaned === API_BASE || cleaned.startsWith(`${API_BASE}/`))) return cleaned;
   const streamMatch = cleaned.match(/^\/media\/stream\/(\d+)(?:\?.*)?$/i);
   if (streamMatch) {
@@ -3226,8 +3239,18 @@ function StudentLeaderboard({ data, user }: { data: GenericRow, user?: any }) {
             🏆
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-xs font-black tracking-widest text-gold-600 dark:text-gold-400 uppercase mb-1">{tt("leaderboard.firstPlace", "1-o'rin")}</span>
-            <h3 className="text-lg sm:text-2xl font-black text-navy-900 dark:text-white font-display mb-0.5 truncate">{top.full_name || "-"}</h3>
+            <h3 className="text-lg sm:text-2xl font-black text-navy-900 dark:text-white font-display mb-0.5 truncate flex items-center gap-2">
+              <span>{top.full_name || "-"}</span>
+              {((top as any)?.selected_badge?.asset_url || (top as any)?.badge_asset_url) ? (
+                <img
+                  src={resolveAssetUrl((top as any)?.selected_badge?.asset_url || (top as any)?.badge_asset_url)}
+                  alt={(top as any)?.selected_badge?.title || (top as any)?.badge_title || "Badge"}
+                  title={(top as any)?.selected_badge?.title || (top as any)?.badge_title || "Badge"}
+                  className="inline-block w-6 h-6 object-contain align-middle shrink-0"
+                  loading="lazy"
+                />
+              ) : null}
+            </h3>
             <strong className="currency-inline text-base sm:text-xl font-bold text-cyan-600 dark:text-cyan-400">
               <AssetIcon type="dcoin" size={22} />
               {Number(top.dcoin_balance || 0).toFixed(1)} D'Coin

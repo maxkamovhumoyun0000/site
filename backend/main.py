@@ -15872,6 +15872,14 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
         int(row.get("id") or row.get("user_id") or 0) for row in ordered_rows
     )
 
+    user_ids = [int(row.get("id") or row.get("user_id") or 0) for row in ordered_rows]
+    badges_by_user: dict[int, dict] = {}
+    try:
+        from backend import personalization as personalization_api
+        badges_by_user = personalization_api.get_users_selected_badges(user_ids)
+    except Exception:
+        badges_by_user = {}
+
     out: list[dict] = []
     for idx, row in enumerate(ordered_rows, start=1):
         avatar_url = (
@@ -15880,16 +15888,21 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
             or str(row.get("face_reference_image_url") or "").strip()
             or None
         )
+        uid = int(row.get("id") or row.get("user_id") or 0)
+        badge_info = badges_by_user.get(uid)
         out.append(
             {
                 "rank": idx,
-                "user_id": int(row.get("id") or 0),
+                "user_id": uid,
                 "full_name": _display_name(row),
                 "avatar_url": avatar_url,
                 "profile_image_url": avatar_url,
                 "dcoin_balance": float(row.get("dcoin_balance") or 0),
                 "dpoint_balance": float(row.get("dpoint_balance") or 0),
-                **presence_by_user.get(int(row.get("id") or row.get("user_id") or 0), {}),
+                "selected_badge": badge_info,
+                "badge_asset_url": badge_info.get("asset_url") if badge_info else None,
+                "badge_title": badge_info.get("title") if badge_info else None,
+                **presence_by_user.get(uid, {}),
             }
         )
     return out
@@ -50297,8 +50310,23 @@ async def user_presence_profile(user_id: int, authorization: str | None = Header
     dpoint_balance = float(_safe_call(lambda: get_dpoints(uid), 0.0) or 0.0)
     presence = _presence_summary_for_user(uid)
     ranking = _safe_call(lambda: get_user_rating_info(uid), {}) or {}
+
+    badge_data = {}
+    try:
+        from backend import personalization as personalization_api
+        badge_data = personalization_api.get_user_badges_and_certificates(uid)
+    except Exception:
+        badge_data = {}
+
+    selected_badge = badge_data.get("selected_badge")
     profile = _serialize_user_row(target)
     profile.update(presence)
+    profile["selected_badge"] = selected_badge
+    profile["badge_asset_url"] = badge_data.get("badge_asset_url")
+    profile["badge_title"] = badge_data.get("badge_title")
+    profile["badges"] = badge_data.get("badges") or []
+    profile["certificates"] = badge_data.get("certificates") or []
+
     return {
         "user": profile,
         "presence": presence,
@@ -50313,6 +50341,9 @@ async def user_presence_profile(user_id: int, authorization: str | None = Header
         "tickets": tickets,
         "ticket_count": sum(max(0, int(row.get("ticket_count") or 0)) for row in tickets),
         "ranking": ranking,
+        "badges": badge_data.get("badges") or [],
+        "selected_badge": selected_badge,
+        "certificates": badge_data.get("certificates") or [],
     }
 
 
