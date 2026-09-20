@@ -7424,10 +7424,14 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
             return dict(cached[1])
     payload = _decode_bearer_payload(authorization)
     user_id = payload.get("sub")
-    if not user_id:
+    if not user_id or str(user_id).strip() == "" or str(user_id).strip().lower() == "none":
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+    try:
+        user_id_int = int(user_id)
+    except (ValueError, TypeError):
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
-    row = _auth_user_row_cached(int(user_id))
+    row = _auth_user_row_cached(user_id_int)
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     token_telegram_id = str(payload.get("telegram_id") or "").strip()
@@ -7438,7 +7442,7 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
 
     sid = str(payload.get("sid") or "").strip()
     if sid:
-        _validate_web_session_cached(sid, int(user_id))
+        _validate_web_session_cached(sid, user_id_int)
         _touch_web_session(sid)
         if token:
             _AUTH_USER_ROW_CACHE[token] = (time.time() + 8.0, dict(row))
@@ -7476,6 +7480,8 @@ REVIEW_REQUIRED_ALLOWED_PATH_PREFIXES = (
     "/reviews",
     "/student/review-status",
     "/student/channel-membership",
+    "/student/diamondvoy",
+    "/chats",
     "/auth",
     "/user",
     "/notifications",
@@ -21593,11 +21599,14 @@ def _diamondvoy_student_learning_context(user_id: int) -> str:
             )
         cur.execute(
             """
-            SELECT COALESCE(subject, ''), COALESCE(topic_key, ''), COUNT(*) AS total
+            SELECT COALESCE(subject, '') AS subject,
+                   COALESCE(topic_key, '') AS topic_key,
+                   COUNT(*) AS total
             FROM mistake_notebook_items
             WHERE user_id=? AND resolved_at IS NULL
             GROUP BY COALESCE(subject, ''), COALESCE(topic_key, '')
-            ORDER BY total DESC, subject ASC, topic_key ASC
+            ORDER BY total DESC, COALESCE(subject, '') ASC,
+                     COALESCE(topic_key, '') ASC
             LIMIT 8
             """,
             (int(user_id),),

@@ -362,6 +362,26 @@ def ensure_schema() -> None:
                 # Local SQLite fallback has no BIGSERIAL; existing db adapter's
                 # production target is PostgreSQL, so retry using INTEGER PK.
                 cur.execute(sql.replace("BIGSERIAL PRIMARY KEY", "INTEGER PRIMARY KEY AUTOINCREMENT").replace("BIGINT", "INTEGER"))
+        # Older production databases predate the per-subject analysis column.
+        # Add it before creating its index; PostgreSQL aborts the entire
+        # transaction after an index references a missing column.
+        try:
+            cur.execute("ALTER TABLE weekly_ai_analyses ADD COLUMN IF NOT EXISTS subject TEXT DEFAULT 'English'")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                cur.execute("ALTER TABLE weekly_ai_analyses ADD COLUMN subject TEXT DEFAULT 'English'")
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
         for sql in (
             "CREATE INDEX IF NOT EXISTS idx_mistakes_user_review ON mistake_notebook_items(user_id, review_at)",
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON learning_bookmarks(user_id, created_at DESC)",
@@ -387,7 +407,13 @@ def ensure_schema() -> None:
             try:
                 cur.execute(sql)
             except Exception:
-                pass
+                # A failed DDL command leaves a PostgreSQL transaction
+                # aborted. Roll back before attempting the next optional
+                # index so a legacy schema can still complete its upgrades.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
         try:
             cur.execute("ALTER TABLE study_rooms ADD COLUMN IF NOT EXISTS voice_room_id BIGINT")
         except Exception:
@@ -407,6 +433,14 @@ def ensure_schema() -> None:
         except Exception:
             try:
                 cur.execute("ALTER TABLE learning_modules ADD COLUMN reward_coins INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+        try:
+            cur.execute("UPDATE learning_module_progress SET status='passed' WHERE passed_at IS NOT NULL AND status != 'passed'")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
             except Exception:
                 pass
         try:
@@ -1183,7 +1217,7 @@ def _sweep_study_room_presence(cur: Any, room_id: int | None = None) -> list[int
        is automatically closed, closed_at is set, and temporary files/messages are cleaned up.
     """
     now = _now()
-    cutoff = (now - datetime.timedelta(seconds=30)).isoformat()
+    cutoff = (now - timedelta(seconds=30)).isoformat()
     now_iso = now.isoformat()
 
     # Step 1: Mark timed-out / disconnected members as left
@@ -1455,7 +1489,7 @@ async def leave_study_room(room_id: int, authorization: str | None = Header(defa
         cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (now_iso, room_id, user_id))
 
         # Check remaining active members (active in last 30s)
-        cutoff = (_now() - datetime.timedelta(seconds=30)).isoformat()
+        cutoff = (_now() - timedelta(seconds=30)).isoformat()
         cur.execute(
             "SELECT user_id FROM study_room_members WHERE room_id=? AND left_at IS NULL AND ((last_seen_at IS NOT NULL AND last_seen_at >= ?) OR (last_seen_at IS NULL AND joined_at >= ?)) ORDER BY joined_at ASC",
             (room_id, cutoff, cutoff)
@@ -1932,7 +1966,14 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
         module["image_full_url"] = full_url
         if student_id:
             cur.execute("SELECT status,best_score,passed_at FROM learning_module_progress WHERE module_id=? AND student_id=?", (int(module["id"]), int(student_id)))
-            progress=cur.fetchone(); module["progress"] = dict(progress) if progress else {"status":"locked", "best_score":0}
+            progress = cur.fetchone()
+            if progress:
+                p_dict = dict(progress)
+                if p_dict.get("passed_at") is not None:
+                    p_dict["status"] = "passed"
+                module["progress"] = p_dict
+            else:
+                module["progress"] = {"status": "locked", "best_score": 0}
             if lessons:
                 lesson_ids = [l["id"] for l in lessons]
                 ph = ",".join("?" for _ in lesson_ids)
