@@ -9728,43 +9728,6 @@ function StudentProfile({
           </svg>
         </button>
 
-        {/* Item 5: Pomodoro */}
-        <button
-          type="button"
-          onClick={() => { window.location.href = "/?role=student&section=pomodoro"; }}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-rose-500/10 dark:bg-rose-500/20 flex items-center justify-center text-rose-600 dark:text-rose-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            Pomodoro
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
-
-        {/* Item 6: Mening o'quv rejam */}
-        <button
-          type="button"
-          onClick={() => { window.location.href = "/student/plan"; }}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-purple-500/10 dark:bg-purple-500/20 flex items-center justify-center text-purple-600 dark:text-purple-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-            </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            Mening o‘quv rejam
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
 
         {/* Item 7: Sharh qoldirish */}
         <button

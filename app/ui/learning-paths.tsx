@@ -853,8 +853,8 @@ function SegmentedProgressRing({
   const cx = size / 2;
   const cy = size / 2;
 
-  // Ishlangan mavzu: to'qroq zumrad yashil (#059669 / dark: #10b981)
-  // Ishlanmagan mavzu: ochroq pastel yashil (#6ee7b7 / dark: rgba(16, 185, 129, 0.35))
+  // Ishlangan mavzu: to'qroq Diamond brand ko'k (Light: #1429F2 / Dark: #00F0FF)
+  // Ishlanmagan mavzu: ochroq Diamond ko'k (Light: #93C5FD / Dark: rgba(0, 240, 255, 0.25))
   if (count === 1) {
     const isDone = completed >= 1;
     return (
@@ -869,16 +869,16 @@ function SegmentedProgressRing({
           cy={cy}
           r={radius}
           fill="none"
-          stroke={isDone ? "#059669" : "#6ee7b7"}
+          stroke={isDone ? "#1429F2" : "#93C5FD"}
           strokeWidth={isDone ? strokeWidth + 0.8 : strokeWidth}
-          className={isDone ? "stroke-[#059669] dark:stroke-[#10b981]" : "stroke-[#6ee7b7] dark:stroke-[#10b981]/35"}
+          className={isDone ? "stroke-[#1429F2] dark:stroke-[#00F0FF]" : "stroke-[#93C5FD] dark:stroke-[#00F0FF]/25"}
         />
       </svg>
     );
   }
 
-  // Multi-segment circular ring (2 to 5 arcs)
-  const gapDeg = count === 2 ? 24 : count === 3 ? 18 : count === 4 ? 14 : 12;
+  // Multi-segment circular ring (2 to 5 arcs) with distinct gaps ("uzuk-uzuk chiziqlar")
+  const gapDeg = count === 2 ? 30 : count === 3 ? 22 : count === 4 ? 18 : 14;
   const segDeg = 360 / count - gapDeg;
   const segments = [];
 
@@ -903,11 +903,11 @@ function SegmentedProgressRing({
         key={i}
         d={d}
         fill="none"
-        stroke={isDone ? "#059669" : "#6ee7b7"}
+        stroke={isDone ? "#1429F2" : "#93C5FD"}
         strokeWidth={isDone ? strokeWidth + 0.8 : strokeWidth}
         strokeLinecap="round"
         className={`transition-all duration-300 ${
-          isDone ? "stroke-[#059669] dark:stroke-[#10b981]" : "stroke-[#6ee7b7] dark:stroke-[#10b981]/35"
+          isDone ? "stroke-[#1429F2] dark:stroke-[#00F0FF]" : "stroke-[#93C5FD] dark:stroke-[#00F0FF]/25"
         }`}
       />
     );
@@ -947,8 +947,10 @@ function DuolingoNode({
   const score = Number(progress.best_score || 0);
   const stars = isPassed ? (score >= 95 ? 3 : score >= 85 ? 2 : 1) : 0;
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
-  const topicKeys = Array.isArray(module.topic_keys) ? module.topic_keys : [];
-  const totalTopics = Math.min(5, Math.max(1, module.total_topics || lessons.length || topicKeys.length || 1));
+  const topicKeys = (Array.isArray(module.topic_keys) ? module.topic_keys : [])
+    .map((t: any) => String(t || "").trim())
+    .filter(Boolean);
+  const totalTopics = Math.min(5, Math.max(1, module.total_topics || (topicKeys.length > 0 ? topicKeys.length : 1)));
   const completedTopics = isLocked
     ? 0
     : Math.min(
@@ -957,7 +959,7 @@ function DuolingoNode({
           0,
           isPassed
             ? totalTopics
-            : (module.completed_topics ?? lessons.filter((l: any) => l.passed).length)
+            : (module.completed_topics ?? (totalTopics > 1 && lessons.length > 0 ? Math.min(totalTopics - 1, Math.floor((lessons.filter((l: any) => l.passed).length / lessons.length) * totalTopics)) : 0))
         )
       );
   const moduleImage = module.image_url || image(module.cover_key || "star");
@@ -1115,7 +1117,7 @@ function DuolingoNode({
               <div className="mt-4 space-y-2 text-left w-full">
                 <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-navy-300">
                   <span>Modul mavzulari ({completedTopics}/{totalTopics})</span>
-                  <span className="text-[10px] text-emerald-600 font-bold">
+                  <span className="text-[10px] text-[#002DFF] dark:text-[#00F0FF] font-black">
                     {Math.round((completedTopics / totalTopics) * 100)}%
                   </span>
                 </div>
@@ -1131,7 +1133,7 @@ function DuolingoNode({
                         key={tIdx}
                         className={`flex items-center justify-between rounded-xl border p-2 text-xs font-bold transition ${
                           isTopPassed
-                            ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800/40 dark:bg-emerald-950/30 dark:text-emerald-300"
+                            ? "border-[#1429F2]/30 bg-blue-50/70 text-[#0C188B] dark:border-[#00F0FF]/30 dark:bg-[#00F0FF]/10 dark:text-[#00F0FF]"
                             : isTopActive
                             ? "border-[#002DFF] bg-blue-50 text-[#002DFF] dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300 shadow-xs"
                             : "border-slate-200 bg-slate-50 text-slate-400 dark:border-white/10 dark:bg-navy-800/40"
@@ -1141,7 +1143,7 @@ function DuolingoNode({
                           <span
                             className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black ${
                               isTopPassed
-                                ? "bg-emerald-500 text-white"
+                                ? "bg-[#1429F2] text-white dark:bg-[#00F0FF] dark:text-[#010954]"
                                 : isTopActive
                                 ? "bg-[#002DFF] text-white"
                                 : "bg-slate-200 text-slate-600 dark:bg-navy-700 dark:text-slate-300"
@@ -1167,7 +1169,7 @@ function DuolingoNode({
                     <span>Jami savollar: {lessons.length} ta</span>
                   </span>
                   {isPassed ? (
-                    <span className="text-emerald-600 font-black">✓ {score}% (O'tilgan)</span>
+                    <span className="text-[#002DFF] dark:text-[#00F0FF] font-black">✓ {score}% (O'tilgan)</span>
                   ) : isFailed ? (
                     <span className="text-rose-600 font-black">✗ {score}% (O'tilmadi)</span>
                   ) : (

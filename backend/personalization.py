@@ -1402,16 +1402,19 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
             module["progress"] = {"status": "unlocked", "best_score": 0}
 
         # Determine total_topics and completed_topics for segmented circular ring (1 to 5)
+        # Topics are strictly defined by topic_keys (mavzular). Lessons are question/test tasks.
         mod_status = str((module.get("progress") or {}).get("status") or "locked").lower()
-        topic_count = len(module.get("topic_keys") or [])
-        lesson_count = len(lessons)
-        total_topics = min(5, max(1, max(lesson_count, topic_count)))
+        topic_keys = [str(t).strip() for t in (module.get("topic_keys") or []) if str(t).strip()]
+        total_topics = min(5, max(1, len(topic_keys)))
 
         if mod_status == "passed":
             completed_topics = total_topics
-        elif lesson_count > 0:
+        elif total_topics > 1 and len(lessons) > 0:
             passed_lessons = sum(1 for l in lessons if l.get("passed"))
-            completed_topics = min(total_topics, max(0, passed_lessons))
+            if len(lessons) == total_topics:
+                completed_topics = min(total_topics, max(0, passed_lessons))
+            else:
+                completed_topics = min(total_topics - 1, int((passed_lessons / len(lessons)) * total_topics))
         else:
             completed_topics = 0
 

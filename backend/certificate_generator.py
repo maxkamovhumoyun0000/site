@@ -77,8 +77,7 @@ def get_certificate_pdf(
         except (TypeError, ValueError):
             x, y, size = width / 2.0, height / 2.0, 14
 
-        color = str(layer.get("color") or "blue").lower()
-        c.setFillColorRGB(*(0.13, 0.22, 0.72) if color == "blue" else (0.12, 0.16, 0.30))
+        c.setFillColorRGB(*CERT_COLOR_RGB)
         c.setFont("Helvetica-Bold" if bool(layer.get("bold")) else "Helvetica", size)
         c.drawCentredString(x, y, text)
 
