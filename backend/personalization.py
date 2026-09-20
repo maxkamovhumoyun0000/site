@@ -1799,7 +1799,10 @@ class LearningAiLessonRequest(BaseModel):
     level: str | None = Field(default=None, max_length=80)
     instruction: str | None = Field(default=None, max_length=1000)
     question_count: int = Field(default=1, ge=1, le=30)
-    test_types: list[str] = Field(default_factory=lambda: ["multiple_choice"], max_length=8)
+    test_types: list[str] = Field(
+        default_factory=lambda: ["multiple_choice", "true_false", "fill_blank", "word_order", "matching"],
+        max_length=12,
+    )
 
 
 class LearningLibraryTestAttachRequest(BaseModel):
@@ -2214,21 +2217,25 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     finally:
         conn.close()
 
-    types_list = [str(t).strip() for t in (payload.test_types or ["multiple_choice"]) if str(t).strip()]
-    if not types_list:
-        types_list = ["multiple_choice"]
+    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "fill_blank", "word_order", "matching"]
+    raw_types = [str(t).strip() for t in (payload.test_types or []) if str(t).strip()]
+    if not raw_types or any(k in raw_types for k in ("mixed", "all", "aralash", "barchasi")):
+        types_list = DEFAULT_MIXED_TEST_TYPES
+    else:
+        types_list = raw_types
     types_str = ", ".join(types_list)
 
     prompt = (
         f"Create exactly {payload.question_count} safe, high-quality test questions for students on the topic: '{payload.topic}'.\n"
         f"Difficulty Level: {payload.level or 'intermediate'}.\n"
         f"Required Exercise Types: {types_str}.\n"
+        f"Distribute the questions evenly across these exercise types ({types_str}) to provide a varied and engaging mix.\n"
         f"Additional Instruction: {payload.instruction or 'none'}.\n\n"
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt\n"
         "- 'test_type': one of ('multiple_choice', 'true_false', 'fill_blank', 'word_order', 'matching')\n"
-        "- 'options': array of string choices (for multiple_choice give 4 options; for true_false ['To\\'g\\'ri', 'Noto\\'g\\'ri']; for fill_blank/word_order 2-4 hints or empty array)\n"
+        "- 'options': array of string choices (for multiple_choice give 4 options; for true_false ['To\\'g\\'ri', 'Noto\\'g\\'ri']; for fill_blank/word_order 2-4 hints or empty array; for matching give 3-4 pairs like 'apple = olma')\n"
         "- 'correct_answer': the exact correct answer string (must match one of the options for multiple_choice/true_false)\n"
         "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
     )

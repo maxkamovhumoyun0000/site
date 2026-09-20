@@ -3750,7 +3750,7 @@ function LessonEditor({
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(5);
-  const [types, setTypes] = useState("multiple_choice,true_false,fill_blank");
+  const [types, setTypes] = useState("multiple_choice,true_false,fill_blank,word_order,matching");
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
 
@@ -3935,7 +3935,7 @@ function LessonEditor({
         body: {
           topic: topic.trim(),
           question_count: count,
-          test_types: types.split(",").map((value) => value.trim()).filter(Boolean),
+          test_types: (types || "multiple_choice,true_false,fill_blank,word_order,matching").split(",").map((value) => value.trim()).filter(Boolean),
         },
       });
       const items = Array.isArray(result?.items) ? result.items : (result ? [result] : []);
@@ -4425,6 +4425,7 @@ function LessonEditor({
                         onChange={(e) => setTypes(e.target.value)}
                         className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
+                        <option value="multiple_choice,true_false,fill_blank,word_order,matching">🎲 Barchasi aralash (MCQ + True/False + Bo'sh joy + So'z tartibi + Moslashtirish) — Standart</option>
                         <option value="multiple_choice,true_false,fill_blank">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
                         <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
                         <option value="true_false">Faqat To'g'ri / Noto'g'ri (True / False)</option>
@@ -4433,7 +4434,6 @@ function LessonEditor({
                         <option value="matching">Faqat Moslashtirish (Matching Pairs)</option>
                         <option value="translation">Faqat Tarjima mashqlari</option>
                         <option value="spelling">Faqat Imlo (Spelling)</option>
-                        <option value="multiple_choice,true_false,fill_blank,word_order,matching">Barcha turlar aralash</option>
                       </select>
 
                       <button
