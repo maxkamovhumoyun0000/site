@@ -15,6 +15,7 @@ const config: Config = {
         surface: "var(--surface)",
         "surface-soft": "var(--surface-soft)",
         navy: {
+          950: "var(--navy-950, #090d16)",
           900: "var(--navy-900)",
           800: "var(--navy-800)",
           700: "var(--navy-700)",

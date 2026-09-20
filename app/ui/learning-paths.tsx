@@ -254,12 +254,16 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
       ) : null}
 
       {/* Tracks List */}
-      <div className="space-y-10">
+      <div className="flex flex-col space-y-4">
         {filteredTracks.map((track, i) => (
           <DuolingoTrack
             key={track.id}
             track={track}
             index={i}
+            totalTracks={filteredTracks.length}
+            hasNext={i < filteredTracks.length - 1}
+            hasPrev={i > 0}
+            nextTrackTitle={filteredTracks[i + 1]?.title}
             apiFetch={apiFetch}
             onStartModule={(mod) => {
               playDuolingoSound("pop");
@@ -319,12 +323,20 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 function DuolingoTrack({
   track,
   index,
+  totalTracks = 1,
+  hasNext = false,
+  hasPrev = false,
+  nextTrackTitle = "",
   apiFetch,
   onStartModule,
   onStartFinalExam,
 }: {
   track: Row;
   index: number;
+  totalTracks?: number;
+  hasNext?: boolean;
+  hasPrev?: boolean;
+  nextTrackTitle?: string;
   apiFetch: ApiFetch;
   onStartModule: (module: Row) => void;
   onStartFinalExam: (track: Row) => void;
@@ -398,7 +410,7 @@ function DuolingoTrack({
   // Sine-wave horizontal offsets for snake trail (chapdan o'ngga, o'ngdan chapga)
   const OFFSETS = [-68, -34, 0, 34, 68, 34, 0, -34];
 
-  // Continuous winding snake path ("ilon izi") connecting all nodes and chest
+  // Continuous winding snake path ("ilon izi") connecting all nodes, chest, and adjacent tracks
   const snakePathD = useMemo(() => {
     if (!modules.length) return "";
     const cx = 192;
@@ -406,13 +418,26 @@ function DuolingoTrack({
     const startY = 56;
     const points: { x: number; y: number }[] = [];
 
+    // If hasPrev (Unit 2, Unit 3...), incoming snake trail enters from top center
+    if (hasPrev) {
+      points.push({ x: cx, y: 0 });
+    }
+
     modules.forEach((_: any, i: number) => {
       const xOffset = OFFSETS[i % OFFSETS.length];
       points.push({ x: cx + xOffset, y: startY + i * stepY });
     });
 
     // Final chest center
-    points.push({ x: cx, y: startY + modules.length * stepY + 28 });
+    const chestY = startY + modules.length * stepY + 28;
+    points.push({ x: cx, y: chestY });
+
+    // If hasNext, snake trail CONTINUES downwards past the chest to connect seamlessly with the next track!
+    if (hasNext) {
+      points.push({ x: cx + 38, y: chestY + 60 });
+      points.push({ x: cx - 38, y: chestY + 120 });
+      points.push({ x: cx, y: chestY + 180 });
+    }
 
     if (points.length < 2) return "";
 
@@ -428,14 +453,26 @@ function DuolingoTrack({
       d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
     }
     return d;
-  }, [modules, OFFSETS]);
+  }, [modules, OFFSETS, hasPrev, hasNext]);
 
   const svgHeight = useMemo(() => {
-    return Math.max(200, modules.length * 116 + 180);
-  }, [modules.length]);
+    const base = Math.max(200, modules.length * 116 + 180);
+    return hasNext ? base + 155 : base;
+  }, [modules.length, hasNext]);
 
   return (
     <article className={`relative select-none`}>
+      {/* Connected top milestone notch from previous track */}
+      {hasPrev ? (
+        <div className="mx-auto -mb-3 flex justify-center relative z-20">
+          <div className="flex items-center gap-1.5 rounded-full border-2 border-cyan-400 bg-[#001A88] px-3.5 py-1 text-[10px] font-black uppercase tracking-widest text-cyan-300 shadow-md">
+            <span>●</span>
+            <span>Yo'l davomi</span>
+            <span>●</span>
+          </div>
+        </div>
+      ) : null}
+
       {/* Diamond Logo Themed Unit Header Banner */}
       <header
         className={`relative overflow-hidden rounded-3xl border-2 border-b-[6px] ${unitColor.border} ${unitColor.bg} p-5 text-white shadow-xl shadow-blue-950/20`}
@@ -487,7 +524,7 @@ function DuolingoTrack({
               <linearGradient id={`snake-grad-${track.id}`} x1="0%" y1="0%" x2="0%" y2="100%">
                 <stop offset="0%" stopColor="#38bdf8" />
                 <stop offset="50%" stopColor="#002DFF" />
-                <stop offset="100%" stopColor="#f59e0b" />
+                <stop offset="100%" stopColor="#001A88" />
               </linearGradient>
             </defs>
 
@@ -615,6 +652,21 @@ function DuolingoTrack({
               {chestUnlocked ? "🎓 Sertifikat & Mukofot" : examReady ? "⚡ Yakuniy Imtihon" : "Yakuniy Bosqich"}
             </span>
           </div>
+
+          {/* Continuous Snake Trail Bridge Connector to Next Track */}
+          {hasNext ? (
+            <div className="relative z-10 mt-10 mb-2 flex flex-col items-center select-none">
+              <div className="group flex items-center gap-2.5 rounded-full border-2 border-[#002DFF] bg-white/95 px-4 py-2 shadow-lg shadow-blue-500/20 backdrop-blur-md dark:border-cyan-500 dark:bg-navy-900/95 transition-all duration-200 hover:scale-105">
+                <span className="grid h-6 w-6 place-items-center rounded-full bg-gradient-to-r from-[#002DFF] to-[#00F0FF] text-white text-xs font-black shadow-sm animate-bounce">
+                  ↓
+                </span>
+                <span className="text-xs font-black uppercase tracking-wider text-navy-900 dark:text-cyan-300">
+                  {nextTrackTitle ? `Bo'lim ${index + 2}: ${nextTrackTitle}` : "Keyingi bo'lim sari"}
+                </span>
+                <span className="text-xs">✨</span>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -626,7 +678,7 @@ function DuolingoTrack({
               onClick={() => setShowChestModal(false)}
             >
               <div
-                className="relative w-full max-w-md overflow-hidden rounded-3xl border-2 border-amber-400/50 bg-white p-6 shadow-2xl dark:border-amber-600/40 dark:bg-navy-900 animate-scale-up"
+                className="relative w-full max-w-md overflow-hidden rounded-3xl border-2 border-amber-400/50 bg-white p-6 shadow-2xl dark:border-amber-600/40 dark:bg-[#0f172a] animate-scale-up"
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Close Button */}
@@ -722,7 +774,7 @@ function DuolingoTrack({
                     <button
                       type="button"
                       onClick={() => setShowChestModal(false)}
-                      className="mt-4 w-full rounded-2xl border-2 border-b-4 border-slate-300 bg-slate-100 py-3 text-center text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 active:translate-y-0.5 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-200"
+                      className="mt-4 w-full rounded-2xl border-2 border-b-4 border-slate-300 bg-slate-100 py-3 text-center text-xs font-black uppercase tracking-wider text-slate-700 hover:bg-slate-200 active:translate-y-0.5 active:border-b-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                     >
                       Yopish
                     </button>
@@ -743,12 +795,12 @@ function DuolingoTrack({
                       🎓 Yakuniy Imtihon
                     </h3>
 
-                    <p className="mt-2 text-xs text-slate-600 dark:text-navy-200 max-w-sm leading-relaxed">
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300 max-w-sm leading-relaxed">
                       Siz barcha modullarni muvaffaqiyatli tamomladingiz! Endi rasmiy <strong>Sertifikat</strong> olish va keyingi trackni ochish uchun ushbu yakuniy imtihonni topshiring.
                     </p>
 
                     <div className="mt-4 grid grid-cols-2 gap-3 w-full">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-white/10 dark:bg-navy-800">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-800/80">
                         <p className="text-[10px] font-bold uppercase text-slate-400">O'tish bali</p>
                         <p className="text-base font-black text-navy-900 dark:text-white mt-0.5">
                           {track.passing_score || 70}%
@@ -795,16 +847,16 @@ function DuolingoTrack({
                       Yakuniy Sandiq Qulflangan
                     </h3>
 
-                    <p className="mt-2 text-xs text-slate-600 dark:text-navy-200 max-w-sm leading-relaxed">
+                    <p className="mt-2 text-xs text-slate-600 dark:text-slate-300 max-w-sm leading-relaxed">
                       Ushbu maxsus sandiq ichida siz uchun rasmiy <strong>Sertifikat</strong> hamda <strong>+50 D'Point</strong> va <strong>+50 D'Coin</strong> mukofoti saqlangan.
                     </p>
 
-                    <div className="mt-4 w-full rounded-2xl bg-slate-50 p-3.5 dark:bg-navy-800/80 border border-slate-100 dark:border-navy-700">
-                      <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-navy-200 mb-2">
+                    <div className="mt-4 w-full rounded-2xl bg-slate-50 p-3.5 dark:bg-slate-800/80 border border-slate-100 dark:border-slate-700">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">
                         <span>O'tilgan darslar:</span>
-                        <span className="font-black text-[#002DFF]">{passedCount} / {modules.length} modul ({progressPercent}%)</span>
+                        <span className="font-black text-[#002DFF] dark:text-[#38bdf8]">{passedCount} / {modules.length} modul ({progressPercent}%)</span>
                       </div>
-                      <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-navy-900">
+                      <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-900">
                         <div
                           className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-300"
                           style={{ width: `${progressPercent}%` }}
@@ -1082,20 +1134,20 @@ function DuolingoNode({
             onClick={() => setShowPopover(false)}
           >
             <div
-              className="relative w-full max-w-sm rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 shadow-2xl dark:border-navy-700 dark:bg-navy-900 animate-scale-up"
+              className="relative w-full max-w-sm rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-800 dark:bg-[#0f172a] animate-scale-up"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-white/10">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3 dark:border-slate-800">
                 <div className="flex items-center gap-2.5">
                   <img src={moduleImage} alt="" className="h-8 w-8 rounded-full object-cover border-2 border-[#002DFF]" />
-                  <span className="text-xs font-black uppercase tracking-wider text-[#002DFF]">
+                  <span className="text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
                     Modul #{order + 1}
                   </span>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowPopover(false)}
-                  className="grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-white/10 dark:hover:text-white transition"
+                  className="grid h-8 w-8 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-white transition"
                 >
                   ✕
                 </button>
@@ -1108,16 +1160,16 @@ function DuolingoNode({
                 <h3 className="text-lg font-black text-navy-900 dark:text-white">
                   {module.title}
                 </h3>
-                <p className="mt-1 text-xs text-slate-500 dark:text-navy-300 leading-relaxed max-w-xs">
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs">
                   {module.description || "Ushbu modul orqali bilimlaringizni sinang va mustahkamlang."}
                 </p>
               </div>
 
               {/* Topics Breakdown List (1 to 5 topics) */}
               <div className="mt-4 space-y-2 text-left w-full">
-                <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-navy-300">
+                <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                   <span>Modul mavzulari ({completedTopics}/{totalTopics})</span>
-                  <span className="text-[10px] text-[#002DFF] dark:text-[#00F0FF] font-black">
+                  <span className="text-[10px] text-[#002DFF] dark:text-[#38bdf8] font-black">
                     {Math.round((completedTopics / totalTopics) * 100)}%
                   </span>
                 </div>
@@ -1136,7 +1188,7 @@ function DuolingoNode({
                             ? "border-[#1429F2]/30 bg-blue-50/70 text-[#0C188B] dark:border-[#00F0FF]/30 dark:bg-[#00F0FF]/10 dark:text-[#00F0FF]"
                             : isTopActive
                             ? "border-[#002DFF] bg-blue-50 text-[#002DFF] dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300 shadow-xs"
-                            : "border-slate-200 bg-slate-50 text-slate-400 dark:border-white/10 dark:bg-navy-800/40"
+                            : "border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-800/40"
                         }`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
@@ -1146,7 +1198,7 @@ function DuolingoNode({
                                 ? "bg-[#1429F2] text-white dark:bg-[#00F0FF] dark:text-[#010954]"
                                 : isTopActive
                                 ? "bg-[#002DFF] text-white"
-                                : "bg-slate-200 text-slate-600 dark:bg-navy-700 dark:text-slate-300"
+                                : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
                             }`}
                           >
                             {tIdx + 1}
@@ -1163,7 +1215,7 @@ function DuolingoNode({
               </div>
 
               <div className="mt-4 space-y-2">
-                <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-700 dark:bg-navy-800 dark:text-navy-200">
+                <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                   <span className="flex items-center gap-1.5">
                     <span>📝</span>
                     <span>Jami savollar: {lessons.length} ta</span>
@@ -1404,7 +1456,7 @@ function LessonPlayerModal({
 
   return createPortal(
     <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6 animate-fade-in">
-      <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-navy-700 dark:bg-[#131f24]">
+      <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-[#0f172a]">
         {/* Hidden Audio Player */}
         {question?.audio_url ? (
           <audio
@@ -1417,7 +1469,7 @@ function LessonPlayerModal({
         ) : null}
 
         {/* ─── Duolingo Top Bar: Close, Glossy Progress Bar, Hearts ─── */}
-        <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-white/10">
+        <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-slate-800">
           <button
             onClick={() => {
               if (result || window.confirm("Haqiqatan ham darsni tark etmoqchimisiz?")) {
@@ -1425,13 +1477,13 @@ function LessonPlayerModal({
               }
             }}
             type="button"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:text-slate-400"
           >
             ✕
           </button>
 
           {/* Duolingo Rounded Glossy Progress Bar */}
-          <div className="relative h-4 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-navy-800">
+          <div className="relative h-4 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-500 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
               style={{ width: `${progressPercent}%` }}
@@ -2059,7 +2111,7 @@ function FinalExamPlayerModal({
 
   return createPortal(
     <div className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm sm:p-6 animate-fade-in">
-      <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-navy-700 dark:bg-[#131f24]">
+      <div className="relative flex h-full max-h-[96vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-[#0f172a]">
         {currentQuestion?.audio_url ? (
           <audio
             ref={audioRef}
@@ -2070,16 +2122,16 @@ function FinalExamPlayerModal({
         ) : null}
 
         {/* Top Header */}
-        <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-white/10">
+        <div className="flex items-center gap-3 border-b border-slate-100 p-4 dark:border-slate-800">
           <button
             type="button"
             onClick={onClose}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-navy-800"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:text-slate-400"
             title="Chiqish"
           >
             ✕
           </button>
-          <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-navy-800">
+          <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
               className="h-full rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 transition-all duration-300"
               style={{ width: `${progressPercent}%` }}
@@ -2679,13 +2731,13 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
       {/* Main Tracks Table Card */}
       <div className="premium-card overflow-hidden">
         {/* Table Search & Filter Toolbar */}
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line p-4 sm:p-5 dark:border-white/10 bg-surface-soft/40 dark:bg-white/5">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-line p-4 sm:p-5 dark:border-slate-800 bg-surface-soft/40 dark:bg-slate-800/40">
           <div className="flex items-center gap-2">
             <span className="text-sm font-black text-navy-900 dark:text-white">
-              Mavjud O'quv Yo'llari (Tracklar)
+              {t("learning_paths.teacher.available_tracks", "Mavjud O'quv Yo'llari (Tracklar)")}
             </span>
             <span className="rounded-full bg-cyan-500/15 px-2.5 py-0.5 text-xs font-bold text-cyan-700 dark:text-cyan-300">
-              {tracks.length} ta track · {totalModulesCount} ta modul
+              {tracks.length} {t("learning_paths.tracks_count", "{count} ta track").replace("{count}", String(tracks.length))} · {totalModulesCount} {t("learning_paths.modules_count", "{count} ta modul").replace("{count}", String(totalModulesCount))}
             </span>
           </div>
 
@@ -2693,8 +2745,8 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
             <input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Track yoki fan nomi bo'yicha qidirish..."
-              className="w-full rounded-xl border border-line bg-white px-3.5 py-2 text-xs font-medium text-navy-900 placeholder:text-ink-400 focus:border-cyan-500 focus:outline-none dark:border-white/10 dark:bg-navy-900 dark:text-white"
+              placeholder={t("learning_paths.teacher.search_placeholder", "Track yoki fan nomi bo'yicha qidirish...")}
+              className="w-full rounded-xl border border-line bg-white px-3.5 py-2 text-xs font-medium text-navy-900 placeholder:text-ink-400 focus:border-cyan-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
             />
           </div>
         </div>
@@ -2704,26 +2756,26 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
-                <tr className="border-b border-line dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/40 text-[11px] font-black uppercase tracking-wider text-ink-500 dark:text-navy-400">
+                <tr className="border-b border-line dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80 text-[11px] font-black uppercase tracking-wider text-ink-500 dark:text-slate-400">
                   <th className="py-3.5 px-4 text-center w-12">#</th>
-                  <th className="py-3.5 px-4">Track Nomi</th>
-                  <th className="py-3.5 px-4">Fan</th>
-                  <th className="py-3.5 px-4 text-center">Modullar</th>
-                  <th className="py-3.5 px-4 text-center">O'tish Bali</th>
-                  <th className="py-3.5 px-4 text-center">Holati</th>
-                  <th className="py-3.5 px-4 text-right">Amallar</th>
+                  <th className="py-3.5 px-4">{t("learning_paths.teacher.col_track", "Track Nomi")}</th>
+                  <th className="py-3.5 px-4">{t("learning_paths.teacher.col_subject", "Fan")}</th>
+                  <th className="py-3.5 px-4 text-center">{t("learning_paths.teacher.col_modules", "Modullar")}</th>
+                  <th className="py-3.5 px-4 text-center">{t("learning_paths.teacher.col_passing_score", "O'tish Bali")}</th>
+                  <th className="py-3.5 px-4 text-center">{t("learning_paths.teacher.col_status", "Holati")}</th>
+                  <th className="py-3.5 px-4 text-right">{t("learning_paths.teacher.col_actions", "Amallar")}</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-line dark:divide-white/10">
+              <tbody className="divide-y divide-line dark:divide-slate-800">
                 {filteredTracks.map((track, idx) => {
                   const mods = Array.isArray(track.modules) ? track.modules : [];
                   return (
                     <tr
                       key={track.id}
                       onClick={() => setSelected(track)}
-                      className="group cursor-pointer hover:bg-cyan-500/5 dark:hover:bg-white/5 transition"
+                      className="group cursor-pointer hover:bg-cyan-500/5 dark:hover:bg-slate-800/50 transition"
                     >
-                      <td className="py-4 px-4 text-center font-mono font-black text-xs text-ink-500 dark:text-navy-400">
+                      <td className="py-4 px-4 text-center font-mono font-black text-xs text-ink-500 dark:text-slate-400">
                         {idx + 1}
                       </td>
 
@@ -2736,7 +2788,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                             <p className="font-black text-sm text-navy-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition">
                               {track.title}
                             </p>
-                            <p className="text-[11px] text-ink-400 dark:text-navy-400 mt-0.5">
+                            <p className="text-[11px] text-ink-400 dark:text-slate-400 mt-0.5">
                               ID: #{track.id} · Duolingo Snake Path
                             </p>
                           </div>
@@ -2744,7 +2796,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                       </td>
 
                       <td className="py-4 px-4 whitespace-nowrap">
-                        <span className="inline-flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-navy-800 px-3 py-1 text-xs font-bold text-slate-800 dark:text-slate-200 border border-slate-200/60 dark:border-white/10">
+                        <span className="inline-flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-800 px-3 py-1 text-xs font-bold text-slate-800 dark:text-slate-200 border border-slate-200/60 dark:border-slate-700">
                           <span>📖</span>
                           <span>{track.subject || "General"}</span>
                         </span>
@@ -2753,7 +2805,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                       <td className="py-4 px-4 text-center whitespace-nowrap">
                         <span className="inline-flex items-center gap-1 rounded-xl bg-cyan-500/10 dark:bg-cyan-500/20 px-2.5 py-1 text-xs font-bold text-cyan-700 dark:text-cyan-300">
                           <span>📦</span>
-                          <span>{mods.length} ta modul</span>
+                          <span>{mods.length} {t("learning_paths.modules_count", "{count} ta modul").replace("{count}", String(mods.length))}</span>
                         </span>
                       </td>
 
@@ -2767,7 +2819,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                       <td className="py-4 px-4 text-center whitespace-nowrap">
                         <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600 dark:text-emerald-400">
                           <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                          <span>Faol</span>
+                          <span>{t("learning_paths.teacher.status_active", "Faol")}</span>
                         </span>
                       </td>
 
@@ -2782,13 +2834,13 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                             className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-bold text-cyan-700 hover:bg-cyan-500/20 dark:text-cyan-300 transition"
                           >
                             <span>⚙️</span>
-                            <span>Boshqarish</span>
+                            <span>{t("learning_paths.teacher.action_manage", "Boshqarish")}</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => void deleteTrack(track.id)}
                             className="grid h-8 w-8 place-items-center rounded-xl text-ink-400 hover:bg-rose-500/15 hover:text-rose-600 transition"
-                            title="Trackni o'chirish"
+                            title={t("learning_paths.teacher.delete_track", "Trackni o'chirish")}
                           >
                             🗑
                           </button>
@@ -2831,15 +2883,15 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           ═══════════════════════════════════════════════════════════════════════════ */}
       {selected && typeof document !== "undefined" && createPortal(
         <div
-          className="fixed inset-0 z-[200] flex items-center justify-center bg-navy-950/80 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 p-3 sm:p-6 backdrop-blur-sm overflow-hidden animate-fade-in"
           onClick={() => setSelected(null)}
         >
           <div
-            className="relative w-full max-w-5xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+            className="relative w-full max-w-5xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 overflow-hidden animate-scale-up"
             onClick={(e) => e.stopPropagation()}
           >
             {/* Modal Header */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-6 py-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80">
               <div className="flex items-center gap-3 min-w-0">
                 <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-cyan-500/15 text-2xl font-black text-cyan-700 dark:text-cyan-300">
                   🎓
@@ -2853,10 +2905,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                       {selected.subject || "General"}
                     </span>
                     <span className="rounded-xl bg-emerald-500/15 px-2.5 py-0.5 text-xs font-black text-emerald-700 dark:text-emerald-300">
-                      {selected.passing_score || 70}% o'tish
+                      {selected.passing_score || 70}% {t("learning_paths.passing_score", "o'tish").replace("🎯 O‘tish bali: ", "")}
                     </span>
                   </div>
-                  <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                  <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
                     ID: #{selected.id} · Barcha modullar, test savollari va sertifikat sozlamalari
                   </p>
                 </div>
@@ -2869,13 +2921,13 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   onClick={() => void deleteTrack(selected.id)}
                   className="rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
                 >
-                  🗑 Trackni o'chirish
+                  🗑 {t("learning_paths.teacher.delete_track", "Trackni o'chirish")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelected(null)}
-                  className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
-                  title="Yopish"
+                  className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold dark:text-slate-400 dark:hover:text-white"
+                  title={t("common.close", "Yopish")}
                 >
                   ✕
                 </button>
@@ -2884,8 +2936,8 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
             {/* Modal Body (Scrollable) */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
-              {/* Certificate & Passing Score Card (Opens in dedicated Popup Modal) */}
-              <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-cyan-500/10 via-indigo-500/10 to-purple-500/10 p-5 shadow-sm">
+              {/* Certificate & Passing Score Card */}
+              <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-cyan-500/10 via-indigo-500/10 to-purple-500/10 dark:from-cyan-950/30 dark:via-indigo-950/30 dark:to-purple-950/30 p-5 shadow-sm">
                 <div className="flex items-center gap-3.5 min-w-0">
                   <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-cyan-500/20 text-2xl shadow-inner">
                     🎓
@@ -2893,7 +2945,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-black text-navy-900 dark:text-white text-base">
-                        Bitiruv Sertifikati Sozlamalari
+                        {t("learning_paths.teacher.cert_popup_title", "Bitiruv Sertifikati Sozlamalari")}
                       </h3>
                       {(() => {
                         const isRussian = (selected.subject || "").toLowerCase().includes("rus") || (selected.subject || "").toLowerCase().includes("рус");
@@ -2907,8 +2959,8 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         {selected.passing_score || 70}% o'tish bali
                       </span>
                     </div>
-                    <p className="text-xs text-ink-500 dark:text-navy-300 mt-1">
-                      Sertifikat matni, shrift, rang va shablonni alohida popup oynada vizual tahrirlang.
+                    <p className="text-xs text-ink-500 dark:text-slate-400 mt-1">
+                      {t("learning_paths.teacher.cert_hint", "Sertifikat matni, shrift, rang va shablonni alohida popup oynada vizual tahrirlang.")}
                     </p>
                   </div>
                 </div>
@@ -2918,18 +2970,18 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   onClick={() => setShowCertModal(true)}
                   className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-600 to-indigo-600 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md hover:from-cyan-700 hover:to-indigo-700 active:scale-[0.98] transition"
                 >
-                  <span>🎓 Sertifikatni Sozlash (Popup)</span>
+                  <span>{t("learning_paths.teacher.cert_btn", "🎓 Sertifikatni Sozlash (Popup)")}</span>
                 </button>
               </div>
 
               {/* Modules Management Section */}
-              <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-white dark:bg-navy-900/60 shadow-xs">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 dark:border-white/10">
+              <div className="rounded-2xl border border-line p-5 dark:border-slate-800 bg-white dark:bg-[#090d16]/50 shadow-xs">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 dark:border-slate-800">
                   <div>
                     <h3 className="text-base font-black text-navy-900 dark:text-white flex items-center gap-2">
-                      <span>📦 Modullar Ro'yxati</span>
+                      <span>📦 {t("learning_paths.teacher.modules_list", "Modullar Ro'yxati")}</span>
                     </h3>
-                    <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                    <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
                       Jami {(selected.modules || []).length} ta bosqich. Har bir modulni alohida popup oynada to'liq sozlang va testlarini boshqaring.
                     </p>
                   </div>
@@ -2938,7 +2990,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                     onClick={() => setShowAddModuleInline(!showAddModuleInline)}
                     className="inline-flex items-center gap-2 rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow transition hover:bg-[#1899d6] active:translate-y-0.5 active:border-b-2"
                   >
-                    <span>{showAddModuleInline ? "✕ Formani yopish" : "➕ Yangi Modul Qo'shish"}</span>
+                    <span>{showAddModuleInline ? "✕ Formani yopish" : `➕ ${t("learning_paths.teacher.new_module", "Yangi Modul Qo'shish")}`}</span>
                   </button>
                 </div>
 
@@ -2946,46 +2998,46 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 {showAddModuleInline ? (
                   <form
                     onSubmit={addModule}
-                    className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 p-4 sm:p-5 space-y-4 animate-fade-in"
+                    className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 dark:bg-cyan-950/20 p-4 sm:p-5 space-y-4 animate-fade-in"
                   >
                     <div>
                       <h4 className="font-black text-sm text-navy-900 dark:text-white">
                         + "{selected.title}" ga yangi modul qo'shish
                       </h4>
-                      <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+                      <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
                         Modul nomi va unga tegishli mavzularni kiriting.
                       </p>
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
-                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
-                          Modul nomi
+                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
+                          {t("learning_paths.teacher.module_title", "Modul nomi")}
                         </label>
                         <input
                           value={moduleTitle}
                           onChange={(e) => setModuleTitle(e.target.value)}
-                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                           placeholder="Masalan: 1-bosqich: Basic Grammar"
                           required
                         />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
-                          Mavzular (vergul bilan, maksimal 5 ta) *
+                        <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
+                          {t("learning_paths.teacher.topics", "Mavzular")} (vergul bilan, maksimal 5 ta) *
                         </label>
                         <input
                           value={topics}
                           onChange={(e) => setTopics(e.target.value)}
-                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                          className="w-full rounded-xl border border-line bg-white p-2.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                           placeholder="Present Simple, To be, Fe'llar (maksimal 5 ta)"
                         />
                       </div>
                     </div>
 
                     <div>
-                      <label className="text-xs font-bold text-ink-600 dark:text-navy-300 block mb-1">
-                        Muvaffaqiyatli topshirilganda beriladigan D'Point & D'Coin mukofoti *
+                      <label className="text-xs font-bold text-ink-600 dark:text-slate-300 block mb-1">
+                        {t("learning_paths.teacher.reward_coins", "Topshirilsa beriladigan D'Point (+ D'Coin)")} *
                       </label>
                       <input
                         value={rewardCoins}
@@ -2994,23 +3046,23 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         max="10000"
                         required
                         onChange={(e) => setRewardCoins(e.target.value)}
-                        className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                        className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         placeholder="Masalan: 50"
                       />
                     </div>
 
-                    <div className="border-t border-line/40 pt-3 dark:border-white/10">
-                      <p className="text-xs font-bold text-ink-500 mb-2">Modul belgisi (ikonka):</p>
+                    <div className="border-t border-line/40 pt-3 dark:border-slate-800">
+                      <p className="text-xs font-bold text-ink-500 dark:text-slate-400 mb-2">Modul belgisi (ikonka):</p>
                       <CoverPicker value={cover} onChange={setCover} forbiddenKey={lastModuleCover} />
                     </div>
 
-                    <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-white/10">
+                    <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-slate-800">
                       <button
                         type="button"
                         onClick={() => setShowAddModuleInline(false)}
-                        className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                        className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                       >
-                        Bekor qilish
+                        {t("common.cancel", "Bekor qilish")}
                       </button>
                       <button
                         type="submit"
@@ -3030,7 +3082,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                     return (
                       <div
                         key={module.id}
-                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line p-4 dark:border-white/10 transition hover:shadow-md bg-surface-soft/30 dark:bg-white/5"
+                        className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-line p-4 dark:border-slate-800 transition hover:shadow-md bg-surface-soft/30 dark:bg-slate-800/40"
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
                           <img
@@ -3040,14 +3092,14 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                           />
                           <div className="min-w-0">
                             <div className="flex items-center gap-2 flex-wrap">
-                              <span className="grid h-6 w-6 place-items-center rounded-lg bg-navy-100 dark:bg-navy-800 text-xs font-black text-navy-900 dark:text-white">
+                              <span className="grid h-6 w-6 place-items-center rounded-lg bg-navy-100 dark:bg-slate-800 text-xs font-black text-navy-900 dark:text-white">
                                 {index + 1}
                               </span>
                               <p className="font-black text-navy-900 dark:text-white text-base truncate">
                                 {module.title}
                               </p>
                             </div>
-                            <div className="flex items-center gap-2 flex-wrap mt-1 text-xs text-ink-500 dark:text-navy-300">
+                            <div className="flex items-center gap-2 flex-wrap mt-1 text-xs text-ink-500 dark:text-slate-400">
                               <span>{(module.topic_keys || []).join(" · ") || "Mavzu kiritilmagan"}</span>
                               <span>•</span>
                               <span className="font-bold text-cyan-700 dark:text-cyan-300">
@@ -3071,7 +3123,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                             onClick={() => setSelectedModuleId(module.id)}
                             className="inline-flex items-center gap-2 rounded-xl bg-[#002DFF] hover:bg-blue-700 text-white font-black text-xs px-3.5 py-2 shadow-sm transition"
                           >
-                            <span>⚙️ Modulni Sozlash & Testlar</span>
+                            <span>⚙️ {t("learning_paths.teacher.edit_module", "Modulni Sozlash & Testlar")}</span>
                           </button>
                           <button
                             type="button"
@@ -3087,7 +3139,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   })}
 
                   {!(selected.modules || []).length ? (
-                    <div className="py-8 text-center text-xs text-ink-400">
+                    <div className="py-8 text-center text-xs text-ink-400 dark:text-slate-400">
                       Bu trackda hali birorta modul yo'q. Yuqoridagi <strong>«➕ Yangi Modul Qo'shish»</strong> tugmasi orqali qo'shing.
                     </div>
                   ) : null}
@@ -3096,8 +3148,8 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
             </div>
 
             {/* Modal Footer */}
-            <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
-              <span className="text-xs font-bold text-ink-500 dark:text-navy-400">
+            <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/80">
+              <span className="text-xs font-bold text-ink-500 dark:text-slate-400">
                 Track ID: #{selected.id} · O'zgarishlar avtomatik sinxronlanadi
               </span>
               <button
@@ -3105,7 +3157,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 onClick={() => setSelected(null)}
                 className="btn btn-primary text-xs py-2 px-5 font-bold"
               >
-                Yopish
+                {t("common.close", "Yopish")}
               </button>
             </div>
           </div>
@@ -3139,37 +3191,42 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
       {/* Yangi Track Yaratish Modali (Portal) */}
       {showCreateTrackModal && typeof document !== "undefined" && createPortal(
-        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
-          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 animate-scale-up">
-            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-white/10">
+        <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in">
+          <div className="relative w-full max-w-lg overflow-hidden rounded-3xl bg-white p-6 shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 animate-scale-up">
+            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-slate-800">
               <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
-                <span>➕ Yangi Learning Track Yaratish</span>
+                <span>➕ {t("learning_paths.teacher.new_track", "Yangi Track Yaratish")}</span>
               </h3>
               <button
                 type="button"
                 onClick={() => setShowCreateTrackModal(false)}
-                className="grid h-8 w-8 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+                className="grid h-8 w-8 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition dark:text-slate-400 dark:hover:text-white"
+                title={t("common.close", "Yopish")}
               >
                 ✕
               </button>
             </div>
             <form onSubmit={create} className="mt-4 space-y-4">
               <div>
-                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-navy-300">Track nomi</label>
+                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-slate-300">
+                  {t("learning_paths.teacher.track_title", "Track nomi")}
+                </label>
                 <input
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full rounded-2xl border border-line bg-transparent p-3 text-sm font-bold dark:border-white/10"
+                  className="w-full rounded-2xl border border-line bg-white p-3 text-sm font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                   placeholder="Masalan: General English B1, Matematika Asoslari"
                   required
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-navy-300">Fanni tanlang</label>
+                <label className="mb-1 block text-xs font-black text-ink-600 dark:text-slate-300">
+                  {t("learning_paths.teacher.choose_subject", "Fanni tanlang")}
+                </label>
                 <select
                   value={trackSubject}
                   onChange={(e) => setTrackSubject(e.target.value)}
-                  className="w-full rounded-2xl border border-line bg-transparent p-3 text-sm font-bold dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                  className="w-full rounded-2xl border border-line bg-white p-3 text-sm font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 >
                   <option value="Ingliz tili">🇬🇧 Ingliz tili</option>
                   <option value="Rus tili">🇷🇺 Rus tili</option>
@@ -3178,20 +3235,20 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   <option value="General">🌐 Boshqa / Umumiy</option>
                 </select>
               </div>
-              <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-white/10">
+              <div className="flex justify-end gap-2.5 pt-2 border-t border-line/40 dark:border-slate-800">
                 <button
                   type="button"
                   onClick={() => setShowCreateTrackModal(false)}
-                  className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                  className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                 >
-                  Bekor qilish
+                  {t("common.cancel", "Bekor qilish")}
                 </button>
                 <button
                   type="submit"
                   disabled={busy || !title.trim()}
                   className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2.5 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40"
                 >
-                  {busy ? "Yaratilmoqda..." : "Track yaratish"}
+                  {busy ? "Yaratilmoqda..." : t("learning_paths.teacher.create_track_btn", "Track yaratish")}
                 </button>
               </div>
             </form>
@@ -3214,6 +3271,7 @@ function CertificateSettingsModal({
   onSaved: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useWebT();
   const layer = (track.certificate_layers || [])[0] || {};
   const [score, setScore] = useState(String(track.passing_score || 70));
 
@@ -3246,34 +3304,52 @@ function CertificateSettingsModal({
     setBold(next.bold !== undefined ? Boolean(next.bold) : true);
   }, [track, defaultCongratulations]);
 
-  const applyPreset = (presetKey: "default" | "honors" | "specialist" | "short") => {
-    if (isRussian) {
-      if (presetKey === "default") {
-        setText(`Поздравляем! Вы успешно завершили курс и освоили программу «${track.title || "Курс"}». Желаем дальнейших академических успехов!`);
-      } else if (presetKey === "honors") {
-        setText(`За особые академические успехи и блестящее освоение программы курса «${track.title || "Курс"}».`);
-      } else if (presetKey === "specialist") {
-        setText(`Настоящий сертификат подтверждает квалификацию выпускника по программе «${track.title || "Курс"}».`);
-      } else if (presetKey === "short") {
-        setText(`Курс практического русского языка · Выпускник курса`);
-      }
-    } else {
-      if (presetKey === "default") {
-        setText(`Congratulations! Successfully completed the «${track.title || "Course"}» curriculum with outstanding excellence.`);
-      } else if (presetKey === "honors") {
-        setText(`Awarded with Highest Honors for extraordinary mastery and dedication in «${track.title || "Course"}».`);
-      } else if (presetKey === "specialist") {
-        setText(`This certificate acknowledges successful completion and mastery of «${track.title || "Course"}».`);
-      } else if (presetKey === "short") {
-        setText(`English Language Mastery Track · Certified Graduate`);
-      }
-    }
+  const place = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const nx = Math.max(0.05, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+    const ny = Math.max(0.05, Math.min(0.95, 1 - (e.clientY - rect.top) / rect.height));
+    setX(Number(nx.toFixed(4)));
+    setY(Number(ny.toFixed(4)));
   };
 
-  const place = (event: MouseEvent<HTMLDivElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    setX(Math.min(0.95, Math.max(0.05, (event.clientX - rect.left) / rect.width)));
-    setY(Math.min(0.95, Math.max(0.05, 1 - (event.clientY - rect.top) / rect.height)));
+  const applyPreset = (preset: "default" | "honors" | "specialist" | "short") => {
+    if (isRussian) {
+      if (preset === "default") {
+        setText(`Поздравляем! Вы успешно завершили курс и освоили программу «${track.title || "Курс"}». Желаем дальнейших академических успехов!`);
+        setSize(16);
+        setBold(true);
+      } else if (preset === "honors") {
+        setText(`С отличием окончил(а) полный курс углубленного изучения «${track.title || "Курс"}» с наивысшими баллами.`);
+        setSize(18);
+        setBold(true);
+      } else if (preset === "specialist") {
+        setText(`Настоящий сертификат подтверждает квалификационное освоение учебной программы «${track.title || "Курс"}».`);
+        setSize(15);
+        setBold(false);
+      } else {
+        setText(`Успешно завершил(а) обучение по программе «${track.title || "Курс"}».`);
+        setSize(16);
+        setBold(true);
+      }
+    } else {
+      if (preset === "default") {
+        setText(`Congratulations! Successfully completed the «${track.title || "Course"}» curriculum with outstanding excellence.`);
+        setSize(16);
+        setBold(true);
+      } else if (preset === "honors") {
+        setText(`Graduated with High Honors and exceptional mastery in the «${track.title || "Course"}» program.`);
+        setSize(18);
+        setBold(true);
+      } else if (preset === "specialist") {
+        setText(`This certificate officially verifies the successful qualification in «${track.title || "Course"}».`);
+        setSize(15);
+        setBold(false);
+      } else {
+        setText(`Successfully completed all modules of «${track.title || "Course"}».`);
+        setSize(16);
+        setBold(true);
+      }
+    }
   };
 
   const save = async () => {
@@ -3282,43 +3358,49 @@ function CertificateSettingsModal({
       await apiFetch(`/staff/learning-tracks/${track.id}`, {
         method: "PATCH",
         body: {
-          passing_score: Number(score),
-          certificate_template_key: template,
-          certificate_layers: text.trim() ? [{ text: text.trim(), x, y, font_size: size, color, bold }] : [],
+          passing_score: Math.max(1, Math.min(100, Number(score) || 70)),
+          certificate_layers: [
+            {
+              text: text.trim(),
+              x,
+              y,
+              font_size: size,
+              color,
+              bold,
+            },
+          ],
         },
       });
       setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
       await onSaved();
-      setTimeout(() => {
-        onClose();
-      }, 700);
     } finally {
       setBusy(false);
     }
   };
 
-  const previewColor = color === "blue" ? "#2138b8" : "#1f294d";
+  const previewColor = color === "ink" ? "#1f294d" : "#2138b8";
 
   return (
     <div
-      className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/80 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-black/75 p-3 sm:p-6 backdrop-blur-sm overflow-hidden animate-fade-in"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+        className="relative w-full max-w-4xl max-h-[92vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 overflow-hidden animate-scale-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80">
           <div className="flex items-center gap-3 min-w-0">
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-cyan-500/15 text-2xl font-black text-cyan-700 dark:text-cyan-300">
               🎓
             </span>
             <div className="min-w-0">
               <h2 className="font-black text-navy-900 dark:text-white text-base sm:text-lg truncate">
-                Bitiruv Sertifikati Sozlamalari
+                {t("learning_paths.teacher.cert_popup_title", "Bitiruv Sertifikati Sozlamalari")}
               </h2>
-              <p className="text-xs text-ink-500 dark:text-navy-300 truncate">
+              <p className="text-xs text-ink-500 dark:text-slate-400 truncate">
                 Track: {track.title} · Faqat butun kurs muvaffaqiyatli yakunlanganda beriladi
               </p>
             </div>
@@ -3326,8 +3408,8 @@ function CertificateSettingsModal({
           <button
             type="button"
             onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
-            title="Yopish"
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold dark:text-slate-400 dark:hover:text-white"
+            title={t("common.close", "Yopish")}
           >
             ✕
           </button>
@@ -3335,8 +3417,8 @@ function CertificateSettingsModal({
 
         {/* Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 custom-scrollbar">
-          {/* Auto-detected Subject Banner (NO dropdown!) */}
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-3.5">
+          {/* Auto-detected Subject Banner */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-cyan-500/30 bg-cyan-500/10 dark:bg-cyan-950/20 p-3.5">
             <div className="flex items-center gap-2.5">
               <span className="text-2xl">{isRussian ? "🇷🇺" : "🇬🇧"}</span>
               <div>
@@ -3348,14 +3430,14 @@ function CertificateSettingsModal({
                 </p>
               </div>
             </div>
-            <span className="rounded-lg bg-white/80 dark:bg-navy-900/80 px-2.5 py-1 text-xs font-bold text-navy-900 dark:text-white shadow-xs">
+            <span className="rounded-lg bg-white/80 dark:bg-slate-800 px-2.5 py-1 text-xs font-bold text-navy-900 dark:text-white shadow-xs">
               {template}.svg
             </span>
           </div>
 
-          {/* Quick Preset Buttons (Shablonlar avtomatik kiritilgan) */}
-          <div className="rounded-2xl border border-line bg-surface-soft/40 p-3.5 dark:border-white/10 dark:bg-white/5 space-y-2">
-            <p className="text-xs font-black uppercase text-ink-600 dark:text-navy-300">
+          {/* Quick Preset Buttons */}
+          <div className="rounded-2xl border border-line bg-surface-soft/40 p-3.5 dark:border-slate-800 dark:bg-slate-800/40 space-y-2">
+            <p className="text-xs font-black uppercase text-ink-600 dark:text-slate-300">
               ✨ Tayyor tabrik va yutuq shablonlari (1 bosishda matnni to'ldirish):
             </p>
             <div className="flex flex-wrap gap-2">
@@ -3393,7 +3475,7 @@ function CertificateSettingsModal({
           {/* Settings Fields */}
           <div className="grid gap-3 sm:grid-cols-3">
             <div>
-              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
                 Track o'tish bali (%)
               </label>
               <input
@@ -3402,11 +3484,11 @@ function CertificateSettingsModal({
                 max="100"
                 type="number"
                 onChange={(e) => setScore(e.target.value)}
-                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
                 Shrift o'lchami (px)
               </label>
               <input
@@ -3415,17 +3497,17 @@ function CertificateSettingsModal({
                 max="42"
                 value={size}
                 onChange={(e) => setSize(Number(e.target.value))}
-                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
+              <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
                 Matn rangi
               </label>
               <select
                 value={color}
                 onChange={(e) => setColor(e.target.value)}
-                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               >
                 <option value="blue">Ko'k (#2138b8)</option>
                 <option value="ink">To'q qora-ko'k (#1f294d)</option>
@@ -3435,10 +3517,10 @@ function CertificateSettingsModal({
 
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="text-xs font-bold text-ink-600 dark:text-navy-300">
-                Sertifikatdagi tabrik yoki erishilgan natija matni (Avtomatik kiritilgan):
+              <label className="text-xs font-bold text-ink-600 dark:text-slate-300">
+                Sertifikatdagi tabrik yoki erishilgan natija matni:
               </label>
-              <label className="flex items-center gap-1.5 text-xs font-bold text-ink-600 dark:text-navy-300 cursor-pointer">
+              <label className="flex items-center gap-1.5 text-xs font-bold text-ink-600 dark:text-slate-300 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={bold}
@@ -3452,13 +3534,13 @@ function CertificateSettingsModal({
               rows={2}
               value={text}
               onChange={(e) => setText(e.target.value)}
-              className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white resize-none"
+              className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white resize-none dark:placeholder-slate-400"
               placeholder="Tabriknoma yoki kurs nomi..."
             />
           </div>
 
           <div className="flex items-center justify-between pt-1">
-            <p className="text-xs font-bold text-ink-600 dark:text-navy-300">
+            <p className="text-xs font-bold text-ink-600 dark:text-slate-300">
               👇 Sertifikat maketi — matnni siljitish uchun rasm ustiga bosing:
             </p>
             <span className="text-xs font-mono font-bold text-cyan-700 dark:text-cyan-300">
@@ -3542,14 +3624,14 @@ function CertificateSettingsModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-line px-6 py-4 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
+        <div className="flex items-center justify-between border-t border-line px-6 py-4 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/80">
           <div>
             {savedSuccess ? (
               <span className="text-xs font-black text-emerald-600 dark:text-emerald-400 animate-fade-in">
                 ✅ Sertifikat sozlamalari muvaffaqiyatli saqlandi!
               </span>
             ) : (
-              <span className="text-xs text-ink-500 dark:text-navy-400">
+              <span className="text-xs text-ink-500 dark:text-slate-400">
                 Sertifikat {isRussian ? "ruscha" : "inglizcha"} dizaynda avtomatik yaratiladi
               </span>
             )}
@@ -3558,17 +3640,17 @@ function CertificateSettingsModal({
             <button
               type="button"
               onClick={onClose}
-              className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+              className="rounded-xl border border-line px-4 py-2 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
             >
-              Yopish
+              {t("common.close", "Yopish")}
             </button>
             <button
               type="button"
               disabled={busy}
               onClick={() => void save()}
-              className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40 active:translate-y-0.5"
+              className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40 transition active:translate-y-0.5 active:border-b-2"
             >
-              {busy ? "Saqlanmoqda…" : "💾 Sozlamalarni Saqlash"}
+              {busy ? "Saqlanmoqda..." : "✓ Sertifikatni saqlash"}
             </button>
           </div>
         </div>
@@ -3613,6 +3695,7 @@ const ALL_TEST_KINDS = [
 ];
 
 function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: ApiFetch; onSaved: () => Promise<void> }) {
+  const t = useWebT();
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -3867,7 +3950,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
   };
 
   const remove = async () => {
-    if (!window.confirm(`"${module.title}" moduli va uning barcha darslari o'chirilsinmi?`)) return;
+    if (!window.confirm(t("learning_paths.teacher.delete_module_prompt", { title: String(module.title || "") }))) return;
     setBusy(true);
     try {
       await apiFetch(`/staff/learning-modules/${module.id}`, { method: "DELETE" });
@@ -3878,16 +3961,16 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
   };
 
   return (
-    <div className="mt-4 border-t border-line/60 pt-4 dark:border-white/10 space-y-4">
+    <div className="mt-4 border-t border-line/60 pt-4 dark:border-slate-800 space-y-4">
       {/* ─── Moduldagi mavjud testlar ro'yxati (Tahrirlash va O'chirish) ─── */}
-      <div className="rounded-2xl border border-line p-4 dark:border-white/10 bg-white/70 dark:bg-navy-900/80">
+      <div className="rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a]">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
-              <span>📋 Moduldagi mavjud testlar ({lessons.length} ta)</span>
+              <span>📋 {t("learning_paths.teacher.lessons_in_module", { count: lessons.length })}</span>
             </p>
-            <span className="text-[10px] font-bold text-ink-500 dark:text-navy-300">
-              Har bir testni tahrirlash yoki o'chirish mumkin
+            <span className="text-[10px] font-bold text-ink-500 dark:text-slate-400">
+              {t("learning_paths.teacher.lessons_hint")}
             </span>
           </div>
           <button
@@ -3895,7 +3978,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
             onClick={() => setShowAddTestModal(true)}
             className="inline-flex items-center gap-1.5 rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-0.5 active:border-b-2 hover:bg-[#1899d6]"
           >
-            <span>➕ Test qo'shish (Modal)</span>
+            <span>{t("learning_paths.teacher.add_test_btn")}</span>
           </button>
         </div>
 
@@ -3912,23 +3995,23 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                   key={lesson.id}
                   className={`rounded-xl border p-3 transition ${
                     isEditing
-                      ? "border-cyan-400 bg-cyan-500/5 shadow-sm"
-                      : "border-line bg-surface-soft/40 hover:border-cyan-300 dark:border-white/10 dark:bg-white/5"
+                      ? "border-cyan-400 bg-cyan-500/5 shadow-sm dark:bg-cyan-950/20"
+                      : "border-line bg-surface-soft/40 hover:border-cyan-300 dark:border-slate-800 dark:bg-[#090d16]/50"
                   }`}
                 >
                   {isEditing ? (
                     /* Inline Lesson Edit Form */
                     <div className="space-y-3">
-                      <div className="flex items-center justify-between border-b border-line/40 pb-2 dark:border-white/10">
+                      <div className="flex items-center justify-between border-b border-line/40 pb-2 dark:border-slate-800">
                         <span className="text-xs font-black text-cyan-700 dark:text-cyan-300">
-                          ✏️ Testni tahrirlash (#{idx + 1})
+                          ✏️ {t("learning_paths.teacher.edit_test_title")} (#{idx + 1})
                         </span>
                         <button
                           type="button"
                           onClick={() => setEditingLessonId(null)}
-                          className="text-xs text-ink-500 hover:text-rose-500"
+                          className="text-xs text-ink-500 hover:text-rose-500 dark:text-slate-400"
                         >
-                          ✕ Bekor
+                          ✕ {t("learning_paths.teacher.cancel")}
                         </button>
                       </div>
 
@@ -3936,13 +4019,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         <input
                           value={editTitle}
                           onChange={(e) => setEditTitle(e.target.value)}
-                          className="rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10 font-bold"
-                          placeholder="Dars nomi"
+                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white font-bold placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder={t("learning_paths.teacher.module_title")}
                         />
                         <select
                           value={editType}
                           onChange={(e) => setEditType(e.target.value)}
-                          className="rounded-xl border border-line bg-transparent p-2 text-xs font-semibold dark:border-white/10"
+                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs font-semibold dark:border-slate-700 dark:text-white"
                         >
                           {ALL_TEST_KINDS.map((k) => (
                             <option key={k.key} value={k.key}>
@@ -3953,16 +4036,16 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                       </div>
 
                       {editKindMeta.needsAudio ? (
-                        <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/10 p-2.5 space-y-2">
+                        <div className="rounded-xl border border-cyan-400/40 bg-cyan-500/10 p-2.5 space-y-2 dark:bg-cyan-950/30">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-black text-cyan-800 dark:text-cyan-200">
-                              🎧 Audio biriktirish (Majburiy)
+                              🎧 {t("learning_paths.teacher.upload_audio")}
                             </span>
-                            {editAudioUploading && <span className="text-[10px] text-cyan-600 animate-pulse">Yuklanmoqda...</span>}
+                            {editAudioUploading && <span className="text-[10px] text-cyan-600 animate-pulse">{t("learning_paths.teacher.uploading")}</span>}
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <label className="btn btn-soft text-xs py-1 px-3 cursor-pointer">
-                              📁 Yangi audio yuklash
+                              📁 {t("learning_paths.teacher.upload_new_audio")}
                               <input
                                 type="file"
                                 accept="audio/*"
@@ -3983,8 +4066,8 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                             <input
                               value={editAudioUrl}
                               onChange={(e) => setEditAudioUrl(e.target.value)}
-                              placeholder="Audio URL (/homework/files/... yoki https://...)"
-                              className="min-w-0 flex-1 rounded-xl border border-line bg-transparent p-1.5 text-xs dark:border-white/10"
+                              placeholder={t("learning_paths.teacher.audio_url_placeholder")}
+                              className="min-w-0 flex-1 rounded-xl border border-line bg-white dark:bg-slate-800 p-1.5 text-xs dark:border-slate-700 dark:text-white"
                             />
                           </div>
                           {editAudioUrl ? (
@@ -3997,30 +4080,30 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         value={editPrompt}
                         onChange={(e) => setEditPrompt(e.target.value)}
                         rows={2}
-                        className="w-full rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-                        placeholder="Savol matni..."
+                        className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                        placeholder={t("learning_paths.teacher.question_prompt")}
                       />
 
                       <div className="grid gap-2 sm:grid-cols-2">
                         <input
                           value={editOptions}
                           onChange={(e) => setEditOptions(e.target.value)}
-                          className="rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-                          placeholder="Variantlar: A | B | C | D (| bilan)"
+                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder={`${t("learning_paths.teacher.options")}: A | B | C | D`}
                         />
                         <input
                           value={editCorrect}
                           onChange={(e) => setEditCorrect(e.target.value)}
-                          className="rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-                          placeholder="To'g'ri javob matni"
+                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder={t("learning_paths.teacher.correct_answer")}
                         />
                       </div>
 
                       <input
                         value={editExplanation}
                         onChange={(e) => setEditExplanation(e.target.value)}
-                        className="w-full rounded-xl border border-line bg-transparent p-2 text-xs dark:border-white/10"
-                        placeholder="Tushuntirish / Izoh"
+                        className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                        placeholder={t("learning_paths.teacher.explanation")}
                       />
 
                       <div className="flex justify-end gap-2 pt-1">
@@ -4029,7 +4112,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           onClick={() => setEditingLessonId(null)}
                           className="btn btn-soft text-xs"
                         >
-                          Bekor qilish
+                          {t("learning_paths.teacher.cancel")}
                         </button>
                         <button
                           type="button"
@@ -4037,7 +4120,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           onClick={() => void saveEdit()}
                           className="btn btn-primary text-xs"
                         >
-                          ✓ Saqlash
+                          ✓ {t("learning_paths.teacher.save")}
                         </button>
                       </div>
                     </div>
@@ -4071,13 +4154,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                             onClick={() => startEdit(lesson)}
                             className="rounded-lg border border-cyan-400/40 px-2.5 py-1 text-xs font-bold text-cyan-700 hover:bg-cyan-500/10 dark:text-cyan-300 transition"
                           >
-                            ✏️ Tahrirlash
+                            ✏️ {t("learning_paths.teacher.edit")}
                           </button>
                           <button
                             type="button"
                             onClick={() => void deleteLesson(Number(lesson.id))}
                             className="rounded-lg border border-rose-400/40 px-2 py-1 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
-                            title="O'chirish"
+                            title={t("learning_paths.teacher.delete")}
                           >
                             🗑
                           </button>
@@ -4085,7 +4168,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                       </div>
 
                       {/* Question text & choices preview */}
-                      <p className="mt-2 text-xs font-medium text-ink-600 dark:text-navy-200">
+                      <p className="mt-2 text-xs font-medium text-ink-600 dark:text-slate-300">
                         {p.question || "Savol matni mavjud emas"}
                       </p>
 
@@ -4105,7 +4188,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                                 className={`rounded-lg px-2 py-0.5 text-[11px] font-semibold border ${
                                   isCorrect
                                     ? "border-emerald-400 bg-emerald-500/15 text-emerald-800 dark:text-emerald-200 font-bold"
-                                    : "border-line/60 bg-white/50 text-ink-500 dark:border-white/10 dark:bg-white/5 dark:text-navy-300"
+                                    : "border-line/60 bg-white/50 text-ink-500 dark:border-slate-800 dark:bg-slate-800/40 dark:text-slate-300"
                                 }`}
                               >
                                 {isCorrect ? "✓ " : ""}{opt}
@@ -4115,7 +4198,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         </div>
                       ) : p.correct_answer ? (
                         <p className="mt-1 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-                          To'g'ri javob: <strong>{String(p.correct_answer)}</strong>
+                          {t("learning_paths.teacher.correct_answer")}: <strong>{String(p.correct_answer)}</strong>
                         </p>
                       ) : null}
                     </div>
@@ -4124,21 +4207,21 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               );
             })
           ) : (
-            <p className="text-xs text-ink-400 italic p-3 bg-surface-soft/40 rounded-xl text-center">
-              Hozircha bu modulda testlar yo'q. Quyidagi 3 usuldan biri orqali test qo'shing.
+            <p className="text-xs text-ink-400 italic p-3 bg-surface-soft/40 dark:bg-slate-800/40 rounded-xl text-center">
+              {t("learning_paths.teacher.no_lessons_yet")}
             </p>
           )}
         </div>
       </div>
 
       {/* ─── Modul amallari paneli ─── */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface-soft/40 p-4 dark:border-white/10 dark:bg-white/5">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-line/80 bg-surface-soft/40 p-4 dark:border-slate-800 dark:bg-[#0f172a]">
         <button
           type="button"
           onClick={() => setShowAddTestModal(true)}
           className="inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-5 py-2.5 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-0.5 active:border-b-2 hover:bg-[#1899d6]"
         >
-          <span>➕ Ushbu modulga yangi test qo'shish (Modal)</span>
+          <span>{t("learning_paths.teacher.module_add_test_btn")}</span>
         </button>
 
         <button
@@ -4147,45 +4230,45 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
           onClick={() => void remove()}
           className="rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300 transition"
         >
-          Modulni to'liq o'chirish
+          {t("learning_paths.teacher.delete_module_btn")}
         </button>
       </div>
 
       {/* ─── Test Qo'shish Qalqib chiquvchi Oynasi (Modal Dialog Portal) ─── */}
       {showAddTestModal && typeof document !== "undefined" && createPortal(
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-navy-950/80 p-3 sm:p-4 backdrop-blur-sm animate-fade-in">
-          <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/75 p-3 sm:p-4 backdrop-blur-sm animate-fade-in">
+          <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800">
             {/* Modal Header */}
-            <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-white/10">
+            <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-slate-800 dark:bg-[#090d16]/80">
               <div>
                 <h4 className="text-sm font-black uppercase tracking-wider text-navy-900 dark:text-white flex items-center gap-2">
-                  <span>➕ Modulga Yangi Test Qo'shish</span>
+                  <span>{t("learning_paths.teacher.add_test_modal_title")}</span>
                 </h4>
-                <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-                  "{module.title}" moduli uchun 3 xil usuldan birini tanlang
+                <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
+                  {t("learning_paths.teacher.method_choose", { title: String(module.title || "") })}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowAddTestModal(false)}
-                className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+                className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 dark:text-slate-400 transition"
               >
                 ✕
               </button>
             </div>
 
             {/* 3-Tab Segmented Controls */}
-            <div className="flex border-b border-line bg-surface-soft/40 p-2 dark:border-white/10 dark:bg-white/5 gap-1.5">
+            <div className="flex border-b border-line bg-surface-soft/40 p-2 dark:border-slate-800 dark:bg-[#090d16]/50 gap-1.5">
               <button
                 type="button"
                 onClick={() => setAddMode("library")}
                 className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
                   addMode === "library"
-                    ? "bg-white text-[#1cb0f6] shadow-sm dark:bg-navy-800 dark:text-[#1cb0f6]"
-                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                    ? "bg-white text-[#1cb0f6] shadow-sm dark:bg-slate-800 dark:text-[#38bdf8]"
+                    : "text-slate-600 hover:text-navy-900 dark:text-slate-400 dark:hover:text-white"
                 }`}
               >
-                <span>📂 Kutubxonadan</span>
+                <span>📂 {t("learning_paths.teacher.from_library")}</span>
               </button>
 
               <button
@@ -4193,11 +4276,11 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                 onClick={() => setAddMode("ai")}
                 className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
                   addMode === "ai"
-                    ? "bg-white text-emerald-600 shadow-sm dark:bg-navy-800 dark:text-emerald-400"
-                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                    ? "bg-white text-emerald-600 shadow-sm dark:bg-slate-800 dark:text-emerald-400"
+                    : "text-slate-600 hover:text-navy-900 dark:text-slate-400 dark:hover:text-white"
                 }`}
               >
-                <span>✨ Diamondvoy AI</span>
+                <span>✨ {t("learning_paths.teacher.from_ai")}</span>
               </button>
 
               <button
@@ -4205,11 +4288,11 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                 onClick={() => setAddMode("manual")}
                 className={`flex-1 flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-black transition-all ${
                   addMode === "manual"
-                    ? "bg-white text-purple-600 shadow-sm dark:bg-navy-800 dark:text-purple-400"
-                    : "text-slate-600 hover:text-navy-900 dark:text-navy-300"
+                    ? "bg-white text-purple-600 shadow-sm dark:bg-slate-800 dark:text-purple-400"
+                    : "text-slate-600 hover:text-navy-900 dark:text-slate-400 dark:hover:text-white"
                 }`}
               >
-                <span>✍️ Qo'lda kiritish</span>
+                <span>✍️ {t("learning_paths.teacher.manual")}</span>
               </button>
             </div>
 
@@ -4218,15 +4301,15 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               {/* TAB 1: Real Materials Library Picker */}
               {addMode === "library" ? (
                 <div className="space-y-4 animate-fade-in">
-                  <div className="rounded-2xl border-2 border-dashed border-[#1cb0f6]/40 bg-[#1cb0f6]/5 p-6 text-center dark:border-[#1cb0f6]/20">
+                  <div className="rounded-2xl border-2 border-dashed border-[#1cb0f6]/40 bg-[#1cb0f6]/5 p-6 text-center dark:border-[#1cb0f6]/20 dark:bg-cyan-950/20">
                     <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-[#1cb0f6]/15 text-2xl text-[#1cb0f6]">
                       📂
                     </div>
                     <h5 className="text-base font-black text-navy-900 dark:text-white">
-                      O'qituvchi Kutubxonasidagi Testlarni Ulash
+                      {t("learning_paths.teacher.library_title")}
                     </h5>
-                    <p className="mx-auto mt-1 max-w-md text-xs text-slate-500 dark:text-navy-300">
-                      Papkalar daraxti yoki kitoblar, videolar va vazifalar orqali avval yaratilgan istalgan testni bir necha soniyada ushbu modulga biriktiring.
+                    <p className="mx-auto mt-1 max-w-md text-xs text-slate-500 dark:text-slate-400">
+                      {t("learning_paths.teacher.library_desc")}
                     </p>
 
                     <button
@@ -4234,7 +4317,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                       onClick={() => setShowLibraryModal(true)}
                       className="mt-4 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#1899d6]"
                     >
-                      <span>📂 Kutubxona papkalari va materiallarini ochish</span>
+                      <span>{t("learning_paths.teacher.library_open_btn")}</span>
                     </button>
                   </div>
                 </div>
@@ -4243,19 +4326,19 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               {/* TAB 2: AI Diamondvoy Generator */}
               {addMode === "ai" ? (
                 <div className="space-y-4 animate-fade-in">
-                  <div className="rounded-2xl border-2 border-emerald-500/20 bg-emerald-500/5 p-4 sm:p-5">
+                  <div className="rounded-2xl border-2 border-emerald-500/20 bg-emerald-500/5 p-4 sm:p-5 dark:bg-emerald-950/20 dark:border-emerald-500/30">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
-                        <span>✨ Diamondvoy AI yordamida test yaratish</span>
+                        <span>{t("learning_paths.teacher.ai_title")}</span>
                       </span>
                       <span className="rounded-full bg-emerald-500/20 px-2.5 py-0.5 text-[10px] font-black text-emerald-800 dark:text-emerald-200">
-                        Modulga to'g'ridan-to'g'ri qo'shiladi
+                        {t("learning_paths.teacher.ai_direct_add")}
                       </span>
                     </div>
 
                     {/* Quick Topic Suggestion Pills */}
                     <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] font-bold text-slate-500">Mavzular:</span>
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{t("learning_paths.teacher.ai_topic_label")}</span>
                       {[
                         "Present Perfect vs Past Simple",
                         "Irregular Verbs",
@@ -4267,7 +4350,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           key={sug}
                           type="button"
                           onClick={() => setTopic(sug)}
-                          className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:bg-navy-800 dark:text-emerald-300"
+                          className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-800 dark:text-emerald-300"
                         >
                           + {sug}
                         </button>
@@ -4278,13 +4361,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                       <input
                         value={topic}
                         onChange={(e) => setTopic(e.target.value)}
-                        placeholder="Test mavzusi (masalan: English Grammar, Food & Dining, B2 Vocabulary)..."
-                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        placeholder={t("learning_paths.teacher.ai_topic_placeholder")}
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                       />
 
                       <div className="flex items-center gap-2">
-                        <label className="text-xs font-black text-slate-600 dark:text-navy-300 whitespace-nowrap">
-                          Soni:
+                        <label className="text-xs font-black text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                          {t("learning_paths.teacher.ai_count_label")}
                         </label>
                         <input
                           type="number"
@@ -4292,14 +4375,14 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           max="25"
                           value={count}
                           onChange={(e) => setCount(Number(e.target.value))}
-                          className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-center text-xs font-black text-navy-900 focus:border-emerald-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                          className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-center text-xs font-black text-navy-900 focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         />
                       </div>
 
                       <select
                         value={types}
                         onChange={(e) => setTypes(e.target.value)}
-                        className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
                         <option value="multiple_choice,true_false,fill_blank">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
                         <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
@@ -4318,7 +4401,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         onClick={() => void generate()}
                         className="sm:col-span-2 rounded-2xl border-2 border-b-4 border-[#46a302] bg-[#58cc02] py-3.5 text-center text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-[#4cb802] disabled:opacity-40"
                       >
-                        {busy ? "⏳ Diamondvoy testlarni yaratmoqda..." : `💎 Diamondvoy ${count} ta savol yaratib modulga qo'shsin`}
+                        {busy ? t("learning_paths.teacher.ai_busy") : t("learning_paths.teacher.ai_generate_btn")}
                       </button>
                     </div>
                   </div>
@@ -4328,13 +4411,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
               {/* TAB 3: Manual Test Builder */}
               {addMode === "manual" ? (
                 <div className="space-y-4 animate-fade-in">
-                  <div className="rounded-2xl border-2 border-purple-500/20 bg-purple-500/5 p-4 sm:p-5 space-y-3">
+                  <div className="rounded-2xl border-2 border-purple-500/20 bg-purple-500/5 p-4 sm:p-5 space-y-3 dark:bg-purple-950/20 dark:border-purple-500/30">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-black uppercase tracking-wider text-purple-900 dark:text-purple-300">
-                        ✍️ Qo'lda Yangi Test Yaratish
+                        {t("learning_paths.teacher.manual_title")}
                       </span>
                       <span className="rounded-full bg-purple-500/20 px-2.5 py-0.5 text-[10px] font-black text-purple-800 dark:text-purple-200">
-                        20 ta turli test turi
+                        {t("learning_paths.teacher.manual_kinds_count")}
                       </span>
                     </div>
 
@@ -4343,8 +4426,8 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                       <input
                         value={title}
                         onChange={(e) => setTitle(e.target.value)}
-                        placeholder="Test savoli nomi (masalan: 1-mashq, Vocabulary check)"
-                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        placeholder={t("learning_paths.teacher.manual_name_placeholder")}
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                       />
 
                       <select
@@ -4359,7 +4442,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                             setCorrect("");
                           }
                         }}
-                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
                         {ALL_TEST_KINDS.map((k) => (
                           <option key={k.key} value={k.key}>
@@ -4371,21 +4454,21 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
 
                     {/* Audio Section for Listening Test Kinds */}
                     {curKindMeta.needsAudio ? (
-                      <div className="rounded-2xl border-2 border-cyan-400/40 bg-cyan-500/10 p-4 space-y-3">
+                      <div className="rounded-2xl border-2 border-cyan-400/40 bg-cyan-500/10 p-4 space-y-3 dark:bg-cyan-950/30">
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-black text-cyan-900 dark:text-cyan-200 flex items-center gap-1.5">
-                            <span>🎧 Audio biriktirish (Majburiy)</span>
+                            <span>🎧 {t("learning_paths.teacher.upload_audio")}</span>
                           </span>
                           {audioUploading && (
                             <span className="text-xs text-cyan-600 animate-pulse font-bold">
-                              Yuklanmoqda...
+                              {t("learning_paths.teacher.uploading")}
                             </span>
                           )}
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
                           <label className="cursor-pointer rounded-xl border-2 border-b-4 border-cyan-500 bg-cyan-500 px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-cyan-600 active:translate-y-0.5 active:border-b-2">
-                            📁 Audio faylni tanlash (MP3, WAV, M4A)
+                            📁 {t("learning_paths.teacher.choose_audio_file")}
                             <input
                               type="file"
                               accept="audio/*"
@@ -4407,8 +4490,8 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           <input
                             value={audioUrl}
                             onChange={(e) => setAudioUrl(e.target.value)}
-                            placeholder="Yoki Audio URL (masalan: /homework/files/... yoki https://...)"
-                            className="min-w-0 flex-1 rounded-xl border border-line bg-white p-2 text-xs dark:bg-navy-800 dark:border-white/10"
+                            placeholder={t("learning_paths.teacher.or_audio_url")}
+                            className="min-w-0 flex-1 rounded-xl border border-line bg-white p-2 text-xs dark:bg-slate-800 dark:border-slate-700 dark:text-white"
                           />
                         </div>
 
@@ -4432,15 +4515,15 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           ? "Aralash so'zlar: teacher / is / He / a"
                           : manualType === "matching"
                           ? "Ko'rsatma: So'zlarni o'zbekcha tarjimasi bilan moslashtiring"
-                          : "Savol matni..."
+                          : t("learning_paths.teacher.question_prompt")
                       }
-                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                     />
 
                     {/* Dynamic contextual inputs per test type */}
                     {manualType === "true_false" || manualType === "listening_tf" ? (
                       <div className="flex items-center gap-4 py-1">
-                        <span className="text-xs font-black text-slate-700 dark:text-navy-300">To'g'ri javob:</span>
+                        <span className="text-xs font-black text-slate-700 dark:text-slate-300">{t("learning_paths.teacher.correct_answer")}:</span>
                         <label className="flex items-center gap-1.5 text-xs font-black text-emerald-600 cursor-pointer">
                           <input
                             type="radio"
@@ -4468,13 +4551,13 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                           value={correct}
                           onChange={(e) => setCorrect(e.target.value)}
                           placeholder="To'g'ri to'ldiriladigan so'z (masalan: is)"
-                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                         />
                         <input
                           value={options}
                           onChange={(e) => setOptions(e.target.value)}
                           placeholder="Qo'shimcha noto'g'ri variantlar (ixtiyoriy, | bilan)"
-                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                         />
                       </div>
                     ) : manualType === "word_order" || manualType === "listening_order" ? (
@@ -4482,28 +4565,28 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         value={correct}
                         onChange={(e) => setCorrect(e.target.value)}
                         placeholder="To'g'ri tartibdagi to'liq gap: He is a teacher."
-                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                       />
                     ) : manualType === "matching" ? (
                       <input
                         value={options}
                         onChange={(e) => setOptions(e.target.value)}
                         placeholder="Juftliklar: book = kitob | pen = ruchka | cat = mushuk (| bilan)"
-                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                       />
                     ) : (
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         <input
                           value={options}
                           onChange={(e) => setOptions(e.target.value)}
-                          placeholder="Variantlar: A | B | C | D (| bilan ajrating)"
-                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                          placeholder={`${t("learning_paths.teacher.options")}: A | B | C | D`}
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                         />
                         <input
                           value={correct}
                           onChange={(e) => setCorrect(e.target.value)}
-                          placeholder="To'g'ri javob matni"
-                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                          placeholder={t("learning_paths.teacher.correct_answer")}
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                         />
                       </div>
                     )}
@@ -4511,17 +4594,17 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                     <input
                       value={explanation}
                       onChange={(e) => setExplanation(e.target.value)}
-                      placeholder="Izoh / Tushuntirish (ixtiyoriy)"
-                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      placeholder={t("learning_paths.teacher.explanation")}
+                      className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                     />
 
                     <div className="flex justify-end gap-2.5 pt-2">
                       <button
                         type="button"
                         onClick={() => setShowAddTestModal(false)}
-                        className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-white/10"
+                        className="rounded-xl border border-line px-4 py-2.5 text-xs font-bold text-ink-500 hover:bg-surface-soft dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
                       >
-                        Bekor qilish
+                        {t("learning_paths.teacher.cancel")}
                       </button>
                       <button
                         type="button"
@@ -4529,7 +4612,7 @@ function LessonEditor({ module, apiFetch, onSaved }: { module: Row; apiFetch: Ap
                         onClick={() => void saveManual()}
                         className="rounded-2xl border-2 border-b-4 border-purple-600 bg-purple-600 px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md transition-all active:translate-y-1 active:border-b-2 hover:bg-purple-700 disabled:opacity-40"
                       >
-                        + Ushbu test savolini modulga qo'shish
+                        {t("learning_paths.teacher.manual_create_btn")}
                       </button>
                     </div>
                   </div>
@@ -4578,6 +4661,7 @@ function MaterialsLibraryModal({
   onSelect: (contentId: number, contentType: string, count: number) => void;
   onClose: () => void;
 }) {
+  const t = useWebT();
   const [modalTab, setModalTab] = useState<"tree" | "materials">("tree");
   const [nodes, setNodes] = useState<LibTreeNode[]>([]);
   const [loading, setLoading] = useState(true);
@@ -4665,17 +4749,17 @@ function MaterialsLibraryModal({
         <div key={node.id}>
           <div
             onClick={() => toggle(node.id)}
-            className="flex items-center gap-2 rounded-xl px-2 py-2 transition hover:bg-surface-soft dark:hover:bg-white/5 cursor-pointer select-none"
+            className="flex items-center gap-2 rounded-xl px-2 py-2 transition hover:bg-surface-soft dark:hover:bg-slate-800/40 cursor-pointer select-none"
             style={{ paddingLeft: depth * 18 + 8 }}
           >
-            <span className="w-4 text-xs font-black text-ink-500 dark:text-navy-300">
+            <span className="w-4 text-xs font-black text-ink-500 dark:text-slate-400">
               {isOpen ? "▾" : "▸"}
             </span>
             <span className="text-base">📁</span>
             <span className="font-bold text-xs text-navy-900 dark:text-white">
               {node.title}
             </span>
-            <span className="ml-auto text-[10px] text-ink-400">
+            <span className="ml-auto text-[10px] text-ink-400 dark:text-slate-400">
               {kids.filter((k) => k.kind === "test").length} ta test
             </span>
           </div>
@@ -4695,8 +4779,8 @@ function MaterialsLibraryModal({
         }}
         className={`flex items-center gap-2 rounded-xl px-3 py-2 transition cursor-pointer my-0.5 ${
           isSelected
-            ? "border-2 border-cyan-400 bg-cyan-500/15 shadow-sm"
-            : "hover:bg-cyan-500/5"
+            ? "border-2 border-cyan-400 bg-cyan-500/15 shadow-sm dark:bg-cyan-950/30"
+            : "hover:bg-cyan-500/5 dark:hover:bg-slate-800/40"
         }`}
         style={{ paddingLeft: depth * 18 + 24 }}
       >
@@ -4705,7 +4789,7 @@ function MaterialsLibraryModal({
           <p className="font-bold text-xs text-navy-900 dark:text-white truncate">
             {node.title}
           </p>
-          <p className="text-[10px] text-ink-400 dark:text-navy-400">
+          <p className="text-[10px] text-ink-400 dark:text-slate-400">
             {node.subject || "English"} {node.level ? `· ${node.level}` : ""}
           </p>
         </div>
@@ -4729,39 +4813,39 @@ function MaterialsLibraryModal({
   const roots = childrenOf.get(0) || [];
 
   return (
-    <div className="fixed inset-0 z-[270] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm animate-fade-in">
-      <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10">
+    <div className="fixed inset-0 z-[270] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in">
+      <div className="relative flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-white/10">
+        <div className="flex items-center justify-between border-b border-line p-4 sm:p-5 dark:border-slate-800 dark:bg-[#090d16]/80">
           <div>
             <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
-              <span>📂 Materiallar Kutubxonasi Testlari</span>
+              <span>{t("learning_paths.teacher.materials_modal_title")}</span>
             </h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-              Papkalar yoki kutubxona materiallaridan kerakli testni tanlab modulga biriktiring
+            <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
+              {t("learning_paths.teacher.library_desc")}
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition"
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 dark:text-slate-400 transition"
           >
             ✕
           </button>
         </div>
 
         {/* Dual Tab Bar */}
-        <div className="flex border-b border-line bg-surface-soft/40 px-4 pt-2.5 dark:border-white/10 dark:bg-white/5 gap-2">
+        <div className="flex border-b border-line bg-surface-soft/40 px-4 pt-2.5 dark:border-slate-800 dark:bg-[#090d16]/50 gap-2">
           <button
             type="button"
             onClick={() => setModalTab("tree")}
             className={`pb-2.5 px-3.5 text-xs font-black transition border-b-2 ${
               modalTab === "tree"
                 ? "border-cyan-500 text-cyan-700 dark:text-cyan-300"
-                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-navy-300"
+                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-slate-400 dark:hover:text-white"
             }`}
           >
-            📁 O'qituvchi Papkalari (Daraxt)
+            {t("learning_paths.teacher.folders_tree")}
           </button>
           <button
             type="button"
@@ -4769,22 +4853,22 @@ function MaterialsLibraryModal({
             className={`pb-2.5 px-3.5 text-xs font-black transition border-b-2 ${
               modalTab === "materials"
                 ? "border-cyan-500 text-cyan-700 dark:text-cyan-300"
-                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-navy-300"
+                : "border-transparent text-ink-500 hover:text-navy-900 dark:text-slate-400 dark:hover:text-white"
             }`}
           >
-            📚 Kitoblar, Videolar va Vazifalar
+            {t("learning_paths.teacher.materials_tab")}
           </button>
         </div>
 
         {modalTab === "tree" ? (
           <>
             {/* Search bar for tree */}
-            <div className="p-4 border-b border-line dark:border-white/10">
+            <div className="p-4 border-b border-line dark:border-slate-800">
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Test nomi bo'yicha qidiring (masalan: Present Simple, Unit 1)..."
-                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white font-medium"
+                placeholder={t("learning_paths.teacher.search_placeholder")}
+                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 font-medium"
               />
             </div>
 
@@ -4807,8 +4891,8 @@ function MaterialsLibraryModal({
                         }}
                         className={`flex items-center justify-between p-3 rounded-2xl border-2 transition cursor-pointer ${
                           isSelected
-                            ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
-                            : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
+                            ? "border-cyan-400 bg-cyan-500/10 shadow-sm dark:bg-cyan-950/30"
+                            : "border-line/60 hover:border-cyan-300 dark:border-slate-800 bg-white dark:bg-slate-800/40"
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
@@ -4817,7 +4901,7 @@ function MaterialsLibraryModal({
                             <p className="font-bold text-xs text-navy-900 dark:text-white truncate">
                               {test.title}
                             </p>
-                            <p className="text-[10px] text-ink-400">
+                            <p className="text-[10px] text-ink-400 dark:text-slate-400">
                               {test.subject || "English"} {test.level ? `· ${test.level}` : ""}
                             </p>
                           </div>
@@ -4841,14 +4925,14 @@ function MaterialsLibraryModal({
                     );
                   })
                 ) : (
-                  <p className="py-12 text-center text-xs text-ink-500">
+                  <p className="py-12 text-center text-xs text-ink-500 dark:text-slate-400">
                     "{search}" bo'yicha hech qanday test topilmadi.
                   </p>
                 )
               ) : roots.length ? (
                 roots.map((node) => renderFolderNode(node, 0))
               ) : (
-                <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400 space-y-2">
+                <div className="py-12 text-center text-xs text-ink-500 dark:text-slate-400 space-y-2">
                   <p className="font-bold">Kutubxonada testlar topilmadi.</p>
                   <p className="text-[11px]">Avval Materiallar Kutubxonasi bo'limida papka va testlar yarating.</p>
                 </div>
@@ -4856,12 +4940,12 @@ function MaterialsLibraryModal({
             </div>
 
             {selectedTest ? (
-              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-white/10">
+              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-slate-800 dark:bg-cyan-950/20">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-black text-cyan-800 dark:text-cyan-200 flex items-center gap-1.5">
                     <span>🧪 Tanlangan: {selectedTest.title}</span>
                   </span>
-                  <span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">
+                  <span className="text-[11px] font-bold text-ink-500 dark:text-slate-400">
                     {selectedTest.question_count} ta savol mavjud
                   </span>
                 </div>
@@ -4871,7 +4955,7 @@ function MaterialsLibraryModal({
         ) : (
           /* Materials Library Search View (Books, Videos, Homeworks) */
           <>
-            <div className="p-4 border-b border-line dark:border-white/10 space-y-2.5">
+            <div className="p-4 border-b border-line dark:border-slate-800 space-y-2.5">
               {/* Type Filter Chips */}
               <div className="flex flex-wrap gap-1.5">
                 {[
@@ -4888,7 +4972,7 @@ function MaterialsLibraryModal({
                     className={`rounded-xl px-3 py-1 text-xs font-bold transition ${
                       matFilter === f.key
                         ? "bg-cyan-500 text-white shadow-sm"
-                        : "bg-surface-soft text-ink-500 hover:bg-cyan-500/10 dark:bg-white/5 dark:text-navy-300"
+                        : "bg-surface-soft text-ink-500 hover:bg-cyan-500/10 dark:bg-slate-800 dark:text-slate-300"
                     }`}
                   >
                     {f.label}
@@ -4899,8 +4983,8 @@ function MaterialsLibraryModal({
               <input
                 value={matQuery}
                 onChange={(e) => setMatQuery(e.target.value)}
-                placeholder="Material nomi bo'yicha qidiring..."
-                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white font-medium"
+                placeholder={t("learning_paths.teacher.search_materials")}
+                className="w-full rounded-xl border border-line bg-surface-soft p-2.5 text-xs text-navy-900 placeholder:text-ink-400 focus:border-cyan-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 font-medium"
               />
             </div>
 
@@ -4924,8 +5008,8 @@ function MaterialsLibraryModal({
                       }}
                       className={`flex items-center justify-between p-3.5 rounded-2xl border-2 transition cursor-pointer ${
                         isSel
-                          ? "border-cyan-400 bg-cyan-500/10 shadow-sm"
-                          : "border-line/60 hover:border-cyan-300 dark:border-white/10 bg-white dark:bg-white/5"
+                          ? "border-cyan-400 bg-cyan-500/10 shadow-sm dark:bg-cyan-950/30"
+                          : "border-line/60 hover:border-cyan-300 dark:border-slate-800 bg-white dark:bg-slate-800/40"
                       }`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
@@ -4958,19 +5042,19 @@ function MaterialsLibraryModal({
                   );
                 })
               ) : (
-                <div className="py-12 text-center text-xs text-ink-500 dark:text-navy-400">
+                <div className="py-12 text-center text-xs text-ink-500 dark:text-slate-400">
                   Ushbu turkumda material testlari topilmadi.
                 </div>
               )}
             </div>
 
             {selectedMatItem ? (
-              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-white/10">
+              <div className="border-t border-line bg-cyan-500/5 p-3.5 dark:border-slate-800 dark:bg-cyan-950/20">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-black text-cyan-800 dark:text-cyan-200">
                     🧪 Tanlangan: {selectedMatItem.title} ({selectedMatItem.content_type})
                   </span>
-                  <span className="text-[11px] font-bold text-ink-500 dark:text-navy-300">
+                  <span className="text-[11px] font-bold text-ink-500 dark:text-slate-400">
                     {selectedMatItem.question_count} ta savol mavjud
                   </span>
                 </div>
@@ -4980,10 +5064,10 @@ function MaterialsLibraryModal({
         )}
 
         {/* Selected Test Action Footer */}
-        <div className="border-t border-line p-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/40 flex flex-wrap items-center justify-between gap-3">
+        <div className="border-t border-line p-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-ink-600 dark:text-navy-300">
-              Qo'shiladigan savollar soni:
+            <span className="text-xs font-bold text-ink-600 dark:text-slate-300">
+              {t("learning_paths.teacher.ai_count_label")}
             </span>
             <input
               type="number"
@@ -4991,7 +5075,7 @@ function MaterialsLibraryModal({
               max={100}
               value={questionCount}
               onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="w-20 rounded-xl border border-line bg-transparent p-2 text-xs font-bold text-center dark:border-white/10"
+              className="w-20 rounded-xl border border-line bg-white dark:bg-slate-800 p-2 text-xs font-bold text-center dark:border-slate-700 dark:text-white"
             />
           </div>
 
@@ -5007,7 +5091,7 @@ function MaterialsLibraryModal({
             }}
             className="btn btn-primary text-xs py-2.5 px-6 font-bold disabled:opacity-40"
           >
-            ✓ Tanlangan testni modulga biriktirish
+            {t("learning_paths.teacher.attach_test_btn")}
           </button>
         </div>
       </div>
@@ -5112,6 +5196,7 @@ function ModuleDetailModal({
   onSaved: () => Promise<void>;
   onClose: () => void;
 }) {
+  const t = useWebT();
   const [modTitle, setModTitle] = useState(module.title || "");
   const [modTopics, setModTopics] = useState((module.topic_keys || []).join(", "));
   const [modRewardCoins, setModRewardCoins] = useState<number>(Number(module.reward_coins || 0));
@@ -5153,15 +5238,15 @@ function ModuleDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-[250] flex items-center justify-center bg-navy-950/85 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+      className="fixed inset-0 z-[250] flex items-center justify-center bg-black/75 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-5xl max-h-[94vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-navy-900 border border-line dark:border-white/10 overflow-hidden animate-scale-up"
+        className="relative w-full max-w-5xl max-h-[94vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 overflow-hidden animate-scale-up"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-white/10 bg-surface-soft/60 dark:bg-navy-950/50">
+        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80">
           <div className="flex items-center gap-3.5 min-w-0">
             <img
               src={module.image_url || image(modCover)}
@@ -5180,8 +5265,8 @@ function ModuleDetailModal({
                   Track: {track.title}
                 </span>
               </div>
-              <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5 truncate">
-                Modul parametrlari va test savollarini boshqarish
+              <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5 truncate">
+                {t("learning_paths.teacher.module_params")}
               </p>
             </div>
           </div>
@@ -5189,8 +5274,8 @@ function ModuleDetailModal({
           <button
             type="button"
             onClick={onClose}
-            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 transition text-base font-bold"
-            title="Yopish"
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 dark:text-slate-400 transition text-base font-bold"
+            title={t("learning_paths.teacher.close")}
           >
             ✕
           </button>
@@ -5199,10 +5284,10 @@ function ModuleDetailModal({
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
           {/* Module Settings Card */}
-          <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-surface-soft/40 dark:bg-white/5 space-y-4">
-            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-white/10">
+          <div className="rounded-2xl border border-line p-5 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/50 space-y-4">
+            <div className="flex items-center justify-between border-b border-line pb-3 dark:border-slate-800">
               <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
-                <span>⚙️ Modul Parametrlari</span>
+                <span>⚙️ {t("learning_paths.teacher.module_params")}</span>
               </h3>
               {savedNotice ? (
                 <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 animate-fade-in">
@@ -5213,34 +5298,34 @@ function ModuleDetailModal({
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
-                  Modul nomi
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
+                  {t("learning_paths.teacher.module_title")}
                 </label>
                 <input
                   value={modTitle}
                   onChange={(e) => setModTitle(e.target.value)}
-                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
-                  placeholder="Modul nomi"
+                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                  placeholder={t("learning_paths.teacher.module_title")}
                 />
               </div>
 
               <div>
-                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
-                  Mavzular (vergul bilan, maksimal 5 ta)
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
+                  {t("learning_paths.teacher.topics")}
                 </label>
                 <input
                   value={modTopics}
                   onChange={(e) => setModTopics(e.target.value)}
-                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
-                  placeholder="Present Simple, Fe'llar, So'z boyligi (maksimal 5 ta)"
+                  className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                  placeholder="Present Simple, Fe'llar, So'z boyligi"
                 />
               </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2 items-center">
               <div>
-                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-navy-300">
-                  Topshirilsa beriladigan D'Point (+ D'Coin):
+                <label className="mb-1 block text-xs font-bold text-ink-600 dark:text-slate-300">
+                  {t("learning_paths.teacher.reward_coins")}:
                 </label>
                 <input
                   type="number"
@@ -5248,7 +5333,7 @@ function ModuleDetailModal({
                   max="10000"
                   value={modRewardCoins}
                   onChange={(e) => setModRewardCoins(Number(e.target.value))}
-                  className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-white/10 dark:bg-navy-900 dark:text-white"
+                  className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </div>
 
@@ -5259,13 +5344,13 @@ function ModuleDetailModal({
                   onClick={() => void saveModuleSettings()}
                   className="rounded-xl border-2 border-b-4 border-cyan-600 bg-cyan-600 px-5 py-2.5 text-xs font-black uppercase text-white shadow hover:bg-cyan-700 disabled:opacity-40 transition"
                 >
-                  {busy ? "Saqlanmoqda..." : "💾 Modulni Saqlash"}
+                  {busy ? "..." : `💾 ${t("learning_paths.teacher.save_module")}`}
                 </button>
               </div>
             </div>
 
-            <div className="border-t border-line/40 pt-3 dark:border-white/10">
-              <p className="text-xs font-bold text-ink-500 mb-2">Modul belgisi (ikonka):</p>
+            <div className="border-t border-line/40 pt-3 dark:border-slate-800">
+              <p className="text-xs font-bold text-ink-500 dark:text-slate-400 mb-2">Modul belgisi (ikonka):</p>
               <CoverPicker
                 value={modCover}
                 onChange={setModCover}
@@ -5275,25 +5360,25 @@ function ModuleDetailModal({
           </div>
 
           {/* Test Questions and Lessons Editor */}
-          <div className="rounded-2xl border border-line p-5 dark:border-white/10 bg-white dark:bg-navy-900/60 shadow-xs">
+          <div className="rounded-2xl border border-line p-5 dark:border-slate-800 bg-white dark:bg-[#0f172a] shadow-xs">
             <h3 className="text-sm font-black text-navy-900 dark:text-white mb-4 flex items-center gap-2">
-              <span>🎯 Test Savollari va Darslar Boshqaruvi</span>
+              <span>🎯 {t("learning_paths.teacher.tests_manager")}</span>
             </h3>
             <LessonEditor module={module} apiFetch={apiFetch} onSaved={onSaved} />
           </div>
         </div>
 
         {/* Modal Footer */}
-        <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-white/10 bg-surface-soft/40 dark:bg-navy-950/40">
-          <span className="text-xs font-bold text-ink-500 dark:text-navy-400">
-            Jami {(module.lessons || []).length} ta savol mavjud
+        <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/80">
+          <span className="text-xs font-bold text-ink-500 dark:text-slate-400">
+            {t("learning_paths.teacher.lessons_in_module", { count: (module.lessons || []).length })}
           </span>
           <button
             type="button"
             onClick={onClose}
             className="btn btn-primary text-xs py-2 px-5 font-bold"
           >
-            Yopish
+            {t("learning_paths.teacher.close")}
           </button>
         </div>
       </div>

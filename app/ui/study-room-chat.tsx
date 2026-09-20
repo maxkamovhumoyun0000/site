@@ -94,13 +94,40 @@ export function StudyRoomChat({
 
   const loadRoom = async (id = roomId) => {
     if (!id) return;
-    const [nextDetail, nextMessages] = await Promise.all([
-      apiFetch(`/student/study-rooms/${id}`),
-      apiFetch(`/student/study-rooms/${id}/messages`),
-    ]);
-    setDetail(nextDetail || null);
-    setRoom(nextDetail?.room || room);
-    setMessages(nextMessages?.items || []);
+    try {
+      const [nextDetail, nextMessages] = await Promise.all([
+        apiFetch(`/student/study-rooms/${id}`),
+        apiFetch(`/student/study-rooms/${id}/messages`),
+      ]);
+      if (nextDetail?.closed || nextDetail?.room?.status === "closed") {
+        setNotice("Study roomda hech kim qolmaganligi sababli xona avtomatik yopildi.");
+        setRoom(null);
+        setDetail(null);
+        setMessages([]);
+        if (activeVoiceRoomIdRef.current) {
+          leaveVoiceRoom();
+          activeVoiceRoomIdRef.current = null;
+        }
+        await loadMyRooms();
+        return;
+      }
+      setDetail(nextDetail || null);
+      setRoom(nextDetail?.room || room);
+      setMessages(nextMessages?.items || []);
+    } catch (err: any) {
+      const msg = err instanceof Error ? err.message : String(err || "");
+      if (msg.includes("yopilgan") || msg.includes("topilmadi") || msg.includes("membership required")) {
+        setNotice("Study room yopildi.");
+        setRoom(null);
+        setDetail(null);
+        setMessages([]);
+        if (activeVoiceRoomIdRef.current) {
+          leaveVoiceRoom();
+          activeVoiceRoomIdRef.current = null;
+        }
+        await loadMyRooms();
+      }
+    }
   };
 
   const loadMyRooms = async () => {
@@ -116,7 +143,46 @@ export function StudyRoomChat({
     if (!roomId) return;
     loadRoom().catch((error) => setNotice(error instanceof Error ? error.message : "Xona yuklanmadi"));
     const timer = window.setInterval(() => loadRoom().catch(() => null), 3500);
-    return () => window.clearInterval(timer);
+
+    // Active heartbeat ping every 8s to guarantee presence detection
+    const pingTimer = window.setInterval(() => {
+      apiFetch(`/student/study-rooms/${roomId}/ping`, { method: "POST" })
+        .then((res: any) => {
+          if (res?.closed) {
+            setNotice("Study roomda hech kim qolmaganligi sababli xona avtomatik yopildi.");
+            setRoom(null);
+            setDetail(null);
+            setMessages([]);
+            if (activeVoiceRoomIdRef.current) {
+              leaveVoiceRoom();
+              activeVoiceRoomIdRef.current = null;
+            }
+            void loadMyRooms();
+          }
+        })
+        .catch(() => null);
+    }, 8000);
+
+    // Auto-detect when tab/window is closed or user navigates away
+    const onUnload = () => {
+      try {
+        const url = `/api/student/study-rooms/${roomId}/leave`;
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(url);
+        } else {
+          fetch(url, { method: "POST", keepalive: true }).catch(() => null);
+        }
+      } catch (_) {}
+    };
+    window.addEventListener("beforeunload", onUnload);
+    window.addEventListener("pagehide", onUnload);
+
+    return () => {
+      window.clearInterval(timer);
+      window.clearInterval(pingTimer);
+      window.removeEventListener("beforeunload", onUnload);
+      window.removeEventListener("pagehide", onUnload);
+    };
   }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Empty room countdown: if 0 members remain, close after 10 seconds

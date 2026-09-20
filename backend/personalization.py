@@ -375,6 +375,13 @@ def ensure_schema() -> None:
             except Exception:
                 pass
         try:
+            cur.execute("ALTER TABLE study_room_members ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE study_room_members ADD COLUMN last_seen_at TIMESTAMP")
+            except Exception:
+                pass
+        try:
             cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS reward_coins INTEGER NOT NULL DEFAULT 0")
         except Exception:
             try:
@@ -900,6 +907,8 @@ async def list_study_rooms(authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user, STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor()
+        _sweep_study_room_presence(cur)
+        conn.commit()
         cur.execute(
             "SELECT r.*, COUNT(active.id) AS member_count FROM study_rooms r "
             "JOIN study_room_members mine ON mine.room_id=r.id AND mine.user_id=? AND mine.left_at IS NULL "
@@ -946,6 +955,65 @@ def _cleanup_study_room_files(room_id: int, cur: Any) -> None:
         pass
 
 
+def _sweep_study_room_presence(cur: Any, room_id: int | None = None) -> list[int]:
+    """Detect presence in all possible ways and auto-close empty study rooms.
+
+    1. Any member whose last_seen_at was more than 30s ago (or null and joined > 30s ago)
+       is marked left_at = now.
+    2. Any study_room that is 'open' and has 0 active members (left_at IS NULL)
+       is automatically closed, closed_at is set, and temporary files/messages are cleaned up.
+    """
+    now = _now()
+    cutoff = (now - datetime.timedelta(seconds=30)).isoformat()
+    now_iso = now.isoformat()
+
+    # Step 1: Mark timed-out / disconnected members as left
+    if room_id:
+        cur.execute(
+            "UPDATE study_room_members SET left_at=? WHERE room_id=? AND left_at IS NULL AND ((last_seen_at IS NOT NULL AND last_seen_at < ?) OR (last_seen_at IS NULL AND joined_at < ?))",
+            (now_iso, room_id, cutoff, cutoff)
+        )
+    else:
+        cur.execute(
+            "UPDATE study_room_members SET left_at=? WHERE left_at IS NULL AND ((last_seen_at IS NOT NULL AND last_seen_at < ?) OR (last_seen_at IS NULL AND joined_at < ?))",
+            (now_iso, cutoff, cutoff)
+        )
+
+    # Step 2: Find open rooms with 0 active members left
+    if room_id:
+        cur.execute("""
+            SELECT r.id FROM study_rooms r
+            WHERE r.id=? AND r.status='open'
+            AND NOT EXISTS (
+                SELECT 1 FROM study_room_members m
+                WHERE m.room_id=r.id AND m.left_at IS NULL
+            )
+        """, (room_id,))
+    else:
+        cur.execute("""
+            SELECT r.id FROM study_rooms r
+            WHERE r.status='open'
+            AND NOT EXISTS (
+                SELECT 1 FROM study_room_members m
+                WHERE m.room_id=r.id AND m.left_at IS NULL
+            )
+        """)
+
+    empty_rooms = [int(dict(r)["id"]) for r in cur.fetchall()]
+    for er_id in empty_rooms:
+        try:
+            _cleanup_study_room_files(er_id, cur)
+            cur.execute("DELETE FROM study_room_materials WHERE room_id=?", (er_id,))
+            cur.execute("DELETE FROM study_room_messages WHERE room_id=?", (er_id,))
+            cur.execute(
+                "UPDATE study_rooms SET status='closed', closed_at=? WHERE id=?",
+                (now_iso, er_id)
+            )
+        except Exception:
+            pass
+    return empty_rooms
+
+
 @router.post("/student/study-rooms/join/{room_code}")
 async def join_study_room(room_code: str, authorization: str | None = Header(default=None)):
     user = _user(authorization)
@@ -972,10 +1040,14 @@ async def join_study_room(room_code: str, authorization: str | None = Header(def
         already = bool(cur.fetchone())
         if not already and count >= 4:
             raise HTTPException(status_code=409, detail="Study-room to'lgan (maksimum 4 kishi)")
+        now_iso = _now().isoformat()
         if not already:
-            cur.execute("UPDATE study_room_members SET left_at=NULL,joined_at=? WHERE room_id=? AND user_id=?", (_now().isoformat(), int(room["id"]), int(user["id"])))
+            cur.execute("UPDATE study_room_members SET left_at=NULL,joined_at=?,last_seen_at=? WHERE room_id=? AND user_id=?", (now_iso, now_iso, int(room["id"]), int(user["id"])))
             if cur.rowcount == 0:
-                cur.execute("INSERT INTO study_room_members(room_id,user_id) VALUES(?,?)", (int(room["id"]), int(user["id"])))
+                cur.execute("INSERT INTO study_room_members(room_id,user_id,joined_at,last_seen_at) VALUES(?,?,?,?)", (int(room["id"]), int(user["id"]), now_iso, now_iso))
+            conn.commit()
+        else:
+            cur.execute("UPDATE study_room_members SET last_seen_at=? WHERE room_id=? AND user_id=?", (now_iso, int(room["id"]), int(user["id"])))
             conn.commit()
         return {"room": room, "member_count": count if already else count + 1, "max_members": 4}
     finally:
@@ -985,8 +1057,11 @@ async def join_study_room(room_code: str, authorization: str | None = Header(def
 def _room_for_member(room_id: int, user_id: int) -> dict[str, Any]:
     conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT r.* FROM study_rooms r JOIN study_room_members m ON m.room_id=r.id WHERE r.id=? AND m.user_id=? AND m.left_at IS NULL", (room_id,user_id)); row=cur.fetchone()
-        if not row: raise HTTPException(status_code=403, detail="Study-room membership required")
+        cur=conn.cursor()
+        cur.execute("SELECT r.* FROM study_rooms r JOIN study_room_members m ON m.room_id=r.id WHERE r.id=? AND m.user_id=? AND m.left_at IS NULL", (room_id,user_id))
+        row=cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=403, detail="Study-room membership required")
         return dict(row)
     finally: conn.close()
 
@@ -995,12 +1070,15 @@ def _room_for_member(room_id: int, user_id: int) -> dict[str, Any]:
 async def study_room_messages(room_id: int, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT m.*, u.first_name, u.last_name, u.login_id FROM study_room_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.room_id=? ORDER BY m.id ASC LIMIT 250", (room_id,))
+        cur=conn.cursor(); now_iso = _now().isoformat()
+        cur.execute("UPDATE study_room_members SET last_seen_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (now_iso, room_id, int(user["id"])))
+        cur.execute("SELECT m.*, u.first_name, u.last_name, u.login_id FROM study_room_messages m LEFT JOIN users u ON u.id=m.sender_id WHERE m.room_id=? ORDER BY m.id ASC LIMIT 250", (room_id,))
         items=[]
         for row in _dicts(cur.fetchall()):
             try: row["attachments"]=json.loads(str(row.get("attachments_json") or "[]"))
             except Exception: row["attachments"]=[]
             items.append(row)
+        conn.commit()
         return {"items":items}
     finally: conn.close()
 
@@ -1009,8 +1087,34 @@ async def study_room_messages(room_id: int, authorization: str | None = Header(d
 async def post_study_room_message(room_id: int, payload: StudyRoomMessage, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); _room_for_member(room_id,int(user["id"])); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("INSERT INTO study_room_messages(room_id,sender_id,body,attachments_json) VALUES(?,?,?,?)", (room_id,int(user["id"]),payload.body,json.dumps(payload.attachments))); conn.commit(); return {"id":int(cur.lastrowid or 0)}
+        cur=conn.cursor(); now_iso = _now().isoformat()
+        cur.execute("UPDATE study_room_members SET last_seen_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (now_iso, room_id, int(user["id"])))
+        cur.execute("INSERT INTO study_room_messages(room_id,sender_id,body,attachments_json) VALUES(?,?,?,?)", (room_id,int(user["id"]),payload.body,json.dumps(payload.attachments)))
+        conn.commit(); return {"id":int(cur.lastrowid or 0)}
     finally: conn.close()
+
+
+@router.post("/student/study-rooms/{room_id}/ping")
+async def ping_study_room(room_id: int, authorization: str | None = Header(default=None)):
+    """Heartbeat presence ping from active client in study room."""
+    user = _user(authorization); _require(user, STUDY_ROOM_ROLES); ensure_schema(); conn = get_conn()
+    try:
+        cur = conn.cursor(); now_iso = _now().isoformat()
+        cur.execute(
+            "UPDATE study_room_members SET last_seen_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL",
+            (now_iso, room_id, int(user["id"]))
+        )
+        _sweep_study_room_presence(cur, room_id)
+        conn.commit()
+        cur.execute("SELECT status FROM study_rooms WHERE id=?", (room_id,))
+        row = cur.fetchone()
+        status = str(dict(row).get("status") or "closed") if row else "closed"
+        cur.execute("SELECT COUNT(*) as c FROM study_room_members WHERE room_id=? AND left_at IS NULL", (room_id,))
+        cnt_row = cur.fetchone()
+        active_count = int(dict(cnt_row)["c"]) if cnt_row else 0
+        return {"ok": True, "closed": status == "closed", "active_members": active_count}
+    finally:
+        conn.close()
 
 
 @router.post("/student/study-rooms/{room_id}/close")
@@ -1055,14 +1159,34 @@ def _room_owner(room_id: int, user_id: int) -> dict[str, Any]:
 
 @router.get("/student/study-rooms/{room_id}")
 async def study_room_detail(room_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); room=_room_for_member(room_id,int(user["id"])); conn=get_conn()
+    user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor()
-        cur.execute("SELECT m.user_id,m.joined_at,u.first_name,u.last_name,u.login_id FROM study_room_members m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.left_at IS NULL ORDER BY m.joined_at", (room_id,))
+        cur=conn.cursor(); now_iso = _now().isoformat()
+        cur.execute(
+            "UPDATE study_room_members SET last_seen_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL",
+            (now_iso, room_id, int(user["id"]))
+        )
+        _sweep_study_room_presence(cur, room_id)
+        conn.commit()
+
+        cur.execute("SELECT * FROM study_rooms WHERE id=?", (room_id,))
+        room_row = cur.fetchone()
+        if not room_row:
+            raise HTTPException(status_code=404, detail="Study room topilmadi")
+        room = dict(room_row)
+        if str(room.get("status") or "").lower() == "closed":
+            return {"room": room, "members": [], "materials": [], "closed": True, "notice": "Study roomda hech kim qolmaganligi sababli xona avtomatik yopildi", "max_members": 4}
+
+        cur.execute("SELECT 1 FROM study_room_members WHERE room_id=? AND user_id=? AND left_at IS NULL", (room_id, int(user["id"])))
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="Study-room membership required")
+
+        cur.execute("SELECT m.user_id,m.joined_at,m.last_seen_at,u.first_name,u.last_name,u.login_id FROM study_room_members m JOIN users u ON u.id=m.user_id WHERE m.room_id=? AND m.left_at IS NULL ORDER BY m.joined_at", (room_id,))
         members=_dicts(cur.fetchall())
         cur.execute("SELECT * FROM study_room_materials WHERE room_id=? ORDER BY id DESC LIMIT 50", (room_id,))
-        return {"room":room,"members":members,"materials":_dicts(cur.fetchall()),"max_members":4}
-    finally: conn.close()
+        return {"room": room, "members": members, "materials": _dicts(cur.fetchall()), "max_members": 4, "closed": False}
+    finally:
+        conn.close()
 
 
 @router.post("/student/study-rooms/{room_id}/regenerate-code")
@@ -1086,7 +1210,9 @@ async def remove_study_room_member(room_id: int, member_id: int, authorization: 
     try:
         if int(member_id) == int(user["id"]):
             raise HTTPException(status_code=422, detail="Owner should close the room instead")
-        cur=conn.cursor(); cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (_now().isoformat(),room_id,member_id)); conn.commit()
+        cur=conn.cursor(); cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (_now().isoformat(),room_id,member_id))
+        _sweep_study_room_presence(cur, room_id)
+        conn.commit()
         return {"removed":cur.rowcount > 0}
     finally: conn.close()
 
@@ -1094,17 +1220,45 @@ async def remove_study_room_member(room_id: int, member_id: int, authorization: 
 @router.post("/student/study-rooms/{room_id}/leave")
 async def leave_study_room(room_id: int, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,STUDY_ROOM_ROLES); ensure_schema()
-    room = _room_for_member(room_id, int(user["id"]))
-    if int(room.get("owner_id") or 0) == int(user["id"]):
-        raise HTTPException(status_code=422, detail="Owner should close the room instead")
     conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute(
-            "UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL",
-            (_now().isoformat(), room_id, int(user["id"])),
-        ); conn.commit()
-        return {"left": cur.rowcount > 0}
-    finally: conn.close()
+        cur=conn.cursor()
+        now_iso = _now().isoformat()
+        cur.execute("SELECT * FROM study_rooms WHERE id=?", (room_id,))
+        room_row = cur.fetchone()
+        if not room_row:
+            return {"left": True, "closed": True}
+        room = dict(room_row)
+        user_id = int(user["id"])
+        is_owner = int(room.get("owner_id") or 0) == user_id
+
+        # Mark caller left
+        cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (now_iso, room_id, user_id))
+
+        # Check remaining active members (active in last 30s)
+        cutoff = (_now() - datetime.timedelta(seconds=30)).isoformat()
+        cur.execute(
+            "SELECT user_id FROM study_room_members WHERE room_id=? AND left_at IS NULL AND ((last_seen_at IS NOT NULL AND last_seen_at >= ?) OR (last_seen_at IS NULL AND joined_at >= ?)) ORDER BY joined_at ASC",
+            (room_id, cutoff, cutoff)
+        )
+        remaining = _dicts(cur.fetchall())
+
+        if not remaining:
+            # Nobody left -> auto close immediately!
+            _cleanup_study_room_files(room_id, cur)
+            cur.execute("DELETE FROM study_room_materials WHERE room_id=?", (room_id,))
+            cur.execute("DELETE FROM study_room_messages WHERE room_id=?", (room_id,))
+            cur.execute("UPDATE study_rooms SET status='closed', closed_at=? WHERE id=?", (now_iso, room_id))
+            conn.commit()
+            return {"left": True, "closed": True}
+        else:
+            if is_owner:
+                new_owner_id = int(remaining[0]["user_id"])
+                cur.execute("UPDATE study_rooms SET owner_id=? WHERE id=?", (new_owner_id, room_id))
+            conn.commit()
+            return {"left": True, "closed": False}
+    finally:
+        conn.close()
 
 
 @router.post("/student/study-rooms/{room_id}/materials")

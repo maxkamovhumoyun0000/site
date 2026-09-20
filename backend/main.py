@@ -842,6 +842,7 @@ daily_test_reminder_task: asyncio.Task[Any] | None = None
 homework_deadline_reminder_task: asyncio.Task[Any] | None = None
 weekly_review_task: asyncio.Task[Any] | None = None
 competition_stale_lobbies_task: asyncio.Task[Any] | None = None
+study_room_presence_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
 
 background_scheduler_lock_file: Any | None = None
@@ -16906,6 +16907,25 @@ def _run_weekly_review_penalty_job() -> None:
     logger.info("weekly_review penalty week=%s users=%s penalty=%s", week_start, len(user_ids), penalty)
 
 
+async def _study_room_presence_worker() -> None:
+    """Sweep inactive study room members and auto-close empty rooms."""
+    await asyncio.sleep(10)
+    while True:
+        try:
+            await asyncio.sleep(12)
+            c = get_conn()
+            try:
+                cur = c.cursor()
+                personalization_api._sweep_study_room_presence(cur)
+                c.commit()
+            finally:
+                c.close()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            await asyncio.sleep(5)
+
+
 async def _domain_email_cleanup_worker() -> None:
     await asyncio.sleep(10)
     while True:
@@ -18469,7 +18489,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, competition_stale_lobbies_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, competition_stale_lobbies_task, study_room_presence_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -18577,6 +18597,11 @@ async def startup_event() -> None:
             weekly_review_task = asyncio.create_task(
                 _weekly_review_worker(),
                 name="weekly_review_worker",
+            )
+        if study_room_presence_task is None or study_room_presence_task.done():
+            study_room_presence_task = asyncio.create_task(
+                _study_room_presence_worker(),
+                name="study_room_presence_worker",
             )
     else:
 
@@ -54451,6 +54476,17 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                                 ):
                                     try: _REDIS_CLIENT.delete(key)
                                     except Exception: pass
+                                try:
+                                    sr_id = int(str(info.get("subject") or "").rsplit("_", 1)[-1])
+                                    _c = get_conn()
+                                    try:
+                                        _cur = _c.cursor()
+                                        personalization_api._sweep_study_room_presence(_cur, sr_id)
+                                        _c.commit()
+                                    finally:
+                                        _c.close()
+                                except Exception:
+                                    pass
                         elif info.get("host_id") == my_ws_id:
                             # Host left, close room
                             await _broadcast_room(current_room_id, {"type": "room_closed"})
@@ -54506,6 +54542,17 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     ):
                         try: _REDIS_CLIENT.delete(key)
                         except Exception: pass
+                    try:
+                        sr_id = int(str(info.get("subject") or "").rsplit("_", 1)[-1])
+                        _c = get_conn()
+                        try:
+                            _cur = _c.cursor()
+                            personalization_api._sweep_study_room_presence(_cur, sr_id)
+                            _c.commit()
+                        finally:
+                            _c.close()
+                    except Exception:
+                        pass
             elif info and info.get("host_id") == my_ws_id:
                 for p in peers:
                     _REDIS_CLIENT.rpush(f"webrtc_signal_{p}", json.dumps({"type": "room_closed"}))
