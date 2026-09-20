@@ -16883,7 +16883,10 @@ async def _weekly_personal_plan_analyzer_worker() -> None:
             today_str = now_local.strftime("%Y-%m-%d")
             if now_local.weekday() == dispatch_dow and now_local.hour == dispatch_hour and last_run_day != today_str:
                 logger.info("weekly_personal_plan_analyzer_worker: starting Sunday 12:00 PM batch...")
-                from personalization import generate_weekly_analysis_for_all_students
+                try:
+                    from backend.personalization import generate_weekly_analysis_for_all_students
+                except ImportError:
+                    from personalization import generate_weekly_analysis_for_all_students
                 res = await generate_weekly_analysis_for_all_students()
                 last_run_day = today_str
                 logger.info("weekly_personal_plan_analyzer_worker completed successfully: %s", res)
@@ -34330,7 +34333,10 @@ async def admin_trigger_weekly_analysis(authorization: str | None = Header(defau
     """Admin endpoint to manually run the Sunday weekly analysis batch for all students."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin", "superadmin"})
-    from personalization import generate_weekly_analysis_for_all_students
+    try:
+        from backend.personalization import generate_weekly_analysis_for_all_students
+    except ImportError:
+        from personalization import generate_weekly_analysis_for_all_students
     res = await generate_weekly_analysis_for_all_students()
     return {"success": True, "result": res}
 

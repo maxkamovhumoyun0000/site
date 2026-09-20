@@ -11,7 +11,7 @@ import json
 import secrets
 import random
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, unquote
@@ -3009,7 +3009,7 @@ async def teacher_student_insights(authorization: str | None = Header(default=No
         ids = set()
         if _role(user) == "admin":
             try:
-                cur.execute("SELECT id FROM users WHERE role='student' ORDER BY id DESC LIMIT 500")
+                cur.execute("SELECT id FROM users WHERE (login_type IN (1, 2) OR login_type IS NULL) AND (blocked IS NULL OR blocked = 0) ORDER BY id DESC LIMIT 500")
                 ids = {int(r["id"]) for r in _dicts(cur.fetchall())}
             except Exception:
                 pass
@@ -3389,7 +3389,7 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
     students: list[dict[str, Any]] = []
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, username, first_name, last_name, role FROM users WHERE role='student'")
+        cur.execute("SELECT id, login_id, first_name, last_name, login_type FROM users WHERE (login_type IN (1, 2) OR login_type IS NULL) AND (blocked IS NULL OR blocked = 0)")
         students = _dicts(cur.fetchall())
     finally:
         conn.close()
@@ -3412,10 +3412,20 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
                     skipped += 1
                     continue
                 stats = _collect_week_stats(cur, uid, week_start, week_end)
+                has_activity = (
+                    int(stats.get("test_count") or 0) > 0
+                    or int(stats.get("homework_total") or 0) > 0
+                    or len(stats.get("weak_topics_by_tests") or []) > 0
+                    or len(stats.get("weak_topics_by_mistakes") or []) > 0
+                    or int(stats.get("learning_path_count") or 0) > 0
+                )
             finally:
                 conn.close()
 
-            result = await _generate_ai_analysis(stats, user_name)
+            if has_activity:
+                result = await _generate_ai_analysis(stats, user_name)
+            else:
+                result = _build_smart_fallback_analysis(stats, user_name)
             conn = get_conn()
             try:
                 cur = conn.cursor()
