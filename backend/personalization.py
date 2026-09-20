@@ -2995,36 +2995,88 @@ def _refresh_learning_module_progress(cur: Any, module_id: int, student_id: int,
         required=[int(row["id"]) for row in lessons]
     if not required:
         return {"status":"unlocked","best_score":0,"passed":False}
+
+    # Check if this module was ALREADY passed previously by this student
+    cur.execute("SELECT status, best_score, passed_at, rewarded_at FROM learning_module_progress WHERE module_id=? AND student_id=?", (module_id, student_id))
+    ex_row = cur.fetchone()
+    already_passed = False
+    existing_best = 0.0
+    existing_passed_at = None
+    existing_rewarded_at = None
+    if ex_row is not None:
+        ex_dict = dict(ex_row)
+        already_passed = (str(ex_dict.get("status") or "") == "passed" or ex_dict.get("passed_at") is not None)
+        existing_best = float(ex_dict.get("best_score") or 0.0)
+        existing_passed_at = ex_dict.get("passed_at")
+        existing_rewarded_at = ex_dict.get("rewarded_at")
+
     attempted_scores=[]
     for lesson_id in required:
-        cur.execute("SELECT score FROM learning_lesson_attempts WHERE lesson_id=? AND student_id=? ORDER BY id DESC LIMIT 1",(lesson_id,student_id))
+        cur.execute("SELECT MAX(score) AS score FROM learning_lesson_attempts WHERE lesson_id=? AND student_id=?", (lesson_id, student_id))
         row=cur.fetchone()
         if row is not None and dict(row).get("score") is not None:
             attempted_scores.append(float(dict(row)["score"]))
     total_required=len(required)
     total_attempted=len(attempted_scores)
     if total_attempted==0:
-        status="unlocked"
-        best=0.0
-        complete=False
+        status="passed" if already_passed else "unlocked"
+        best=existing_best
+        complete=already_passed
     else:
-        best=round(sum(attempted_scores)/total_attempted,2)
-        if total_attempted<total_required:
+        calc_best=round(sum(attempted_scores)/total_attempted, 2)
+        best=max(existing_best, calc_best)
+        if already_passed:
+            status="passed"
+            complete=True
+        elif total_attempted<total_required:
             status="in_progress"
             complete=False
         else:
-            if best>=passing_score:
+            if best>=passing_score or calc_best>=passing_score:
                 status="passed"
                 complete=True
             else:
                 status="failed"
                 complete=False
+
+    passed_at = existing_passed_at or (_now().isoformat() if complete else None)
+    now_iso = _now().isoformat()
     try:
-        cur.execute("INSERT INTO learning_module_progress(module_id,student_id,status,best_score,passed_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(module_id,student_id) DO UPDATE SET status=excluded.status,best_score=excluded.best_score,passed_at=COALESCE(learning_module_progress.passed_at,excluded.passed_at),updated_at=excluded.updated_at",(module_id,student_id,status,best,_now().isoformat() if complete else None,_now().isoformat()))
+        cur.execute(
+            """
+            INSERT INTO learning_module_progress(module_id, student_id, status, best_score, passed_at, rewarded_at, updated_at)
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(module_id,student_id) DO UPDATE SET
+                status=CASE WHEN learning_module_progress.status='passed' THEN 'passed' ELSE excluded.status END,
+                best_score=CASE WHEN excluded.best_score > learning_module_progress.best_score THEN excluded.best_score ELSE learning_module_progress.best_score END,
+                passed_at=COALESCE(learning_module_progress.passed_at, excluded.passed_at),
+                rewarded_at=COALESCE(learning_module_progress.rewarded_at, excluded.rewarded_at),
+                updated_at=excluded.updated_at
+            """,
+            (module_id, student_id, status, best, passed_at, existing_rewarded_at, now_iso)
+        )
     except Exception:
-        cur.execute("DELETE FROM learning_module_progress WHERE module_id=? AND student_id=?",(module_id,student_id))
-        cur.execute("INSERT INTO learning_module_progress(module_id,student_id,status,best_score,passed_at,updated_at) VALUES(?,?,?,?,?,?)",(module_id,student_id,status,best,_now().isoformat() if complete else None,_now().isoformat()))
-    return {"status":status,"best_score":best,"passed":complete}
+        cur.execute(
+            """
+            UPDATE learning_module_progress
+            SET status=CASE WHEN status='passed' THEN 'passed' ELSE ? END,
+                best_score=CASE WHEN ? > best_score THEN ? ELSE best_score END,
+                passed_at=COALESCE(passed_at, ?),
+                rewarded_at=COALESCE(rewarded_at, ?),
+                updated_at=?
+            WHERE module_id=? AND student_id=?
+            """,
+            (status, best, best, passed_at, existing_rewarded_at, now_iso, module_id, student_id)
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO learning_module_progress(module_id, student_id, status, best_score, passed_at, rewarded_at, updated_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (module_id, student_id, status, best, passed_at, existing_rewarded_at, now_iso)
+            )
+    return {"status": "passed" if (already_passed or complete) else status, "best_score": best, "passed": (already_passed or complete)}
 
 
 def _ensure_track_certificate(cur: Any, track: dict[str, Any], student_id: int) -> dict[str, Any] | None:
@@ -3286,9 +3338,18 @@ async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, 
         progress=_refresh_learning_module_progress(cur,int(lesson["module_id"]),uid,threshold)
         reward_coins=0
         if progress.get("passed") and int(lesson.get("module_reward_coins") or 0) > 0:
-            cur.execute("UPDATE learning_module_progress SET rewarded_at=? WHERE module_id=? AND student_id=? AND rewarded_at IS NULL", (_now().isoformat(),int(lesson["module_id"]),uid))
-            if cur.rowcount:
-                reward_coins=int(lesson.get("module_reward_coins") or 0)
+            mid = int(lesson["module_id"])
+            cur.execute("SELECT rewarded_at FROM learning_module_progress WHERE module_id=? AND student_id=?", (mid, uid))
+            p_row = cur.fetchone()
+            was_rewarded = bool(p_row and dict(p_row).get("rewarded_at"))
+            if not was_rewarded:
+                cur.execute("SELECT id FROM diamond_history WHERE user_id=? AND change_type=? LIMIT 1", (uid, f"learning_module_reward:{mid}"))
+                if cur.fetchone():
+                    was_rewarded = True
+            if not was_rewarded:
+                cur.execute("UPDATE learning_module_progress SET rewarded_at=? WHERE module_id=? AND student_id=? AND rewarded_at IS NULL", (_now().isoformat(), mid, uid))
+                if cur.rowcount:
+                    reward_coins = int(lesson.get("module_reward_coins") or 0)
         cur.execute("SELECT COALESCE(p.status,'locked') AS status FROM learning_modules m LEFT JOIN learning_module_progress p ON p.module_id=m.id AND p.student_id=? WHERE m.track_id=? ORDER BY m.position,m.id",(uid,int(lesson["track_id"]))); states=[str(dict(r).get("status") or "locked") for r in cur.fetchall()]
         track_complete = False
         certificate = None
@@ -3296,7 +3357,7 @@ async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, 
         if reward_coins:
             award=_runtime.get("award_coins")
             if award:
-                try: award(uid,reward_coins,"GLOBAL",change_type="learning_module_reward")
+                try: award(uid,reward_coins,"GLOBAL",change_type=f"learning_module_reward:{int(lesson['module_id'])}")
                 except Exception: pass
         return {"passed":passed,"required_score":threshold,"module_progress":progress,"track_completed":track_complete,"certificate":certificate,"reward_coins":reward_coins,"reward_points":reward_coins}
     finally: conn.close()
