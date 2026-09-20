@@ -7,10 +7,12 @@ remains the single source of truth.
 
 from __future__ import annotations
 
+import re
 import json
 import secrets
 import random
 import asyncio
+import logging
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -20,8 +22,9 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from db import get_conn
+from db import get_conn, add_dcoins
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 _runtime: dict[str, Callable[..., Any]] = {}
 _schema_ready = False
@@ -243,6 +246,7 @@ def ensure_schema() -> None:
               user_id BIGINT NOT NULL,
               week_start TEXT NOT NULL,
               week_end TEXT NOT NULL,
+              subject TEXT DEFAULT 'English',
               analysis_text TEXT,
               weak_topics_json TEXT,
               recommendations_json TEXT,
@@ -253,6 +257,19 @@ def ensure_schema() -> None:
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(user_id, week_start)
+            )""",
+            """CREATE TABLE IF NOT EXISTS ai_generated_questions_bank (
+              id BIGSERIAL PRIMARY KEY,
+              subject TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              difficulty TEXT DEFAULT 'medium',
+              question_text TEXT NOT NULL,
+              options_json TEXT NOT NULL,
+              correct_answer TEXT NOT NULL,
+              explanation TEXT,
+              test_type TEXT DEFAULT 'multiple_choice',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              use_count INTEGER DEFAULT 0
             )""",
             """CREATE TABLE IF NOT EXISTS personal_practice_attempts (
               id BIGSERIAL PRIMARY KEY,
@@ -354,6 +371,9 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_pomodoro_user ON pomodoro_sessions(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_user_sessions ON user_sessions(user_id, last_seen DESC)",
             "CREATE INDEX IF NOT EXISTS idx_weekly_analysis_user ON weekly_ai_analyses(user_id, week_start DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_weekly_analysis_user_subj ON weekly_ai_analyses(user_id, week_start, subject)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_qbank_topic ON ai_generated_questions_bank(subject, topic)",
+            "CREATE INDEX IF NOT EXISTS idx_ai_qbank_count ON ai_generated_questions_bank(use_count)",
             "CREATE INDEX IF NOT EXISTS idx_personal_practice_attempts_user ON personal_practice_attempts(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_personal_practice_items_attempt ON personal_practice_attempt_items(user_id, attempt_id, question_index)",
             "CREATE INDEX IF NOT EXISTS idx_learning_tracks_owner ON learning_tracks(owner_id, subject, status, position)",
@@ -408,6 +428,13 @@ def ensure_schema() -> None:
         except Exception:
             try:
                 cur.execute("ALTER TABLE student_badges ADD COLUMN notified INTEGER DEFAULT 0")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE weekly_ai_analyses ADD COLUMN IF NOT EXISTS subject TEXT DEFAULT 'English'")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE weekly_ai_analyses ADD COLUMN subject TEXT DEFAULT 'English'")
             except Exception:
                 pass
         official_badges = (
@@ -1821,6 +1848,14 @@ class LearningLessonSubmit(BaseModel):
     answers: list[Any] = Field(default_factory=list, max_length=200)
 
 
+class LearningLessonAiCheckRequest(BaseModel):
+    lesson_id: int | None = None
+    question_payload: dict[str, Any] | None = None
+    answer_text: str | None = None
+    audio_url: str | None = None
+    subject: str | None = None
+
+
 def _learning_track_for_manager(track_id: int, user: dict[str, Any]) -> dict[str, Any]:
     conn=get_conn()
     try:
@@ -1873,8 +1908,8 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
     for module in _dicts(cur.fetchall()):
         try: raw_t_keys = json.loads(str(module.get("topic_keys_json") or "[]"))
         except Exception: raw_t_keys = []
-        module["topic_keys"] = (raw_t_keys if isinstance(raw_t_keys, list) else [])[:5]
-        cur.execute("SELECT id,title,source_kind,source_id,question_payload_json,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id LIMIT 5", (int(module["id"]),))
+        module["topic_keys"] = (raw_t_keys if isinstance(raw_t_keys, list) else [])
+        cur.execute("SELECT id,title,source_kind,source_id,question_payload_json,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
         lessons = []
         for l_row in _dicts(cur.fetchall()):
             try:
@@ -1910,11 +1945,11 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
         else:
             module["progress"] = {"status": "unlocked", "best_score": 0}
 
-        # Determine total_topics and completed_topics for segmented circular ring (1 to 5)
+        # Determine total_topics and completed_topics for segmented circular ring
         # Topics are strictly defined by topic_keys (mavzular). Lessons are question/test tasks.
         mod_status = str((module.get("progress") or {}).get("status") or "locked").lower()
         topic_keys = [str(t).strip() for t in (module.get("topic_keys") or []) if str(t).strip()]
-        total_topics = min(5, max(1, len(topic_keys)))
+        total_topics = max(1, len(topic_keys)) if topic_keys else max(1, len(lessons))
 
         if mod_status == "passed":
             completed_topics = total_topics
@@ -2166,24 +2201,201 @@ async def delete_learning_lesson(lesson_id: int, authorization: str | None = Hea
         conn.close()
 
 
-@router.get("/staff/teacher-library-tree")
-async def staff_teacher_library_tree(authorization: str | None = Header(default=None)):
-    """Fetch the real teacher library folders and test nodes for attaching to learning modules."""
-    user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+def _normalize_subject_label(value: str | None) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    if raw in {"english", "eng", "ingliz", "en"}:
+        return "English"
+    if raw in {"russian", "rus", "ru", "русский", "russian language"}:
+        return "Russian"
+    if raw in {"matematika", "math", "mathematics"}:
+        return "Matematika"
+    if raw in {"ona tili"}:
+        return "Ona tili"
+    if raw in {"tarix", "history"}:
+        return "Tarix"
+    if raw in {"arab tili", "arabic"}:
+        return "Arab tili"
+    return None
+
+
+def _extract_node_questions(payload_obj: Any) -> list[dict]:
+    if isinstance(payload_obj, list):
+        return [q for q in payload_obj if isinstance(q, dict)]
+    if isinstance(payload_obj, dict):
+        for key in ("questions", "items", "test_questions", "quiz"):
+            val = payload_obj.get(key)
+            if isinstance(val, list):
+                return [q for q in val if isinstance(q, dict)]
+    return []
+
+
+def _teacher_allowed_subjects(user: dict[str, Any]) -> list[str]:
+    uid = int(user.get("id") or 0)
+    allowed: list[str] = []
+    try:
+        from main import _teacher_manageable_groups
+        groups = _safe_call(lambda: _teacher_manageable_groups(uid), []) or []
+        for g in groups:
+            s = _normalize_subject_label(str(g.get("subject") or ""))
+            if s and s not in allowed:
+                allowed.append(s)
+    except Exception:
+        pass
+    raw_s = str(user.get("subject") or "")
+    for part in raw_s.split(","):
+        s = _normalize_subject_label(part.strip())
+        if s and s not in allowed:
+            allowed.append(s)
+    return allowed or ["English"]
+
+
+def save_to_question_bank(
+    subject: str,
+    topic: str,
+    questions: list[dict[str, Any]],
+    difficulty: str = "medium",
+) -> int:
+    """Save generated questions into ai_generated_questions_bank to prevent duplicate generations."""
+    if not questions:
+        return 0
+    clean_sub = _normalize_subject_label(subject) or "English"
+    clean_top = str(topic or "").strip()
+    if not clean_top:
+        return 0
+    ensure_schema()
+    conn = get_conn()
+    saved = 0
+    try:
+        cur = conn.cursor()
+        for q in questions:
+            if not isinstance(q, dict):
+                continue
+            q_text = str(q.get("question") or q.get("prompt") or "").strip()
+            if not q_text:
+                continue
+            cur.execute(
+                "SELECT id FROM ai_generated_questions_bank WHERE subject=? AND topic=? AND question_text=? LIMIT 1",
+                (clean_sub, clean_top, q_text),
+            )
+            if cur.fetchone():
+                continue
+            opts = q.get("options") or []
+            opts_json = json.dumps(opts, ensure_ascii=False) if isinstance(opts, list) else "[]"
+            corr = str(q.get("correct_answer") or q.get("correct") or "")
+            exp = str(q.get("explanation") or "")
+            t_type = str(q.get("test_type") or "multiple_choice")
+            cur.execute(
+                """
+                INSERT INTO ai_generated_questions_bank(
+                    subject, topic, difficulty, question_text, options_json, correct_answer, explanation, test_type, use_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (clean_sub, clean_top, difficulty, q_text, opts_json, corr, exp, t_type),
+            )
+            saved += 1
+        conn.commit()
+    except Exception:
+        logger.exception("Failed to save questions to bank")
+    finally:
+        conn.close()
+    return saved
+
+
+def get_questions_from_bank(
+    subject: str,
+    topic: str,
+    count: int = 10,
+    difficulty: str | None = None,
+) -> list[dict[str, Any]]:
+    """Retrieve least-used questions from the question bank."""
+    clean_sub = _normalize_subject_label(subject) or "English"
+    clean_top = str(topic or "").strip().lower()
+    if not clean_top:
+        return []
     ensure_schema()
     conn = get_conn()
     try:
         cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, subject, topic, difficulty, question_text, options_json, correct_answer, explanation, test_type, use_count
+            FROM ai_generated_questions_bank
+            WHERE (LOWER(subject) = LOWER(?) OR subject = '')
+              AND (LOWER(topic) LIKE ? OR ? LIKE '%' || LOWER(topic) || '%')
+            ORDER BY use_count ASC, RANDOM()
+            LIMIT ?
+            """,
+            (clean_sub, f"%{clean_top}%", clean_top, max(1, min(100, count))),
+        )
+        rows = _dicts(cur.fetchall())
+        if not rows:
+            return []
+        ids = [int(r["id"]) for r in rows]
+        if ids:
+            ph = ",".join("?" for _ in ids)
+            cur.execute(f"UPDATE ai_generated_questions_bank SET use_count = use_count + 1 WHERE id IN ({ph})", ids)
+            conn.commit()
+        result = []
+        for r in rows:
+            try:
+                opts = json.loads(str(r.get("options_json") or "[]"))
+            except Exception:
+                opts = []
+            result.append({
+                "question": r.get("question_text") or "",
+                "options": opts,
+                "correct": r.get("correct_answer") or "",
+                "correct_answer": r.get("correct_answer") or "",
+                "explanation": r.get("explanation") or "",
+                "topic": r.get("topic") or clean_top,
+                "difficulty": r.get("difficulty") or "medium",
+                "test_type": r.get("test_type") or "multiple_choice",
+            })
+        return result
+    except Exception:
+        logger.exception("Failed to get questions from bank")
+        return []
+    finally:
+        conn.close()
+
+
+def get_total_question_bank_count() -> int:
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) AS total FROM ai_generated_questions_bank")
+        row = cur.fetchone()
+        return int((dict(row) if row else {}).get("total") or 0)
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+@router.get("/staff/teacher-library-tree")
+async def staff_teacher_library_tree(authorization: str | None = Header(default=None)):
+    """Fetch teacher library folders and test nodes for attaching to learning modules, isolated strictly to the teacher's subject."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    role = _role(user)
+    allowed_subs = [s.lower() for s in _teacher_allowed_subjects(user)] if role == "teacher" else None
+    try:
+        cur = conn.cursor()
         cur.execute("SELECT id, parent_id, kind, title, description, subject, level, payload_json FROM library_nodes WHERE kind IN ('folder', 'test') ORDER BY sort_order ASC, id ASC")
-        nodes = []
-        for r in _dicts(cur.fetchall()):
+        raw_rows = _dicts(cur.fetchall())
+        all_nodes = []
+        for r in raw_rows:
             try:
                 p_obj = json.loads(str(r.pop("payload_json", None) or "{}"))
             except Exception:
                 p_obj = {}
-            qs = p_obj.get("questions") or []
-            nodes.append({
+            qs = _extract_node_questions(p_obj)
+            all_nodes.append({
                 "id": int(r["id"]),
                 "parent_id": int(r["parent_id"]) if r.get("parent_id") is not None else None,
                 "kind": str(r["kind"]),
@@ -2194,14 +2406,54 @@ async def staff_teacher_library_tree(authorization: str | None = Header(default=
                 "question_count": len(qs) if isinstance(qs, list) else 0,
                 "questions": qs if isinstance(qs, list) else [],
             })
-        return {"nodes": nodes}
+
+        # Strict subject isolation for teachers
+        if allowed_subs:
+            matched_test_ids: set[int] = set()
+            visible_parent_ids: set[int] = set()
+            filtered_nodes = []
+
+            for n in all_nodes:
+                if n["kind"] == "test":
+                    n_sub = (n.get("subject") or "").strip().lower()
+                    if n_sub:
+                        match = any(sub in n_sub or n_sub in sub for sub in allowed_subs)
+                    else:
+                        # Fallback check on title
+                        t_low = n["title"].lower()
+                        if "rus" in allowed_subs and ("rus" in t_low or "рус" in t_low):
+                            match = True
+                        elif "english" in allowed_subs and ("eng" in t_low or "ielts" in t_low or "grammar" in t_low or "past" in t_low or "present" in t_low or "unit" in t_low or "vocabulary" in t_low):
+                            match = True
+                        elif not any(other in t_low for other in ("rus", "рус", "ona tili", "matematika")):
+                            match = ("english" in allowed_subs)
+                        else:
+                            match = False
+
+                    if match:
+                        matched_test_ids.add(n["id"])
+                        pid = n.get("parent_id")
+                        while pid:
+                            visible_parent_ids.add(pid)
+                            parent_node = next((x for x in all_nodes if x["id"] == pid), None)
+                            pid = parent_node.get("parent_id") if parent_node else None
+
+            for n in all_nodes:
+                if n["kind"] == "test" and n["id"] in matched_test_ids:
+                    filtered_nodes.append(n)
+                elif n["kind"] == "folder" and n["id"] in visible_parent_ids:
+                    filtered_nodes.append(n)
+
+            return {"nodes": filtered_nodes}
+
+        return {"nodes": all_nodes}
     finally:
         conn.close()
 
 
 @router.post("/staff/learning-modules/{module_id}/ai-question")
 async def generate_learning_ai_question(module_id: int, payload: LearningAiLessonRequest, authorization: str | None = Header(default=None)):
-    """Generate AI test questions using Diamondvoy (xAI / Gemini) and auto-save to materials library."""
+    """Generate AI test questions using Diamondvoy (xAI / Gemini) with question bank reuse and auto-save."""
     import re
     user = _user(authorization)
     _require(user, LEARNING_MANAGER_ROLES)
@@ -2213,7 +2465,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Learning module not found")
-        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        track_row = _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        track_subject = str((track_row or {}).get("subject") or "English")
     finally:
         conn.close()
 
@@ -2225,8 +2478,30 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         types_list = raw_types
     types_str = ", ".join(types_list)
 
+    needed_count = payload.question_count or 10
+
+    # 1. Efficiency check: Retrieve from question bank if enough questions exist or bank has >= 2000 total questions
+    total_bank = get_total_question_bank_count()
+    bank_questions = get_questions_from_bank(
+        subject=track_subject,
+        topic=payload.topic,
+        count=needed_count,
+        difficulty=payload.level or "medium",
+    )
+    if len(bank_questions) >= needed_count or (total_bank >= 2000 and len(bank_questions) >= min(5, needed_count)):
+        chosen_bank = bank_questions[:needed_count]
+        items = []
+        for index, bq in enumerate(chosen_bank):
+            items.append({
+                "title": f"{payload.topic} · {index + 1}",
+                "source_kind": "ai",
+                "question_payload": bq,
+            })
+        return items[0] if needed_count == 1 else {"items": items, "question_count": len(items)}
+
     prompt = (
-        f"Create exactly {payload.question_count} safe, high-quality test questions for students on the topic: '{payload.topic}'.\n"
+        f"Create exactly {needed_count} safe, high-quality test questions for students on the topic: '{payload.topic}'.\n"
+        f"Subject: {track_subject}.\n"
         f"Difficulty Level: {payload.level or 'intermediate'}.\n"
         f"Required Exercise Types: {types_str}.\n"
         f"Distribute the questions evenly across these exercise types ({types_str}) to provide a varied and engaging mix.\n"
@@ -2273,7 +2548,6 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
 
     try:
         source = str(raw_text).strip()
-        # Strip ```json ... ``` markdown if present
         source = re.sub(r"^```(?:json)?\s*", "", source, flags=re.IGNORECASE)
         source = re.sub(r"\s*```$", "", source)
         start = source.find("[")
@@ -2290,7 +2564,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
 
         items = []
         library_questions = []
-        for index, result in enumerate(parsed[:payload.question_count]):
+        for index, result in enumerate(parsed[:needed_count]):
             if not isinstance(result, dict):
                 continue
             q_text = str(result.get("question") or f"{payload.topic} savoli {index + 1}").strip()
@@ -2299,7 +2573,6 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             options = [str(x).strip() for x in raw_opts] if isinstance(raw_opts, list) else []
             correct = str(result.get("correct_answer") or "").strip()
 
-            # Sanitize question to guarantee valid test behavior
             if q_type == "true_false":
                 if not options:
                     options = ["To'g'ri", "Noto'g'ri"]
@@ -2309,13 +2582,11 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                 norm_opts = [o.lower() for o in options]
                 norm_correct = correct.lower()
                 joined = " ".join(norm_opts)
-                # If options were chopped words of the answer (e.g. ['will', 'be', 'traveling'])
                 if joined == norm_correct or (norm_correct not in norm_opts and all(o in norm_correct for o in norm_opts if o)):
-                    options = []  # Render as clean fill-in-the-blank input
+                    options = []
                 elif norm_correct not in norm_opts and len(options) >= 2:
                     options.append(correct)
             elif q_type in ("multiple_choice", "matching"):
-                # Handle combined semicolon answers
                 if ";" in correct or "\n" in correct:
                     delim = ";" if ";" in correct else "\n"
                     parts = [p.strip() for p in correct.split(delim) if p.strip()]
@@ -2353,6 +2624,17 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         if not items:
             raise ValueError("No valid questions generated")
 
+        # Save to question bank for efficient future reuse
+        try:
+            save_to_question_bank(
+                subject=track_subject,
+                topic=payload.topic,
+                questions=library_questions,
+                difficulty=payload.level or "medium",
+            )
+        except Exception:
+            pass
+
         # Auto-save to materials library under content_type='ai_generated'
         save_cb = _runtime.get("save_library_test")
         if save_cb and library_questions:
@@ -2368,9 +2650,9 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                     raw_questions=True,
                 )
             except Exception:
-                pass  # Non-fatal for module flow
+                pass
 
-        return items[0] if payload.question_count == 1 else {"items": items, "question_count": len(items)}
+        return items[0] if needed_count == 1 else {"items": items, "question_count": len(items)}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Diamondvoy returned an invalid test response: {exc}")
 
@@ -2394,6 +2676,7 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     audio_url = str(raw.get("audio_url") or "").strip()
     image_url = str(raw.get("image_url") or "").strip()
     instruction = str(raw.get("instruction") or "").strip()
+    passage = str(raw.get("passage") or raw.get("passage_template") or "").strip()
 
     if kind in {"true_false", "boolean", "listening_tf"}:
         if not options:
@@ -2413,7 +2696,16 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             correct = str(raw.get("answer"))
 
     if not question:
-        question = str(raw.get("passage") or raw.get("context") or "Savol")
+        question = instruction or (str(raw.get("prompt") or "").strip() if str(raw.get("prompt") or "").strip() != passage else "")
+        if not question:
+            if passage:
+                question = "Matnni o'qing va topshiriqni bajaring:"
+            elif raw.get("context"):
+                question = "Topshiriqni bajaring:"
+            else:
+                question = "Savol"
+    elif passage and question.strip() == passage.strip():
+        question = instruction or "Matnni o'qing va topshiriqni bajaring:"
 
     res = {
         "question": question,
@@ -2424,18 +2716,52 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         "image_url": image_url,
         "instruction": instruction,
         "test_type": kind,
+        "kind": kind,
+        "check": raw.get("check") or ("ai" if kind in {"speak_sentence", "write_sentence", "guided_writing", "translation", "reading_open", "read_aloud", "paraphrase", "dialogue_completion", "picture_description", "listening_open", "word_practice", "open"} else "auto"),
     }
-    # Preserve rich polymorphic fields from materials library
+    # Preserve rich polymorphic fields from materials library & homeworks
     for extra_key in (
         "passage", "context", "questions", "pairs", "matches",
         "cloze_text", "word_bank", "sentence", "target_sentence",
-        "hints", "sample_answer", "acceptable_answers",
+        "hints", "sample_answer", "acceptable_answers", "tokens",
+        "distractors", "left_items", "right_items", "sub_questions",
+        "passage_template", "blank_count", "blanks", "answers",
+        "hint", "word_count", "example_sentence", "direction",
+        "word", "meaning", "reference_answer", "needs_audio_upload",
+        "translation", "translation_uz", "translation_ru", "level",
+        "pronunciation", "phonetic", "target_level",
     ):
         if extra_key in raw and raw[extra_key] is not None:
             res[extra_key] = raw[extra_key]
 
-    if kind == "matching" and not res.get("pairs") and raw.get("matches"):
-        res["pairs"] = raw["matches"]
+    # Special handling for matching / pairs
+    if kind == "matching":
+        pairs = res.get("pairs") or raw.get("matches") or []
+        if not pairs and options:
+            parsed_pairs = []
+            for opt in options:
+                if "=" in opt:
+                    p_left, p_right = opt.split("=", 1)
+                    parsed_pairs.append({"left": p_left.strip(), "right": p_right.strip()})
+                elif " - " in opt:
+                    p_left, p_right = opt.split(" - ", 1)
+                    parsed_pairs.append({"left": p_left.strip(), "right": p_right.strip()})
+            if parsed_pairs:
+                pairs = parsed_pairs
+        if pairs:
+            res["pairs"] = pairs
+            if not res.get("left_items"):
+                res["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
+            if not res.get("right_items"):
+                res["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
+
+    # Special handling for word_order / scrambled_sentence
+    elif kind in {"word_order", "scrambled_sentence", "listening_order"}:
+        if not res.get("tokens"):
+            if options:
+                res["tokens"] = list(options)
+            elif res.get("correct_answer"):
+                res["tokens"] = [w for w in str(res["correct_answer"]).split() if w]
 
     # Sanitize options and answers to avoid broken test UX
     if kind in {"fill_blank", "gap_fill"}:
@@ -2458,6 +2784,20 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
                     if any(p.strip().lower() == o.strip().lower() for o in res["options"]):
                         res["correct_answer"] = p.strip()
                         break
+    # Sanitize word_bank in tense / verb form exercises or when sentences contain bracketed clues
+    wb = res.get("word_bank")
+    if isinstance(wb, list) and wb:
+        inst_txt = str(res.get("instruction") or "").lower()
+        q_txt = str(res.get("question") or "").lower()
+        p_txt = str(res.get("passage") or res.get("passage_template") or "").lower()
+        all_txt = f"{inst_txt} {q_txt} {p_txt}"
+        is_tense_or_form = any(k in all_txt for k in ["form", "tense", "zamon", "shakl", "put the verb", "brackets", "qavs"])
+        has_brackets = bool(re.search(r"\(\s*[a-zA-Z'\s-]+\s*\)", p_txt or q_txt))
+        blanks = res.get("blanks") or res.get("answers") or []
+        ans_set = {str(b.get("answer") if isinstance(b, dict) else b).strip().lower() for b in blanks if (b.get("answer") if isinstance(b, dict) else b)}
+        wb_set = {str(w).strip().lower() for w in wb if w}
+        if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
+            res["word_bank"] = []
 
     return res
 
@@ -2481,7 +2821,7 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
                 p_obj = json.loads(str(n_dict.get("payload_json") or "{}"))
             except Exception:
                 p_obj = {}
-            raw_questions = p_obj.get("questions") or []
+            raw_questions = _extract_node_questions(p_obj)
             test = {"title": n_dict.get("title") or "Kutubxona testi", "questions": raw_questions}
         else:
             test = None
@@ -2493,8 +2833,11 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
                 cur.execute("SELECT title, questions_json FROM web_content_tests WHERE content_type=? AND content_id=?", (payload.content_type, payload.content_id))
                 wrow = cur.fetchone()
                 if wrow:
-                    try: qs = json.loads(str(dict(wrow).get("questions_json") or "[]"))
-                    except Exception: qs = []
+                    try:
+                        w_json = json.loads(str(dict(wrow).get("questions_json") or "[]"))
+                        qs = _extract_node_questions(w_json)
+                    except Exception:
+                        qs = []
                     test = {"title": dict(wrow).get("title") or f"{payload.content_type} testi", "questions": qs}
             if not test: raise HTTPException(status_code=404,detail="Material test not found")
 
@@ -2527,39 +2870,117 @@ async def assign_learning_track(track_id: int, payload: LearningAssignRequest, a
 
 @router.get("/staff/materials-search")
 async def staff_materials_search(q: str = "", content_type: str = "", authorization: str | None = Header(default=None)):
-    """Search material library tests that can be attached to learning modules."""
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    """Search material library tests that can be attached to learning modules with strict teacher subject isolation."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    role = _role(user)
+    allowed_subs = [s.lower() for s in _teacher_allowed_subjects(user)] if role == "teacher" else None
     try:
-        cur=conn.cursor(); items=[]
-        all_types = {"book", "video", "homework", "ai_generated"}
-        search_types = [content_type] if content_type in all_types else ["book", "video", "homework", "ai_generated"]
+        cur = conn.cursor()
+        items = []
+        all_types = {"book", "video", "homework", "ai_generated", "library_node"}
+        search_types = [content_type] if content_type in all_types else ["library_node", "book", "video", "homework", "ai_generated"]
         for ct in search_types:
             try:
-                if ct == "book":
+                if ct == "library_node":
                     if q.strip():
-                        cur.execute("SELECT t.content_id, b.title, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' AND b.title LIKE ? ORDER BY b.title LIMIT 20", (f"%{q.strip()}%",))
+                        cur.execute("SELECT id, title, subject, payload_json FROM library_nodes WHERE kind='test' AND title LIKE ? ORDER BY title LIMIT 40", (f"%{q.strip()}%",))
                     else:
-                        cur.execute("SELECT t.content_id, b.title, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' ORDER BY b.title LIMIT 20")
+                        cur.execute("SELECT id, title, subject, payload_json FROM library_nodes WHERE kind='test' ORDER BY title LIMIT 40")
+                    for row in _dicts(cur.fetchall()):
+                        n_sub = (row.get("subject") or "").strip().lower()
+                        if allowed_subs:
+                            if n_sub:
+                                if not any(sub in n_sub or n_sub in sub for sub in allowed_subs):
+                                    continue
+                            else:
+                                t_low = str(row.get("title") or "").lower()
+                                if "rus" in allowed_subs and ("rus" in t_low or "рус" in t_low):
+                                    pass
+                                elif "english" in allowed_subs and ("eng" in t_low or "ielts" in t_low or "grammar" in t_low or "past" in t_low or "present" in t_low or "unit" in t_low):
+                                    pass
+                                elif not any(other in t_low for other in ("rus", "рус", "ona tili", "matematika")):
+                                    if "english" not in allowed_subs:
+                                        continue
+                                else:
+                                    continue
+                        try:
+                            p_json = json.loads(str(row.get("payload_json") or "{}"))
+                            qs = _extract_node_questions(p_json)
+                        except Exception:
+                            qs = []
+                        items.append({"content_id": int(row["id"]), "title": str(row.get("title") or "Kutubxona testi"), "content_type": "library_node", "question_count": len(qs)})
+
+                elif ct == "book":
+                    if q.strip():
+                        cur.execute("SELECT t.content_id, b.title, b.subject, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' AND b.title LIKE ? ORDER BY b.title LIMIT 30", (f"%{q.strip()}%",))
+                    else:
+                        cur.execute("SELECT t.content_id, b.title, b.subject, t.questions_json FROM web_content_tests t JOIN web_books b ON b.id=t.content_id WHERE t.content_type='book' ORDER BY b.title LIMIT 30")
+                    for row in _dicts(cur.fetchall()):
+                        b_sub = (row.get("subject") or "").strip().lower()
+                        if allowed_subs and b_sub and not any(sub in b_sub or b_sub in sub for sub in allowed_subs):
+                            continue
+                        try:
+                            w_json = json.loads(str(row.get("questions_json") or "[]"))
+                            qs = _extract_node_questions(w_json)
+                        except Exception:
+                            qs = []
+                        items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "Kitob"), "content_type": ct, "question_count": len(qs)})
+
                 elif ct == "video":
                     if q.strip():
-                        cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' AND v.title LIKE ? ORDER BY v.title LIMIT 20", (f"%{q.strip()}%",))
+                        cur.execute("SELECT t.content_id, v.title, v.subject, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' AND v.title LIKE ? ORDER BY v.title LIMIT 30", (f"%{q.strip()}%",))
                     else:
-                        cur.execute("SELECT t.content_id, v.title, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' ORDER BY v.title LIMIT 20")
+                        cur.execute("SELECT t.content_id, v.title, v.subject, t.questions_json FROM web_content_tests t JOIN web_videos v ON v.id=t.content_id WHERE t.content_type='video' ORDER BY v.title LIMIT 30")
+                    for row in _dicts(cur.fetchall()):
+                        v_sub = (row.get("subject") or "").strip().lower()
+                        if allowed_subs and v_sub and not any(sub in v_sub or v_sub in sub for sub in allowed_subs):
+                            continue
+                        try:
+                            w_json = json.loads(str(row.get("questions_json") or "[]"))
+                            qs = _extract_node_questions(w_json)
+                        except Exception:
+                            qs = []
+                        items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "Video"), "content_type": ct, "question_count": len(qs)})
+
                 elif ct == "ai_generated":
-                    # AI-generated tests stored directly in web_content_tests with content_type='ai_generated'
                     if q.strip():
-                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.title LIKE ? AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 20", (f"%{q.strip()}%",))
+                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.title LIKE ? AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 30", (f"%{q.strip()}%",))
                     else:
-                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 20")
+                        cur.execute("SELECT t.content_id, t.title, t.questions_json FROM web_content_tests t WHERE t.content_type='ai_generated' AND t.is_active=1 ORDER BY t.updated_at DESC LIMIT 30")
+                    for row in _dicts(cur.fetchall()):
+                        t_low = str(row.get("title") or "").lower()
+                        if allowed_subs:
+                            if "rus" in allowed_subs and ("rus" in t_low or "рус" in t_low):
+                                pass
+                            elif "english" in allowed_subs and not any(other in t_low for other in ("rus", "рус", "ona tili", "matematika")):
+                                pass
+                            else:
+                                continue
+                        try:
+                            w_json = json.loads(str(row.get("questions_json") or "[]"))
+                            qs = _extract_node_questions(w_json)
+                        except Exception:
+                            qs = []
+                        items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "AI Test"), "content_type": ct, "question_count": len(qs)})
+
                 else:
                     if q.strip():
-                        cur.execute("SELECT t.content_id, h.title, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' AND h.title LIKE ? ORDER BY h.title LIMIT 20", (f"%{q.strip()}%",))
+                        cur.execute("SELECT t.content_id, h.title, h.subject, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' AND h.title LIKE ? ORDER BY h.title LIMIT 30", (f"%{q.strip()}%",))
                     else:
-                        cur.execute("SELECT t.content_id, h.title, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' ORDER BY h.title LIMIT 20")
-                for row in _dicts(cur.fetchall()):
-                    try: questions=json.loads(str(row.get("questions_json") or "[]"))
-                    except Exception: questions=[]
-                    items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "Nomsiz"), "content_type": ct, "question_count": len(questions) if isinstance(questions, list) else 0})
+                        cur.execute("SELECT t.content_id, h.title, h.subject, t.questions_json FROM web_content_tests t JOIN web_homeworks h ON h.id=t.content_id WHERE t.content_type='homework' ORDER BY h.title LIMIT 30")
+                    for row in _dicts(cur.fetchall()):
+                        h_sub = (row.get("subject") or "").strip().lower()
+                        if allowed_subs and h_sub and not any(sub in h_sub or h_sub in sub for sub in allowed_subs):
+                            continue
+                        try:
+                            w_json = json.loads(str(row.get("questions_json") or "[]"))
+                            qs = _extract_node_questions(w_json)
+                        except Exception:
+                            qs = []
+                        items.append({"content_id": int(row["content_id"]), "title": str(row.get("title") or "Homework"), "content_type": ct, "question_count": len(qs)})
             except Exception:
                 pass
         return {"items": items}
@@ -2659,15 +3080,22 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
                 final_passed = (final_status == "passed")
                 completed = all_modules_passed and final_passed
 
+                course_key = f"learning-track:{int(track['id'])}:v{int(track.get('version') or 1)}"
+                cur.execute("SELECT certificate_id, issued_at FROM certificates WHERE user_id=? AND course_key=?", (uid, course_key))
+                cert_row = cur.fetchone()
+                cert_claimed = bool(cert_row)
+
                 item["final_exam"] = {
                     "status": final_status,
                     "best_score": float(fp.get("best_score") or 0),
                     "passed": final_passed,
                     "passing_score": normalize_track_passing_score(track.get("passing_score")),
                     "unlocked": all_modules_passed,
+                    "certificate_id": dict(cert_row).get("certificate_id") if cert_row else None,
                 }
                 item["progress_status"]="passed" if completed else ("unlocked" if previous_complete else "locked")
                 item["locked"]=not previous_complete; item["certificate_eligible"]=completed
+                item["certificate_claimed"] = cert_claimed
                 tracks.append(item); previous_complete = previous_complete and completed
 
         # Collect distinct real subjects (strictly exclude any "all", "barchasi", etc.)
@@ -2705,10 +3133,138 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
             previous=cur.fetchone()
             if not previous or str(dict(previous).get("status") or "") != "passed":
                 raise HTTPException(status_code=423, detail="Oldingi modulni muvaffaqiyatli yakunlang")
-        try: item["question_payload"] = json.loads(str(item.pop("question_payload_json", None) or "{}"))
-        except Exception: item["question_payload"] = {}
+        try:
+            item["question_payload"] = json.loads(str(item.pop("question_payload_json", None) or "{}"))
+        except Exception:
+            item["question_payload"] = {}
+        if isinstance(item.get("question_payload"), dict):
+            qp = item["question_payload"]
+            q_txt = str(qp.get("question") or "").strip()
+            p_txt = str(qp.get("passage") or qp.get("passage_template") or "").strip()
+            inst = str(qp.get("instruction") or "").strip()
+            if p_txt and q_txt == p_txt:
+                qp["question"] = inst or "Matnni o'qing va topshiriqni bajaring:"
+            all_text = f"{inst} {q_txt} {p_txt}".lower()
+            is_tense_or_form = any(k in all_text for k in ["form", "tense", "zamon", "shakl", "put the verb", "brackets", "qavs"])
+            has_brackets = bool(re.search(r"\(\s*[a-zA-Z'\s-]+\s*\)", p_txt or q_txt))
+            wb = qp.get("word_bank") or []
+            blanks = qp.get("blanks") or qp.get("answers") or []
+            if wb and blanks:
+                ans_set = {str(b.get("answer") if isinstance(b, dict) else b).strip().lower() for b in blanks if (b.get("answer") if isinstance(b, dict) else b)}
+                wb_set = {str(w).strip().lower() for w in wb if w}
+                if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
+                    qp["word_bank"] = []
         return item
     finally: conn.close()
+
+
+@router.post("/student/learning-lessons/{lesson_id}/check-ai")
+@router.post("/student/learning-lessons/check-ai")
+async def check_learning_lesson_ai(
+    lesson_id: int | None = None,
+    payload: LearningLessonAiCheckRequest | None = None,
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
+    user = _user(authorization)
+    _require(user, {"student", "teacher", "admin", "superadmin", "director", "mentor", "support", "staff"})
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        eff_lesson_id = lesson_id or (payload.lesson_id if payload else None)
+        qp: dict[str, Any] = {}
+        track_subject = "English"
+        if eff_lesson_id:
+            cur.execute(
+                "SELECT l.question_payload_json, t.subject FROM learning_module_lessons l "
+                "JOIN learning_modules m ON m.id=l.module_id "
+                "JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=?",
+                (int(eff_lesson_id),),
+            )
+            row = cur.fetchone()
+            if row:
+                r_dict = dict(row)
+                track_subject = str(r_dict.get("subject") or "English")
+                try:
+                    qp = json.loads(str(r_dict.get("question_payload_json") or "{}"))
+                except Exception:
+                    qp = {}
+        if payload and payload.question_payload and isinstance(payload.question_payload, dict):
+            qp = {**qp, **payload.question_payload}
+
+        if not qp:
+            raise HTTPException(status_code=400, detail="Savol topilmadi")
+
+        subject = (payload.subject if payload and payload.subject else None) or track_subject or "English"
+        answer = str((payload.answer_text if payload else "") or "").strip()
+        audio_url = (payload.audio_url if payload else None) or None
+
+        if not answer and not audio_url:
+            return {
+                "is_correct": False,
+                "verdict": "wrong",
+                "feedback": "Javob bo'sh qoldirilgan.",
+                "corrected": str(qp.get("reference_answer") or qp.get("sample_answer") or qp.get("correct_answer") or ""),
+                "grammar_errors": [],
+                "score": 0.0,
+            }
+
+        from backend.library_ai import _check_with_ai, _student_lang, AiTestAnswerRequest
+
+        q_for_ai = {
+            "kind": str(qp.get("kind") or qp.get("test_type") or "open"),
+            "prompt": str(qp.get("prompt") or qp.get("question") or qp.get("instruction") or ""),
+            "instruction": str(qp.get("instruction") or ""),
+            "word": qp.get("word"),
+            "passage": qp.get("passage") or qp.get("context"),
+            "reference_answer": qp.get("reference_answer") or qp.get("sample_answer") or qp.get("example_sentence") or qp.get("correct_answer"),
+            "target_level": qp.get("target_level") or qp.get("level"),
+        }
+
+        ai_req = AiTestAnswerRequest(
+            question_index=0,
+            answer_text=answer,
+            audio_url=audio_url,
+        )
+
+        lang = x_language or _student_lang(user) or "uz"
+        try:
+            verdict, feedback = await _check_with_ai(q_for_ai, ai_req, subject, lang)
+            is_correct = verdict == "correct"
+            return {
+                "is_correct": is_correct,
+                "verdict": verdict,
+                "feedback": feedback.get("feedback") or ("Ajoyib! Juda to'g'ri!" if is_correct else "Javobingizda xatolik mavjud."),
+                "transcript": feedback.get("transcript") or (answer if feedback.get("was_spoken") else ""),
+                "corrected": feedback.get("corrected"),
+                "grammar_errors": feedback.get("grammar_errors") or [],
+                "pronunciation_errors": feedback.get("pronunciation_errors") or [],
+                "was_spoken": feedback.get("was_spoken") or bool(audio_url),
+                "score": feedback.get("score") or (100.0 if is_correct else 0.0),
+            }
+        except Exception as exc:
+            logger.warning("learning lesson ai check fallback on error: %s", exc)
+            ref = str(q_for_ai.get("reference_answer") or "").strip().lower()
+            ans_norm = answer.lower()
+            if ref and (ans_norm == ref or ans_norm in ref or ref in ans_norm):
+                return {
+                    "is_correct": True,
+                    "verdict": "correct",
+                    "feedback": "Javob qabul qilindi.",
+                    "corrected": q_for_ai.get("reference_answer"),
+                    "grammar_errors": [],
+                    "score": 100.0,
+                }
+            return {
+                "is_correct": False,
+                "verdict": "wrong",
+                "feedback": "AI tekshirish xizmati javob bermadi. Iltimos qayta urinib ko'ring yoki javobingizni to'liqroq yozing.",
+                "corrected": q_for_ai.get("reference_answer"),
+                "grammar_errors": [],
+                "score": 0.0,
+            }
+    finally:
+        conn.close()
 
 
 @router.post("/student/learning-lessons/{lesson_id}/submit")
@@ -2831,20 +3387,15 @@ async def claim_track_certificate(track_id: int, authorization: str | None = Hea
         cert = _ensure_track_certificate(cur, track_dict, uid)
         conn.commit()
         
-        reward = 50
+        reward = 50.0
         history_key = f"track_complete_{track_id}"
         cur.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=?", (uid, history_key))
         if not cur.fetchone():
-            _ensure_user_dpoints_ready(cur, context="claim_track_certificate")
-            _ensure_user_dpoints_row(cur, uid)
-            now_iso = _now().strftime('%Y-%m-%d %H:%M:%S')
-            _award_visible_dpoints_tx(cur, uid, float(reward), now_iso)
-            _award_visible_dcoins_tx(cur, uid, float(reward), now_iso)
-            cur.execute(
-                "INSERT INTO diamond_history (user_id, dcoin_change, dpoints_change, subject, created_at, change_type) VALUES (?, ?, ?, ?, ?, ?)",
-                (uid, float(reward), float(reward), "GLOBAL", now_iso, history_key)
-            )
-            conn.commit()
+            try:
+                award = _runtime.get("award_coins") or add_dcoins
+                award(uid, reward, str(track_dict.get("subject") or "GLOBAL"), change_type=history_key)
+            except Exception as ex:
+                logger.exception("Failed to award claim certificate coins: %s", ex)
             
         return {
             "ok": True,
@@ -3000,20 +3551,16 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
         reward_awarded = False
         if passed:
             certificate = _ensure_track_certificate(cur, track_dict, uid)
-            reward = 50
+            reward = 50.0
             history_key = f"track_complete_{track_id}"
             cur.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=?", (uid, history_key))
             if not cur.fetchone():
-                _ensure_user_dpoints_ready(cur, context="submit_track_final_exam")
-                _ensure_user_dpoints_row(cur, uid)
-                now_str = _now().strftime('%Y-%m-%d %H:%M:%S')
-                _award_visible_dpoints_tx(cur, uid, float(reward), now_str)
-                _award_visible_dcoins_tx(cur, uid, float(reward), now_str)
-                cur.execute(
-                    "INSERT INTO diamond_history (user_id, dcoin_change, dpoints_change, subject, created_at, change_type) VALUES (?, ?, ?, ?, ?, ?)",
-                    (uid, float(reward), float(reward), "GLOBAL", now_str, history_key)
-                )
-                reward_awarded = True
+                try:
+                    award = _runtime.get("award_coins") or add_dcoins
+                    award(uid, reward, str(track_dict.get("subject") or "GLOBAL"), change_type=history_key)
+                    reward_awarded = True
+                except Exception as ex:
+                    logger.exception("Failed to award final exam coins: %s", ex)
 
         conn.commit()
 
@@ -3099,8 +3646,31 @@ def _current_week_range() -> tuple[str, str]:
     return monday.isoformat(), sunday.isoformat()
 
 
-def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) -> dict[str, Any]:
-    """Gather test + homework + mistake stats for the given week."""
+def _student_enrolled_subjects(cur: Any, user_id: int, user_row: dict[str, Any]) -> list[str]:
+    subs: list[str] = []
+    try:
+        cur.execute(
+            "SELECT DISTINCT g.subject FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=?",
+            (user_id,),
+        )
+        for r in cur.fetchall():
+            s = _normalize_subject_label(str(dict(r).get("subject") or ""))
+            if s and s not in subs:
+                subs.append(s)
+    except Exception:
+        pass
+    if not subs:
+        raw_s = str(user_row.get("subject") or "")
+        for part in raw_s.split(","):
+            s = _normalize_subject_label(part.strip())
+            if s and s not in subs:
+                subs.append(s)
+    return subs or ["English"]
+
+
+def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, subject: str | None = None) -> dict[str, Any]:
+    """Gather test + homework + mistake stats for the given week, optionally filtered by subject."""
+    clean_sub = _normalize_subject_label(subject)
     # Test stats
     cur.execute(
         "SELECT test_type, topic_id, correct_count, wrong_count, skipped_count, created_at "
@@ -3124,13 +3694,21 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
             topic_errors[topic] = topic_errors.get(topic, 0) + wrong
     weak_by_tests = sorted(topic_errors.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    # Mistake notebook stats (unresolved)
-    cur.execute(
-        "SELECT subject, topic_key, COUNT(*) AS cnt "
-        "FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL "
-        "GROUP BY subject, topic_key ORDER BY cnt DESC LIMIT 5",
-        (user_id,),
-    )
+    # Mistake notebook stats (unresolved, filtered by subject if specified)
+    if clean_sub:
+        cur.execute(
+            "SELECT subject, topic_key, COUNT(*) AS cnt "
+            "FROM mistake_notebook_items WHERE user_id=? AND (LOWER(subject)=LOWER(?) OR subject IS NULL) AND resolved_at IS NULL "
+            "GROUP BY subject, topic_key ORDER BY cnt DESC LIMIT 5",
+            (user_id, clean_sub),
+        )
+    else:
+        cur.execute(
+            "SELECT subject, topic_key, COUNT(*) AS cnt "
+            "FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL "
+            "GROUP BY subject, topic_key ORDER BY cnt DESC LIMIT 5",
+            (user_id,),
+        )
     weak_by_mistakes = _dicts(cur.fetchall())
     cur.execute(
         "SELECT source_type,COUNT(*) AS count FROM mistake_notebook_items "
@@ -3153,20 +3731,32 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
     hw_total = int(hw_row.get("total") or 0)
     hw_completed = int(hw_row.get("completed") or 0)
 
-    # A Learning Path lesson can be manual, library, homework, or AI-created.
-    # Folding every attempted lesson into the same weekly evidence prevents the
-    # advisor from overlooking the work students do in the Duolingo-style map.
-    cur.execute(
-        "SELECT t.subject,t.title AS track_title,m.title AS module_title,l.source_kind,"
-        "a.score,a.passed,a.completed_at "
-        "FROM learning_lesson_attempts a "
-        "JOIN learning_module_lessons l ON l.id=a.lesson_id "
-        "JOIN learning_modules m ON m.id=l.module_id "
-        "JOIN learning_tracks t ON t.id=m.track_id "
-        "WHERE a.student_id=? AND DATE(a.completed_at)>=? AND DATE(a.completed_at)<=? "
-        "ORDER BY a.completed_at DESC",
-        (user_id, week_start, week_end),
-    )
+    # Learning Path attempts filtered by track subject
+    if clean_sub:
+        cur.execute(
+            "SELECT t.subject,t.title AS track_title,m.title AS module_title,l.source_kind,"
+            "a.score,a.passed,a.completed_at "
+            "FROM learning_lesson_attempts a "
+            "JOIN learning_module_lessons l ON l.id=a.lesson_id "
+            "JOIN learning_modules m ON m.id=l.module_id "
+            "JOIN learning_tracks t ON t.id=m.track_id "
+            "WHERE a.student_id=? AND DATE(a.completed_at)>=? AND DATE(a.completed_at)<=? "
+            "AND (LOWER(t.subject)=LOWER(?) OR t.subject IS NULL) "
+            "ORDER BY a.completed_at DESC",
+            (user_id, week_start, week_end, clean_sub),
+        )
+    else:
+        cur.execute(
+            "SELECT t.subject,t.title AS track_title,m.title AS module_title,l.source_kind,"
+            "a.score,a.passed,a.completed_at "
+            "FROM learning_lesson_attempts a "
+            "JOIN learning_module_lessons l ON l.id=a.lesson_id "
+            "JOIN learning_modules m ON m.id=l.module_id "
+            "JOIN learning_tracks t ON t.id=m.track_id "
+            "WHERE a.student_id=? AND DATE(a.completed_at)>=? AND DATE(a.completed_at)<=? "
+            "ORDER BY a.completed_at DESC",
+            (user_id, week_start, week_end),
+        )
     learning_path_attempts = _dicts(cur.fetchall())
     learning_path_total = len(learning_path_attempts)
     learning_path_passed = sum(1 for item in learning_path_attempts if int(item.get("passed") or 0) == 1)
@@ -3196,22 +3786,130 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str) 
     }
 
 
-def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dict[str, Any]:
+def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subject: str = "English") -> dict[str, Any]:
     test_cnt = stats.get("test_count", 0)
     acc = stats.get("accuracy_pct", 0)
     hw_comp = stats.get("homework_completed", 0)
     hw_tot = stats.get("homework_total", 0)
+    is_rus = (subject == "Russian")
 
+    if is_rus:
+        if test_cnt > 0:
+            analysis = (
+                f"Здравствуйте, {user_name}! На этой неделе вы выполнили {test_cnt} тестов с общей точностью {acc}%. "
+                f"Сдано {hw_comp}/{hw_tot} домашних заданий. "
+                f"Регулярная практика — ключ к отличному результату. Закрепите слабые темы, и ваши баллы станут еще выше!"
+            )
+        else:
+            analysis = (
+                f"Здравствуйте, {user_name}! Начало недели — идеальное время для освоения новых правил русского языка. "
+                f"Уделяйте 10-15 минут в день занятиям с Diamondvoy, чтобы обогатить словарный запас и повысить грамотность!"
+            )
+
+        raw_weaks = stats.get("weak_topics_by_tests", []) or []
+        weak_topics = []
+        for item in raw_weaks[:4]:
+            t_name = str(item.get("topic") or "Грамматика и орфография")
+            weak_topics.append({
+                "topic": t_name,
+                "level": "medium" if item.get("errors", 0) < 3 else "weak",
+                "explanation": f"В теме «{t_name}» рекомендуется повторить основные правила написания и синтаксиса.",
+                "rules": [
+                    f"Вспомните ключевые правила и орфограммы по теме «{t_name}».",
+                    "Обращайте внимание на окончания, приставки и контекст предложения.",
+                ],
+            })
+
+        if not weak_topics:
+            weak_topics = [
+                {
+                    "topic": "Падежные окончания существительных",
+                    "level": "medium",
+                    "explanation": "Обращайте внимание на различие окончаний родительного, дательного и предложного падежей.",
+                    "rules": [
+                        "1-е склонение: в дательном и предложном падежах окончание -е (о книге, к реке).",
+                        "Слова на -ия, -ий, -ие в предложном падеже имеют окончание -и (об армии, в здании).",
+                    ],
+                },
+                {
+                    "topic": "Правописание безударных гласных в корне",
+                    "level": "weak",
+                    "explanation": "Всегда проверяйте безударную гласную ударением или помните о чередующихся корнях.",
+                    "rules": [
+                        "Подбирайте однокоренное слово, где гласная под ударением: вода -> во́дный.",
+                        "Корни с чередованием (лаг/лож, раст/рос) не проверяются ударением.",
+                    ],
+                },
+            ]
+
+        recs = [
+            "Выполните 5 практических упражнений ниже для закрепления правил русского языка.",
+            "Откройте Тетрадь Ошибок (Mistakes Notebook) и заново решите вопросы, где ошиблись.",
+            "Возьмите за привычку ежедневно проходить хотя бы один тест или мини-викторину.",
+        ]
+
+        practice_qs = [
+            {
+                "question": "В каком слове на месте пропуска пишется буква И?",
+                "options": ["пр..брежный", "пр..мудрый", "пр..красный", "пр..одолеть"],
+                "correct": "пр..брежный",
+                "topic": "Правописание приставок ПРЕ- и ПРИ-",
+                "difficulty": "easy",
+                "explanation": "Приставка ПРИ- пишется в значении приближения, присоединения, нахождения рядом: прибрежный (возле берега).",
+            },
+            {
+                "question": "Укажите предложение с ошибкой в согласовании:",
+                "options": ["Быстрое метро довезло нас", "Вкусное кофе стояло на столе", "Новое пальто висело в шкафу", "Опытное жюри выставило оценки"],
+                "correct": "Вкусное кофе стояло на столе",
+                "topic": "Род несклоняемых существительных",
+                "difficulty": "medium",
+                "explanation": "Слово «кофе» в литературном русском языке мужского рода: «Вкусный кофе стоял на столе».",
+            },
+            {
+                "question": "В каком слове пишется НН?",
+                "options": ["стекля..ый", "кожа..ый", "песча..ый", "глиня..ый"],
+                "correct": "стекля..ый",
+                "topic": "Н и НН в суффиксах прилагательных",
+                "difficulty": "easy",
+                "explanation": "Стеклянный, оловянный, деревянный — слова-исключения, пишутся с двумя Н.",
+            },
+            {
+                "question": "В каком корне пишется буква А?",
+                "options": ["пол..жить", "предл..гать", "прик..снуться", "изл..жение"],
+                "correct": "предл..гать",
+                "topic": "Чередующиеся гласные в корне ЛАГ/ЛОЖ",
+                "difficulty": "easy",
+                "explanation": "Перед буквой Г в корне пишется А (предлагать), перед Ж пишется О (положить).",
+            },
+            {
+                "question": "Выберите правильный вариант: Мы подошли к высокой ____.",
+                "options": ["башне", "башни", "башню", "башней"],
+                "correct": "башне",
+                "topic": "Падежи существительных",
+                "difficulty": "easy",
+                "explanation": "Предлог «к» требует Дательного падежа: подошли к (чему?) башне.",
+            },
+        ]
+
+        return {
+            "analysis": analysis,
+            "weak_topics": weak_topics,
+            "recommendations": recs,
+            "practice_questions": practice_qs,
+            "encouragement": "Каждый пройденный шаг приближает вас к отличному знанию языка. Продолжайте учиться! 🌟",
+        }
+
+    # English default
     if test_cnt > 0:
         analysis = (
-            f"Salom, {user_name}! Bu hafta jami {test_cnt} ta test topshirdingiz va umumiy aniqligingiz {acc}% ni tashkil etdi. "
-            f"Uy vazifalaridan {hw_comp}/{hw_tot} tasi bajarildi. "
-            f"O'rganishda davomiylik juda muhim. Zaif mavzular ustida ishlasangiz, natijalaringiz yanada yuqori bo'ladi!"
+            f"Hello, {user_name}! This week you completed {test_cnt} tests with an overall accuracy of {acc}%. "
+            f"You finished {hw_comp}/{hw_tot} homework assignments. "
+            f"Consistency is essential for English fluency. Focus on your weak topics to boost your scores even higher!"
         )
     else:
         analysis = (
-            f"Salom, {user_name}! Bu hafta yangi mashqlar va testlarni boshlash uchun eng qulay vaqt. "
-            f"Har kuni 10-15 daqiqa Diamondvoy bilan shug'ullanib, grammatika va so'z boyligingizni mustahkamlab boring!"
+            f"Hello, {user_name}! The start of the week is the perfect time to build your English skills. "
+            f"Spend 10-15 minutes each day with Diamondvoy to expand your vocabulary and solidify grammar rules!"
         )
 
     raw_weaks = stats.get("weak_topics_by_tests", []) or []
@@ -3221,39 +3919,39 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
         weak_topics.append({
             "topic": t_name,
             "level": "medium" if item.get("errors", 0) < 3 else "weak",
-            "explanation": f"Ushbu «{t_name}» mavzusida savollarga javob berishda e'tiborsizlik yoki qoidalarni qayta ko'rib chiqish talab etiladi.",
+            "explanation": f"Reviewing rules and time markers for '{t_name}' will help you avoid careless mistakes.",
             "rules": [
-                f"{t_name} mavzusidagi asosiy grammatik qoidalarni va formulalarni eslab qoling.",
-                "Savolni yechayotganda vaqt ko'rsatkichlari (time markers) va gap tuzilishiga diqqat qiling.",
+                f"Remember the core formula and typical use cases for '{t_name}'.",
+                "Pay close attention to key time indicators and sentence structure.",
             ],
         })
 
     if not weak_topics:
         weak_topics = [
             {
-                "topic": "Present Simple vs Continuous",
+                "topic": "Present Simple vs Present Continuous",
                 "level": "medium",
-                "explanation": "Doimiy takrorlanuvchi harakatlar (Simple) bilan ayni damda sodir bo'layotgan harakatlar (Continuous) farqiga e'tibor bering.",
+                "explanation": "Notice the difference between repeated routines (Simple) and actions happening right now (Continuous).",
                 "rules": [
-                    "Har kuni yoki doimiy ishlar uchun: Present Simple (always, usually, every day).",
-                    "Ayni paytda davom etayotgan harakatlar uchun: Present Continuous (now, at the moment).",
+                    "For daily habits and general facts: Present Simple (always, usually, every day).",
+                    "For ongoing actions happening right now: Present Continuous (now, at the moment).",
                 ],
             },
             {
-                "topic": "Past Simple irregular verbs",
+                "topic": "Past Simple Irregular Verbs",
                 "level": "weak",
-                "explanation": "Noto'g'ri fe'llarning 2-shaklini (V2) eslab qolish va inkor shaklida did not + V1 qo'llashga diqqat qiling.",
+                "explanation": "Memorize common V2 irregular forms and remember that negatives use 'did not + V1'.",
                 "rules": [
                     "Go -> Went, See -> Saw, Buy -> Bought, Make -> Made.",
-                    "Inkor va so'roqda asosiy fe'l o'zgarishsiz qoladi: Did you see? (Did you saw EMAS).",
+                    "In questions and negatives, the main verb stays in base form: Did you see? (NOT Did you saw).",
                 ],
             },
         ]
 
     recs = [
-        "Quyidagi 5 ta amaliy test mashqini yechib, qoidalarni mustahkamlang.",
-        "Xatolar daftarchasiga (Mistakes Notebook) o'tib, avval adashgan savollaringizni qayta ishlang.",
-        "Har kuni kamida bitta Daily test yoki mini-viktorina yechishni odatga aylantiring.",
+        "Complete the 5 practice questions below to reinforce these grammar rules.",
+        "Open your Mistakes Notebook to re-attempt questions you missed previously.",
+        "Make it a daily habit to take at least one Daily Quiz or mini-test.",
     ]
 
     practice_qs = [
@@ -3263,7 +3961,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
             "correct": "goes",
             "topic": "Present Simple",
             "difficulty": "easy",
-            "explanation": "Uchinchi shaxs birlik (he, she, it) uchun Present Simple zamonida fe'lga -s / -es qo'shiladi.",
+            "explanation": "Third-person singular subjects (he, she, it) take the -s/-es verb ending in Present Simple.",
         },
         {
             "question": "Look at the window! It _____ heavily right now.",
@@ -3271,7 +3969,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
             "correct": "is raining",
             "topic": "Present Continuous",
             "difficulty": "easy",
-            "explanation": "'right now' va 'Look!' ayni damda sodir bo'layotgan ish-harakatni bildiradi (am/is/are + V-ing).",
+            "explanation": "'Look!' and 'right now' indicate an action happening at this exact moment (is + V-ing).",
         },
         {
             "question": "Yesterday they _____ a great time at the amusement park.",
@@ -3279,7 +3977,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
             "correct": "had",
             "topic": "Past Simple",
             "difficulty": "easy",
-            "explanation": "'Yesterday' o'tgan zamon kalit so'zi, 'have' fe'lining o'tgan zamondagi shakli esa 'had'.",
+            "explanation": "'Yesterday' signals the Past Simple tense, and the past form of 'have' is 'had'.",
         },
         {
             "question": "He hasn't finished reading the book _____.",
@@ -3287,7 +3985,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
             "correct": "yet",
             "topic": "Present Perfect",
             "difficulty": "medium",
-            "explanation": "Inkor gaplar oxirida odatda 'yet' (hali, hamon) ishlatiladi.",
+            "explanation": "Negative Present Perfect sentences typically end with 'yet'.",
         },
         {
             "question": "If you study consistently, you _____ the exam easily.",
@@ -3295,7 +3993,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
             "correct": "will pass",
             "topic": "First Conditional",
             "difficulty": "medium",
-            "explanation": "1-turdagi shart ergash gaplarida: If + Present Simple, bosh gapda esa Will + V1.",
+            "explanation": "In First Conditional: If + Present Simple (study), main clause uses will + V1 (will pass).",
         },
     ]
 
@@ -3304,61 +4002,100 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str) -> dic
         "weak_topics": weak_topics,
         "recommendations": recs,
         "practice_questions": practice_qs,
-        "encouragement": "Har bir qadam sizni maqsadingizga yaqinlashtiradi. O'rganishdan to'xtamang! 🌟",
+        "encouragement": "Every step you take brings you closer to fluency. Keep practicing! 🌟",
     }
 
 
-async def _generate_ai_analysis(stats: dict[str, Any], user_name: str) -> dict[str, Any]:
-    """Call AI to produce weekly analysis, explanations, recommendations and practice questions."""
+async def _generate_ai_analysis(stats: dict[str, Any], user_name: str, subject: str = "English") -> dict[str, Any]:
+    """Call AI to produce weekly analysis in the student's target subject language."""
     import aiohttp
+    is_rus = (subject == "Russian")
 
     weak_topics = []
     for item in stats.get("weak_topics_by_tests", []):
-        weak_topics.append(f"- {item['topic']} ({item['errors']} ta xato)")
+        err_word = "ошибок" if is_rus else "errors"
+        weak_topics.append(f"- {item['topic']} ({item['errors']} {err_word})")
     for item in stats.get("weak_topics_by_mistakes", []):
-        subj = str(item.get("subject") or "")
+        sub = str(item.get("subject") or "")
         topic = str(item.get("topic_key") or "")
         cnt = int(item.get("cnt") or 0)
-        weak_topics.append(f"- {subj} / {topic} ({cnt} ta hal qilinmagan xato)")
+        unr_word = "нерешенных ошибок" if is_rus else "unresolved mistakes"
+        weak_topics.append(f"- {sub} / {topic} ({cnt} {unr_word})")
 
-    weak_str = "\n".join(weak_topics) if weak_topics else "Hozircha zaif mavzular aniqlanmadi."
-    source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "Hozircha xato qayd etilmagan."
+    if is_rus:
+        weak_str = "\n".join(weak_topics) if weak_topics else "Слабые темы пока не выявлены."
+        source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "Ошибок пока не зафиксировано."
+        prompt = f"""Ты — персональный AI-тьютор Diamondvoy на платформе Diamond Education.
+Ученик: {user_name}
+Предмет: Русский язык
 
-    prompt = f"""Sen Diamond Education platformasida o'quvchilarga yordam beruvchi AI tutorsan (Diamondvoy).
-O'quvchi: {user_name}
+Статистика за неделю:
+- Количество тестов: {stats.get('test_count', 0)}
+- Верно: {stats.get('total_correct', 0)}, Неверно: {stats.get('total_wrong', 0)}, Пропущено: {stats.get('total_skipped', 0)}
+- Точность: {stats.get('accuracy_pct', 0)}%
+- Домашние задания: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} выполнено ({stats.get('homework_completion_pct', 0)}%)
+- Learning Path: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} пройдено ({stats.get('learning_path_accuracy_pct', 0)}%)
 
-Bu haftadagi statistika:
-- Testlar soni: {stats.get('test_count', 0)}
-- To'g'ri: {stats.get('total_correct', 0)}, Noto'g'ri: {stats.get('total_wrong', 0)}, O'tkazilgan: {stats.get('total_skipped', 0)}
-- Umumiy aniqlik: {stats.get('accuracy_pct', 0)}%
-- Uy vazifalari: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} bajarildi ({stats.get('homework_completion_pct', 0)}%)
-- Learning Path mashqlari: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} muvaffaqiyatli ({stats.get('learning_path_accuracy_pct', 0)}%)
-
-Zaif mavzular:
+Слабые темы:
 {weak_str}
 
-Xatolar kelgan test turlari: {source_str}
+Источники ошибок: {source_str}
 
-Quyidagilarni JSON formatda yoz:
+Верни строго JSON объект следующей структуры (ВСЕ ТЕКСТЫ, ОБЪЯСНЕНИЯ И ВОПРОСЫ НА РУССКОМ ЯЗЫКЕ!):
 {{
-  "analysis": "O'quvchining bu haftadagi holati haqida batafsil tahlil (3-5 jumlada, samimiy va rag'batlantiruvchi tonda, zaif tomonlarni ham aniq ko'rsat)",
+  "analysis": "Подробный анализ недели ученика (3-5 предложений, доброжелательно, с указанием сильных и слабых сторон)",
   "weak_topics": [
-    {{"topic": "mavzu nomi", "level": "weak/medium", "explanation": "bu mavzuda nega qiynalayotgani haqida tushuntirish", "rules": ["1-qoida yoki tushuntirish", "2-qoida yoki tushuntirish"]}}
+    {{"topic": "название темы", "level": "weak/medium", "explanation": "почему здесь возникают трудности", "rules": ["1-е правило", "2-е правило"]}}
   ],
   "recommendations": [
-    "1-tavsiya: aniq va amaliy qadam",
-    "2-tavsiya",
-    "3-tavsiya"
+    "1-я рекомендация",
+    "2-я рекомендация",
+    "3-я рекомендация"
   ],
   "practice_questions": [
-    {{"question": "savol matni", "options": ["A) variant", "B) variant", "C) variant", "D) variant"], "correct": "A) variant", "topic": "mavzu", "difficulty": "easy", "explanation": "to'g'ri javob tushuntirmasi"}}
+    {{"question": "текст вопроса", "options": ["Вариант A", "Вариант B", "Вариант C", "Вариант D"], "correct": "Вариант A", "topic": "тема", "difficulty": "easy", "explanation": "объяснение ответа"}}
   ],
-  "encouragement": "rag'batlantiruvchi xabar"
+  "encouragement": "ободряющее сообщение"
 }}
 
-practice_questions da eng kamida 5 ta savol bo'lsin, zaif mavzularga oid, OSON darajada.
-Har bir zaif mavzu uchun kamida 1 ta savol bo'lsin.
-Faqat JSON qaytar, boshqa hech narsa yozma."""
+В practice_questions должно быть не менее 5 легких практических вопросов по слабым темам. Только валидный JSON."""
+    else:
+        weak_str = "\n".join(weak_topics) if weak_topics else "No weak topics detected yet."
+        source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "No mistakes recorded yet."
+        prompt = f"""You are Diamondvoy, the personal AI tutor at Diamond Education.
+Student: {user_name}
+Target Subject: English
+
+This week's statistics:
+- Test count: {stats.get('test_count', 0)}
+- Correct: {stats.get('total_correct', 0)}, Wrong: {stats.get('total_wrong', 0)}, Skipped: {stats.get('total_skipped', 0)}
+- Overall accuracy: {stats.get('accuracy_pct', 0)}%
+- Homework: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} completed ({stats.get('homework_completion_pct', 0)}%)
+- Learning Path: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} passed ({stats.get('learning_path_accuracy_pct', 0)}%)
+
+Weak topics:
+{weak_str}
+
+Mistake sources: {source_str}
+
+Return ONLY a valid JSON object with the following structure (ALL TEXTS, EXPLANATIONS, AND QUESTIONS STRICTLY IN ENGLISH!):
+{{
+  "analysis": "Detailed weekly analysis of student performance (3-5 encouraging sentences highlighting areas of improvement)",
+  "weak_topics": [
+    {{"topic": "topic name", "level": "weak/medium", "explanation": "why student struggled here", "rules": ["rule 1", "rule 2"]}}
+  ],
+  "recommendations": [
+    "1st recommendation",
+    "2nd recommendation",
+    "3rd recommendation"
+  ],
+  "practice_questions": [
+    {{"question": "question text", "options": ["Choice A", "Choice B", "Choice C", "Choice D"], "correct": "Choice A", "topic": "topic", "difficulty": "easy", "explanation": "clear explanation"}}
+  ],
+  "encouragement": "warm encouraging closing statement"
+}}
+
+practice_questions must include at least 5 easy practice questions covering the weak topics. Return ONLY JSON."""
 
     try:
         from ai_generator import _xai_generate_text
@@ -3379,7 +4116,7 @@ Faqat JSON qaytar, boshqa hech narsa yozma."""
         result["recommendations"] = result.get("recommendations") if isinstance(result.get("recommendations"), list) and result.get("recommendations") else []
         result["practice_questions"] = result.get("practice_questions") if isinstance(result.get("practice_questions"), list) and len(result.get("practice_questions")) >= 3 else []
         if not result.get("practice_questions"):
-            fallback = _build_smart_fallback_analysis(stats, user_name)
+            fallback = _build_smart_fallback_analysis(stats, user_name, subject=subject)
             result["practice_questions"] = fallback["practice_questions"]
             if not result.get("weak_topics"):
                 result["weak_topics"] = fallback["weak_topics"]
@@ -3387,48 +4124,48 @@ Faqat JSON qaytar, boshqa hech narsa yozma."""
                 result["recommendations"] = fallback["recommendations"]
         return result
     except Exception:
-        return _build_smart_fallback_analysis(stats, user_name)
+        return _build_smart_fallback_analysis(stats, user_name, subject=subject)
 
 
 async def _finish_weekly_analysis(
-    *, user_id: int, user_name: str, week_start: str, stats: dict[str, Any]
+    *, user_id: int, user_name: str, week_start: str, stats: dict[str, Any], subject: str = "English"
 ) -> None:
-    """Run the slow AI call outside the request and persist one immutable weekly result."""
+    """Run the slow AI call outside the request and persist one immutable weekly result for the subject."""
+    clean_sub = _normalize_subject_label(subject) or "English"
     try:
-        result = await _generate_ai_analysis(stats, user_name)
+        result = await _generate_ai_analysis(stats, user_name, subject=clean_sub)
         conn = get_conn()
         try:
             cur = conn.cursor()
             cur.execute(
                 "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
-                "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=?",
+                "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
                 (
                     str(result.get("analysis", "")),
                     json.dumps(result.get("weak_topics", []), ensure_ascii=False),
                     json.dumps(result.get("recommendations", []), ensure_ascii=False),
                     json.dumps(result.get("practice_questions", []), ensure_ascii=False),
-                    _now().isoformat(), user_id, week_start,
+                    _now().isoformat(), user_id, week_start, clean_sub, clean_sub,
                 ),
             )
             conn.commit()
         finally:
             conn.close()
     except Exception:
-        # Save smart fallback on unexpected error
         try:
-            fallback = _build_smart_fallback_analysis(stats, user_name)
+            fallback = _build_smart_fallback_analysis(stats, user_name, subject=clean_sub)
             conn = get_conn()
             try:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
-                    "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=?",
+                    "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
                     (
                         str(fallback.get("analysis", "")),
                         json.dumps(fallback.get("weak_topics", []), ensure_ascii=False),
                         json.dumps(fallback.get("recommendations", []), ensure_ascii=False),
                         json.dumps(fallback.get("practice_questions", []), ensure_ascii=False),
-                        _now().isoformat(), user_id, week_start,
+                        _now().isoformat(), user_id, week_start, clean_sub, clean_sub,
                     ),
                 )
                 conn.commit()
@@ -3447,7 +4184,7 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
     students: list[dict[str, Any]] = []
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, login_id, first_name, last_name, login_type FROM users WHERE (login_type IN (1, 2) OR login_type IS NULL) AND (blocked IS NULL OR blocked = 0)")
+        cur.execute("SELECT id, login_id, first_name, last_name, login_type, subject FROM users WHERE (login_type IN (1, 2) OR login_type IS NULL) AND (blocked IS NULL OR blocked = 0)")
         students = _dicts(cur.fetchall())
     finally:
         conn.close()
@@ -3464,12 +4201,14 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
             conn = get_conn()
             try:
                 cur = conn.cursor()
-                cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+                enrolled_subs = _student_enrolled_subjects(cur, uid, s)
+                target_sub = enrolled_subs[0] if enrolled_subs else "English"
+                cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))", (uid, week_start, target_sub, target_sub))
                 row = cur.fetchone()
                 if row and dict(row).get("status") == "done":
                     skipped += 1
                     continue
-                stats = _collect_week_stats(cur, uid, week_start, week_end)
+                stats = _collect_week_stats(cur, uid, week_start, week_end, subject=target_sub)
                 has_activity = (
                     int(stats.get("test_count") or 0) > 0
                     or int(stats.get("homework_total") or 0) > 0
@@ -3481,20 +4220,21 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
                 conn.close()
 
             if has_activity:
-                result = await _generate_ai_analysis(stats, user_name)
+                result = await _generate_ai_analysis(stats, user_name, subject=target_sub)
             else:
-                result = _build_smart_fallback_analysis(stats, user_name)
+                result = _build_smart_fallback_analysis(stats, user_name, subject=target_sub)
             conn = get_conn()
             try:
                 cur = conn.cursor()
                 cur.execute(
                     """
                     INSERT INTO weekly_ai_analyses(
-                        user_id, week_start, week_end, analysis_text, weak_topics_json,
+                        user_id, week_start, week_end, subject, analysis_text, weak_topics_json,
                         recommendations_json, test_stats_json, homework_stats_json,
                         practice_questions_json, status, updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,'done',?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,'done',?)
                     ON CONFLICT(user_id, week_start) DO UPDATE SET
+                        subject=excluded.subject,
                         analysis_text=excluded.analysis_text,
                         weak_topics_json=excluded.weak_topics_json,
                         recommendations_json=excluded.recommendations_json,
@@ -3505,7 +4245,7 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
                         updated_at=excluded.updated_at
                     """,
                     (
-                        uid, week_start, week_end,
+                        uid, week_start, week_end, target_sub,
                         str(result.get("analysis", "")),
                         json.dumps(result.get("weak_topics", []), ensure_ascii=False),
                         json.dumps(result.get("recommendations", []), ensure_ascii=False),
@@ -3530,7 +4270,7 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
     return {"total": total, "processed": processed, "skipped": skipped, "errors": errors}
 
 
-def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
+def _weekly_payload(row: dict[str, Any], available_subjects: list[str] | None = None, selected_subject: str | None = None) -> dict[str, Any]:
     created_at = row.get("created_at")
     if hasattr(created_at, "isoformat"):
         created_at = created_at.isoformat()
@@ -3540,6 +4280,9 @@ def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
         "exists": True,
         "week_start": str(row["week_start"]),
         "week_end": str(row["week_end"]),
+        "subject": str(row.get("subject") or selected_subject or "English"),
+        "available_subjects": available_subjects or ["English"],
+        "selected_subject": selected_subject or str(row.get("subject") or "English"),
         "status": str(row.get("status") or "done"),
         "analysis": row.get("analysis_text", ""),
         "weak_topics": json.loads(row.get("weak_topics_json") or "[]"),
@@ -3552,42 +4295,52 @@ def _weekly_payload(row: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/student/personal-plan/weekly-analysis")
-async def get_weekly_analysis(authorization: str | None = Header(default=None)):
-    """Get the current week's AI analysis (or latest available)."""
+async def get_weekly_analysis(subject: str | None = Query(default=None), authorization: str | None = Header(default=None)):
+    """Get the current week's AI analysis in the student's enrolled subject and language."""
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
     uid = int(user["id"]); week_start, week_end = _current_week_range()
     conn = get_conn()
     try:
         cur = conn.cursor()
+        enrolled_subs = _student_enrolled_subjects(cur, uid, user)
+        clean_sub = _normalize_subject_label(subject)
+        active_sub = clean_sub if clean_sub and clean_sub in enrolled_subs else enrolled_subs[0]
+
         cur.execute(
-            "SELECT * FROM weekly_ai_analyses WHERE user_id=? AND week_start=?",
-            (uid, week_start),
+            "SELECT * FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
+            (uid, week_start, active_sub, active_sub),
         )
         row = cur.fetchone()
         if row:
-            return _weekly_payload(dict(row))
-        # Collect live stats and auto-trigger generation if never generated
-        stats = _collect_week_stats(cur, uid, week_start, week_end)
+            return _weekly_payload(dict(row), available_subjects=enrolled_subs, selected_subject=active_sub)
+
+        # Collect live stats and auto-trigger generation if not yet generated
+        stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
         user_name = _student_name(user)
         try:
             cur.execute(
-                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO NOTHING",
-                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
+                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing'",
+                (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
                 })),
             )
             conn.commit()
-            asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats))
+            asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
         except Exception:
             pass
+
+        thinking_msg = "Diamondvoy готовит ваш еженедельный анализ..." if active_sub == "Russian" else "Diamondvoy is preparing your weekly analysis..."
         return {
             "exists": True,
             "week_start": week_start,
             "week_end": week_end,
+            "subject": active_sub,
+            "available_subjects": enrolled_subs,
+            "selected_subject": active_sub,
             "status": "processing",
-            "analysis": "Diamondvoy haftalik natijalaringizni tahlil qilmoqda...",
+            "analysis": thinking_msg,
             "weak_topics": [],
             "recommendations": [],
             "test_stats": stats,
@@ -3604,25 +4357,30 @@ async def get_weekly_analysis(authorization: str | None = Header(default=None)):
 
 
 @router.post("/student/personal-plan/weekly-analysis/generate")
-async def generate_weekly_analysis(authorization: str | None = Header(default=None)):
-    """Queue a weekly Diamondvoy analysis and return immediately for UI polling."""
+async def generate_weekly_analysis(subject: str | None = Query(default=None), authorization: str | None = Header(default=None)):
+    """Queue a weekly Diamondvoy analysis for the specified subject and return immediately for UI polling."""
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
     uid = int(user["id"]); week_start, week_end = _current_week_range()
     user_name = _student_name(user)
     conn = get_conn()
     try:
         cur = conn.cursor()
-        stats = _collect_week_stats(cur, uid, week_start, week_end)
-        cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+        enrolled_subs = _student_enrolled_subjects(cur, uid, user)
+        clean_sub = _normalize_subject_label(subject)
+        active_sub = clean_sub if clean_sub and clean_sub in enrolled_subs else enrolled_subs[0]
+
+        stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
+        cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))", (uid, week_start, active_sub, active_sub))
         current = cur.fetchone()
         if current and str(dict(current).get("status") or "") == "processing":
-            return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+            return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end, "subject": active_sub}
+
         # Mark as processing
         try:
             cur.execute(
-                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET status='processing', updated_at=?",
-                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
+                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing', updated_at=?",
+                (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
                 }), _now().isoformat()),
@@ -3630,8 +4388,8 @@ async def generate_weekly_analysis(authorization: str | None = Header(default=No
         except Exception:
             cur.execute("DELETE FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
             cur.execute(
-                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, status, test_stats_json, homework_stats_json) VALUES(?,?,?,'processing',?,?)",
-                (uid, week_start, week_end, json.dumps(stats), json.dumps({
+                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) VALUES(?,?,?,?,'processing',?,?)",
+                (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
                 })),
@@ -3639,26 +4397,37 @@ async def generate_weekly_analysis(authorization: str | None = Header(default=No
         conn.commit()
     finally:
         conn.close()
-    asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats))
-    return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end}
+    asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
+    return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end, "subject": active_sub}
 
 
 @router.get("/student/personal-plan/analysis-history")
-async def get_analysis_history(authorization: str | None = Header(default=None)):
-    """Get all previous weekly analyses for the student."""
+async def get_analysis_history(subject: str | None = Query(default=None), authorization: str | None = Header(default=None)):
+    """Get all previous weekly analyses for the student, optionally filtered by subject."""
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
     uid = int(user["id"])
+    clean_sub = _normalize_subject_label(subject)
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute(
-            "SELECT id, week_start, week_end, analysis_text, weak_topics_json, "
-            "recommendations_json, test_stats_json, homework_stats_json, "
-            "practice_questions_json, status, created_at "
-            "FROM weekly_ai_analyses WHERE user_id=? AND status='done' "
-            "ORDER BY week_start DESC LIMIT 12",
-            (uid,),
-        )
+        if clean_sub:
+            cur.execute(
+                "SELECT id, week_start, week_end, subject, analysis_text, weak_topics_json, "
+                "recommendations_json, test_stats_json, homework_stats_json, "
+                "practice_questions_json, status, created_at "
+                "FROM weekly_ai_analyses WHERE user_id=? AND (subject=? OR (subject IS NULL AND ?='English')) AND status='done' "
+                "ORDER BY week_start DESC LIMIT 12",
+                (uid, clean_sub, clean_sub),
+            )
+        else:
+            cur.execute(
+                "SELECT id, week_start, week_end, subject, analysis_text, weak_topics_json, "
+                "recommendations_json, test_stats_json, homework_stats_json, "
+                "practice_questions_json, status, created_at "
+                "FROM weekly_ai_analyses WHERE user_id=? AND status='done' "
+                "ORDER BY week_start DESC LIMIT 12",
+                (uid,),
+            )
         items = []
         for row in cur.fetchall():
             r = dict(row)
@@ -3671,6 +4440,7 @@ async def get_analysis_history(authorization: str | None = Header(default=None))
                 "id": r["id"],
                 "week_start": str(r["week_start"]),
                 "week_end": str(r["week_end"]),
+                "subject": str(r.get("subject") or "English"),
                 "analysis": r.get("analysis_text", ""),
                 "weak_topics": json.loads(r.get("weak_topics_json") or "[]"),
                 "recommendations": json.loads(r.get("recommendations_json") or "[]"),

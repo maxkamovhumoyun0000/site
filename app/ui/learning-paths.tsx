@@ -255,26 +255,36 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
       {/* Tracks List */}
       <div className="flex flex-col space-y-4">
-        {filteredTracks.map((track, i) => (
-          <DuolingoTrack
-            key={track.id}
-            track={track}
-            index={i}
-            totalTracks={filteredTracks.length}
-            hasNext={i < filteredTracks.length - 1}
-            hasPrev={i > 0}
-            nextTrackTitle={filteredTracks[i + 1]?.title}
-            apiFetch={apiFetch}
-            onStartModule={(mod) => {
-              playDuolingoSound("pop");
-              setActiveModule(mod);
-            }}
-            onStartFinalExam={(t) => {
-              playDuolingoSound("pop");
-              setActiveFinalExamTrack(t);
-            }}
-          />
-        ))}
+        {filteredTracks.map((track, i) => {
+          const nextTrack = filteredTracks[i + 1];
+          const nextTrackUnlocked = nextTrack ? !nextTrack.locked : false;
+          const nextTrackStarted = nextTrack && Array.isArray(nextTrack.modules)
+            ? nextTrack.modules.some((m: Row) => m.progress?.status === "passed")
+            : false;
+
+          return (
+            <DuolingoTrack
+              key={track.id}
+              track={track}
+              index={i}
+              totalTracks={filteredTracks.length}
+              hasNext={i < filteredTracks.length - 1}
+              hasPrev={i > 0}
+              nextTrackTitle={nextTrack?.title}
+              nextTrackUnlocked={nextTrackUnlocked}
+              nextTrackStarted={nextTrackStarted}
+              apiFetch={apiFetch}
+              onStartModule={(mod) => {
+                playDuolingoSound("pop");
+                setActiveModule(mod);
+              }}
+              onStartFinalExam={(t) => {
+                playDuolingoSound("pop");
+                setActiveFinalExamTrack(t);
+              }}
+            />
+          );
+        })}
       </div>
 
       {!filteredTracks.length ? (
@@ -327,6 +337,8 @@ function DuolingoTrack({
   hasNext = false,
   hasPrev = false,
   nextTrackTitle = "",
+  nextTrackUnlocked = false,
+  nextTrackStarted = false,
   apiFetch,
   onStartModule,
   onStartFinalExam,
@@ -337,6 +349,8 @@ function DuolingoTrack({
   hasNext?: boolean;
   hasPrev?: boolean;
   nextTrackTitle?: string;
+  nextTrackUnlocked?: boolean;
+  nextTrackStarted?: boolean;
   apiFetch: ApiFetch;
   onStartModule: (module: Row) => void;
   onStartFinalExam: (track: Row) => void;
@@ -356,6 +370,18 @@ function DuolingoTrack({
   const [claimingCert, setClaimingCert] = useState(false);
   const [certRewardData, setCertRewardData] = useState<Row | null>(null);
   const [certError, setCertError] = useState("");
+
+  const certAlreadyClaimed = Boolean(
+    certRewardData ||
+    (track as any).certificate_claimed ||
+    (track as any).final_exam?.certificate_id ||
+    (track as any).final_exam?.certificate
+  );
+
+  // Stop pulsing if:
+  // 1. Certificate has already been claimed / finished (certAlreadyClaimed)
+  // 2. Or the student moved to the next track (nextTrackStarted or (hasNext && nextTrackUnlocked))
+  const shouldPulseChest = chestUnlocked && !certAlreadyClaimed && !nextTrackStarted && !(hasNext && nextTrackUnlocked);
 
   const handleFinalChestClick = async () => {
     setShowChestModal(true);
@@ -407,8 +433,14 @@ function DuolingoTrack({
   ];
   const unitColor = unitGradients[index % unitGradients.length];
 
-  // Sine-wave horizontal offsets for snake trail (chapdan o'ngga, o'ngdan chapga)
-  const OFFSETS = [-68, -34, 0, 34, 68, 34, 0, -34];
+  // Organic pseudo-random offset for snake trail (tasodifiy joylashuv, chap va o'ngga)
+  const getModuleOffset = useCallback((moduleId: number, order: number): number => {
+    const hash = Math.sin((moduleId || order + 1) * 997 + order * 1237) * 10000;
+    const pseudoRnd = Math.abs(hash - Math.floor(hash));
+    const side = (order % 2 === 0) ? -1 : 1;
+    const magnitude = 28 + pseudoRnd * 48; // 28px to 76px
+    return Math.round(side * magnitude);
+  }, []);
 
   // Continuous winding snake path ("ilon izi") connecting all nodes, chest, and adjacent tracks
   const snakePathD = useMemo(() => {
@@ -423,8 +455,8 @@ function DuolingoTrack({
       points.push({ x: cx, y: 0 });
     }
 
-    modules.forEach((_: any, i: number) => {
-      const xOffset = OFFSETS[i % OFFSETS.length];
+    modules.forEach((mod: any, i: number) => {
+      const xOffset = getModuleOffset(Number(mod.id), i);
       points.push({ x: cx + xOffset, y: startY + i * stepY });
     });
 
@@ -453,7 +485,7 @@ function DuolingoTrack({
       d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
     }
     return d;
-  }, [modules, OFFSETS, hasPrev, hasNext]);
+  }, [modules, track.id, hasPrev, hasNext]);
 
   const svgHeight = useMemo(() => {
     const base = Math.max(200, modules.length * 116 + 180);
@@ -563,7 +595,7 @@ function DuolingoTrack({
         {/* Winding Trail Column */}
         <div className="relative z-10 flex flex-col items-center gap-7">
           {modules.map((module: Row, order: number) => {
-            const xOffset = OFFSETS[order % OFFSETS.length];
+            const xOffset = getModuleOffset(Number(module.id), order);
 
             return (
               <div key={module.id} className="relative flex flex-col items-center">
@@ -581,28 +613,6 @@ function DuolingoTrack({
 
           {/* Final Brand Chest Node at the end of the track */}
           <div className="relative flex flex-col items-center mt-3">
-            {/* Side speech bubble for Final Chest (tepasida emas yon tarafida) */}
-            {chestUnlocked ? (
-              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-                <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-amber-500 -mr-[1px]" />
-                <div className="rounded-2xl border-2 border-amber-500 bg-gradient-to-r from-amber-400 to-amber-500 px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-amber-950 shadow-lg">
-                  🎁 Sandiqni ochish!
-                </div>
-              </div>
-            ) : examReady ? (
-              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-                <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-blue-500 -mr-[1px]" />
-                <div className="rounded-2xl border-2 border-[#002DFF] bg-gradient-to-r from-[#002DFF] to-indigo-600 px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-white shadow-lg">
-                  ⚡ Yakuniy Imtihon!
-                </div>
-              </div>
-            ) : (
-              <div className="absolute left-full ml-3.5 top-1/2 -translate-y-1/2 z-20 flex items-center gap-1 rounded-full bg-slate-900/80 px-2.5 py-1 text-[10px] font-bold text-white backdrop-blur-sm shadow-sm pointer-events-none whitespace-nowrap">
-                <span>🔒</span>
-                <span>Yakuniy Imtihon</span>
-              </div>
-            )}
-
             {/* Solid Opaque Backing Disc to block snake path underneath */}
             <div className="absolute h-22 w-22 sm:h-24 sm:w-24 rounded-full bg-white dark:bg-[#070d1e] shadow-md pointer-events-none" />
 
@@ -612,10 +622,12 @@ function DuolingoTrack({
               onClick={handleFinalChestClick}
               className={`group relative grid h-20 w-20 sm:h-22 sm:w-22 shrink-0 place-items-center rounded-full border-2 transition-all duration-150 select-none ${
                 chestUnlocked
-                  ? "border-amber-700 border-b-[8px] bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-white shadow-xl shadow-amber-500/30 ring-4 ring-amber-400/50 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer animate-pulse"
+                  ? `border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#001A88] text-white shadow-xl shadow-blue-900/30 ring-4 ring-[#002DFF]/50 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer ${
+                      shouldPulseChest ? "animate-pulse" : ""
+                    }`
                   : examReady
-                  ? "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#002DFF] text-white shadow-xl shadow-blue-600/30 ring-4 ring-amber-400/60 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer animate-pulse"
-                  : "border-amber-700 border-b-[8px] bg-gradient-to-b from-amber-400 via-amber-500 to-amber-600 text-white shadow-lg shadow-amber-600/20 ring-4 ring-amber-400/30 cursor-pointer active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-105"
+                  ? "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] to-[#002DFF] text-white shadow-xl shadow-blue-600/30 ring-4 ring-[#002DFF]/60 active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-110 cursor-pointer animate-pulse"
+                  : "border-[#001A88] border-b-[8px] bg-gradient-to-b from-[#1429f2] via-[#002DFF] to-[#001A88] text-white shadow-lg shadow-blue-900/20 ring-4 ring-[#002DFF]/30 cursor-pointer active:translate-y-1.5 active:border-b-[2px] active:shadow-none hover:scale-105 hover:brightness-105"
               }`}
             >
               <div className="relative h-full w-full p-2 flex items-center justify-center">
@@ -626,47 +638,36 @@ function DuolingoTrack({
                 />
                 {!chestUnlocked && !examReady ? (
                   <div className="absolute inset-0 grid place-items-center">
-                    <span className="grid h-7 w-7 place-items-center rounded-full bg-amber-950 border border-amber-400 text-xs text-amber-300 shadow-md">
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-[#000B3B] border border-blue-400 text-xs text-blue-200 shadow-md">
                       🔒
                     </span>
                   </div>
                 ) : examReady ? (
-                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-amber-400 text-[11px] text-amber-950 shadow-md">
+                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-[#002DFF] text-[11px] text-white shadow-md">
                     ⚡
                   </div>
+                ) : certAlreadyClaimed ? (
+                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-emerald-500 text-[11px] font-bold text-white shadow-md">
+                    ✓
+                  </div>
                 ) : (
-                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-amber-400 text-[11px] text-amber-950 shadow-md">
+                  <div className="absolute -bottom-1 -right-1 grid h-6 w-6 place-items-center rounded-full border-2 border-white bg-[#002DFF] text-[11px] text-white shadow-md">
                     ✨
                   </div>
                 )}
               </div>
             </button>
 
-            <span className={`mt-2 text-xs font-black uppercase tracking-wider ${
-              chestUnlocked
-                ? "text-amber-600 dark:text-amber-400"
+            <span className="mt-2 text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
+              {certAlreadyClaimed
+                ? "🎓 Sertifikat olindi"
+                : chestUnlocked
+                ? "🎓 Sertifikat & Mukofot"
                 : examReady
-                ? "text-[#002DFF] dark:text-blue-400"
-                : "text-amber-600 dark:text-amber-400"
-            }`}>
-              {chestUnlocked ? "🎓 Sertifikat & Mukofot" : examReady ? "⚡ Yakuniy Imtihon" : "Yakuniy Bosqich"}
+                ? "⚡ Yakuniy Imtihon"
+                : "Yakuniy Bosqich"}
             </span>
           </div>
-
-          {/* Continuous Snake Trail Bridge Connector to Next Track */}
-          {hasNext ? (
-            <div className="relative z-10 mt-10 mb-2 flex flex-col items-center select-none">
-              <div className="group flex items-center gap-2.5 rounded-full border-2 border-[#002DFF] bg-white/95 px-4 py-2 shadow-lg shadow-blue-500/20 backdrop-blur-md dark:border-cyan-500 dark:bg-navy-900/95 transition-all duration-200 hover:scale-105">
-                <span className="grid h-6 w-6 place-items-center rounded-full bg-gradient-to-r from-[#002DFF] to-[#00F0FF] text-white text-xs font-black shadow-sm animate-bounce">
-                  ↓
-                </span>
-                <span className="text-xs font-black uppercase tracking-wider text-navy-900 dark:text-cyan-300">
-                  {nextTrackTitle ? `Bo'lim ${index + 2}: ${nextTrackTitle}` : "Keyingi bo'lim sari"}
-                </span>
-                <span className="text-xs">✨</span>
-              </div>
-            </div>
-          ) : null}
         </div>
       </div>
 
@@ -678,7 +679,7 @@ function DuolingoTrack({
               onClick={() => setShowChestModal(false)}
             >
               <div
-                className="relative w-full max-w-md overflow-hidden rounded-3xl border-2 border-amber-400/50 bg-white p-6 shadow-2xl dark:border-amber-600/40 dark:bg-[#0f172a] animate-scale-up"
+                className="relative w-full max-w-md overflow-hidden rounded-3xl border-2 border-[#002DFF]/40 bg-white p-6 shadow-2xl dark:border-[#002DFF]/40 dark:bg-[#0f172a] animate-scale-up"
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Close Button */}
@@ -694,14 +695,14 @@ function DuolingoTrack({
                   <div className="flex flex-col items-center text-center">
                     {/* Animated Chest & Sparkles */}
                     <div className="relative my-2">
-                      <div className="h-28 w-28 rounded-3xl bg-gradient-to-tr from-amber-400 to-amber-200 p-2 shadow-xl ring-4 ring-amber-400/40 flex items-center justify-center animate-bounce">
+                      <div className="h-28 w-28 rounded-3xl bg-gradient-to-tr from-[#1429f2] to-[#002DFF] p-2 shadow-xl ring-4 ring-[#002DFF]/40 flex items-center justify-center animate-bounce">
                         <img src="/learning-paths/chest.png" alt="Sandiq" className="h-full w-full object-contain" />
                       </div>
                       <span className="absolute -top-2 -right-2 text-2xl animate-spin">✨</span>
                       <span className="absolute -bottom-1 -left-2 text-2xl animate-pulse">🌟</span>
                     </div>
 
-                    <span className="rounded-full bg-amber-500/15 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                    <span className="rounded-full bg-[#002DFF]/10 px-3 py-1 text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
                       Bo'lim yakunlandi
                     </span>
 
@@ -715,12 +716,12 @@ function DuolingoTrack({
 
                     {/* Dual Reward Badges */}
                     <div className="mt-4 grid grid-cols-2 gap-3 w-full">
-                      <div className="rounded-2xl border-2 border-cyan-400/30 bg-cyan-500/10 p-3 text-center">
+                      <div className="rounded-2xl border-2 border-blue-400/30 bg-blue-500/10 p-3 text-center">
                         <span className="text-xl">💎</span>
-                        <p className="text-base font-black text-cyan-700 dark:text-cyan-300 mt-0.5">
+                        <p className="text-base font-black text-[#002DFF] dark:text-[#38bdf8] mt-0.5">
                           +50 D'Point
                         </p>
-                        <p className="text-[10px] text-cyan-600/80 font-bold">Reyting uchun</p>
+                        <p className="text-[10px] text-blue-600/80 font-bold">Reyting uchun</p>
                       </div>
 
                       <div className="rounded-2xl border-2 border-amber-400/30 bg-amber-500/10 p-3 text-center">
@@ -735,18 +736,18 @@ function DuolingoTrack({
                     {/* Certificate Card */}
                     {claimingCert ? (
                       <div className="mt-5 flex items-center justify-center gap-2 py-4 text-xs font-bold text-slate-500">
-                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-500 border-t-transparent" />
+                        <div className="h-5 w-5 animate-spin rounded-full border-2 border-[#002DFF] border-t-transparent" />
                         <span>Sertifikat rasmiylashtirilmoqda...</span>
                       </div>
                     ) : certRewardData?.certificate ? (
-                      <div className="mt-4 w-full rounded-2xl border-2 border-amber-400/40 bg-gradient-to-br from-amber-50/70 to-yellow-50/70 p-4 text-left dark:border-amber-600/30 dark:bg-amber-950/20">
+                      <div className="mt-4 w-full rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-blue-50/80 to-indigo-50/80 p-4 text-left dark:border-blue-800/40 dark:bg-blue-950/30">
                         <div className="flex items-center gap-2.5">
                           <span className="text-2xl">🎓</span>
                           <div>
-                            <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                            <p className="text-xs font-black text-blue-950 dark:text-blue-200">
                               {certRewardData.certificate.course_title || track.title}
                             </p>
-                            <p className="text-[10px] font-mono text-amber-700 dark:text-amber-400">
+                            <p className="text-[10px] font-mono text-blue-700 dark:text-blue-400">
                               ID: {certRewardData.certificate.certificate_id}
                             </p>
                           </div>
@@ -757,7 +758,7 @@ function DuolingoTrack({
                             href={`/api/student/certificates/${certRewardData.certificate.certificate_id}/pdf`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 py-2.5 px-4 text-xs font-black text-white shadow-md hover:from-amber-600 hover:to-amber-700 transition active:scale-98"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2] py-2.5 px-4 text-xs font-black text-white shadow-md transition active:scale-98 active:border-b-2"
                           >
                             <span>📄 Sertifikatni PDF ko'rish / Yuklab olish</span>
                           </a>
@@ -800,9 +801,9 @@ function DuolingoTrack({
                     </p>
 
                     <div className="mt-4 grid grid-cols-2 gap-3 w-full">
-                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-center dark:border-slate-800 dark:bg-slate-800/80">
+                      <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3 text-center dark:border-blue-800/40 dark:bg-blue-950/30">
                         <p className="text-[10px] font-bold uppercase text-slate-400">O'tish bali</p>
-                        <p className="text-base font-black text-navy-900 dark:text-white mt-0.5">
+                        <p className="text-base font-black text-[#002DFF] dark:text-[#38bdf8] mt-0.5">
                           {track.passing_score || 70}%
                         </p>
                       </div>
@@ -833,11 +834,11 @@ function DuolingoTrack({
                   <div className="flex flex-col items-center text-center">
                     {/* Locked Chest */}
                     <div className="relative my-2">
-                      <div className="h-24 w-24 rounded-3xl bg-gradient-to-tr from-amber-400 to-amber-200 p-2 shadow-md ring-4 ring-amber-400/40 flex items-center justify-center">
+                      <div className="h-24 w-24 rounded-3xl bg-gradient-to-tr from-[#1429f2] to-[#002DFF] p-2 shadow-md ring-4 ring-[#002DFF]/40 flex items-center justify-center">
                         <img src="/learning-paths/chest.png" alt="Sandiq" className="h-full w-full object-contain drop-shadow-md" />
                       </div>
                       <div className="absolute inset-0 grid place-items-center">
-                        <span className="grid h-10 w-10 place-items-center rounded-full bg-amber-950 border-2 border-amber-400 text-lg text-amber-300 shadow-lg">
+                        <span className="grid h-10 w-10 place-items-center rounded-full bg-[#000B3B] border-2 border-blue-400 text-lg text-blue-200 shadow-lg">
                           🔒
                         </span>
                       </div>
@@ -858,11 +859,11 @@ function DuolingoTrack({
                       </div>
                       <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-900">
                         <div
-                          className="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 transition-all duration-300"
+                          className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-300"
                           style={{ width: `${progressPercent}%` }}
                         />
                       </div>
-                      <p className="mt-2 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                      <p className="mt-2 text-[11px] font-bold text-[#002DFF] dark:text-[#38bdf8]">
                         Sandiqni ochish uchun yana {modules.length - passedCount} ta modulni yakunlang!
                       </p>
                     </div>
@@ -1027,40 +1028,7 @@ function DuolingoNode({
       className="relative flex flex-col items-center transition-all duration-300"
       style={{ transform: `translateX(${xOffset}px)` }}
     >
-      {/* Side Animated Speech Bubble for Active/Failed Node (tepasida emas yon tarafida) */}
-      {isFailed ? (
-        xOffset < 0 ? (
-          <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-            <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-rose-500 -mr-[1px]" />
-            <div className="rounded-2xl border-2 border-rose-500 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-600 shadow-lg dark:bg-navy-800">
-              Qayta topshirish
-            </div>
-          </div>
-        ) : (
-          <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-            <div className="rounded-2xl border-2 border-rose-500 bg-white px-3 py-1 text-[11px] font-black uppercase tracking-wider text-rose-600 shadow-lg dark:bg-navy-800">
-              Qayta topshirish
-            </div>
-            <div className="h-0 w-0 border-y-4 border-l-4 border-y-transparent border-l-rose-500 -ml-[1px]" />
-          </div>
-        )
-      ) : isActive ? (
-        xOffset < 0 ? (
-          <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-            <div className="h-0 w-0 border-y-4 border-r-4 border-y-transparent border-r-[#002DFF] -mr-[1px]" />
-            <div className="rounded-2xl border-2 border-[#002DFF] bg-white px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-[#002DFF] shadow-lg dark:bg-navy-800">
-              {completedTopics > 0 ? `${completedTopics + 1}-mavzu` : "Boshlash"}
-            </div>
-          </div>
-        ) : (
-          <div className="absolute right-full mr-3 top-1/2 -translate-y-1/2 z-20 flex items-center animate-pulse pointer-events-none whitespace-nowrap">
-            <div className="rounded-2xl border-2 border-[#002DFF] bg-white px-3.5 py-1 text-[11px] font-black uppercase tracking-wider text-[#002DFF] shadow-lg dark:bg-navy-800">
-              {completedTopics > 0 ? `${completedTopics + 1}-mavzu` : "Boshlash"}
-            </div>
-            <div className="h-0 w-0 border-y-4 border-l-4 border-y-transparent border-l-[#002DFF] -ml-[1px]" />
-          </div>
-        )
-      ) : null}
+
 
       {/* Floating stars for completed node */}
       {isPassed ? (
@@ -1271,6 +1239,295 @@ function DuolingoNode({
   );
 }
 
+function speakWord(word: string, lang = "en-US") {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(word);
+  utterance.lang = lang;
+  utterance.rate = 0.9;
+  window.speechSynthesis.speak(utterance);
+}
+
+function TargetWordBanner({
+  word,
+  phonetic,
+  targetLevel,
+  definition,
+  meaning,
+  hint,
+  exampleSentence,
+}: {
+  word?: string;
+  phonetic?: string;
+  targetLevel?: string;
+  definition?: string;
+  meaning?: string;
+  hint?: string;
+  exampleSentence?: string;
+}) {
+  if (!word) return null;
+  return (
+    <div className="rounded-2xl border-2 border-indigo-200 bg-gradient-to-br from-indigo-50/90 to-blue-50/80 p-4 shadow-sm dark:border-indigo-900/60 dark:bg-gradient-to-br dark:from-indigo-950/40 dark:to-blue-950/30">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          <span className="text-2xl sm:text-3xl font-black text-[#002DFF] dark:text-[#38bdf8] tracking-tight">
+            {word}
+          </span>
+          {phonetic ? (
+            <span className="text-sm font-mono font-semibold text-slate-500 dark:text-slate-400">
+              {phonetic}
+            </span>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => speakWord(word)}
+            className="grid h-9 w-9 place-items-center rounded-xl border border-indigo-200 bg-white text-indigo-600 shadow-sm transition hover:bg-indigo-50 active:scale-95 dark:border-indigo-800 dark:bg-navy-800 dark:text-indigo-400"
+            title="Ovozini eshitish"
+          >
+            🔊
+          </button>
+        </div>
+        {targetLevel ? (
+          <span className="rounded-lg border border-indigo-300 bg-indigo-100 px-2 py-0.5 text-xs font-black text-indigo-800 dark:border-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-200">
+            {targetLevel}
+          </span>
+        ) : null}
+      </div>
+
+      {(meaning || definition || hint) ? (
+        <p className="mt-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+          💡 <span className="font-bold">Ma'nosi: </span>
+          {meaning || definition || hint}
+        </p>
+      ) : null}
+
+      {exampleSentence ? (
+        <div className="mt-2 rounded-xl bg-white/70 p-2.5 text-xs font-semibold text-slate-800 dark:bg-navy-900/60 dark:text-slate-200 border border-indigo-100 dark:border-indigo-900">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <span className="font-black text-indigo-600 dark:text-indigo-400">Misol: </span>
+              <span>{exampleSentence}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => speakWord(exampleSentence)}
+              className="shrink-0 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+              title="Misolni eshitish"
+            >
+              🔊
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function InstantVoiceRecorder({
+  apiFetch,
+  onRecorded,
+  disabled,
+}: {
+  apiFetch: ApiFetch;
+  onRecorded: (audioUrl: string) => Promise<void> | void;
+  disabled?: boolean;
+}) {
+  const [recording, setRecording] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState("");
+  const [seconds, setSeconds] = useState(0);
+
+  const mediaRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startTimeRef = useRef<number>(0);
+  const timerRef = useRef<any>(null);
+  const isHoldingRef = useRef<boolean>(false);
+  const tapModeRef = useRef<boolean>(false);
+
+  const cleanup = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => cleanup();
+  }, []);
+
+  const start = async () => {
+    if (disabled || uploading || recording) return;
+    setErr("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mr = new MediaRecorder(stream);
+      mediaRef.current = mr;
+      chunksRef.current = [];
+      startTimeRef.current = Date.now();
+
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+
+      mr.onstop = async () => {
+        cleanup();
+        const duration = Date.now() - startTimeRef.current;
+        if (duration < 400) {
+          setErr("Ovoz juda qisqa bo'ldi. Bosib turib gapiring.");
+          setRecording(false);
+          setUploading(false);
+          tapModeRef.current = false;
+          return;
+        }
+
+        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        setUploading(true);
+        try {
+          const form = new FormData();
+          form.append("file", blob, "voice_answer.webm");
+          const res = await apiFetch("/student/ai-tests/upload-audio", {
+            method: "POST",
+            body: form,
+          });
+          if (res?.url) {
+            await onRecorded(res.url);
+          } else {
+            setErr("Ovoz yuklanmadi. Qayta urinib ko'ring.");
+          }
+        } catch (e: any) {
+          setErr(e?.message || "Ovozni yuklashda xatolik yuz berdi");
+        } finally {
+          setUploading(false);
+          setRecording(false);
+          tapModeRef.current = false;
+        }
+      };
+
+      mr.start();
+      setRecording(true);
+      setSeconds(0);
+      timerRef.current = setInterval(() => {
+        setSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch {
+      cleanup();
+      setErr("Mikrofonga ruxsat berilmadi yoki mikrofon topilmadi.");
+    }
+  };
+
+  const stop = () => {
+    if (mediaRef.current && mediaRef.current.state === "recording") {
+      mediaRef.current.stop();
+    }
+  };
+
+  const handlePointerDown = () => {
+    if (disabled || uploading) return;
+    if (recording && tapModeRef.current) {
+      tapModeRef.current = false;
+      stop();
+      return;
+    }
+    if (!recording) {
+      isHoldingRef.current = true;
+      tapModeRef.current = false;
+      void start();
+    }
+  };
+
+  const handlePointerUp = () => {
+    if (!recording || !isHoldingRef.current) return;
+    isHoldingRef.current = false;
+    const elapsed = Date.now() - startTimeRef.current;
+    if (elapsed < 400) {
+      tapModeRef.current = true;
+    } else {
+      stop();
+    }
+  };
+
+  const handlePointerCancel = () => {
+    if (recording && isHoldingRef.current) {
+      isHoldingRef.current = false;
+      stop();
+    }
+  };
+
+  const formatTime = (s: number) => {
+    const mins = Math.floor(s / 60);
+    const secs = s % 60;
+    return `${mins < 10 ? "0" : ""}${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  };
+
+  return (
+    <div className="flex flex-col items-center justify-center py-4 space-y-3 select-none">
+      <div className="relative flex items-center justify-center">
+        {recording ? (
+          <>
+            <div className="absolute h-28 w-28 animate-ping rounded-full bg-rose-500/20" />
+            <div className="absolute h-24 w-24 animate-pulse rounded-full bg-rose-500/30" />
+          </>
+        ) : null}
+
+        <button
+          type="button"
+          disabled={disabled || uploading}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          className={`relative grid h-20 w-20 place-items-center rounded-full border-4 text-3xl shadow-xl transition-all duration-200 active:scale-95 touch-none cursor-pointer ${
+            uploading
+              ? "border-amber-400 bg-amber-50 text-amber-600 animate-spin"
+              : recording
+              ? "border-rose-600 bg-rose-500 text-white shadow-rose-500/40"
+              : "border-[#001A88] bg-[#002DFF] text-white shadow-blue-600/30 hover:bg-[#1429f2]"
+          }`}
+        >
+          {uploading ? "⏳" : recording ? "⏹" : "🎙️"}
+        </button>
+      </div>
+
+      <div className="text-center">
+        <p className="text-sm font-black text-slate-800 dark:text-white">
+          {uploading ? (
+            <span className="text-amber-600 dark:text-amber-400 animate-pulse">
+              AI javobingizni tekshirmoqda...
+            </span>
+          ) : recording ? (
+            <span className="text-rose-600 dark:text-rose-400 flex items-center justify-center gap-2">
+              <span className="h-2.5 w-2.5 rounded-full bg-rose-600 animate-ping inline-block" />
+              Yozilmoqda: {formatTime(seconds)} — qo'yib yuborsangiz tekshiriladi
+            </span>
+          ) : (
+            <span className="text-slate-600 dark:text-slate-300">
+              Mikrofonni bosib turib gapiring (qo'yib yuborganingizda tekshiriladi)
+            </span>
+          )}
+        </p>
+        <p className="text-xs font-semibold text-slate-400 mt-0.5">
+          {recording
+            ? "Gapirib bo'lgach qo'yib yuboring (yoki tugatish uchun yana bir marta bosing)"
+            : "Yoki bir marta bosib gapiring va to'xtatish uchun yana bosing"}
+        </p>
+      </div>
+
+      {err ? (
+        <p className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-1.5 text-xs font-bold text-rose-600 dark:bg-rose-950/40 dark:border-rose-900 dark:text-rose-300">
+          ⚠️ {err}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════════
    LESSON PLAYER MODAL — Authentic Duolingo test player experience
    ═══════════════════════════════════════════════════════════════════════════════ */
@@ -1296,11 +1553,24 @@ function LessonPlayerModal({
   const [moduleResult, setModuleResult] = useState<Row | null>(null);
   const [error, setError] = useState("");
   const [audioPlaying, setAudioPlaying] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
   const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
 
   // For Word Order interactive exercise
   const [sentenceWords, setSentenceWords] = useState<string[]>([]);
   const [bankWords, setBankWords] = useState<{ id: number; text: string; used: boolean }[]>([]);
+
+  // For Matching interactive exercise
+  const [matchedPairs, setMatchedPairs] = useState<Record<string, string>>({});
+  const [matchingPairs, setMatchingPairs] = useState<{ left: string; right: string }[]>([]);
+  const [matchingLefts, setMatchingLefts] = useState<string[]>([]);
+  const [matchingRights, setMatchingRights] = useState<string[]>([]);
+
+  // For Passage Cloze interactive exercise (materials library style)
+  const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
+  const [usedWordBank, setUsedWordBank] = useState<Set<number>>(() => new Set());
+  const [wordBankAssignments, setWordBankAssignments] = useState<Record<number, number>>({});
+  const [wrongBlankPositions, setWrongBlankPositions] = useState<number[]>([]);
 
   // Hidden Audio Element ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -1329,11 +1599,70 @@ function LessonPlayerModal({
     setError("");
     setSentenceWords([]);
     setBankWords([]);
+    setMatchedPairs({});
+    setMatchingPairs([]);
+    setMatchingLefts([]);
+    setMatchingRights([]);
+    setClozeBlanks([]);
+    setUsedWordBank(new Set());
+    setWordBankAssignments({});
+    setWrongBlankPositions([]);
 
     try {
       const data = await apiFetch(`/student/learning-lessons/${lesson.id}`);
       const q = data?.question_payload || data || null;
       setQuestion(q);
+      const isVoice =
+        q?.input === "audio" ||
+        q?.test_type === "speak_sentence" ||
+        q?.test_type === "read_aloud" ||
+        q?.test_type === "speaking_repeat" ||
+        q?.test_type === "speaking_response" ||
+        q?.kind === "speak_sentence" ||
+        q?.kind === "read_aloud" ||
+        q?.kind === "speaking_repeat" ||
+        q?.kind === "speaking_response";
+      setVoiceMode(Boolean(isVoice));
+
+      // Initialize matching if matching test or pairs provided
+      if (q && (q.test_type === "matching" || (Array.isArray(q.pairs) && q.pairs.length > 0))) {
+        let pairs: { left: string; right: string }[] = [];
+        if (Array.isArray(q.pairs) && q.pairs.length > 0) {
+          pairs = q.pairs.filter((p: any) => p && typeof p === "object" && p.left && p.right);
+        } else if (Array.isArray(q.options)) {
+          for (const opt of q.options) {
+            if (typeof opt === "string" && opt.includes("=")) {
+              const [l, r] = opt.split("=").map((s: string) => s.trim());
+              if (l && r) pairs.push({ left: l, right: r });
+            } else if (typeof opt === "string" && opt.includes(" - ")) {
+              const [l, r] = opt.split(" - ").map((s: string) => s.trim());
+              if (l && r) pairs.push({ left: l, right: r });
+            }
+          }
+        }
+        setMatchingPairs(pairs);
+        const lefts = q.left_items && Array.isArray(q.left_items) && q.left_items.length
+          ? q.left_items
+          : pairs.map((p) => p.left);
+        const rights = q.right_items && Array.isArray(q.right_items) && q.right_items.length
+          ? q.right_items
+          : [...pairs.map((p) => p.right)].sort(() => Math.random() - 0.5);
+        setMatchingLefts(lefts);
+        setMatchingRights(rights);
+      }
+
+      // Initialize cloze blanks if passage_cloze or text with ___
+      const isClozeQ =
+        q?.test_type === "passage_cloze" ||
+        q?.input === "cloze" ||
+        Boolean(q?.passage_template) ||
+        (typeof q?.passage === "string" && q.passage.includes("___")) ||
+        (typeof q?.question === "string" && q.question.includes("___"));
+      if (q && isClozeQ) {
+        const tmpl = String(q.passage_template || q.passage || q.question || "");
+        const total = (tmpl.match(/___/g) || []).length || (Array.isArray(q.blanks) ? q.blanks.length : 0);
+        setClozeBlanks(Array.from({ length: total }, () => ""));
+      }
 
       // Initialize word bank if Word Order / Scrambled sentence test OR options are chopped words of answer
       const isWordsOfAnswer =
@@ -1341,10 +1670,14 @@ function LessonPlayerModal({
         q.options.length > 1 &&
         q.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(q.correct_answer || "").trim().toLowerCase();
 
-      if (q && (q.test_type === "word_order" || q.test_type === "listening_order" || q.test_type === "scrambled_sentence" || isWordsOfAnswer)) {
-        const fullText = String(q.correct_answer || q.prompt || q.question || "");
-        // Split and shuffle
-        const rawWords = fullText.split(/\s+/).filter(Boolean);
+      if (q && (q.test_type === "word_order" || q.test_type === "listening_order" || q.test_type === "scrambled_sentence" || isWordsOfAnswer || (Array.isArray(q.tokens) && q.tokens.length > 0))) {
+        let rawWords: string[] = [];
+        if (Array.isArray(q.tokens) && q.tokens.length > 0) {
+          rawWords = [...q.tokens, ...(Array.isArray(q.distractors) ? q.distractors : [])];
+        } else {
+          const fullText = String(q.correct_answer || q.prompt || q.question || "");
+          rawWords = fullText.split(/\s+/).filter(Boolean);
+        }
         const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
         setBankWords(shuffled.map((w, idx) => ({ id: idx, text: w, used: false })));
       }
@@ -1403,10 +1736,23 @@ function LessonPlayerModal({
     audioRef.current.play().catch(() => setAudioPlaying(false));
   };
 
-  const submit = async () => {
-    if (!selected || result || !question) return;
+  const isCurrentCloze =
+    question?.test_type === "passage_cloze" ||
+    question?.input === "cloze" ||
+    Boolean(question?.passage_template) ||
+    (typeof question?.passage === "string" && question.passage.includes("___")) ||
+    (typeof question?.question === "string" && question.question.includes("___"));
+
+  const submit = async (override?: { answer_text?: string; audio_url?: string }) => {
+    if (!question || result) return;
     const lesson = lessons[currentIndex];
-    const normSelected = selected.trim().toLowerCase();
+    const isCloze = isCurrentCloze;
+    const audioUrl = override?.audio_url;
+
+    if (!audioUrl && !selected && !override?.answer_text && matchingPairs.length === 0 && (!isCloze || clozeBlanks.every((x) => !x || !x.trim()))) return;
+
+    const currentAnsText = override?.answer_text !== undefined ? override.answer_text : selected;
+    const normSelected = currentAnsText.trim().toLowerCase();
     const acceptable = Array.isArray(question?.acceptable_answers)
       ? question.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
       : [];
@@ -1417,12 +1763,163 @@ function LessonPlayerModal({
       ? correctAns.split("\n").map((p) => p.trim().toLowerCase()).filter(Boolean)
       : [];
 
-    const correct =
-      (correctAns ? normSelected === correctAns : false) ||
-      acceptable.includes(normSelected) ||
-      correctParts.includes(normSelected) ||
-      (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p))) ||
-      (!correctAns && acceptable.length === 0);
+    let correct = false;
+    let selectedAnswer = audioUrl ? "[Ovozli javob]" : currentAnsText;
+    let correctAnswerStr = String(question?.correct_answer || "");
+
+    const qTestType = String(question?.test_type || "").toLowerCase();
+    const qKind = String(question?.kind || "").toLowerCase();
+    const isAiCheck =
+      Boolean(audioUrl) ||
+      question?.check === "ai" ||
+      [
+        "write_sentence",
+        "guided_writing",
+        "reading_open",
+        "open",
+        "translation",
+        "paraphrase",
+        "picture_description",
+        "dialogue_completion",
+        "speak_sentence",
+        "read_aloud",
+        "speaking_repeat",
+        "speaking_response",
+        "listening_open",
+        "word_practice",
+      ].includes(qTestType) ||
+      [
+        "write_sentence",
+        "guided_writing",
+        "reading_open",
+        "open",
+        "translation",
+        "paraphrase",
+        "picture_description",
+        "dialogue_completion",
+        "speak_sentence",
+        "read_aloud",
+        "speaking_repeat",
+        "speaking_response",
+        "listening_open",
+        "word_practice",
+      ].includes(qKind) ||
+      (!isCloze &&
+        question?.test_type !== "matching" &&
+        matchingPairs.length === 0 &&
+        question?.test_type !== "word_order" &&
+        question?.test_type !== "scrambled_sentence" &&
+        !correctAns &&
+        (!Array.isArray(question?.options) || question.options.length === 0));
+
+    let aiFeedbackText = "";
+    let aiCorrectedText = "";
+    let aiTranscriptText = "";
+    let aiPronErrors: any[] = [];
+    let aiGrammarErrors: any[] = [];
+
+    if (isAiCheck) {
+      setLoading(true);
+      try {
+        const aiRes = await apiFetch(`/student/learning-lessons/check-ai`, {
+          method: "POST",
+          body: {
+            lesson_id: lesson?.id,
+            question_payload: question,
+            answer_text: currentAnsText,
+            audio_url: audioUrl,
+          },
+        });
+        correct = Boolean(aiRes?.is_correct ?? (aiRes?.verdict === "correct"));
+        aiFeedbackText = String(aiRes?.feedback || (correct ? "Ajoyib! Juda to'g'ri!" : "Javobingizda xatolik mavjud."));
+        aiCorrectedText = String(aiRes?.corrected || aiRes?.correct_answer || "");
+        aiTranscriptText = String(aiRes?.transcript || "");
+        aiPronErrors = Array.isArray(aiRes?.pronunciation_errors) ? aiRes.pronunciation_errors : [];
+        aiGrammarErrors = Array.isArray(aiRes?.grammar_errors) ? aiRes.grammar_errors : [];
+        if (aiCorrectedText) {
+          correctAnswerStr = aiCorrectedText;
+        }
+        if (aiTranscriptText) {
+          selectedAnswer = `[Ovozli]: ${aiTranscriptText}`;
+        }
+      } catch (err) {
+        correct = false;
+        aiFeedbackText = errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring.");
+      } finally {
+        setLoading(false);
+      }
+    } else if (isCloze) {
+      const blanks = Array.isArray(question.blanks) ? question.blanks : [];
+      const wrongPositions: number[] = [];
+      const expectedAnswersList: string[] = [];
+
+      for (let i = 0; i < clozeBlanks.length; i++) {
+        const b = blanks[i];
+        const given = (clozeBlanks[i] || "").trim().toLowerCase();
+        let isBlankCorrect = false;
+        let expectedLabel = "";
+
+        if (b && typeof b === "object") {
+          const mainAns = String(b.answer || "").trim();
+          expectedLabel = mainAns;
+          const expectedSet = new Set([
+            mainAns.toLowerCase(),
+            ...(Array.isArray(b.accepted_answers) ? b.accepted_answers.map((x: any) => String(x).trim().toLowerCase()) : []),
+          ]);
+          expectedSet.delete("");
+          if (expectedSet.has(given)) {
+            isBlankCorrect = true;
+          }
+        } else if (typeof b === "string") {
+          expectedLabel = b.trim();
+          if (given === b.trim().toLowerCase()) {
+            isBlankCorrect = true;
+          }
+        } else if (Array.isArray(question.answers) && question.answers[i]) {
+          expectedLabel = String(question.answers[i]).trim();
+          if (given === expectedLabel.toLowerCase()) {
+            isBlankCorrect = true;
+          }
+        } else if (correctAns) {
+          const parts = correctAns.split(/[,;\n]+/).map((s) => s.trim());
+          if (parts[i]) {
+            expectedLabel = parts[i];
+            if (given === parts[i].toLowerCase()) {
+              isBlankCorrect = true;
+            }
+          }
+        }
+
+        if (expectedLabel) {
+          expectedAnswersList.push(`${i + 1}. ${expectedLabel}`);
+        }
+        if (!isBlankCorrect) {
+          wrongPositions.push(i + 1);
+        }
+      }
+
+      setWrongBlankPositions(wrongPositions);
+      correct = wrongPositions.length === 0 && clozeBlanks.length > 0;
+      selectedAnswer = clozeBlanks.map((ans, idx) => `${idx + 1}. ${ans || "___"}`).join(", ");
+      if (expectedAnswersList.length > 0) {
+        correctAnswerStr = expectedAnswersList.join(" | ");
+      }
+    } else if (question.test_type === "matching" || matchingPairs.length > 0) {
+      correct =
+        matchingPairs.length > 0 &&
+        matchingPairs.every(
+          (p) => (matchedPairs[p.left] || "").trim().toLowerCase() === p.right.trim().toLowerCase()
+        );
+      selectedAnswer = Object.entries(matchedPairs).map(([l, r]) => `${l} = ${r}`).join("; ");
+      correctAnswerStr = matchingPairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+    } else {
+      correct =
+        (correctAns ? normSelected === correctAns : false) ||
+        acceptable.includes(normSelected) ||
+        correctParts.includes(normSelected) ||
+        (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p)));
+    }
+
     const newScore = score + (correct ? 1 : 0);
     const newTotal = total + 1;
     setScore(newScore);
@@ -1431,9 +1928,9 @@ function LessonPlayerModal({
     setReviewItems((prev) => [
       ...prev,
       {
-        prompt: String(question?.question || question?.prompt || lesson?.title || `Savol ${currentIndex + 1}`),
-        selected_answer: selected,
-        correct_answer: question?.correct_answer || "",
+        prompt: String(question?.instruction || question?.question || question?.prompt || lesson?.title || `Savol ${currentIndex + 1}`),
+        selected_answer: selectedAnswer,
+        correct_answer: correctAnswerStr || question?.correct_answer || "",
         options: Array.isArray(question?.options) ? question.options : [],
         is_correct: correct,
         explanation: String(question?.explanation || ""),
@@ -1452,14 +1949,35 @@ function LessonPlayerModal({
       const lessonPassScore = correct ? 100 : 0;
       const submitResult = await apiFetch(`/student/learning-lessons/${lesson.id}/submit`, {
         method: "POST",
-        body: { score: lessonPassScore, answers: [{ question: question?.question, selected, correct }] },
+        body: { score: lessonPassScore, answers: [{ question: question?.question || question?.instruction, selected: selectedAnswer, correct }] },
       });
-      setResult({ correct, explanation: question?.explanation || "", ...submitResult });
+      setResult({
+        correct,
+        selected: selectedAnswer,
+        correct_answer: correctAnswerStr,
+        explanation: question?.explanation || "",
+        ai_feedback: aiFeedbackText,
+        ai_corrected: aiCorrectedText,
+        ai_transcript: aiTranscriptText,
+        pronunciation_errors: aiPronErrors,
+        grammar_errors: aiGrammarErrors,
+        ...submitResult,
+      });
       if (submitResult?.module_progress?.passed) {
         setModuleResult(submitResult);
       }
     } catch {
-      setResult({ correct, explanation: question?.explanation || "" });
+      setResult({
+        correct,
+        selected: selectedAnswer,
+        correct_answer: correctAnswerStr,
+        explanation: question?.explanation || "",
+        ai_feedback: aiFeedbackText,
+        ai_corrected: aiCorrectedText,
+        ai_transcript: aiTranscriptText,
+        pronunciation_errors: aiPronErrors,
+        grammar_errors: aiGrammarErrors,
+      });
     } finally {
       setLoading(false);
     }
@@ -1685,7 +2203,23 @@ function LessonPlayerModal({
               {/* Category Pill */}
               <div className="flex items-center justify-between">
                 <span className="rounded-xl bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-wider text-slate-600 dark:bg-navy-800 dark:text-navy-300">
-                  {question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence"
+                  {isCurrentCloze || question.test_type === "passage_cloze"
+                    ? "📝 Matnni to'ldiring"
+                    : question.test_type === "speak_sentence" || question.kind === "speak_sentence"
+                    ? "🗣️ Ovozli gap tuzish"
+                    : question.test_type === "read_aloud" || question.kind === "read_aloud"
+                    ? "🗣️ Ovoz chiqarib o'qish"
+                    : question.test_type === "word_practice" || question.kind === "word_practice"
+                    ? "📚 So'z mashqi (Vocabulary)"
+                    : question.test_type === "spelling" || question.kind === "spelling"
+                    ? "🔤 To'g'ri yozilish (spelling)"
+                    : question.test_type === "translation" || question.kind === "translation"
+                    ? "🌐 Tarjima qiling"
+                    : question.test_type === "picture_description" || question.kind === "picture_description"
+                    ? "🖼️ Rasmni tasvirlang"
+                    : question.test_type === "write_sentence" || question.test_type === "guided_writing"
+                    ? "✍️ Gap yozish"
+                    : question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence"
                     ? "🧩 Gap tuzing"
                     : question.test_type === "true_false" || question.test_type === "listening_tf"
                     ? "⚖️ To'g'ri yoki Noto'g'ri"
@@ -1697,10 +2231,6 @@ function LessonPlayerModal({
                     ? "🔄 Qayta ifodalash"
                     : question.test_type === "listening_dictation"
                     ? "✍️ Diktant (eshitib yozish)"
-                    : question.test_type === "spelling"
-                    ? "🔤 To'g'ri yozilish (spelling)"
-                    : question.test_type === "translation"
-                    ? "🌐 Tarjima qiling"
                     : question.test_type === "reading_open" || question.test_type === "listening_open"
                     ? "📖 Savolga javob yozing"
                     : question.test_type === "speaking_repeat" || question.test_type === "speaking_response"
@@ -1714,13 +2244,42 @@ function LessonPlayerModal({
                 </span>
               </div>
 
+              {/* Target Word Banner (Duolingo / Materials Library style) */}
+              {question.word ? (
+                <TargetWordBanner
+                  word={question.word}
+                  phonetic={question.phonetic || question.pronunciation}
+                  targetLevel={question.target_level || question.level}
+                  definition={question.definition}
+                  meaning={question.meaning}
+                  hint={question.hint}
+                  exampleSentence={question.example_sentence}
+                />
+              ) : null}
+
+              {/* Question Image if present */}
+              {question.image_url ? (
+                <div className="overflow-hidden rounded-2xl border-2 border-slate-200 dark:border-slate-800">
+                  <img
+                    src={question.image_url.startsWith("/") ? `/api${question.image_url}` : question.image_url}
+                    alt="Savol rasmi"
+                    className="max-h-64 w-full object-contain bg-slate-50 dark:bg-slate-900"
+                  />
+                </div>
+              ) : null}
+
               {/* Duolingo Question Prompt Title */}
               <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
-                {question.question || question.prompt || "Savolga javob bering:"}
+                {question.instruction ||
+                  (question.question && question.question.trim() !== question.passage?.trim()
+                    ? question.question
+                    : null) ||
+                  question.prompt ||
+                  "Topshiriqni bajaring:"}
               </h2>
 
-              {/* Passage / Context if available */}
-              {question.passage || question.context ? (
+              {/* Passage / Context if available (hidden for passage_cloze to avoid duplication) */}
+              {!isCurrentCloze && (question.passage || question.context) && (question.question?.trim() !== question.passage?.trim()) ? (
                 <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-4 text-sm leading-relaxed text-slate-800 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
                   <div className="flex items-center gap-1.5 text-xs font-black uppercase text-indigo-700 dark:text-indigo-300 mb-1.5">
                     <span>📖</span>
@@ -1755,6 +2314,199 @@ function LessonPlayerModal({
 
               {/* ─── Exercise Types Evaluation ─── */}
               {(() => {
+                const isVoiceQuestion =
+                  question.input === "audio" ||
+                  question.test_type === "speak_sentence" ||
+                  question.test_type === "read_aloud" ||
+                  question.test_type === "speaking_repeat" ||
+                  question.test_type === "speaking_response" ||
+                  question.kind === "speak_sentence" ||
+                  question.kind === "read_aloud" ||
+                  question.kind === "speaking_repeat" ||
+                  question.kind === "speaking_response";
+                const isVoiceOrText = question.input === "audio_or_text" || isVoiceQuestion;
+
+                // ─── Voice Exercise (Instant Voice Recorder with auto-check on release) ───
+                if (isVoiceQuestion || (isVoiceOrText && voiceMode)) {
+                  return (
+                    <div className="space-y-4 pt-2">
+                      <InstantVoiceRecorder
+                        apiFetch={apiFetch}
+                        disabled={Boolean(result) || loading}
+                        onRecorded={async (audioUrl) => {
+                          await submit({ audio_url: audioUrl });
+                        }}
+                      />
+                      {isVoiceOrText && (
+                        <div className="text-center">
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(false)}
+                            className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-[#002DFF] dark:text-slate-400 dark:hover:text-[#38bdf8]"
+                          >
+                            ✍️ Yozma javob berishga o'tish
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                // ─── Exercise Type 0: Passage Cloze (Materials Library / Homework style) ───
+                if (isCurrentCloze) {
+                  const template = String(question.passage_template || question.passage || question.question || "");
+                  const totalBlanks = (template.match(/___/g) || []).length || (Array.isArray(question.blanks) ? question.blanks.length : 0);
+                  const setBlank = (i: number, v: string) => {
+                    setClozeBlanks((prev) => {
+                      const next = [...prev];
+                      while (next.length < totalBlanks) next.push("");
+                      next[i] = v;
+                      return next;
+                    });
+                  };
+                  const filled = Array.from({ length: totalBlanks }, (_, i) => clozeBlanks[i] || "");
+                  const lines = template.split("\n");
+                  let blankCursor = 0;
+                  const wordBank: string[] = Array.isArray(question.word_bank) ? question.word_bank : [];
+                  const textForCheck = `${question.instruction || ""} ${question.question || ""} ${question.prompt || ""} ${template}`.toLowerCase();
+                  const isTenseOrForm =
+                    textForCheck.includes("form") ||
+                    textForCheck.includes("tense") ||
+                    textForCheck.includes("zamon") ||
+                    textForCheck.includes("shakl") ||
+                    textForCheck.includes("put the verb") ||
+                    textForCheck.includes("in brackets") ||
+                    textForCheck.includes("qavs");
+                  const hasBrackets = /\(\s*[a-zA-Z'\s-]+\s*\)/.test(template);
+                  const blanksList = Array.isArray(question.blanks) ? question.blanks : Array.isArray(question.answers) ? question.answers : [];
+                  const ansSet = new Set(blanksList.map((b: any) => String(b?.answer || b || "").trim().toLowerCase()));
+                  const bankSet = new Set(wordBank.map((w) => String(w || "").trim().toLowerCase()));
+                  const showWordBank =
+                    wordBank.length > 0 &&
+                    !(isTenseOrForm && hasBrackets) &&
+                    !(isTenseOrForm && ansSet.size > 0 && [...ansSet].every((a) => bankSet.has(a)));
+
+                  return (
+                    <div className="space-y-4 pt-1">
+                      {/* Word bank chips — displayed at the TOP above sentences */}
+                      {showWordBank && (
+                        <div className="rounded-2xl border-2 border-slate-200 bg-white p-3.5 shadow-sm dark:border-navy-700 dark:bg-navy-800">
+                          <p className="text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8] mb-2">
+                            💡 So'zlar banki — joylash uchun bosing:
+                          </p>
+                          <div className="flex flex-wrap gap-2 justify-center">
+                            {wordBank.map((w, i) => {
+                              const marked = usedWordBank.has(i);
+                              return (
+                                <button
+                                  key={`${w}-${i}`}
+                                  type="button"
+                                  disabled={Boolean(result)}
+                                  onClick={() => {
+                                    playDuolingoSound("pop");
+                                    if (marked) {
+                                      const blankIndex = Object.entries(wordBankAssignments).find(([, value]) => value === i)?.[0];
+                                      if (blankIndex !== undefined) setBlank(Number(blankIndex), "");
+                                      setWordBankAssignments((prev) => {
+                                        const next = { ...prev };
+                                        if (blankIndex !== undefined) delete next[Number(blankIndex)];
+                                        return next;
+                                      });
+                                      setUsedWordBank((prev) => {
+                                        const next = new Set(prev);
+                                        next.delete(i);
+                                        return next;
+                                      });
+                                      return;
+                                    }
+                                    const idx = filled.findIndex((x) => !x.trim());
+                                    if (idx < 0) return;
+                                    setBlank(idx, w);
+                                    setWordBankAssignments((prev) => ({ ...prev, [idx]: i }));
+                                    setUsedWordBank((prev) => new Set(prev).add(i));
+                                  }}
+                                  className={`rounded-2xl border-2 px-3.5 py-2 text-sm font-black transition-all select-none ${
+                                    marked
+                                      ? "border-slate-200 bg-slate-200/50 text-slate-400 line-through opacity-40 dark:border-navy-800 dark:bg-navy-900"
+                                      : "border-slate-200 border-b-4 bg-white text-navy-900 shadow-sm active:translate-y-1 active:border-b-2 hover:bg-cyan-50 hover:border-cyan-400 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                                  }`}
+                                >
+                                  {w}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Interactive cloze text container */}
+                      <div className="space-y-2.5 rounded-3xl border-2 border-slate-200 bg-slate-50/80 p-4 sm:p-5 text-base leading-loose text-slate-900 dark:border-navy-700 dark:bg-navy-900/50 dark:text-white font-medium">
+                        {lines.map((line, li) => {
+                          const segs = line.split("___");
+                          const rowGaps = segs.length - 1;
+                          const startIdx = blankCursor;
+                          blankCursor += rowGaps;
+                          return (
+                            <div key={li} className="leading-loose">
+                              {segs.map((seg, si) => {
+                                const gi = startIdx + si;
+                                const isWrong = result && wrongBlankPositions.includes(gi + 1);
+                                const isCorrect = result && !isWrong;
+
+                                return (
+                                  <span key={si}>
+                                    {seg}
+                                    {si < rowGaps && (
+                                      <span className="relative inline-block mx-1">
+                                        <input
+                                          type="text"
+                                          value={filled[gi] || ""}
+                                          disabled={Boolean(result)}
+                                          onChange={(e) => {
+                                            setBlank(gi, e.target.value);
+                                            const bankIndex = wordBankAssignments[gi];
+                                            if (bankIndex !== undefined) {
+                                              setWordBankAssignments((prev) => {
+                                                const next = { ...prev };
+                                                delete next[gi];
+                                                return next;
+                                              });
+                                              setUsedWordBank((prev) => {
+                                                const next = new Set(prev);
+                                                next.delete(bankIndex);
+                                                return next;
+                                              });
+                                            }
+                                          }}
+                                          className={`w-28 sm:w-32 rounded-xl border-2 px-2 py-1 text-center text-sm sm:text-base font-black outline-none transition-all ${
+                                            result
+                                              ? isCorrect
+                                                ? "border-[#58cc02] bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]"
+                                                : "border-[#ff4b4b] bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]"
+                                              : filled[gi]
+                                              ? "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a] dark:text-white"
+                                              : "border-slate-300 border-b-4 bg-white text-navy-900 focus:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                                          }`}
+                                          placeholder={`(${gi + 1})`}
+                                        />
+                                        {isWrong && Array.isArray(question.blanks) && question.blanks[gi] ? (
+                                          <span className="block text-[11px] font-black text-[#a01818] dark:text-[#ffa0a0] text-center">
+                                            {String(question.blanks[gi]?.answer || question.blanks[gi])}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                    )}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                }
+
                 const isWordsOfAnswer =
                   Array.isArray(question.options) &&
                   question.options.length > 1 &&
@@ -1850,10 +2602,163 @@ function LessonPlayerModal({
                       })}
                     </div>
                   );
-                } else if (!question.options || !Array.isArray(question.options) || question.options.length < 2 || ((question.test_type === "fill_blank" || question.test_type === "gap_fill") && !hasCorrectChoice)) {
-                  /* ─── Exercise Type 3: Fill Blank, Dictation, Open, Translation, Spelling (Text Input) ─── */
+                } else if (question.test_type === "matching" || matchingPairs.length > 0) {
+                  /* ─── Exercise Type 3: Matching / Pairs ─── */
                   return (
                     <div className="space-y-3 pt-2">
+                      <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                        Har bir chapdagi so'zga mos o'ngdagi tarjima/javobni tanlang:
+                      </p>
+                      {matchingLefts.map((left, idx) => {
+                        const currentVal = matchedPairs[left] || "";
+                        const targetPair = matchingPairs.find((p) => p.left.trim().toLowerCase() === left.trim().toLowerCase());
+                        const isPairCorrect = result && targetPair && (currentVal.trim().toLowerCase() === targetPair.right.trim().toLowerCase());
+                        const isPairWrong = result && targetPair && currentVal && (currentVal.trim().toLowerCase() !== targetPair.right.trim().toLowerCase());
+
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-2xl border-2 p-3 transition-all ${
+                              result
+                                ? isPairCorrect
+                                  ? "border-[#58cc02] bg-[#d7ffb8]/30 dark:bg-[#183617]/30"
+                                  : isPairWrong
+                                  ? "border-[#ff4b4b] bg-[#ffdfe0]/30 dark:bg-[#3d1a1b]/30"
+                                  : "border-slate-200 bg-white dark:border-navy-700 dark:bg-navy-800"
+                                : "border-slate-200 border-b-4 bg-white dark:border-navy-700 dark:bg-navy-800"
+                            }`}
+                          >
+                            <span className="min-w-[120px] text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
+                              <span className="grid h-6 w-6 place-items-center rounded-lg bg-slate-100 text-xs text-slate-600 dark:bg-navy-900 dark:text-navy-300">
+                                {idx + 1}
+                              </span>
+                              <span>{left}</span>
+                            </span>
+                            <div className="flex items-center gap-2 flex-1">
+                              <span className="hidden sm:inline font-black text-slate-300">→</span>
+                              <select
+                                value={currentVal}
+                                disabled={Boolean(result)}
+                                onChange={(e) => {
+                                  playDuolingoSound("pop");
+                                  const newPairs = { ...matchedPairs, [left]: e.target.value };
+                                  setMatchedPairs(newPairs);
+                                  setSelected(Object.entries(newPairs).map(([l, r]) => `${l} = ${r}`).join("; "));
+                                }}
+                                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+                              >
+                                <option value="">Tanlang...</option>
+                                {matchingRights.map((r, ri) => (
+                                  <option key={ri} value={r}>
+                                    {r}
+                                  </option>
+                                ))}
+                              </select>
+                              {result && isPairCorrect && <span className="text-lg text-emerald-600 font-black">✓</span>}
+                              {result && isPairWrong && <span className="text-lg text-rose-600 font-black">✕</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                } else if (
+                  question.test_type === "write_sentence" ||
+                  question.test_type === "guided_writing" ||
+                  question.test_type === "open"
+                ) {
+                  /* ─── Exercise Type 4: Written Sentences / Guided Writing (Textarea + word count) ─── */
+                  const wordCount = selected.trim().split(/\s+/).filter(Boolean).length;
+                  const minWords = typeof question.word_count === "number" ? question.word_count : 0;
+
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <div className="flex flex-wrap gap-2 items-center">
+                        {question.direction ? (
+                          <span className="rounded-xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-xs font-black text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-300">
+                            🌐 {question.direction}
+                          </span>
+                        ) : null}
+                        {question.hint ? (
+                          <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            💡 {question.hint}
+                          </span>
+                        ) : null}
+                        {isVoiceOrText && !voiceMode ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-black text-[#002DFF] transition hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300"
+                          >
+                            🎙️ Ovozli javob berish (mikrofon)
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <textarea
+                        value={selected}
+                        onChange={(e) => setSelected(e.target.value)}
+                        disabled={Boolean(result)}
+                        rows={3}
+                        placeholder="Javobingizni shu yerga yozing..."
+                        autoFocus
+                        className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-base font-semibold text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                        <span>Javobingizni to'liq yozing va pastdagi "Tekshirish" tugmasini bosing.</span>
+                        {minWords > 0 ? (
+                          <span className={wordCount >= minWords ? "text-emerald-600 font-black" : "text-amber-600 font-bold"}>
+                            {wordCount} / {minWords} so'z {wordCount >= minWords ? "✓" : ""}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {result && (question.sample_answer || question.reference_answer) ? (
+                        <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          <p className="font-black mb-1">📝 Namunaviy javob:</p>
+                          <p>{String(question.sample_answer || question.reference_answer)}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                } else if (!question.options || !Array.isArray(question.options) || question.options.length < 2 || ((question.test_type === "fill_blank" || question.test_type === "gap_fill") && !hasCorrectChoice)) {
+                  /* ─── Exercise Type 5: Fill Blank, Dictation, Open, Translation, Spelling (Single Text Input) ─── */
+                  const wordCount = selected.trim().split(/\s+/).filter(Boolean).length;
+                  const minWords = typeof question.word_count === "number" ? question.word_count : 0;
+
+                  return (
+                    <div className="space-y-3 pt-2">
+                      {/* Contextual Badges: Direction / Hint / Example */}
+                      <div className="flex flex-wrap gap-2 items-center">
+                        {question.direction ? (
+                          <span className="rounded-xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-xs font-black text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-300">
+                            🌐 {question.direction}
+                          </span>
+                        ) : null}
+                        {question.hint ? (
+                          <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            💡 Yordam: {question.hint}
+                          </span>
+                        ) : null}
+                        {question.example_sentence ? (
+                          <span className="rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                            📝 Misol: {question.example_sentence}
+                          </span>
+                        ) : null}
+                        {isVoiceOrText && !voiceMode ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-black text-[#002DFF] transition hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300"
+                          >
+                            🎙️ Ovozli javob berish (mikrofon)
+                          </button>
+                        ) : null}
+                      </div>
+
                       <input
                         type="text"
                         value={selected}
@@ -1864,11 +2769,19 @@ function LessonPlayerModal({
                         autoFocus
                         className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                       />
-                      <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
+
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                        <span>Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</span>
+                        {minWords > 0 ? (
+                          <span className={wordCount >= minWords ? "text-emerald-600 font-black" : "text-amber-600 font-bold"}>
+                            {wordCount} / {minWords} so'z {wordCount >= minWords ? "✓" : ""}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   );
                 } else {
-                  /* ─── Exercise Type 4: Multiple Choice (Duolingo 3D Cards) ─── */
+                  /* ─── Exercise Type 6: Multiple Choice (Duolingo 3D Cards) ─── */
                   return (
                     <div className="grid gap-3 pt-2">
                       {(question.options || []).map((opt: string, i: number) => {
@@ -1946,14 +2859,53 @@ function LessonPlayerModal({
                         : "text-[#a01818] dark:text-[#ffa0a0]"
                     }`}
                   >
-                    {result.correct ? "Ajoyib! Juda to'g'ri!" : "To'g'ri javob:"}
+                    {result.correct
+                      ? (result.ai_feedback || "Ajoyib! Juda to'g'ri!")
+                      : "Javobingizda xatolik mavjud:"}
                   </p>
-                  {!result.correct ? (
-                    <p className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
-                      {String(question.correct_answer || "")}
-                    </p>
+                  {result.ai_transcript ? (
+                    <div className="mt-1.5 rounded-xl bg-blue-50/80 px-3 py-2 text-xs font-semibold text-blue-950 dark:bg-blue-950/40 dark:text-blue-200 border border-blue-200 dark:border-blue-900">
+                      <span className="font-bold">🎙️ Siz aytdingiz:</span> “{result.ai_transcript}”
+                    </div>
                   ) : null}
-                  {question.explanation ? (
+                  {!result.correct && (result.ai_feedback || result.correct_answer) ? (
+                    <div className="mt-1 space-y-1">
+                      {result.ai_feedback && result.ai_feedback !== result.correct_answer ? (
+                        <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                          💬 {result.ai_feedback}
+                        </p>
+                      ) : null}
+                      {result.correct_answer ? (
+                        <p className="text-xs font-bold text-slate-900 dark:text-white">
+                          <span className="text-slate-500 dark:text-slate-400">To'g'ri / Namunaviy variant: </span>
+                          {String(result.correct_answer)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {Array.isArray(result.pronunciation_errors) && result.pronunciation_errors.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      <p className="text-xs font-black text-amber-700 dark:text-amber-300">🗣️ Talaffuz bo'yicha maslahatlar:</p>
+                      {result.pronunciation_errors.map((pe: any, pei: number) => (
+                        <div key={pei} className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 border border-amber-200 dark:border-amber-800">
+                          <span className="font-bold">{pe.word}:</span> {pe.note || pe.tip || pe.explanation}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {Array.isArray(result.grammar_errors) && result.grammar_errors.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      {result.grammar_errors.map((ge: any, gei: number) => (
+                        <div key={gei} className="rounded-lg bg-red-100/70 p-2 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-200">
+                          <span className="font-bold line-through mr-1">{ge.original}</span>
+                          <span>→ </span>
+                          <span className="font-bold text-emerald-700 dark:text-emerald-300">{ge.correction}</span>
+                          {ge.explanation ? <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400">{ge.explanation}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {question.explanation && !result.ai_feedback ? (
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                       💡 {question.explanation}
                     </p>
@@ -1964,18 +2916,30 @@ function LessonPlayerModal({
 
             {/* Bottom Button */}
             {!result ? (
-              <button
-                type="button"
-                onClick={submit}
-                disabled={!selected || loading}
-                className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
-                  selected && !loading
-                    ? "border-[#001A88] bg-[#002DFF] text-white shadow-lg shadow-blue-600/30 active:translate-y-1 active:border-b-2 hover:bg-[#1429f2] cursor-pointer"
-                    : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
-                }`}
-              >
-                {loading ? "Tekshirilmoqda..." : "Tekshirish"}
-              </button>
+              (() => {
+                const canSubmit = isCurrentCloze
+                  ? clozeBlanks.length > 0 && clozeBlanks.every((x) => x && x.trim())
+                  : question.test_type === "matching" || matchingPairs.length > 0
+                  ? matchingPairs.length > 0 && Object.keys(matchedPairs).length >= matchingPairs.length
+                  : question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence"
+                  ? sentenceWords.length > 0
+                  : Boolean(selected.trim());
+
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void submit()}
+                    disabled={!canSubmit || loading}
+                    className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
+                      canSubmit && !loading
+                        ? "border-[#001A88] bg-[#002DFF] text-white shadow-lg shadow-blue-600/30 active:translate-y-1 active:border-b-2 hover:bg-[#1429f2] cursor-pointer"
+                        : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
+                    }`}
+                  >
+                    {loading ? "Tekshirilmoqda..." : "Tekshirish"}
+                  </button>
+                );
+              })()
             ) : (
               <button
                 type="button"
@@ -2021,11 +2985,24 @@ function FinalExamPlayerModal({
   const [examResult, setExamResult] = useState<Row | null>(null);
   const [error, setError] = useState("");
   const [audioPlaying, setAudioPlaying] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
   const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
   const [passingScore, setPassingScore] = useState(70);
 
   const [sentenceWords, setSentenceWords] = useState<string[]>([]);
   const [bankWords, setBankWords] = useState<{ id: number; text: string; used: boolean }[]>([]);
+
+  // For Matching interactive exercise
+  const [matchedPairs, setMatchedPairs] = useState<Record<string, string>>({});
+  const [matchingPairs, setMatchingPairs] = useState<{ left: string; right: string }[]>([]);
+  const [matchingLefts, setMatchingLefts] = useState<string[]>([]);
+  const [matchingRights, setMatchingRights] = useState<string[]>([]);
+
+  // For Passage Cloze interactive exercise
+  const [clozeBlanks, setClozeBlanks] = useState<string[]>([]);
+  const [usedWordBank, setUsedWordBank] = useState<Set<number>>(() => new Set());
+  const [wordBankAssignments, setWordBankAssignments] = useState<Record<number, number>>({});
+  const [wrongBlankPositions, setWrongBlankPositions] = useState<number[]>([]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -2065,14 +3042,69 @@ function FinalExamPlayerModal({
 
   useEffect(() => {
     if (currentQuestion) {
+      // Initialize matching if matching test or pairs provided
+      if (currentQuestion.test_type === "matching" || (Array.isArray(currentQuestion.pairs) && currentQuestion.pairs.length > 0)) {
+        let pairs: { left: string; right: string }[] = [];
+        if (Array.isArray(currentQuestion.pairs) && currentQuestion.pairs.length > 0) {
+          pairs = currentQuestion.pairs.filter((p: any) => p && typeof p === "object" && p.left && p.right);
+        } else if (Array.isArray(currentQuestion.options)) {
+          for (const opt of currentQuestion.options) {
+            if (typeof opt === "string" && opt.includes("=")) {
+              const [l, r] = opt.split("=").map((s: string) => s.trim());
+              if (l && r) pairs.push({ left: l, right: r });
+            } else if (typeof opt === "string" && opt.includes(" - ")) {
+              const [l, r] = opt.split(" - ").map((s: string) => s.trim());
+              if (l && r) pairs.push({ left: l, right: r });
+            }
+          }
+        }
+        setMatchingPairs(pairs);
+        const lefts = currentQuestion.left_items && Array.isArray(currentQuestion.left_items) && currentQuestion.left_items.length
+          ? currentQuestion.left_items
+          : pairs.map((p) => p.left);
+        const rights = currentQuestion.right_items && Array.isArray(currentQuestion.right_items) && currentQuestion.right_items.length
+          ? currentQuestion.right_items
+          : [...pairs.map((p) => p.right)].sort(() => Math.random() - 0.5);
+        setMatchingLefts(lefts);
+        setMatchingRights(rights);
+        setMatchedPairs({});
+      } else {
+        setMatchingPairs([]);
+        setMatchingLefts([]);
+        setMatchingRights([]);
+        setMatchedPairs({});
+      }
+
+      setClozeBlanks([]);
+      setUsedWordBank(new Set());
+      setWordBankAssignments({});
+      setWrongBlankPositions([]);
+
+      const isClozeQ =
+        currentQuestion.test_type === "passage_cloze" ||
+        currentQuestion.input === "cloze" ||
+        Boolean(currentQuestion.passage_template) ||
+        (typeof currentQuestion.passage === "string" && currentQuestion.passage.includes("___")) ||
+        (typeof currentQuestion.question === "string" && currentQuestion.question.includes("___"));
+      if (isClozeQ) {
+        const tmpl = String(currentQuestion.passage_template || currentQuestion.passage || currentQuestion.question || "");
+        const total = (tmpl.match(/___/g) || []).length || (Array.isArray(currentQuestion.blanks) ? currentQuestion.blanks.length : 0);
+        setClozeBlanks(Array.from({ length: total }, () => ""));
+      }
+
       const isWordsOfAnswer =
         Array.isArray(currentQuestion.options) &&
         currentQuestion.options.length > 1 &&
         currentQuestion.options.map((w: string) => w.trim().toLowerCase()).join(" ") === String(currentQuestion.correct_answer || "").trim().toLowerCase();
 
-      if (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" || isWordsOfAnswer) {
-        const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
-        const rawWords = fullText.split(/\s+/).filter(Boolean);
+      if (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" || isWordsOfAnswer || (Array.isArray(currentQuestion.tokens) && currentQuestion.tokens.length > 0)) {
+        let rawWords: string[] = [];
+        if (Array.isArray(currentQuestion.tokens) && currentQuestion.tokens.length > 0) {
+          rawWords = [...currentQuestion.tokens, ...(Array.isArray(currentQuestion.distractors) ? currentQuestion.distractors : [])];
+        } else {
+          const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
+          rawWords = fullText.split(/\s+/).filter(Boolean);
+        }
         const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
         setBankWords(shuffled.map((w, idx) => ({ id: idx, text: w, used: false })));
         setSentenceWords([]);
@@ -2086,7 +3118,26 @@ function FinalExamPlayerModal({
       setSentenceWords([]);
       setBankWords([]);
       setSelected("");
+      setMatchingPairs([]);
+      setMatchingLefts([]);
+      setMatchingRights([]);
+      setMatchedPairs({});
+      setClozeBlanks([]);
+      setUsedWordBank(new Set());
+      setWordBankAssignments({});
+      setWrongBlankPositions([]);
     }
+    const isVoice =
+      currentQuestion?.input === "audio" ||
+      currentQuestion?.test_type === "speak_sentence" ||
+      currentQuestion?.test_type === "read_aloud" ||
+      currentQuestion?.test_type === "speaking_repeat" ||
+      currentQuestion?.test_type === "speaking_response" ||
+      currentQuestion?.kind === "speak_sentence" ||
+      currentQuestion?.kind === "read_aloud" ||
+      currentQuestion?.kind === "speaking_repeat" ||
+      currentQuestion?.kind === "speaking_response";
+    setVoiceMode(Boolean(isVoice));
     setResult(null);
   }, [currentIndex, currentQuestion]);
 
@@ -2126,9 +3177,22 @@ function FinalExamPlayerModal({
     audioRef.current.play().catch(() => setAudioPlaying(false));
   };
 
-  const checkAnswer = () => {
-    if (!selected || result || !currentQuestion) return;
-    const normSelected = selected.trim().toLowerCase();
+  const isExamCloze =
+    currentQuestion?.test_type === "passage_cloze" ||
+    currentQuestion?.input === "cloze" ||
+    Boolean(currentQuestion?.passage_template) ||
+    (typeof currentQuestion?.passage === "string" && currentQuestion.passage.includes("___")) ||
+    (typeof currentQuestion?.question === "string" && currentQuestion.question.includes("___"));
+
+  const checkAnswer = async (override?: { answer_text?: string; audio_url?: string }) => {
+    if (!currentQuestion || result) return;
+    const isCloze = isExamCloze;
+    const audioUrl = override?.audio_url;
+
+    if (!audioUrl && !selected && !override?.answer_text && matchingPairs.length === 0 && (!isCloze || clozeBlanks.every((x) => !x || !x.trim()))) return;
+
+    const currentAnsText = override?.answer_text !== undefined ? override.answer_text : selected;
+    const normSelected = currentAnsText.trim().toLowerCase();
     const acceptable = Array.isArray(currentQuestion?.acceptable_answers)
       ? currentQuestion.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
       : [];
@@ -2139,21 +3203,171 @@ function FinalExamPlayerModal({
       ? correctAns.split("\n").map((p) => p.trim().toLowerCase()).filter(Boolean)
       : [];
 
-    const correct =
-      (correctAns ? normSelected === correctAns : false) ||
-      acceptable.includes(normSelected) ||
-      correctParts.includes(normSelected) ||
-      (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p))) ||
-      (!correctAns && acceptable.length === 0);
+    let correct = false;
+    let selectedAnswer = audioUrl ? "[Ovozli javob]" : currentAnsText;
+    let correctAnswerStr = String(currentQuestion.correct_answer || "");
+
+    const qTestType = String(currentQuestion.test_type || "").toLowerCase();
+    const qKind = String(currentQuestion.kind || "").toLowerCase();
+    const isAiCheck =
+      Boolean(audioUrl) ||
+      currentQuestion.check === "ai" ||
+      [
+        "write_sentence",
+        "guided_writing",
+        "reading_open",
+        "open",
+        "translation",
+        "paraphrase",
+        "picture_description",
+        "dialogue_completion",
+        "speak_sentence",
+        "read_aloud",
+        "speaking_repeat",
+        "speaking_response",
+        "listening_open",
+        "word_practice",
+      ].includes(qTestType) ||
+      [
+        "write_sentence",
+        "guided_writing",
+        "reading_open",
+        "open",
+        "translation",
+        "paraphrase",
+        "picture_description",
+        "dialogue_completion",
+        "speak_sentence",
+        "read_aloud",
+        "speaking_repeat",
+        "speaking_response",
+        "listening_open",
+        "word_practice",
+      ].includes(qKind) ||
+      (!isCloze &&
+        currentQuestion.test_type !== "matching" &&
+        matchingPairs.length === 0 &&
+        currentQuestion.test_type !== "word_order" &&
+        currentQuestion.test_type !== "scrambled_sentence" &&
+        !correctAns &&
+        (!Array.isArray(currentQuestion.options) || currentQuestion.options.length === 0));
+
+    let aiFeedbackText = "";
+    let aiCorrectedText = "";
+    let aiTranscriptText = "";
+    let aiPronErrors: any[] = [];
+    let aiGrammarErrors: any[] = [];
+
+    if (isAiCheck) {
+      setLoading(true);
+      try {
+        const aiRes = await apiFetch(`/student/learning-lessons/check-ai`, {
+          method: "POST",
+          body: {
+            question_payload: currentQuestion,
+            answer_text: currentAnsText,
+            audio_url: audioUrl,
+          },
+        });
+        correct = Boolean(aiRes?.is_correct ?? (aiRes?.verdict === "correct"));
+        aiFeedbackText = String(aiRes?.feedback || (correct ? "Ajoyib! Juda to'g'ri!" : "Javobingizda xatolik mavjud."));
+        aiCorrectedText = String(aiRes?.corrected || aiRes?.correct_answer || "");
+        aiTranscriptText = String(aiRes?.transcript || "");
+        aiPronErrors = Array.isArray(aiRes?.pronunciation_errors) ? aiRes.pronunciation_errors : [];
+        aiGrammarErrors = Array.isArray(aiRes?.grammar_errors) ? aiRes.grammar_errors : [];
+        if (aiCorrectedText) {
+          correctAnswerStr = aiCorrectedText;
+        }
+        if (aiTranscriptText) {
+          selectedAnswer = `[Ovozli]: ${aiTranscriptText}`;
+        }
+      } catch (err) {
+        correct = false;
+        aiFeedbackText = errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring.");
+      } finally {
+        setLoading(false);
+      }
+    } else if (isCloze) {
+      const blanks = Array.isArray(currentQuestion.blanks) ? currentQuestion.blanks : [];
+      const wrongPositions: number[] = [];
+      const expectedAnswersList: string[] = [];
+
+      for (let i = 0; i < clozeBlanks.length; i++) {
+        const b = blanks[i];
+        const given = (clozeBlanks[i] || "").trim().toLowerCase();
+        let isBlankCorrect = false;
+        let expectedLabel = "";
+
+        if (b && typeof b === "object") {
+          const mainAns = String(b.answer || "").trim();
+          expectedLabel = mainAns;
+          const expectedSet = new Set([
+            mainAns.toLowerCase(),
+            ...(Array.isArray(b.accepted_answers) ? b.accepted_answers.map((x: any) => String(x).trim().toLowerCase()) : []),
+          ]);
+          expectedSet.delete("");
+          if (expectedSet.has(given)) {
+            isBlankCorrect = true;
+          }
+        } else if (typeof b === "string") {
+          expectedLabel = b.trim();
+          if (given === b.trim().toLowerCase()) {
+            isBlankCorrect = true;
+          }
+        } else if (Array.isArray(currentQuestion.answers) && currentQuestion.answers[i]) {
+          expectedLabel = String(currentQuestion.answers[i]).trim();
+          if (given === expectedLabel.toLowerCase()) {
+            isBlankCorrect = true;
+          }
+        } else if (correctAns) {
+          const parts = correctAns.split(/[,;\n]+/).map((s) => s.trim());
+          if (parts[i]) {
+            expectedLabel = parts[i];
+            if (given === parts[i].toLowerCase()) {
+              isBlankCorrect = true;
+            }
+          }
+        }
+
+        if (expectedLabel) {
+          expectedAnswersList.push(`${i + 1}. ${expectedLabel}`);
+        }
+        if (!isBlankCorrect) {
+          wrongPositions.push(i + 1);
+        }
+      }
+
+      setWrongBlankPositions(wrongPositions);
+      correct = wrongPositions.length === 0 && clozeBlanks.length > 0;
+      selectedAnswer = clozeBlanks.map((ans, idx) => `${idx + 1}. ${ans || "___"}`).join(", ");
+      if (expectedAnswersList.length > 0) {
+        correctAnswerStr = expectedAnswersList.join(" | ");
+      }
+    } else if (currentQuestion.test_type === "matching" || matchingPairs.length > 0) {
+      correct =
+        matchingPairs.length > 0 &&
+        matchingPairs.every(
+          (p) => (matchedPairs[p.left] || "").trim().toLowerCase() === p.right.trim().toLowerCase()
+        );
+      selectedAnswer = Object.entries(matchedPairs).map(([l, r]) => `${l} = ${r}`).join("; ");
+      correctAnswerStr = matchingPairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+    } else {
+      correct =
+        (correctAns ? normSelected === correctAns : false) ||
+        acceptable.includes(normSelected) ||
+        correctParts.includes(normSelected) ||
+        (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p)));
+    }
+
     const newScore = score + (correct ? 1 : 0);
     setScore(newScore);
 
     setReviewItems((prev) => [
       ...prev,
       {
-        prompt: String(currentQuestion.question || currentQuestion.prompt || currentQuestion.title || `Savol ${currentIndex + 1}`),
-        selected_answer: selected,
-        correct_answer: String(currentQuestion.correct_answer || ""),
+        prompt: String(currentQuestion.instruction || currentQuestion.question || currentQuestion.prompt || currentQuestion.title || `Savol ${currentIndex + 1}`),
+        selected_answer: selectedAnswer,
+        correct_answer: correctAnswerStr || String(currentQuestion.correct_answer || ""),
         options: Array.isArray(currentQuestion.options) ? currentQuestion.options : [],
         is_correct: correct,
         explanation: String(currentQuestion.explanation || ""),
@@ -2166,7 +3380,17 @@ function FinalExamPlayerModal({
     } else {
       playDuolingoSound("wrong");
     }
-    setResult({ correct, explanation: currentQuestion.explanation || "" });
+    setResult({
+      correct,
+      selected: selectedAnswer,
+      correct_answer: correctAnswerStr,
+      explanation: currentQuestion.explanation || "",
+      ai_feedback: aiFeedbackText,
+      ai_corrected: aiCorrectedText,
+      ai_transcript: aiTranscriptText,
+      pronunciation_errors: aiPronErrors,
+      grammar_errors: aiGrammarErrors,
+    });
   };
 
   const handleNext = async () => {
@@ -2230,11 +3454,13 @@ function FinalExamPlayerModal({
           </button>
           <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
-              className="h-full rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-amber-600 transition-all duration-300"
+              className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-300 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
               style={{ width: `${progressPercent}%` }}
-            />
+            >
+              <div className="absolute top-1 left-2 right-2 h-1 rounded-full bg-white/40" />
+            </div>
           </div>
-          <span className="flex items-center gap-1 text-xs font-black text-amber-500">
+          <span className="flex items-center gap-1 text-xs font-black text-[#002DFF] dark:text-[#38bdf8]">
             <span>🏆</span>
             <span>Yakuniy Imtihon</span>
           </span>
@@ -2269,7 +3495,7 @@ function FinalExamPlayerModal({
                     <div
                       className={`grid h-24 w-24 place-items-center rounded-3xl text-4xl shadow-xl ring-4 ${
                         isPassed
-                          ? "bg-gradient-to-tr from-amber-400 to-amber-200 ring-amber-400/40 animate-bounce"
+                          ? "border-4 border-[#001A88] bg-gradient-to-b from-[#1429f2] to-[#002DFF] text-white shadow-2xl ring-4 ring-[#002DFF]/40 animate-bounce"
                           : "bg-rose-100 text-rose-600 ring-rose-300 dark:bg-rose-950/50 dark:ring-rose-800"
                       }`}
                     >
@@ -2282,23 +3508,23 @@ function FinalExamPlayerModal({
                   </h3>
 
                   <div className="mt-4 grid grid-cols-2 gap-3 w-full max-w-xs">
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
+                    <div className="rounded-2xl border-2 border-b-4 border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
                       <p className="text-[10px] font-bold text-slate-400 uppercase">To'g'ri javoblar</p>
                       <p className="mt-0.5 text-xl font-black text-navy-900 dark:text-white">
                         {score} / {questions.length}
                       </p>
                     </div>
                     <div
-                      className={`rounded-2xl border p-3 ${
+                      className={`rounded-2xl border-2 border-b-4 p-3 ${
                         isPassed
-                          ? "border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40"
+                          ? "border-[#001A88] bg-blue-50 dark:border-blue-800 dark:bg-blue-950/40"
                           : "border-rose-300 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/40"
                       }`}
                     >
                       <p className="text-[10px] font-bold uppercase text-slate-500">Natija</p>
                       <p
                         className={`mt-0.5 text-xl font-black ${
-                          isPassed ? "text-amber-800 dark:text-amber-200" : "text-rose-800 dark:text-rose-200"
+                          isPassed ? "text-[#001A88] dark:text-blue-200" : "text-rose-800 dark:text-rose-200"
                         }`}
                       >
                         {finalPercent}%
@@ -2307,7 +3533,7 @@ function FinalExamPlayerModal({
                   </div>
 
                   {isPassed ? (
-                    <div className="mt-4 rounded-2xl border-2 border-b-4 border-amber-500 bg-amber-50 p-4 text-sm font-black text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 dark:border-amber-700">
+                    <div className="mt-4 rounded-2xl border-2 border-b-4 border-[#001A88] bg-blue-50 p-4 text-sm font-black text-[#001A88] dark:bg-blue-950/40 dark:text-blue-200 dark:border-blue-800">
                       🎓 Yakuniy imtihon muvaffaqiyatli topshirildi ({finalPercent}% ≥ {passingScore}%)! Rasmiy sertifikat berildi va keyingi track ochildi!
                     </div>
                   ) : (
@@ -2317,7 +3543,7 @@ function FinalExamPlayerModal({
                   )}
 
                   {isPassed ? (
-                    <div className="mt-3 flex items-center justify-center gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs font-black text-amber-800 dark:border-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                    <div className="mt-3 flex items-center justify-center gap-2 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-xs font-black text-[#001A88] dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-200">
                       <span>🎁 Mukofot:</span>
                       <span>💎 +50 D'Point</span>
                       <span>va</span>
@@ -2326,14 +3552,14 @@ function FinalExamPlayerModal({
                   ) : null}
 
                   {isPassed && examResult?.certificate ? (
-                    <div className="mt-4 w-full rounded-2xl border-2 border-amber-400/40 bg-gradient-to-br from-amber-50/70 to-yellow-50/70 p-4 text-left dark:border-amber-600/30 dark:bg-amber-950/20">
+                    <div className="mt-4 w-full rounded-2xl border-2 border-blue-200 bg-gradient-to-br from-blue-50/80 to-indigo-50/80 p-4 text-left dark:border-blue-800/40 dark:bg-blue-950/30">
                       <div className="flex items-center gap-2.5">
                         <span className="text-2xl">🎓</span>
                         <div>
-                          <p className="text-xs font-black text-amber-900 dark:text-amber-200">
+                          <p className="text-xs font-black text-blue-950 dark:text-blue-200">
                             {examResult.certificate.course_title || track.title}
                           </p>
-                          <p className="text-[10px] font-mono text-amber-700 dark:text-amber-400">
+                          <p className="text-[10px] font-mono text-blue-700 dark:text-blue-400">
                             ID: {examResult.certificate.certificate_id}
                           </p>
                         </div>
@@ -2343,7 +3569,7 @@ function FinalExamPlayerModal({
                           href={`/api/student/certificates/${examResult.certificate.certificate_id}/pdf`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 py-2.5 px-4 text-xs font-black text-white shadow-md hover:from-amber-600 hover:to-amber-700 transition"
+                          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2] py-2.5 px-4 text-xs font-black text-white shadow-md transition active:translate-y-0.5 active:border-b-2"
                         >
                           <span>📄 Sertifikatni PDF ko'rish / Yuklab olish</span>
                         </a>
@@ -2364,7 +3590,7 @@ function FinalExamPlayerModal({
                     <button
                       type="button"
                       onClick={onClose}
-                      className="mt-6 w-full rounded-2xl border-2 border-b-4 border-amber-700 bg-gradient-to-r from-amber-500 to-amber-600 py-4 text-base font-black uppercase tracking-wider text-white shadow-xl hover:brightness-110 active:translate-y-1 active:border-b-2 cursor-pointer"
+                      className="mt-6 w-full rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2] py-4 text-base font-black uppercase tracking-wider text-white shadow-xl shadow-blue-600/30 active:translate-y-1 active:border-b-2 cursor-pointer"
                     >
                       Tugatish & Davom etish
                     </button>
@@ -2400,7 +3626,23 @@ function FinalExamPlayerModal({
             <div className="space-y-5 animate-fade-in">
               <div className="flex items-center justify-between">
                 <span className="rounded-xl bg-amber-500/10 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
-                  {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence"
+                  {isExamCloze || currentQuestion.test_type === "passage_cloze"
+                    ? "📝 Matnni to'ldiring"
+                    : currentQuestion.test_type === "speak_sentence" || currentQuestion.kind === "speak_sentence"
+                    ? "🗣️ Ovozli gap tuzish"
+                    : currentQuestion.test_type === "read_aloud" || currentQuestion.kind === "read_aloud"
+                    ? "🗣️ Ovoz chiqarib o'qish"
+                    : currentQuestion.test_type === "word_practice" || currentQuestion.kind === "word_practice"
+                    ? "📚 So'z mashqi (Vocabulary)"
+                    : currentQuestion.test_type === "spelling" || currentQuestion.kind === "spelling"
+                    ? "🔤 To'g'ri yozilish (spelling)"
+                    : currentQuestion.test_type === "translation" || currentQuestion.kind === "translation"
+                    ? "🌐 Tarjima qiling"
+                    : currentQuestion.test_type === "picture_description" || currentQuestion.kind === "picture_description"
+                    ? "🖼️ Rasmni tasvirlang"
+                    : currentQuestion.test_type === "write_sentence" || currentQuestion.test_type === "guided_writing"
+                    ? "✍️ Gap yozish"
+                    : currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence"
                     ? "🧩 Gap tuzing"
                     : currentQuestion.test_type === "true_false" || currentQuestion.test_type === "listening_tf"
                     ? "⚖️ To'g'ri yoki Noto'g'ri"
@@ -2412,10 +3654,6 @@ function FinalExamPlayerModal({
                     ? "🔄 Qayta ifodalash"
                     : currentQuestion.test_type === "listening_dictation"
                     ? "✍️ Diktant (eshitib yozish)"
-                    : currentQuestion.test_type === "spelling"
-                    ? "🔤 To'g'ri yozilish (spelling)"
-                    : currentQuestion.test_type === "translation"
-                    ? "🌐 Tarjima qiling"
                     : currentQuestion.test_type === "reading_open" || currentQuestion.test_type === "listening_open"
                     ? "📖 Savolga javob yozing"
                     : currentQuestion.module_title
@@ -2427,12 +3665,41 @@ function FinalExamPlayerModal({
                 </span>
               </div>
 
+              {/* Target Word Banner (Duolingo / Materials Library style) */}
+              {currentQuestion.word ? (
+                <TargetWordBanner
+                  word={currentQuestion.word}
+                  phonetic={currentQuestion.phonetic || currentQuestion.pronunciation}
+                  targetLevel={currentQuestion.target_level || currentQuestion.level}
+                  definition={currentQuestion.definition}
+                  meaning={currentQuestion.meaning}
+                  hint={currentQuestion.hint}
+                  exampleSentence={currentQuestion.example_sentence}
+                />
+              ) : null}
+
+              {/* Question Image if present */}
+              {currentQuestion.image_url ? (
+                <div className="overflow-hidden rounded-2xl border-2 border-slate-200 dark:border-slate-800">
+                  <img
+                    src={currentQuestion.image_url.startsWith("/") ? `/api${currentQuestion.image_url}` : currentQuestion.image_url}
+                    alt="Savol rasmi"
+                    className="max-h-64 w-full object-contain bg-slate-50 dark:bg-slate-900"
+                  />
+                </div>
+              ) : null}
+
               <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
-                {currentQuestion.question || currentQuestion.prompt || "Savolga javob bering:"}
+                {currentQuestion.instruction ||
+                  (currentQuestion.question && currentQuestion.question.trim() !== currentQuestion.passage?.trim()
+                    ? currentQuestion.question
+                    : null) ||
+                  currentQuestion.prompt ||
+                  "Savolga javob bering:"}
               </h2>
 
-              {/* Passage / Context if available */}
-              {currentQuestion.passage || currentQuestion.context ? (
+              {/* Passage / Context if available (hidden for cloze) */}
+              {!isExamCloze && (currentQuestion.passage || currentQuestion.context) && (currentQuestion.question?.trim() !== currentQuestion.passage?.trim()) ? (
                 <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 text-sm leading-relaxed text-slate-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
                   <div className="flex items-center gap-1.5 text-xs font-black uppercase text-amber-700 dark:text-amber-300 mb-1.5">
                     <span>📖</span>
@@ -2457,6 +3724,199 @@ function FinalExamPlayerModal({
               ) : null}
 
               {(() => {
+                const isVoiceQuestion =
+                  currentQuestion.input === "audio" ||
+                  currentQuestion.test_type === "speak_sentence" ||
+                  currentQuestion.test_type === "read_aloud" ||
+                  currentQuestion.test_type === "speaking_repeat" ||
+                  currentQuestion.test_type === "speaking_response" ||
+                  currentQuestion.kind === "speak_sentence" ||
+                  currentQuestion.kind === "read_aloud" ||
+                  currentQuestion.kind === "speaking_repeat" ||
+                  currentQuestion.kind === "speaking_response";
+                const isVoiceOrText = currentQuestion.input === "audio_or_text" || isVoiceQuestion;
+
+                // ─── Voice Exercise (Instant Voice Recorder with auto-check on release) ───
+                if (isVoiceQuestion || (isVoiceOrText && voiceMode)) {
+                  return (
+                    <div className="space-y-4 pt-2">
+                      <InstantVoiceRecorder
+                        apiFetch={apiFetch}
+                        disabled={Boolean(result) || loading || submitting}
+                        onRecorded={async (audioUrl) => {
+                          await checkAnswer({ audio_url: audioUrl });
+                        }}
+                      />
+                      {isVoiceOrText && (
+                        <div className="text-center">
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(false)}
+                            className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-[#002DFF] dark:text-slate-400 dark:hover:text-[#38bdf8]"
+                          >
+                            ✍️ Yozma javob berishga o'tish
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                // ─── Exercise Type 0: Passage Cloze ───
+                if (isExamCloze) {
+                  const template = String(currentQuestion.passage_template || currentQuestion.passage || currentQuestion.question || "");
+                  const totalBlanks = (template.match(/___/g) || []).length || (Array.isArray(currentQuestion.blanks) ? currentQuestion.blanks.length : 0);
+                  const setBlank = (i: number, v: string) => {
+                    setClozeBlanks((prev) => {
+                      const next = [...prev];
+                      while (next.length < totalBlanks) next.push("");
+                      next[i] = v;
+                      return next;
+                    });
+                  };
+                  const filled = Array.from({ length: totalBlanks }, (_, i) => clozeBlanks[i] || "");
+                  const lines = template.split("\n");
+                  let blankCursor = 0;
+                  const wordBank: string[] = Array.isArray(currentQuestion.word_bank) ? currentQuestion.word_bank : [];
+                  const textForCheck = `${currentQuestion.instruction || ""} ${currentQuestion.question || ""} ${currentQuestion.prompt || ""} ${template}`.toLowerCase();
+                  const isTenseOrForm =
+                    textForCheck.includes("form") ||
+                    textForCheck.includes("tense") ||
+                    textForCheck.includes("zamon") ||
+                    textForCheck.includes("shakl") ||
+                    textForCheck.includes("put the verb") ||
+                    textForCheck.includes("in brackets") ||
+                    textForCheck.includes("qavs");
+                  const hasBrackets = /\(\s*[a-zA-Z'\s-]+\s*\)/.test(template);
+                  const blanksList = Array.isArray(currentQuestion.blanks) ? currentQuestion.blanks : Array.isArray(currentQuestion.answers) ? currentQuestion.answers : [];
+                  const ansSet = new Set(blanksList.map((b: any) => String(b?.answer || b || "").trim().toLowerCase()));
+                  const bankSet = new Set(wordBank.map((w) => String(w || "").trim().toLowerCase()));
+                  const showWordBank =
+                    wordBank.length > 0 &&
+                    !(isTenseOrForm && hasBrackets) &&
+                    !(isTenseOrForm && ansSet.size > 0 && [...ansSet].every((a) => bankSet.has(a)));
+
+                  return (
+                    <div className="space-y-4 pt-1">
+                      {/* Word bank chips — displayed at the TOP above sentences */}
+                      {showWordBank && (
+                        <div className="rounded-2xl border-2 border-slate-200 bg-white p-3.5 shadow-sm dark:border-navy-700 dark:bg-navy-800">
+                          <p className="text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8] mb-2">
+                            💡 So'zlar banki — joylash uchun bosing:
+                          </p>
+                          <div className="flex flex-wrap gap-2 justify-center">
+                            {wordBank.map((w, i) => {
+                              const marked = usedWordBank.has(i);
+                              return (
+                                <button
+                                  key={`${w}-${i}`}
+                                  type="button"
+                                  disabled={Boolean(result)}
+                                  onClick={() => {
+                                    playDuolingoSound("pop");
+                                    if (marked) {
+                                      const blankIndex = Object.entries(wordBankAssignments).find(([, value]) => value === i)?.[0];
+                                      if (blankIndex !== undefined) setBlank(Number(blankIndex), "");
+                                      setWordBankAssignments((prev) => {
+                                        const next = { ...prev };
+                                        if (blankIndex !== undefined) delete next[Number(blankIndex)];
+                                        return next;
+                                      });
+                                      setUsedWordBank((prev) => {
+                                        const next = new Set(prev);
+                                        next.delete(i);
+                                        return next;
+                                      });
+                                      return;
+                                    }
+                                    const idx = filled.findIndex((x) => !x.trim());
+                                    if (idx < 0) return;
+                                    setBlank(idx, w);
+                                    setWordBankAssignments((prev) => ({ ...prev, [idx]: i }));
+                                    setUsedWordBank((prev) => new Set(prev).add(i));
+                                  }}
+                                  className={`rounded-2xl border-2 px-3.5 py-2 text-sm font-black transition-all select-none ${
+                                    marked
+                                      ? "border-slate-200 bg-slate-200/50 text-slate-400 line-through opacity-40 dark:border-navy-800 dark:bg-navy-900"
+                                      : "border-slate-200 border-b-4 bg-white text-navy-900 shadow-sm active:translate-y-1 active:border-b-2 hover:bg-cyan-50 hover:border-cyan-400 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                                  }`}
+                                >
+                                  {w}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Interactive cloze text container */}
+                      <div className="space-y-2.5 rounded-3xl border-2 border-slate-200 bg-slate-50/80 p-4 sm:p-5 text-base leading-loose text-slate-900 dark:border-navy-700 dark:bg-navy-900/50 dark:text-white font-medium">
+                        {lines.map((line, li) => {
+                          const segs = line.split("___");
+                          const rowGaps = segs.length - 1;
+                          const startIdx = blankCursor;
+                          blankCursor += rowGaps;
+                          return (
+                            <div key={li} className="leading-loose">
+                              {segs.map((seg, si) => {
+                                const gi = startIdx + si;
+                                const isWrong = result && wrongBlankPositions.includes(gi + 1);
+                                const isCorrect = result && !isWrong;
+
+                                return (
+                                  <span key={si}>
+                                    {seg}
+                                    {si < rowGaps && (
+                                      <span className="relative inline-block mx-1">
+                                        <input
+                                          type="text"
+                                          value={filled[gi] || ""}
+                                          disabled={Boolean(result)}
+                                          onChange={(e) => {
+                                            setBlank(gi, e.target.value);
+                                            const bankIndex = wordBankAssignments[gi];
+                                            if (bankIndex !== undefined) {
+                                              setWordBankAssignments((prev) => {
+                                                const next = { ...prev };
+                                                delete next[gi];
+                                                return next;
+                                              });
+                                              setUsedWordBank((prev) => {
+                                                const next = new Set(prev);
+                                                next.delete(bankIndex);
+                                                return next;
+                                              });
+                                            }
+                                          }}
+                                          className={`w-28 sm:w-32 rounded-xl border-2 px-2 py-1 text-center text-sm sm:text-base font-black outline-none transition-all ${
+                                            result
+                                              ? isCorrect
+                                                ? "border-[#58cc02] bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]"
+                                                : "border-[#ff4b4b] bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]"
+                                              : filled[gi]
+                                              ? "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a] dark:text-white"
+                                              : "border-slate-300 border-b-4 bg-white text-navy-900 focus:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                                          }`}
+                                          placeholder={`(${gi + 1})`}
+                                        />
+                                        {isWrong && Array.isArray(currentQuestion.blanks) && currentQuestion.blanks[gi] ? (
+                                          <span className="block text-[11px] font-black text-[#a01818] dark:text-[#ffa0a0] text-center">
+                                            {String(currentQuestion.blanks[gi]?.answer || currentQuestion.blanks[gi])}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                    )}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                }
+
                 const isWordsOfAnswer =
                   Array.isArray(currentQuestion.options) &&
                   currentQuestion.options.length > 1 &&
@@ -2544,9 +4004,162 @@ function FinalExamPlayerModal({
                       })}
                     </div>
                   );
-                } else if (!currentQuestion.options || !Array.isArray(currentQuestion.options) || currentQuestion.options.length < 2 || ((currentQuestion.test_type === "fill_blank" || currentQuestion.test_type === "gap_fill") && !hasCorrectChoice)) {
+                } else if (currentQuestion.test_type === "matching" || matchingPairs.length > 0) {
+                  /* ─── Exercise Type 3: Matching / Pairs ─── */
                   return (
                     <div className="space-y-3 pt-2">
+                      <p className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                        Har bir chapdagi so'zga mos o'ngdagi tarjima/javobni tanlang:
+                      </p>
+                      {matchingLefts.map((left, idx) => {
+                        const currentVal = matchedPairs[left] || "";
+                        const targetPair = matchingPairs.find((p) => p.left.trim().toLowerCase() === left.trim().toLowerCase());
+                        const isPairCorrect = result && targetPair && (currentVal.trim().toLowerCase() === targetPair.right.trim().toLowerCase());
+                        const isPairWrong = result && targetPair && currentVal && (currentVal.trim().toLowerCase() !== targetPair.right.trim().toLowerCase());
+
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-2xl border-2 p-3 transition-all ${
+                              result
+                                ? isPairCorrect
+                                  ? "border-[#58cc02] bg-[#d7ffb8]/30 dark:bg-[#183617]/30"
+                                  : isPairWrong
+                                  ? "border-[#ff4b4b] bg-[#ffdfe0]/30 dark:bg-[#3d1a1b]/30"
+                                  : "border-slate-200 bg-white dark:border-navy-700 dark:bg-navy-800"
+                                : "border-slate-200 border-b-4 bg-white dark:border-navy-700 dark:bg-navy-800"
+                            }`}
+                          >
+                            <span className="min-w-[120px] text-sm font-black text-navy-900 dark:text-white flex items-center gap-2">
+                              <span className="grid h-6 w-6 place-items-center rounded-lg bg-slate-100 text-xs text-slate-600 dark:bg-navy-900 dark:text-navy-300">
+                                {idx + 1}
+                              </span>
+                              <span>{left}</span>
+                            </span>
+                            <div className="flex items-center gap-2 flex-1">
+                              <span className="hidden sm:inline font-black text-slate-300">→</span>
+                              <select
+                                value={currentVal}
+                                disabled={Boolean(result)}
+                                onChange={(e) => {
+                                  playDuolingoSound("pop");
+                                  const newPairs = { ...matchedPairs, [left]: e.target.value };
+                                  setMatchedPairs(newPairs);
+                                  setSelected(Object.entries(newPairs).map(([l, r]) => `${l} = ${r}`).join("; "));
+                                }}
+                                className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+                              >
+                                <option value="">Tanlang...</option>
+                                {matchingRights.map((r, ri) => (
+                                  <option key={ri} value={r}>
+                                    {r}
+                                  </option>
+                                ))}
+                              </select>
+                              {result && isPairCorrect && <span className="text-lg text-emerald-600 font-black">✓</span>}
+                              {result && isPairWrong && <span className="text-lg text-rose-600 font-black">✕</span>}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                } else if (
+                  currentQuestion.test_type === "write_sentence" ||
+                  currentQuestion.test_type === "guided_writing" ||
+                  currentQuestion.test_type === "open"
+                ) {
+                  /* ─── Exercise Type 4: Written Sentences / Guided Writing (Textarea + word count) ─── */
+                  const wordCount = selected.trim().split(/\s+/).filter(Boolean).length;
+                  const minWords = typeof currentQuestion.word_count === "number" ? currentQuestion.word_count : 0;
+
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <div className="flex flex-wrap gap-2 items-center">
+                        {currentQuestion.direction ? (
+                          <span className="rounded-xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-xs font-black text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-300">
+                            🌐 {currentQuestion.direction}
+                          </span>
+                        ) : null}
+                        {currentQuestion.hint ? (
+                          <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            💡 Yordam: {currentQuestion.hint}
+                          </span>
+                        ) : null}
+                        {isVoiceOrText && !voiceMode ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-black text-[#002DFF] transition hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300"
+                          >
+                            🎙️ Ovozli javob berish (mikrofon)
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <textarea
+                        value={selected}
+                        onChange={(e) => setSelected(e.target.value)}
+                        disabled={Boolean(result)}
+                        rows={3}
+                        placeholder="Javobingizni shu yerga yozing..."
+                        autoFocus
+                        className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-base font-semibold text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                      />
+
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                        <span>Javobingizni to'liq yozing va pastdagi "Tekshirish" tugmasini bosing.</span>
+                        {minWords > 0 ? (
+                          <span className={wordCount >= minWords ? "text-emerald-600 font-black" : "text-amber-600 font-bold"}>
+                            {wordCount} / {minWords} so'z {wordCount >= minWords ? "✓" : ""}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {result && (currentQuestion.sample_answer || currentQuestion.reference_answer) ? (
+                        <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                          <p className="font-black mb-1">📝 Namunaviy javob:</p>
+                          <p>{String(currentQuestion.sample_answer || currentQuestion.reference_answer)}</p>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                } else if (!currentQuestion.options || !Array.isArray(currentQuestion.options) || currentQuestion.options.length < 2 || ((currentQuestion.test_type === "fill_blank" || currentQuestion.test_type === "gap_fill") && !hasCorrectChoice)) {
+                  /* ─── Exercise Type 5: Fill Blank, Dictation, Open, Translation, Spelling (Text Input) ─── */
+                  const wordCount = selected.trim().split(/\s+/).filter(Boolean).length;
+                  const minWords = typeof currentQuestion.word_count === "number" ? currentQuestion.word_count : 0;
+
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <div className="flex flex-wrap gap-2 items-center">
+                        {currentQuestion.direction ? (
+                          <span className="rounded-xl border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-xs font-black text-cyan-800 dark:border-cyan-800 dark:bg-cyan-950 dark:text-cyan-300">
+                            🌐 {currentQuestion.direction}
+                          </span>
+                        ) : null}
+                        {currentQuestion.hint ? (
+                          <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                            💡 Yordam: {currentQuestion.hint}
+                          </span>
+                        ) : null}
+                        {currentQuestion.example_sentence ? (
+                          <span className="rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
+                            📝 Misol: {currentQuestion.example_sentence}
+                          </span>
+                        ) : null}
+                        {isVoiceOrText && !voiceMode ? (
+                          <button
+                            type="button"
+                            disabled={Boolean(result)}
+                            onClick={() => setVoiceMode(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-black text-[#002DFF] transition hover:bg-blue-100 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300"
+                          >
+                            🎙️ Ovozli javob berish (mikrofon)
+                          </button>
+                        ) : null}
+                      </div>
+
                       <input
                         type="text"
                         value={selected}
@@ -2557,7 +4170,15 @@ function FinalExamPlayerModal({
                         autoFocus
                         className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                       />
-                      <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
+
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-400">
+                        <span>Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</span>
+                        {minWords > 0 ? (
+                          <span className={wordCount >= minWords ? "text-emerald-600 font-black" : "text-amber-600 font-bold"}>
+                            {wordCount} / {minWords} so'z {wordCount >= minWords ? "✓" : ""}
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   );
                 } else {
@@ -2592,7 +4213,7 @@ function FinalExamPlayerModal({
                             }`}
                           >
                             <span className="flex items-center gap-3">
-                              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl bg-slate-100 text-xs font-black text-slate-500 dark:bg-navy-700 dark:text-navy-300">
+                              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-xs font-black text-slate-500 dark:border-navy-700 dark:bg-navy-700 dark:text-navy-300">
                                 {i + 1}
                               </span>
                               <span>{opt}</span>
@@ -2637,14 +4258,53 @@ function FinalExamPlayerModal({
                         : "text-[#a01818] dark:text-[#ffa0a0]"
                     }`}
                   >
-                    {result.correct ? "Ajoyib! Juda to'g'ri!" : "To'g'ri javob:"}
+                    {result.correct
+                      ? (result.ai_feedback || "Ajoyib! Juda to'g'ri!")
+                      : "Javobingizda xatolik mavjud:"}
                   </p>
-                  {!result.correct ? (
-                    <p className="text-sm font-black text-slate-900 dark:text-white mt-0.5">
-                      {String(currentQuestion.correct_answer || "")}
-                    </p>
+                  {result.ai_transcript ? (
+                    <div className="mt-1.5 rounded-xl bg-blue-50/80 px-3 py-2 text-xs font-semibold text-blue-950 dark:bg-blue-950/40 dark:text-blue-200 border border-blue-200 dark:border-blue-900">
+                      <span className="font-bold">🎙️ Siz aytdingiz:</span> “{result.ai_transcript}”
+                    </div>
                   ) : null}
-                  {currentQuestion.explanation ? (
+                  {!result.correct && (result.ai_feedback || result.correct_answer) ? (
+                    <div className="mt-1 space-y-1">
+                      {result.ai_feedback && result.ai_feedback !== result.correct_answer ? (
+                        <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                          💬 {result.ai_feedback}
+                        </p>
+                      ) : null}
+                      {result.correct_answer ? (
+                        <p className="text-xs font-bold text-slate-900 dark:text-white">
+                          <span className="text-slate-500 dark:text-slate-400">To'g'ri / Namunaviy variant: </span>
+                          {String(result.correct_answer)}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {Array.isArray(result.pronunciation_errors) && result.pronunciation_errors.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      <p className="text-xs font-black text-amber-700 dark:text-amber-300">🗣️ Talaffuz bo'yicha maslahatlar:</p>
+                      {result.pronunciation_errors.map((pe: any, pei: number) => (
+                        <div key={pei} className="rounded-lg bg-amber-50 p-2 text-xs text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 border border-amber-200 dark:border-amber-800">
+                          <span className="font-bold">{pe.word}:</span> {pe.note || pe.tip || pe.explanation}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {Array.isArray(result.grammar_errors) && result.grammar_errors.length > 0 ? (
+                    <div className="mt-2 space-y-1">
+                      {result.grammar_errors.map((ge: any, gei: number) => (
+                        <div key={gei} className="rounded-lg bg-red-100/70 p-2 text-xs text-red-900 dark:bg-red-950/40 dark:text-red-200">
+                          <span className="font-bold line-through mr-1">{ge.original}</span>
+                          <span>→ </span>
+                          <span className="font-bold text-emerald-700 dark:text-emerald-300">{ge.correction}</span>
+                          {ge.explanation ? <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400">{ge.explanation}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {currentQuestion.explanation && !result.ai_feedback ? (
                     <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
                       💡 {currentQuestion.explanation}
                     </p>
@@ -2654,18 +4314,30 @@ function FinalExamPlayerModal({
             ) : null}
 
             {!result ? (
-              <button
-                type="button"
-                onClick={checkAnswer}
-                disabled={!selected || loading || submitting}
-                className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
-                  selected && !loading && !submitting
-                    ? "border-amber-700 bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-lg active:translate-y-1 active:border-b-2 hover:brightness-110 cursor-pointer"
-                    : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
-                }`}
-              >
-                {loading ? "Yuklanmoqda..." : "Tekshirish"}
-              </button>
+              (() => {
+                const canSubmit = isExamCloze
+                  ? clozeBlanks.length > 0 && clozeBlanks.every((x) => x && x.trim())
+                  : currentQuestion.test_type === "matching" || matchingPairs.length > 0
+                  ? matchingPairs.length > 0 && Object.keys(matchedPairs).length >= matchingPairs.length
+                  : currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence"
+                  ? sentenceWords.length > 0
+                  : Boolean(selected.trim());
+
+                return (
+                  <button
+                    type="button"
+                    onClick={() => void checkAnswer()}
+                    disabled={!canSubmit || loading || submitting}
+                    className={`w-full rounded-2xl border-2 border-b-4 py-3.5 text-center text-sm font-black uppercase tracking-wider transition-all ${
+                      canSubmit && !loading && !submitting
+                        ? "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2] text-white shadow-xl shadow-blue-600/30 active:translate-y-1 active:border-b-2 cursor-pointer"
+                        : "border-slate-200 bg-slate-200 text-slate-400 cursor-not-allowed dark:border-navy-800 dark:bg-navy-900"
+                    }`}
+                  >
+                    {loading ? "Yuklanmoqda..." : "Tekshirish"}
+                  </button>
+                );
+              })()
             ) : (
               <button
                 type="button"
@@ -3997,6 +5669,9 @@ function LessonEditor({
   const [editExplanation, setEditExplanation] = useState("");
   const [editAudioUrl, setEditAudioUrl] = useState("");
   const [editAudioUploading, setEditAudioUploading] = useState(false);
+  const [editHint, setEditHint] = useState("");
+  const [editDirection, setEditDirection] = useState("");
+  const [editWordCount, setEditWordCount] = useState(0);
 
   // AI & Library states
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
@@ -4005,6 +5680,9 @@ function LessonEditor({
   const [types, setTypes] = useState("multiple_choice,true_false,fill_blank,word_order,matching");
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
+  const [hint, setHint] = useState("");
+  const [direction, setDirection] = useState("");
+  const [wordCount, setWordCount] = useState(0);
 
   useEffect(() => {
     if (initialOpenAddTest) {
@@ -4028,6 +5706,9 @@ function LessonEditor({
     setEditCorrect(String(p.correct_answer || p.answer || ""));
     setEditExplanation(String(p.explanation || ""));
     setEditAudioUrl(String(p.audio_url || ""));
+    setEditHint(String(p.hint || p.definition || ""));
+    setEditDirection(String(p.direction || ""));
+    setEditWordCount(Number(p.word_count || 0));
   };
 
   const saveEdit = async () => {
@@ -4043,6 +5724,7 @@ function LessonEditor({
 
     let choices: string[] = [];
     let answer = editCorrect.trim();
+    let pairs: { left: string; right: string }[] = [];
 
     if (editType === "true_false" || editType === "listening_tf") {
       choices = ["To'g'ri", "Noto'g'ri"];
@@ -4058,11 +5740,25 @@ function LessonEditor({
       }
     } else if (editType === "matching") {
       choices = editOptions.split("|").map((x) => x.trim()).filter(Boolean);
-      if (choices.length < 2) {
+      for (const c of choices) {
+        if (c.includes("=")) {
+          const [l, r] = c.split("=").map((s) => s.trim());
+          if (l && r) pairs.push({ left: l, right: r });
+        } else if (c.includes(" - ")) {
+          const [l, r] = c.split(" - ").map((s) => s.trim());
+          if (l && r) pairs.push({ left: l, right: r });
+        }
+      }
+      if (pairs.length < 2 && choices.length >= 2) {
+        for (let i = 0; i < choices.length - 1; i += 2) {
+          pairs.push({ left: choices[i], right: choices[i + 1] });
+        }
+      }
+      if (pairs.length < 2) {
         alert("Moslashtirish uchun kamida 2 ta juftlik kiriting (masalan: olma = apple | kitob = book).");
         return;
       }
-      if (!answer && choices.length) answer = choices[0];
+      if (!answer && pairs.length) answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
     } else {
       choices = editOptions ? editOptions.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
@@ -4094,6 +5790,19 @@ function LessonEditor({
             test_type: editType,
             audio_url: editAudioUrl.trim() || null,
             ...(editPassage.trim() ? { passage: editPassage.trim() } : {}),
+            ...(pairs.length > 0
+              ? {
+                  pairs,
+                  left_items: pairs.map((p) => p.left),
+                  right_items: [...pairs.map((p) => p.right)].sort(),
+                }
+              : {}),
+            ...(editType === "word_order" || editType === "scrambled_sentence" || editType === "listening_order"
+              ? { tokens: choices.length ? choices : (answer ? answer.split(/\s+/).filter(Boolean) : []) }
+              : {}),
+            ...(editHint.trim() ? { hint: editHint.trim() } : {}),
+            ...(editDirection.trim() ? { direction: editDirection.trim() } : {}),
+            ...(editWordCount > 0 ? { word_count: editWordCount } : {}),
           },
         },
       });
@@ -4131,6 +5840,7 @@ function LessonEditor({
 
     let choices: string[] = [];
     let answer = correct.trim();
+    let pairs: { left: string; right: string }[] = [];
 
     if (manualType === "true_false" || manualType === "listening_tf") {
       choices = ["To'g'ri", "Noto'g'ri"];
@@ -4146,11 +5856,25 @@ function LessonEditor({
       }
     } else if (manualType === "matching") {
       choices = options.split("|").map((x) => x.trim()).filter(Boolean);
-      if (choices.length < 2) {
+      for (const c of choices) {
+        if (c.includes("=")) {
+          const [l, r] = c.split("=").map((s) => s.trim());
+          if (l && r) pairs.push({ left: l, right: r });
+        } else if (c.includes(" - ")) {
+          const [l, r] = c.split(" - ").map((s) => s.trim());
+          if (l && r) pairs.push({ left: l, right: r });
+        }
+      }
+      if (pairs.length < 2 && choices.length >= 2) {
+        for (let i = 0; i < choices.length - 1; i += 2) {
+          pairs.push({ left: choices[i], right: choices[i + 1] });
+        }
+      }
+      if (pairs.length < 2) {
         alert("Moslashtirish uchun kamida 2 ta juftlik kiriting (masalan: olma = apple | kitob = book).");
         return;
       }
-      if (!answer && choices.length) answer = choices[0];
+      if (!answer && pairs.length) answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
     } else {
       choices = options ? options.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
@@ -4180,6 +5904,19 @@ function LessonEditor({
             test_type: manualType,
             audio_url: audioUrl.trim() || null,
             ...(passage.trim() ? { passage: passage.trim() } : {}),
+            ...(pairs.length > 0
+              ? {
+                  pairs,
+                  left_items: pairs.map((p) => p.left),
+                  right_items: [...pairs.map((p) => p.right)].sort(),
+                }
+              : {}),
+            ...(manualType === "word_order" || manualType === "scrambled_sentence" || manualType === "listening_order"
+              ? { tokens: choices.length ? choices : (answer ? answer.split(/\s+/).filter(Boolean) : []) }
+              : {}),
+            ...(hint.trim() ? { hint: hint.trim() } : {}),
+            ...(direction.trim() ? { direction: direction.trim() } : {}),
+            ...(wordCount > 0 ? { word_count: wordCount } : {}),
           },
         },
       });
@@ -4190,6 +5927,9 @@ function LessonEditor({
       setCorrect("");
       setExplanation("");
       setAudioUrl("");
+      setHint("");
+      setDirection("");
+      setWordCount(0);
       setShowAddTestModal(false);
       await onSaved();
     } catch (err) {
@@ -4401,7 +6141,13 @@ function LessonEditor({
                           value={editOptions}
                           onChange={(e) => setEditOptions(e.target.value)}
                           className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                          placeholder={`${t("learning_paths.teacher.options")}: A | B | C | D`}
+                          placeholder={
+                            editType === "matching"
+                              ? "Juftliklar: olma = apple | kitob = book"
+                              : editType === "true_false" || editType === "listening_tf"
+                              ? "To'g'ri | Noto'g'ri"
+                              : `${t("learning_paths.teacher.options")}: A | B | C | D`
+                          }
                         />
                         <input
                           value={editCorrect}
@@ -4410,6 +6156,45 @@ function LessonEditor({
                           placeholder={t("learning_paths.teacher.correct_answer")}
                         />
                       </div>
+
+                      {/* Contextual Extra Inputs for Inline Edit */}
+                      {editKindMeta.needsPassage ? (
+                        <textarea
+                          rows={2}
+                          value={editPassage}
+                          onChange={(e) => setEditPassage(e.target.value)}
+                          className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder="Matn (Passage / Context)..."
+                        />
+                      ) : null}
+
+                      {editType === "spelling" || editType === "dictation" || editType === "listening_dictation" || editType === "gap_fill" || editType === "listening_gap" ? (
+                        <input
+                          value={editHint}
+                          onChange={(e) => setEditHint(e.target.value)}
+                          className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder="Yordamchi ko'rsatma / Ta'rif / Hint..."
+                        />
+                      ) : null}
+
+                      {editType === "translation" ? (
+                        <input
+                          value={editDirection}
+                          onChange={(e) => setEditDirection(e.target.value)}
+                          className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder="Tarjima yo'nalishi (masalan: UZ → EN yoki EN → UZ)"
+                        />
+                      ) : null}
+
+                      {editType === "guided_writing" ? (
+                        <input
+                          type="number"
+                          value={editWordCount || ""}
+                          onChange={(e) => setEditWordCount(Number(e.target.value) || 0)}
+                          className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                          placeholder="Minimal so'zlar soni (masalan: 30)"
+                        />
+                      ) : null}
 
                       <input
                         value={editExplanation}
@@ -4908,6 +6693,47 @@ function LessonEditor({
                         />
                       </div>
                     )}
+
+                    {/* Passage / Context if needed */}
+                    {curKindMeta.needsPassage ? (
+                      <div className="space-y-1">
+                        <span className="text-[11px] font-black text-slate-500 dark:text-slate-400">
+                          Matn / Passage (Reading & Listening context)
+                        </span>
+                        <textarea
+                          value={passage}
+                          onChange={(e) => setPassage(e.target.value)}
+                          rows={4}
+                          placeholder="Matn (Passage / Context)..."
+                          className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                        />
+                      </div>
+                    ) : null}
+
+                    {/* Rich contextual inputs: Hint, Direction, Word Count */}
+                    <div className="grid gap-2 sm:grid-cols-3">
+                      <input
+                        value={direction}
+                        onChange={(e) => setDirection(e.target.value)}
+                        placeholder="Ko'rsatma / Direction (ixtiyoriy)"
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                      />
+                      <input
+                        value={hint}
+                        onChange={(e) => setHint(e.target.value)}
+                        placeholder="Yordam / Hint (ixtiyoriy)"
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                      />
+                      {manualType === "guided_writing" || manualType === "essay" || manualType === "open_answer" || manualType === "reading_open" ? (
+                        <input
+                          type="number"
+                          value={wordCount || ""}
+                          onChange={(e) => setWordCount(Number(e.target.value) || 0)}
+                          placeholder="So'zlar soni (Word count)"
+                          className="rounded-2xl border-2 border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                        />
+                      ) : null}
+                    </div>
 
                     <input
                       value={explanation}

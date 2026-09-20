@@ -451,7 +451,7 @@ from ai_generator import (
 app = FastAPI(
     title="Diamond Education API",
     description="Unified API for web, mobile and Telegram bot integrations",
-    version="2.0.0",
+    version="3.0.0",
 )
 
 GENERATOR_JOBS: dict[str, dict[str, Any]] = {}
@@ -12507,6 +12507,11 @@ def _diamondvoy_find_cached_answer(user_id: int, question: str) -> dict[str, Any
     norm = _diamondvoy_memory_norm(question)
     if len(norm) < 8:
         return None
+    # If the question asks for test/quiz generation, never use stale cached answers
+    test_keywords = {"test", "quiz", "savol", "tuzib", "tuzish", "mashq", "вопрос", "тест", "билет", "topshiriq"}
+    q_words = set(norm.split())
+    if test_keywords & q_words:
+        return None
     best: tuple[float, dict[str, Any] | None] = (0.0, None)
     for row in _diamondvoy_recent_memories(user_id, limit=140):
         score = _diamondvoy_memory_similarity(norm, str(row.get("question_norm") or row.get("question_text") or ""))
@@ -12514,11 +12519,12 @@ def _diamondvoy_find_cached_answer(user_id: int, question: str) -> dict[str, Any
             best = (score, row)
     shared_topic = False
     if best[1]:
-        shared_topic = bool(
-            _diamondvoy_memory_topic_keys(norm)
-            & _diamondvoy_memory_topic_keys(str(best[1].get("question_norm") or best[1].get("question_text") or ""))
-        )
-    if best[1] and (best[0] >= 0.68 or (shared_topic and best[0] >= 0.50)):
+        q_topics = _diamondvoy_memory_topic_keys(norm)
+        cand_topics = _diamondvoy_memory_topic_keys(str(best[1].get("question_norm") or best[1].get("question_text") or ""))
+        if q_topics and cand_topics and not (q_topics & cand_topics):
+            return None
+        shared_topic = bool(q_topics & cand_topics)
+    if best[1] and (best[0] >= 0.88 or (shared_topic and best[0] >= 0.80)):
         best[1]["match_score"] = round(best[0], 3)
         logger.info(
             "diamondvoy memory cache hit user_id=%s memory_id=%s score=%.3f",
@@ -12535,6 +12541,7 @@ def _diamondvoy_find_cached_answer(user_id: int, question: str) -> dict[str, Any
             best[0],
         )
     return None
+
 
 
 def _diamondvoy_related_memory_prompt(user_id: int, question: str, limit: int = 3) -> str:
@@ -21765,13 +21772,74 @@ async def _diamondvoy_run_generation_job(
             f"User request:\n{user_text or '[image-only educational request]'}"
         )
 
-        if image_urls:
-            vision_images = [_chat_media_data_url(url) for url in image_urls]
-            async with aiohttp.ClientSession() as session:
-                gen = _xai_generate_text_stream_with_images(ai_user_text, vision_images, session=session)
+        # Check if user asked for test questions on a topic
+        topic_match = None
+        is_pure_quiz_request = False
+        if user_text and not image_urls and not document_context:
+            m = re.search(r"[“\"'«]([^”\"'»]+)[”\"'»]\s*(?:mavzusi bo‘yicha|mavzusida|bo‘yicha|по теме|topic)\s*(?:menga\s*)?(?:roppa-rosa\s*)?(\d+)?\s*ta\s*test", user_text, re.IGNORECASE)
+            if not m:
+                m = re.search(r"(?:roppa-rosa\s*)?(\d+)?\s*ta\s*test.*?([“\"'«][^”\"'»]+[”\"'»])", user_text, re.IGNORECASE)
+            if not m:
+                m = re.search(r"(?:10\s*тестов\s*по\s*теме|тест\s*по\s*теме)\s*[“\"'«]([^”\"'»]+)[”\"'»]", user_text, re.IGNORECASE)
+            if m:
+                topic_match = m.group(1).strip("“\"'«» ") if not m.group(1).isdigit() else (m.group(2).strip("“\"'«» ") if len(m.groups()) > 1 and m.group(2) else None)
+                low_u = user_text.lower()
+                is_pure_quiz_request = "tushuntir" not in low_u and "объясн" not in low_u and "explain" not in low_u
+
+        # If pure quiz request and we have enough questions in the bank:
+        if is_pure_quiz_request and topic_match:
+            try:
+                from personalization import get_questions_from_bank
+                bank_qs = get_questions_from_bank(
+                    subject=subjects[0] if subjects else "English",
+                    topic=topic_match,
+                    count=10,
+                )
+                if len(bank_qs) >= 10:
+                    quiz_payload = {
+                        "type": "wizard_trigger",
+                        "wizard": "quiz_runner",
+                        "title": f"“{topic_match}” bo‘yicha 10 ta test" if query_lang == "uz" else (f"10 тестов по теме «{topic_match}»" if query_lang == "ru" else f"10 tests on {topic_match}"),
+                        "topic": topic_match,
+                        "questions": bank_qs,
+                    }
+                    intro_text = (
+                        f"Marhamat, “{topic_match}” mavzusi bo‘yicha 10 ta test savollari tayyor! Quyida testlarni ishlashingiz mumkin:\n\n"
+                        if query_lang == "uz" else
+                        (f"Вот 10 тестовых вопросов по теме «{topic_match}»! Вы можете пройти тест ниже:\n\n" if query_lang == "ru" else
+                         f"Here are 10 test questions on '{topic_match}'! You can complete the test below:\n\n")
+                    )
+                    streamed = intro_text + f"```quiz_json\n{json.dumps(quiz_payload, ensure_ascii=False, indent=2)}\n```"
+            except Exception:
+                pass
+
+        if not streamed:
+            if image_urls:
+                vision_images = [_chat_media_data_url(url) for url in image_urls]
+                async with aiohttp.ClientSession() as session:
+                    gen = _xai_generate_text_stream_with_images(ai_user_text, vision_images, session=session)
+                    while True:
+                        try:
+                            chunk = await asyncio.wait_for(anext(gen), timeout=20.0)
+                            if not chunk:
+                                continue
+                            streamed += chunk
+                            _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
+                        except (asyncio.TimeoutError, TimeoutError):
+                            continue
+                        except StopAsyncIteration:
+                            break
+            else:
+                gen = diamondvoy_gemini_answer_stream(
+                    ai_user_text,
+                    subjects,
+                    lang=query_lang,
+                    is_admin_context=role in {"admin", "teacher", "support"},
+                    conversation=prior_context,
+                )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(anext(gen), timeout=20.0)
+                        chunk = await asyncio.wait_for(anext(gen), timeout=15.0)
                         if not chunk:
                             continue
                         streamed += chunk
@@ -21780,28 +21848,26 @@ async def _diamondvoy_run_generation_job(
                         continue
                     except StopAsyncIteration:
                         break
-        else:
-            gen = diamondvoy_gemini_answer_stream(
-                ai_user_text,
-                subjects,
-                lang=query_lang,
-                is_admin_context=role in {"admin", "teacher", "support"},
-                conversation=prior_context,
-            )
-            while True:
-                try:
-                    chunk = await asyncio.wait_for(anext(gen), timeout=15.0)
-                    if not chunk:
-                        continue
-                    streamed += chunk
-                    _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
-                except (asyncio.TimeoutError, TimeoutError):
-                    continue
-                except StopAsyncIteration:
-                    break
 
         assistant_text = sanitize_diamondvoy_reply(streamed.strip() or t(query_lang, "diamondvoy_answer_empty"))
         _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+        # Automatically save any newly generated questions to question bank
+        try:
+            quiz_match = re.search(r"```(?:quiz_json|json)?\s*([\s\S]*?\"wizard\"\s*:\s*\"quiz_runner\"[\s\S]*?)\s*```", assistant_text)
+            if quiz_match:
+                parsed_quiz = json.loads(quiz_match.group(1))
+                t_name = str(parsed_quiz.get("topic") or topic_match or "").strip()
+                qs = parsed_quiz.get("questions") or []
+                if qs:
+                    from personalization import save_to_question_bank
+                    save_to_question_bank(
+                        subject=subjects[0] if subjects else "English",
+                        topic=t_name or "General",
+                        questions=qs,
+                    )
+        except Exception:
+            pass
+
         latest_title, latest_user_msg_count = _diamondvoy_autotitle_from_recent_messages(int(chat_id), max_user_messages=3)
         if latest_user_msg_count >= 2 and latest_title:
             current_chat_title = latest_title
@@ -55160,12 +55226,29 @@ async def teacher_list_materials(
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
     teacher_id = int(user.get("id") or 0)
+    role = str(user.get("role") or "").lower()
+    from personalization import _teacher_allowed_subjects, _normalize_subject_label
+    allowed_subs = _teacher_allowed_subjects(user) if role == "teacher" else None
+    if allowed_subs:
+        if subject:
+            norm_req = _normalize_subject_label(subject)
+            if norm_req not in allowed_subs:
+                return {"items": [], "total": 0, "limit": limit, "offset": offset}
+            target_subject = norm_req
+        else:
+            target_subject = allowed_subs[0]
+    else:
+        target_subject = subject
+
     ensure_teacher_materials_schema()
     items = _safe_call(
-        lambda: list_teacher_materials(teacher_id, subject=subject, my_only=my_only, limit=limit, offset=offset),
+        lambda: list_teacher_materials(teacher_id, subject=target_subject, my_only=my_only, limit=limit, offset=offset),
         [],
     ) or []
+    if allowed_subs:
+        items = [it for it in items if not it.get("subject") or _normalize_subject_label(str(it.get("subject"))) in allowed_subs]
     return {"items": items, "total": len(items), "limit": limit, "offset": offset}
+
 
 
 @app.post("/teacher/materials")

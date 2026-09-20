@@ -33,6 +33,7 @@ type Question = {
   check: "ai" | "auto";
   input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set" | "listening_set";
   retry_until_correct: boolean;
+  question?: string;
   prompt?: string;
   instruction?: string;
   word?: string;
@@ -47,6 +48,8 @@ type Question = {
   passage_template?: string;
   blank_count?: number;
   word_bank?: string[];
+  blanks?: any[];
+  answers?: any[];
   sub_questions?: SubQuestion[];
   hint?: string;          // spelling: ta'rif; dictation: mavzu; gap_fill: qavs so'z
   word_count?: number;    // guided_writing: minimal so'zlar soni
@@ -473,8 +476,67 @@ function AnswerInput({
     // Matnni qatorlarga bo'lamiz — raqamli ro'yxatlar tartibli chiqadi.
     const lines = template.split("\n");
     let blankCursor = 0;
+    const textForCheck = `${question.instruction || ""} ${question.question || ""} ${question.prompt || ""} ${template}`.toLowerCase();
+    const isTenseOrForm =
+      textForCheck.includes("form") ||
+      textForCheck.includes("tense") ||
+      textForCheck.includes("zamon") ||
+      textForCheck.includes("shakl") ||
+      textForCheck.includes("put the verb") ||
+      textForCheck.includes("in brackets") ||
+      textForCheck.includes("qavs");
+    const hasBrackets = /\(\s*[a-zA-Z'\s-]+\s*\)/.test(template);
+    const blanksList = Array.isArray(question.blanks) ? question.blanks : Array.isArray(question.answers) ? question.answers : [];
+    const ansSet = new Set(blanksList.map((b: any) => String(b?.answer || b || "").trim().toLowerCase()));
+    const bankSet = new Set((question.word_bank || []).map((w: any) => String(w || "").trim().toLowerCase()));
+    const showWordBank =
+      (question.word_bank || []).length > 0 &&
+      !(isTenseOrForm && hasBrackets) &&
+      !(isTenseOrForm && ansSet.size > 0 && [...ansSet].every((a) => bankSet.has(a)));
+
     return (
       <div className="space-y-4">
+        {showWordBank && (
+          <div className="rounded-2xl border border-line bg-surface-soft p-3.5 dark:border-white/10 dark:bg-white/5">
+            <p className="mb-2 text-xs font-black uppercase tracking-wider text-cyan-600 dark:text-cyan-400">
+              💡 So'zlar banki — joylash uchun bosing:
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {(question.word_bank || []).map((w, i) => {
+                const marked = usedWordBank.has(i);
+                return (
+                  <button
+                    key={`${w}-${i}`}
+                    type="button"
+                    onClick={() => {
+                      if (marked) {
+                        const blankIndex = Object.entries(wordBankAssignments).find(([, value]) => value === i)?.[0];
+                        if (blankIndex !== undefined) setBlank(Number(blankIndex), "");
+                        setWordBankAssignments((prev) => {
+                          const next = { ...prev };
+                          if (blankIndex !== undefined) delete next[Number(blankIndex)];
+                          return next;
+                        });
+                        setUsedWordBank((prev) => {
+                          const next = new Set(prev); next.delete(i); return next;
+                        });
+                        return;
+                      }
+                      const idx = filled.findIndex((x) => !x.trim());
+                      if (idx < 0) return;
+                      setBlank(idx, w);
+                      setWordBankAssignments((prev) => ({ ...prev, [idx]: i }));
+                      setUsedWordBank((prev) => new Set(prev).add(i));
+                    }}
+                    className={`rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-bold text-navy-900 transition dark:border-white/10 dark:bg-white/10 dark:text-white ${marked ? "opacity-40 line-through decoration-2" : "hover:bg-cyan-50 dark:hover:bg-cyan-500/15"}`}
+                  >
+                    {w}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <div className="space-y-2 rounded-2xl bg-surface-soft p-4 text-base leading-loose text-navy-900 dark:bg-white/5 dark:text-white">
           {lines.map((line, li) => {
             const segs = line.split("___");
@@ -518,40 +580,6 @@ function AnswerInput({
             );
           })}
         </div>
-        {(question.word_bank || []).length > 0 && (
-          <div className="flex flex-wrap gap-2">
-            {(question.word_bank || []).map((w, i) => {
-              const marked = usedWordBank.has(i);
-              return <button
-                key={`${w}-${i}`}
-                type="button"
-                onClick={() => {
-                  if (marked) {
-                    const blankIndex = Object.entries(wordBankAssignments).find(([, value]) => value === i)?.[0];
-                    if (blankIndex !== undefined) setBlank(Number(blankIndex), "");
-                    setWordBankAssignments((prev) => {
-                      const next = { ...prev };
-                      if (blankIndex !== undefined) delete next[Number(blankIndex)];
-                      return next;
-                    });
-                    setUsedWordBank((prev) => {
-                      const next = new Set(prev); next.delete(i); return next;
-                    });
-                    return;
-                  }
-                  const idx = filled.findIndex((x) => !x.trim());
-                  if (idx < 0) return;
-                  setBlank(idx, w);
-                  setWordBankAssignments((prev) => ({ ...prev, [idx]: i }));
-                  setUsedWordBank((prev) => new Set(prev).add(i));
-                }}
-                className={`rounded-xl border border-line bg-white px-3 py-1.5 text-sm font-bold text-navy-900 transition dark:border-white/10 dark:bg-white/10 dark:text-white ${marked ? "opacity-40 line-through decoration-2" : "hover:bg-cyan-50 dark:hover:bg-cyan-500/15"}`}
-              >
-                {w}
-              </button>;
-            })}
-          </div>
-        )}
         <button
           onClick={() => onSubmit({ blanks: filled })}
           disabled={disabled || filled.some((x) => !x.trim())}

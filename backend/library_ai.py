@@ -289,6 +289,8 @@ _KIND_SYNONYMS: dict[str, str] = {
     "reading": "reading_open",
     "reading_comprehension": "reading_open",
     "comprehension": "reading_open",
+    "open": "reading_open",
+    "open_ended": "reading_open",
     "open_question": "reading_open",
     "short_answer": "reading_open",
     "speaking": "speak_sentence",
@@ -731,7 +733,7 @@ def _normalize_questions(raw: Any) -> list[dict]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        kind = str(item.get("kind") or item.get("question_type") or item.get("type") or "").strip().lower()
+        kind = str(item.get("kind") or item.get("test_type") or item.get("question_type") or item.get("type") or "").strip().lower()
         kind = _KIND_SYNONYMS.get(kind, kind)
         if kind not in AI_TEST_TYPES:
             # Turi noaniq bo'lsa — mazmuniga qarab eng mos turini tanlaymiz
@@ -1015,16 +1017,16 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     # paragraf ham soxta alohida mashqlarga o'xshab qolardi.
     normalized_passage = _number_cloze_sentences(normalized_passage, len(answers))
 
-    # So'zlar banki: AI bergan qutini (box) aynan olamiz — chalg'ituvchi so'z
-    # QO'SHMAYMIZ. Faqat qutida hech narsa bo'lmasa, javoblarning o'zini beramiz.
+    # So'zlar banki: Faqat manbaning o'zida explicit box/bank berilgan bo'lsagina olamiz.
+    # Agar manbada box yo'q bo'lsa (masalan, fe'l zamonlari yoki qavsdagi so'zlar mashqlari),
+    # javoblarni sun'iy ravishda bankka qo'shmaymiz — aks holda o'quvchiga tayyor javob ko'rinib qoladi.
     bank_raw = item.get("word_bank") or item.get("bank") or item.get("options") or []
     bank = [str(w).strip() for w in bank_raw if str(w).strip()] if isinstance(bank_raw, list) else []
-    if not bank:
-        bank = [a["answer"] for a in answers]
     seen: set[str] = set()
     bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
-    import random as _r
-    _r.shuffle(bank)
+    if bank:
+        import random as _r
+        _r.shuffle(bank)
 
     return {
         # Muharrir uchun: passage (___ bilan) + answers massivi.
@@ -1185,11 +1187,7 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
         answers.append({"answer": ans, "accepted_answers": [str(a).strip() for a in acc if str(a).strip()]})
         if not instruction and q.get("instruction"):
             instruction = q.get("instruction")
-        bank.append(ans)
     passage = "\n".join(lines)
-    seen: set[str] = set()
-    bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
-    _r.shuffle(bank)
     return {
         "kind": "passage_cloze",
         "instruction": instruction,
@@ -1197,7 +1195,7 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
         "answers": answers,
         "passage_template": passage,
         "blanks": answers,
-        "word_bank": bank,
+        "word_bank": [],
     }
 
 
@@ -2592,7 +2590,7 @@ async def ai_test_answer(
         verdict, feedback = await _check_listening_set_with_ai(
             question, payload, subject, x_language
         )
-    elif meta.get("check") == "auto":
+    elif meta.get("check") == "auto" and question.get("check") != "ai":
         verdict, feedback = _check_auto(question, payload)
     else:
         verdict, feedback = await _check_with_ai(question, payload, subject, x_language)
@@ -3036,12 +3034,16 @@ async def _check_with_ai(
     spoken = False
     answer = str(payload.answer_text or "").strip()
 
-    if input_mode == "audio" or (input_mode == "audio_or_text" and payload.audio_url):
-        if not payload.audio_url:
-            raise HTTPException(status_code=400, detail="Ovozli javob yuborilmadi")
-        answer = await _transcribe(payload.audio_url, subject, x_language)
+    if input_mode == "audio" or (input_mode == "audio_or_text" and payload.audio_url) or payload.audio_url:
         spoken = True
+        if not answer and payload.audio_url:
+            try:
+                answer = await _transcribe(payload.audio_url, subject, x_language)
+            except Exception as exc:
+                logger.warning("stt transcribe failed: %s", exc)
         if not answer:
+            if not payload.audio_url:
+                raise HTTPException(status_code=400, detail="Ovozli javob yuborilmadi")
             return "wrong", {
                 "transcript": "",
                 "feedback": "Ovozingiz aniq eshitilmadi. Yana bir marta, sekinroq va balandroq gapiring.",

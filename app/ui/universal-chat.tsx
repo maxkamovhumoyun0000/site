@@ -2626,34 +2626,34 @@ export function UniversalChat({
   );
 
   const DiamondvoyPane = (
-    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : activePane === null ? "hidden lg:flex" : "hidden")}>
-      <div className="px-3 sm:px-5 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-3">
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/50 dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : activePane === null ? "hidden lg:flex" : "hidden")}>
+      <div className="px-4 sm:px-6 py-3.5 border-b-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-900/95 backdrop-blur-md flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
+          <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-ink-700 dark:text-white active:translate-y-0.5 active:border-b-2">‹</button>
           <DiamondvoyAvatar onPreview={setPreviewMedia} thinkingLabel={tt("chat.ai.thinking", "Diamondvoy o'ylayapti")} profileLabel={tt("chat.ai.title", "Diamondvoy")} />
           <div className="min-w-0">
             <h3 className="font-black text-navy-900 dark:text-white truncate">{activeChat?.title === "Yangi chat" ? tt("chat.new", "Yangi chat") : activeChat?.title || "Diamondvoy"}</h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300">Doimiy shaxsiy yordamchi</p>
+            <p className="text-xs font-bold text-ink-500 dark:text-navy-300">Doimiy shaxsiy yordamchi</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {canRegenerate && (
-            <button type="button" onClick={() => regenerateLastAnswer().catch(() => null)} disabled={sending || !activeChatId} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white disabled:opacity-50">
+            <button type="button" onClick={() => regenerateLastAnswer().catch(() => null)} disabled={sending || !activeChatId} className="px-3.5 py-2 rounded-xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-xs font-black uppercase tracking-wider text-navy-900 dark:text-white disabled:opacity-50 active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF]">
               {tt("chat.regenerate", "Qayta javob ber")}
             </button>
           )}
-          <button type="button" onClick={() => loadAiMessages(activeChatId || 0).catch(() => null)} disabled={!activeChatId || loadingBody} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white disabled:opacity-50">
+          <button type="button" onClick={() => loadAiMessages(activeChatId || 0).catch(() => null)} disabled={!activeChatId || loadingBody} className="p-2 rounded-xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-xs font-black text-navy-900 dark:text-white disabled:opacity-50 active:translate-y-0.5 active:border-b-2">
             ↻
           </button>
         </div>
       </div>
 
-      {testReviewContext ? <div className="border-b border-cyan-500/20 bg-cyan-500/5 px-3 py-3 sm:px-5">
+      {testReviewContext ? <div className="border-b-2 border-cyan-500/30 bg-cyan-500/10 px-4 py-3 sm:px-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div><p className="text-xs font-black text-cyan-800 dark:text-cyan-200">💎 Test tahlili ulandi</p><p className="text-xs text-ink-500 dark:text-navy-300">{testReviewContext.title} · {testReviewContext.questions.length} ta savol. Savolni tanlab Diamondvoydan so‘rang.</p></div>
-          <button type="button" disabled={sending} onClick={() => sendDiamondvoyMessage(`“${testReviewContext.title}” testimdagi barcha xatolarimni umumiy tahlil qilib, qaysi qoidalarni takrorlashim kerakligini ayting.`).catch(() => null)} className="rounded-lg border border-cyan-500/30 bg-white px-3 py-2 text-xs font-black text-cyan-700 disabled:opacity-50 dark:bg-white/10 dark:text-cyan-200">Umumiy tahlil</button>
+          <button type="button" disabled={sending} onClick={() => sendDiamondvoyMessage(`“${testReviewContext.title}” testimdagi barcha xatolarimni umumiy tahlil qilib, qaysi qoidalarni takrorlashim kerakligini ayting.`).catch(() => null)} className="rounded-xl border-2 border-b-4 border-cyan-700 bg-cyan-600 px-3.5 py-1.5 text-xs font-black uppercase text-white disabled:opacity-50 active:translate-y-0.5 active:border-b-2">Umumiy tahlil</button>
         </div>
-        <label className="mt-2 block text-xs font-bold text-ink-600 dark:text-navy-200">Savolni tanlang<select defaultValue="" disabled={sending} onChange={(event) => { const index = Number(event.target.value); if (Number.isInteger(index) && index >= 0) sendDiamondvoyMessage(selectedReviewQuestion(testReviewContext, index)).catch(() => null); event.currentTarget.value = ""; }} className="mt-1 block w-full rounded-lg border border-line bg-white px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:border-cyan-400 disabled:opacity-50 dark:border-white/10 dark:bg-navy-950 dark:text-white"><option value="">Savolni tanlang…</option>{testReviewContext.questions.map((question, index) => <option key={`${index}-${question.prompt}`} value={index}>{index + 1}. {String(question.prompt || "Savol").slice(0, 100)}</option>)}</select></label>
+        <label className="mt-2 block text-xs font-bold text-ink-600 dark:text-navy-200">Savolni tanlang<select defaultValue="" disabled={sending} onChange={(event) => { const index = Number(event.target.value); if (Number.isInteger(index) && index >= 0) sendDiamondvoyMessage(selectedReviewQuestion(testReviewContext, index)).catch(() => null); event.currentTarget.value = ""; }} className="mt-1 block w-full rounded-xl border-2 border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-navy-900 outline-none focus:border-cyan-400 disabled:opacity-50 dark:border-navy-700 dark:bg-navy-950 dark:text-white"><option value="">Savolni tanlang…</option>{testReviewContext.questions.map((question, index) => <option key={`${index}-${question.prompt}`} value={index}>{index + 1}. {String(question.prompt || "Savol").slice(0, 100)}</option>)}</select></label>
       </div> : null}
 
       <div
@@ -2662,7 +2662,7 @@ export function UniversalChat({
           const node = event.currentTarget;
           pinnedToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 120;
         }}
-        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-4 space-y-4"
+        className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 py-5 space-y-4"
       >
         {!activeChatId ? (
           <div className="h-full grid place-items-center text-center text-ink-500 dark:text-navy-300">
@@ -2673,16 +2673,16 @@ export function UniversalChat({
         ) : aiMessages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-ink-400 dark:text-slate-400 h-full">
             <DiamondvoyAvatar profileLabel="Diamondvoy" />
-            <h3 className="mt-4 text-xl font-black text-ink-600 dark:text-slate-200">Diamondvoy</h3>
-            <p className="mt-2 text-sm max-w-sm">
+            <h3 className="mt-4 text-2xl font-black text-navy-900 dark:text-white">Diamondvoy</h3>
+            <p className="mt-2 text-sm max-w-sm font-medium">
               {tt("chat.ai.emptyMessage", "Savollaringizni yozing yoki rasm/fayl yuklang. Diamondvoy yordam berishga tayyor.")}
             </p>
             {isStudent && (
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
+              <div className="mt-6 flex flex-wrap justify-center gap-3">
                 <button
                   type="button"
                   onClick={() => sendDiamondvoyMessage("Mening oxirgi o‘quv tahlilimni tushuntirib bering: qaysi mavzularda qiynalyapman, nimani avval takrorlashim kerak va bugun qanday yengil mashq qilay?").catch(() => null)}
-                  className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 px-4 py-2.5 text-sm font-black text-cyan-700 transition hover:bg-cyan-500/15 dark:text-cyan-200"
+                  className="rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-blue-500/25 active:translate-y-0.5 active:border-b-2 hover:bg-[#1429f2] transition-all cursor-pointer"
                 >
                   💎 Mening o‘quv tahlilim
                 </button>
@@ -2694,7 +2694,7 @@ export function UniversalChat({
                       sendDiamondvoyMessage(`“${topic.trim()}” mavzusi bo‘yicha menga 10 ta test savolini tuzib bering. Har bir savolda 4 ta variant bo‘lsin, javoblar takrorlanmasin.`).catch(() => null);
                     }
                   }}
-                  className="rounded-xl border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm font-black text-blue-700 transition hover:bg-blue-500/15 dark:text-blue-200"
+                  className="rounded-2xl border-2 border-b-4 border-cyan-700 bg-cyan-600 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md active:translate-y-0.5 active:border-b-2 hover:bg-cyan-700 transition-all cursor-pointer"
                 >
                   🎯 10 ta test tuzish
                 </button>
@@ -2703,7 +2703,7 @@ export function UniversalChat({
             {canRegenerate && (userRole === "teacher" || userRole === "support") && (
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 <button
-                  className="px-4 py-2 rounded-xl bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300 text-sm font-bold border border-cyan-200 dark:border-cyan-800/50 hover:bg-cyan-200 dark:hover:bg-cyan-800 transition-colors"
+                  className="px-5 py-2.5 rounded-2xl border-2 border-b-4 border-cyan-700 bg-cyan-600 text-white text-xs font-black uppercase tracking-wider shadow-sm active:translate-y-0.5 active:border-b-2 hover:bg-cyan-700"
                   onClick={() => {
                     setInput("Uy vazifasi berish");
                     setTimeout(() => sendDiamondvoyMessage("Uy vazifasi berish").catch(() => null), 50);
@@ -2716,7 +2716,7 @@ export function UniversalChat({
             {isAdmin && (
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 <button
-                  className="px-4 py-2 rounded-xl bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-sm font-bold border border-emerald-200 dark:border-emerald-800/50 hover:bg-emerald-200 dark:hover:bg-emerald-800 transition-colors"
+                  className="px-5 py-2.5 rounded-2xl border-2 border-b-4 border-emerald-700 bg-emerald-600 text-white text-xs font-black uppercase tracking-wider shadow-sm active:translate-y-0.5 active:border-b-2 hover:bg-emerald-700"
                   onClick={() => {
                     setInput("Yangi o'quvchilar qo'shish");
                     setTimeout(() => sendDiamondvoyMessage("Yangi o'quvchilar qo'shish").catch(() => null), 50);
@@ -2725,7 +2725,7 @@ export function UniversalChat({
                   👥 Yangi o'quvchilar qo'shish
                 </button>
                 <button
-                  className="px-4 py-2 rounded-xl bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 text-sm font-bold border border-blue-200 dark:border-blue-800/50 hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
+                  className="px-5 py-2.5 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] text-white text-xs font-black uppercase tracking-wider shadow-sm active:translate-y-0.5 active:border-b-2 hover:bg-[#1429f2]"
                   onClick={() => {
                     setInput("Mobil ilovalar versiyasi");
                     setTimeout(() => sendDiamondvoyMessage("Mobil ilovalar versiyasi").catch(() => null), 50);
@@ -2745,8 +2745,12 @@ export function UniversalChat({
                 {!mine && <DiamondvoyAvatar thinking={message.streaming && !message.content} onPreview={setPreviewMedia} thinkingLabel={tt("chat.ai.thinking", "Diamondvoy o'ylayapti")} profileLabel={tt("chat.ai.title", "Diamondvoy")} />}
                 <div 
                   className={cx(
-                    isWizardTrigger ? "w-full max-w-[95%] sm:max-w-[85%]" : "max-w-[88%] sm:max-w-[72%] rounded-2xl px-4 py-3 border select-none", 
-                    mine ? "bg-cyan-500 text-white border-cyan-500" : isWizardTrigger ? "" : "bg-surface-soft dark:bg-white/5 text-navy-900 dark:text-white border-line dark:border-white/10"
+                    isWizardTrigger ? "w-full max-w-[95%] sm:max-w-[85%]" : "max-w-[88%] sm:max-w-[72%] rounded-3xl p-4 sm:p-5 border-2 border-b-4 select-none shadow-sm", 
+                    mine
+                      ? "rounded-tr-md border-[#001A88] bg-[#002DFF] text-white shadow-md shadow-blue-500/15"
+                      : isWizardTrigger
+                      ? ""
+                      : "rounded-tl-md border-slate-200 bg-white text-navy-900 dark:border-navy-700 dark:bg-navy-900 dark:text-white"
                   )}
                   onPointerDown={() => {
                     msgLongPressTimerRef.current = window.setTimeout(() => setVisibleTimeId(`ai-${message.id}`), 400);
@@ -2843,16 +2847,16 @@ export function UniversalChat({
           event.preventDefault();
           sendDiamondvoyMessage().catch(() => null);
         }}
-        className="border-t border-line dark:border-white/10 bg-white dark:bg-navy-950 px-3 sm:px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)]"
+        className="border-t-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-950/95 backdrop-blur-md px-4 sm:px-6 py-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]"
       >
         {ComposerImages}
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-2.5">
           <input ref={aiFileInputRef} type="file" accept="image/jpeg,image/png,image/webp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" multiple className="hidden" onChange={(event) => handleFiles(event.target.files).catch(() => null)} />
-          <button type="button" onClick={() => aiFileInputRef.current?.click()} disabled={uploading || images.length >= MAX_ATTACHMENTS} className="w-11 h-11 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white disabled:opacity-50" title="Rasm yoki o‘qiladigan fayl biriktirish">
+          <button type="button" onClick={() => aiFileInputRef.current?.click()} disabled={uploading || images.length >= MAX_ATTACHMENTS} className="w-12 h-12 rounded-2xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-ink-700 dark:text-white disabled:opacity-50 active:translate-y-0.5 active:border-b-2 shadow-sm text-lg" title="Rasm yoki o‘qiladigan fayl biriktirish">
             📎
           </button>
-          <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={1} placeholder={tt("chat.inputPlaceholder", "Xabar yozing...")} className="flex-1 max-h-32 resize-none rounded-lg border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-cyan-400" />
-          <button type="submit" disabled={sending || uploading || (!input.trim() && images.length === 0)} className="px-4 h-11 rounded-lg bg-cyan-500 text-white font-bold disabled:opacity-50">
+          <textarea value={input} onChange={(event) => setInput(event.target.value)} rows={1} placeholder={tt("chat.inputPlaceholder", "Xabar yozing...")} className="flex-1 max-h-32 resize-none rounded-2xl border-2 border-slate-200 dark:border-navy-700 bg-slate-50 dark:bg-navy-900 px-4 py-3 text-sm text-navy-900 dark:text-white outline-none focus:border-[#002DFF] font-medium" />
+          <button type="submit" disabled={sending || uploading || (!input.trim() && images.length === 0)} className="px-5 h-12 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] text-white font-black uppercase tracking-wider text-xs active:translate-y-0.5 active:border-b-2 shadow-md shadow-blue-500/25 disabled:opacity-40 hover:bg-[#1429f2] transition-all cursor-pointer">
             {sending ? "..." : tt("chat.send", "Yuborish")}
           </button>
         </div>
