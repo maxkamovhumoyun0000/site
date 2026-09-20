@@ -82,7 +82,53 @@ export function StudentPresenceProfile({
                 {image ? <img src={image} alt={title} className="h-11 w-11 shrink-0 rounded-lg object-cover border border-line dark:border-white/10" /> : <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-cyan-500/10 text-xl">🎁</span>}
                 <span className="min-w-0 truncate">{title}</span>
               </div>;
-            })}</div> : <p className="text-sm text-ink-500">Hali sovg‘a olmagan</p>}</section>
+            })}</div> : <p className="text-sm text-ink-500">Hali sovg'a olmagan</p>}</section>
+            {/* Badges */}
+            {(() => {
+              const badges = Array.isArray(data?.badges) ? data.badges : Array.isArray(data?.user?.badges) ? data.user.badges : [];
+              const selectedBadge = data?.selected_badge || data?.user?.selected_badge;
+              if (badges.length === 0 && !selectedBadge) return null;
+              const unlocked = badges.filter((b: any) => b.unlocked);
+              const locked = badges.filter((b: any) => !b.unlocked);
+              return <section><h4 className="font-black mb-2">🏅 Badgelar</h4>
+                {unlocked.length === 0 && !selectedBadge ? <p className="text-sm text-ink-500">Hali badge ochilmagan</p> : (
+                  <div className="grid grid-cols-4 gap-2">
+                    {unlocked.map((b: any) => {
+                      const imgSrc = b.asset_url ? (b.asset_url.startsWith("http") ? b.asset_url : `/api${b.asset_url.startsWith("/") ? "" : "/"}${b.asset_url}`) : "";
+                      const isSelected = selectedBadge && (selectedBadge.code === b.code || selectedBadge === b.code);
+                      return <div key={b.code} className={`flex flex-col items-center rounded-xl p-2 text-center ${isSelected ? "bg-cyan-500/15 ring-2 ring-cyan-400" : "bg-surface-soft dark:bg-white/5"}`} title={b.description || b.title}>
+                        {imgSrc ? <img src={imgSrc} alt={b.title} className="h-12 w-12 object-contain" /> : <span className="text-3xl">🏅</span>}
+                        <span className="text-[10px] font-bold mt-1 leading-tight">{b.title}</span>
+                      </div>;
+                    })}
+                    {locked.map((b: any) => {
+                      const imgSrc = b.asset_url ? (b.asset_url.startsWith("http") ? b.asset_url : `/api${b.asset_url.startsWith("/") ? "" : "/"}${b.asset_url}`) : "";
+                      return <div key={b.code} className="flex flex-col items-center rounded-xl p-2 text-center opacity-30 grayscale bg-surface-soft dark:bg-white/5" title={`🔒 ${b.description || b.title}`}>
+                        {imgSrc ? <img src={imgSrc} alt={b.title} className="h-12 w-12 object-contain" /> : <span className="text-3xl">🔒</span>}
+                        <span className="text-[10px] font-bold mt-1 leading-tight">{b.title}</span>
+                      </div>;
+                    })}
+                  </div>
+                )}
+              </section>;
+            })()}
+            {/* Certificates */}
+            {(() => {
+              const certs = Array.isArray(data?.certificates) ? data.certificates : Array.isArray(data?.user?.certificates) ? data.user.certificates : [];
+              if (certs.length === 0) return null;
+              return <section><h4 className="font-black mb-2">📜 Sertifikatlar</h4>
+                <div className="space-y-1.5">
+                  {certs.map((cert: any, idx: number) => {
+                    const pdfUrl = cert.pdf_url || cert.file_url;
+                    return <div key={cert.id || idx} className="flex items-center gap-2 rounded-lg bg-surface-soft dark:bg-white/5 px-3 py-2 text-sm font-semibold">
+                      <span className="text-lg">📜</span>
+                      <span className="min-w-0 truncate flex-1">{cert.title || cert.course_name || `Sertifikat #${idx + 1}`}</span>
+                      {pdfUrl ? <a href={pdfUrl.startsWith("http") ? pdfUrl : `/api${pdfUrl.startsWith("/") ? "" : "/"}${pdfUrl}`} target="_blank" rel="noopener noreferrer" className="text-cyan-500 text-xs font-bold shrink-0 hover:underline">Yuklab olish</a> : null}
+                    </div>;
+                  })}
+                </div>
+              </section>;
+            })()}
           </div> : null}
         </article>
       </div>
