@@ -1808,7 +1808,7 @@ class LearningAiLessonRequest(BaseModel):
 class LearningLibraryTestAttachRequest(BaseModel):
     content_type: str = Field(pattern="^(video|book|homework|ai_generated|teacher_library|library_node|test)$")
     content_id: int = Field(gt=0)
-    question_count: int = Field(default=10, ge=1, le=100)
+    question_count: int | None = Field(default=None, ge=0, le=1000)
 
 
 class LearningAssignRequest(BaseModel):
@@ -2380,29 +2380,14 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     elif kind in {"word_order", "scrambled_sentence", "listening_order"}:
         if not correct and raw.get("target_sentence"):
             correct = str(raw.get("target_sentence"))
-    elif kind == "matching":
-        pairs = raw.get("pairs") or raw.get("matches") or []
-        if not question:
-            question = "So'zlarni moslashtiring"
-        return {
-            "question": question,
-            "options": options,
-            "pairs": pairs,
-            "correct_answer": str(correct or ""),
-            "explanation": explanation,
-            "audio_url": audio_url,
-            "image_url": image_url,
-            "instruction": instruction,
-            "test_type": "matching",
-        }
     elif kind in {"listening", "dictation", "listening_dictation", "listening_open", "listening_set"}:
         if not correct and raw.get("answer"):
             correct = str(raw.get("answer"))
 
     if not question:
-        question = "Savol"
+        question = str(raw.get("passage") or raw.get("context") or "Savol")
 
-    return {
+    res = {
         "question": question,
         "options": options,
         "correct_answer": str(correct if correct is not None else (options[0] if options else "")),
@@ -2412,6 +2397,19 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         "instruction": instruction,
         "test_type": kind,
     }
+    # Preserve rich polymorphic fields from materials library
+    for extra_key in (
+        "passage", "context", "questions", "pairs", "matches",
+        "cloze_text", "word_bank", "sentence", "target_sentence",
+        "hints", "sample_answer", "acceptable_answers",
+    ):
+        if extra_key in raw and raw[extra_key] is not None:
+            res[extra_key] = raw[extra_key]
+
+    if kind == "matching" and not res.get("pairs") and raw.get("matches"):
+        res["pairs"] = raw["matches"]
+
+    return res
 
 
 @router.post("/staff/learning-modules/{module_id}/library-test")
@@ -2454,7 +2452,10 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
         if not questions: raise HTTPException(status_code=422,detail="Bu testda qo'llab-quvvatlanadigan savollar topilmadi")
         cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,)); position=int(dict(cur.fetchone() or {}).get("value") or -1)+1
         created=[]
-        for item in questions[:payload.question_count]:
+        target_questions = questions
+        if payload.question_count is not None and payload.question_count > 0:
+            target_questions = questions[:payload.question_count]
+        for item in target_questions:
             cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,str(test.get("title") or "Material testi"),"library",f"{payload.content_type}:{payload.content_id}",str(item.get("test_type") or "multiple_choice"),json.dumps(item,ensure_ascii=False),0,position,1)); created.append(int(cur.lastrowid or 0)); position+=1
         conn.commit(); return {"created_lesson_ids":created,"question_count":len(created)}
     finally: conn.close()

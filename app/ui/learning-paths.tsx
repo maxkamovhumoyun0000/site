@@ -1335,8 +1335,8 @@ function LessonPlayerModal({
       const q = data?.question_payload || data || null;
       setQuestion(q);
 
-      // Initialize word bank if Word Order test
-      if (q && (q.test_type === "word_order" || q.test_type === "listening_order")) {
+      // Initialize word bank if Word Order / Scrambled sentence test
+      if (q && (q.test_type === "word_order" || q.test_type === "listening_order" || q.test_type === "scrambled_sentence")) {
         const fullText = String(q.correct_answer || q.prompt || q.question || "");
         // Split and shuffle
         const rawWords = fullText.split(/\s+/).filter(Boolean);
@@ -1401,7 +1401,15 @@ function LessonPlayerModal({
   const submit = async () => {
     if (!selected || result || !question) return;
     const lesson = lessons[currentIndex];
-    const correct = String(question?.correct_answer || "").trim().toLowerCase() === selected.trim().toLowerCase();
+    const normSelected = selected.trim().toLowerCase();
+    const acceptable = Array.isArray(question?.acceptable_answers)
+      ? question.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
+      : [];
+    const correctAns = String(question?.correct_answer || "").trim().toLowerCase();
+    const correct =
+      (correctAns ? normSelected === correctAns : false) ||
+      acceptable.includes(normSelected) ||
+      (!correctAns && acceptable.length === 0);
     const newScore = score + (correct ? 1 : 0);
     const newTotal = total + 1;
     setScore(newScore);
@@ -1664,14 +1672,26 @@ function LessonPlayerModal({
               {/* Category Pill */}
               <div className="flex items-center justify-between">
                 <span className="rounded-xl bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-wider text-slate-600 dark:bg-navy-800 dark:text-navy-300">
-                  {question.test_type === "word_order" || question.test_type === "listening_order"
+                  {question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence"
                     ? "🧩 Gap tuzing"
                     : question.test_type === "true_false" || question.test_type === "listening_tf"
                     ? "⚖️ To'g'ri yoki Noto'g'ri"
-                    : question.test_type === "fill_blank" || question.test_type === "listening_gap"
+                    : question.test_type === "fill_blank" || question.test_type === "listening_gap" || question.test_type === "gap_fill"
                     ? "✏️ Bo'sh joyni to'ldiring"
                     : question.test_type === "matching"
                     ? "🔄 Moslashtiring"
+                    : question.test_type === "paraphrase"
+                    ? "🔄 Qayta ifodalash"
+                    : question.test_type === "listening_dictation"
+                    ? "✍️ Diktant (eshitib yozish)"
+                    : question.test_type === "spelling"
+                    ? "🔤 To'g'ri yozilish (spelling)"
+                    : question.test_type === "translation"
+                    ? "🌐 Tarjima qiling"
+                    : question.test_type === "reading_open" || question.test_type === "listening_open"
+                    ? "📖 Savolga javob yozing"
+                    : question.test_type === "speaking_repeat" || question.test_type === "speaking_response"
+                    ? "🗣️ Gapirish mashqi"
                     : question.audio_url
                     ? "🎧 Tinglab javob bering"
                     : "📝 To'g'ri variantni tanlang"}
@@ -1685,6 +1705,17 @@ function LessonPlayerModal({
               <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
                 {question.question || question.prompt || "Savolga javob bering:"}
               </h2>
+
+              {/* Passage / Context if available */}
+              {question.passage || question.context ? (
+                <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-4 text-sm leading-relaxed text-slate-800 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
+                  <div className="flex items-center gap-1.5 text-xs font-black uppercase text-indigo-700 dark:text-indigo-300 mb-1.5">
+                    <span>📖</span>
+                    <span>Matn / Passage</span>
+                  </div>
+                  {String(question.passage || question.context)}
+                </div>
+              ) : null}
 
               {/* Duolingo Speaker Button (if audio) */}
               {question.audio_url ? (
@@ -1710,7 +1741,7 @@ function LessonPlayerModal({
               ) : null}
 
               {/* ─── Exercise Type 1: Word Order / Scrambled sentence (Duolingo Signature) ─── */}
-              {question.test_type === "word_order" || question.test_type === "listening_order" ? (
+              {question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence" ? (
                 <div className="space-y-6 pt-2">
                   {/* Sentence Slots Line */}
                   <div className="min-h-24 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/50">
@@ -1787,8 +1818,8 @@ function LessonPlayerModal({
                     );
                   })}
                 </div>
-              ) : question.test_type === "fill_blank" && (!question.options || question.options.length < 2) ? (
-                /* ─── Exercise Type 3: Fill in the Blank (Input) ─── */
+              ) : (!question.options || !Array.isArray(question.options) || question.options.length < 2) ? (
+                /* ─── Exercise Type 3: Fill Blank, Dictation, Open, Translation, Spelling (Text Input) ─── */
                 <div className="space-y-3 pt-2">
                   <input
                     type="text"
@@ -1800,7 +1831,7 @@ function LessonPlayerModal({
                     autoFocus
                     className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                   />
-                  <p className="text-xs text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
+                  <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
                 </div>
               ) : (
                 /* ─── Exercise Type 4: Multiple Choice (Duolingo 3D Cards) ─── */
@@ -1994,7 +2025,7 @@ function FinalExamPlayerModal({
   const currentQuestion = questions[currentIndex] || null;
 
   useEffect(() => {
-    if (currentQuestion && (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order")) {
+    if (currentQuestion && (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence")) {
       const fullText = String(currentQuestion.correct_answer || currentQuestion.prompt || currentQuestion.question || "");
       const rawWords = fullText.split(/\s+/).filter(Boolean);
       const shuffled = [...rawWords].sort(() => Math.random() - 0.5);
@@ -2047,7 +2078,15 @@ function FinalExamPlayerModal({
 
   const checkAnswer = () => {
     if (!selected || result || !currentQuestion) return;
-    const correct = String(currentQuestion.correct_answer || "").trim().toLowerCase() === selected.trim().toLowerCase();
+    const normSelected = selected.trim().toLowerCase();
+    const acceptable = Array.isArray(currentQuestion?.acceptable_answers)
+      ? currentQuestion.acceptable_answers.map((a: unknown) => String(a).trim().toLowerCase())
+      : [];
+    const correctAns = String(currentQuestion.correct_answer || "").trim().toLowerCase();
+    const correct =
+      (correctAns ? normSelected === correctAns : false) ||
+      acceptable.includes(normSelected) ||
+      (!correctAns && acceptable.length === 0);
     const newScore = score + (correct ? 1 : 0);
     setScore(newScore);
 
@@ -2303,7 +2342,27 @@ function FinalExamPlayerModal({
             <div className="space-y-5 animate-fade-in">
               <div className="flex items-center justify-between">
                 <span className="rounded-xl bg-amber-500/10 px-3 py-1 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
-                  {currentQuestion.module_title ? `📌 ${currentQuestion.module_title}` : "🎓 Yakuniy Imtihon"}
+                  {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence"
+                    ? "🧩 Gap tuzing"
+                    : currentQuestion.test_type === "true_false" || currentQuestion.test_type === "listening_tf"
+                    ? "⚖️ To'g'ri yoki Noto'g'ri"
+                    : currentQuestion.test_type === "fill_blank" || currentQuestion.test_type === "listening_gap" || currentQuestion.test_type === "gap_fill"
+                    ? "✏️ Bo'sh joyni to'ldiring"
+                    : currentQuestion.test_type === "matching"
+                    ? "🔄 Moslashtiring"
+                    : currentQuestion.test_type === "paraphrase"
+                    ? "🔄 Qayta ifodalash"
+                    : currentQuestion.test_type === "listening_dictation"
+                    ? "✍️ Diktant (eshitib yozish)"
+                    : currentQuestion.test_type === "spelling"
+                    ? "🔤 To'g'ri yozilish (spelling)"
+                    : currentQuestion.test_type === "translation"
+                    ? "🌐 Tarjima qiling"
+                    : currentQuestion.test_type === "reading_open" || currentQuestion.test_type === "listening_open"
+                    ? "📖 Savolga javob yozing"
+                    : currentQuestion.module_title
+                    ? `📌 ${currentQuestion.module_title}`
+                    : "🎓 Yakuniy Imtihon"}
                 </span>
                 <span className="text-xs font-bold text-slate-400">
                   {currentIndex + 1} / {questions.length}
@@ -2313,6 +2372,17 @@ function FinalExamPlayerModal({
               <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
                 {currentQuestion.question || currentQuestion.prompt || "Savolga javob bering:"}
               </h2>
+
+              {/* Passage / Context if available */}
+              {currentQuestion.passage || currentQuestion.context ? (
+                <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 text-sm leading-relaxed text-slate-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
+                  <div className="flex items-center gap-1.5 text-xs font-black uppercase text-amber-700 dark:text-amber-300 mb-1.5">
+                    <span>📖</span>
+                    <span>Matn / Passage</span>
+                  </div>
+                  {String(currentQuestion.passage || currentQuestion.context)}
+                </div>
+              ) : null}
 
               {currentQuestion.audio_url ? (
                 <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
@@ -2328,7 +2398,7 @@ function FinalExamPlayerModal({
                 </div>
               ) : null}
 
-              {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" ? (
+              {currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" ? (
                 <div className="space-y-6">
                   <div className="min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
                     {sentenceWords.map((word, idx) => (
@@ -2363,6 +2433,56 @@ function FinalExamPlayerModal({
                       </button>
                     ))}
                   </div>
+                </div>
+              ) : currentQuestion.test_type === "true_false" || currentQuestion.test_type === "listening_tf" ? (
+                /* ─── True / False ─── */
+                <div className="grid grid-cols-2 gap-4 pt-2">
+                  {["To'g'ri", "Noto'g'ri"].map((opt) => {
+                    const isSelected = selected.toLowerCase() === opt.toLowerCase();
+                    const isCorrectChoice = opt.toLowerCase() === String(currentQuestion.correct_answer || "").trim().toLowerCase();
+
+                    let btnStyle = "border-slate-200 border-b-4 bg-white hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800";
+                    if (isSelected && !result) {
+                      btnStyle = "border-[#84d8ff] border-b-4 bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]";
+                    } else if (result) {
+                      if (isCorrectChoice) {
+                        btnStyle = "border-[#58cc02] border-b-4 bg-[#d7ffb8] text-[#2e6b00] dark:bg-[#183617] dark:text-[#a0ff6d]";
+                      } else if (isSelected && !isCorrectChoice) {
+                        btnStyle = "border-[#ff4b4b] border-b-4 bg-[#ffdfe0] text-[#a01818] dark:bg-[#3d1a1b] dark:text-[#ffa0a0]";
+                      }
+                    }
+
+                    return (
+                      <button
+                        key={opt}
+                        type="button"
+                        disabled={Boolean(result)}
+                        onClick={() => {
+                          playDuolingoSound("pop");
+                          setSelected(opt);
+                        }}
+                        className={`flex flex-col items-center justify-center gap-2 rounded-3xl p-6 text-base font-black transition-all active:translate-y-1 active:border-b-2 ${btnStyle}`}
+                      >
+                        <span className="text-3xl">{opt === "To'g'ri" ? "✓" : "✕"}</span>
+                        <span>{opt}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (!currentQuestion.options || !Array.isArray(currentQuestion.options) || currentQuestion.options.length < 2) ? (
+                /* ─── Text Input for Open, Dictation, Gap Fill, Translation ─── */
+                <div className="space-y-3 pt-2">
+                  <input
+                    type="text"
+                    value={selected}
+                    onChange={(e) => setSelected(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !result && void checkAnswer()}
+                    disabled={Boolean(result)}
+                    placeholder="Javobingizni yozing..."
+                    autoFocus
+                    className="w-full rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 text-lg font-black text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                  />
+                  <p className="text-xs font-bold text-slate-400">Javobni yozing va pastdagi "Tekshirish" tugmasini bosing.</p>
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -2509,6 +2629,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const [cover, setCover] = useState("star");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [moduleFormError, setModuleFormError] = useState("");
   const [showCreateTrackModal, setShowCreateTrackModal] = useState(false);
   const [showAddModuleInline, setShowAddModuleInline] = useState(false);
   const [showCertModal, setShowCertModal] = useState(false);
@@ -2574,6 +2695,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     event.preventDefault();
     if (!title.trim()) return;
     setBusy(true);
+    setError("");
     try {
       await apiFetch("/staff/learning-tracks", {
         method: "POST",
@@ -2593,23 +2715,24 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     event.preventDefault();
     if (!selected) return;
     if (!moduleTitle.trim()) {
-      setError("Modul nomini kiritish majburiy.");
+      setModuleFormError("Modul nomini kiritish majburiy.");
       return;
     }
     if (!topics.trim()) {
-      setError("Mavzularni kiritish majburiy.");
+      setModuleFormError("Mavzularni kiritish majburiy.");
       return;
     }
     const coinsNum = parseInt(String(rewardCoins).trim(), 10);
     if (!rewardCoins || isNaN(coinsNum) || coinsNum <= 0) {
-      setError("D'Point & D'Coin mukofotini kiritish majburiy (musbat son kiriting).");
+      setModuleFormError("D'Point & D'Coin mukofotini kiritish majburiy (musbat son kiriting).");
       return;
     }
     if (lastModuleCover && cover === lastModuleCover) {
-      setError("Ketma-ket ikkita modulga bir xil rasm tanlab bo'lmaydi. Boshqa rasm tanlang.");
+      setModuleFormError("Ketma-ket ikkita modulga bir xil rasm tanlab bo'lmaydi. Boshqa rasm tanlang.");
       return;
     }
     setBusy(true);
+    setModuleFormError("");
     setError("");
     try {
       await apiFetch(`/staff/learning-tracks/${selected.id}/modules`, {
@@ -2630,7 +2753,9 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
       setShowAddModuleInline(false);
       await load();
     } catch (e) {
-      setError(errorText(e, "Modul qo'shilmadi."));
+      const msg = errorText(e, "Modul qo'shilmadi.");
+      setModuleFormError(msg);
+      setError(msg);
     } finally {
       setBusy(false);
     }
@@ -2937,6 +3062,13 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
 
             {/* Modal Body (Scrollable) */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 custom-scrollbar">
+              {error ? (
+                <div className="rounded-2xl border border-rose-500/30 bg-rose-500/15 p-4 text-xs font-bold text-rose-700 dark:text-rose-200 flex items-center justify-between gap-3">
+                  <span>⚠️ {error}</span>
+                  <button type="button" onClick={() => setError("")} className="text-xs font-black text-rose-700 dark:text-rose-200 hover:opacity-75">✕</button>
+                </div>
+              ) : null}
+
               {/* Certificate & Passing Score Card */}
               <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-cyan-500/30 bg-gradient-to-r from-cyan-500/10 via-indigo-500/10 to-purple-500/10 dark:from-cyan-950/30 dark:via-indigo-950/30 dark:to-purple-950/30 p-5 shadow-sm">
                 <div className="flex items-center gap-3.5 min-w-0">
@@ -2988,7 +3120,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                   </div>
                   <button
                     type="button"
-                    onClick={() => setShowAddModuleInline(!showAddModuleInline)}
+                    onClick={() => {
+                      setShowAddModuleInline(!showAddModuleInline);
+                      setModuleFormError("");
+                    }}
                     className="inline-flex items-center gap-2 rounded-xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow transition hover:bg-[#1899d6] active:translate-y-0.5 active:border-b-2"
                   >
                     <span>{showAddModuleInline ? "✕ Formani yopish" : `➕ ${t("learning_paths.teacher.new_module", "Yangi Modul Qo'shish")}`}</span>
@@ -3001,6 +3136,16 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                     onSubmit={addModule}
                     className="mt-4 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 dark:bg-cyan-950/20 p-4 sm:p-5 space-y-4 animate-fade-in"
                   >
+                    {moduleFormError ? (
+                      <div className="rounded-xl border border-rose-500/40 bg-rose-500/15 p-3 text-xs font-bold text-rose-700 dark:text-rose-200 flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-2">
+                          <span>⚠️</span>
+                          <span>{moduleFormError}</span>
+                        </span>
+                        <button type="button" onClick={() => setModuleFormError("")} className="hover:opacity-70 font-black">✕</button>
+                      </div>
+                    ) : null}
+
                     <div>
                       <h4 className="font-black text-sm text-navy-900 dark:text-white">
                         + "{selected.title}" ga yangi modul qo'shish
@@ -3017,7 +3162,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         </label>
                         <input
                           value={moduleTitle}
-                          onChange={(e) => setModuleTitle(e.target.value)}
+                          onChange={(e) => {
+                            setModuleTitle(e.target.value);
+                            setModuleFormError("");
+                          }}
                           className="w-full rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                           placeholder="Masalan: 1-bosqich: Basic Grammar"
                           required
@@ -3029,7 +3177,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         </label>
                         <input
                           value={topics}
-                          onChange={(e) => setTopics(e.target.value)}
+                          onChange={(e) => {
+                            setTopics(e.target.value);
+                            setModuleFormError("");
+                          }}
                           className="w-full rounded-xl border border-line bg-white p-2.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                           placeholder="Present Simple, To be, Fe'llar (maksimal 5 ta)"
                         />
@@ -3046,7 +3197,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         min="1"
                         max="10000"
                         required
-                        onChange={(e) => setRewardCoins(e.target.value)}
+                        onChange={(e) => {
+                          setRewardCoins(e.target.value);
+                          setModuleFormError("");
+                        }}
                         className="w-full sm:w-48 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         placeholder="Masalan: 50"
                       />
@@ -3225,6 +3379,11 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 ✕
               </button>
             </div>
+            {error ? (
+              <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-500/15 p-3 text-xs font-bold text-rose-700 dark:text-rose-200">
+                ⚠️ {error}
+              </div>
+            ) : null}
             <form onSubmit={create} className="mt-4 space-y-4">
               <div>
                 <label className="mb-1 block text-xs font-black text-ink-600 dark:text-slate-300">
@@ -3232,7 +3391,10 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 </label>
                 <input
                   value={title}
-                  onChange={(e) => setTitle(e.target.value)}
+                  onChange={(e) => {
+                    setTitle(e.target.value);
+                    setError("");
+                  }}
                   className="w-full rounded-2xl border border-line bg-white p-3 text-sm font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-400"
                   placeholder="Masalan: General English B1, Matematika Asoslari"
                   required
@@ -3694,23 +3856,31 @@ const ALL_TEST_KINDS = [
   { key: "multiple_choice", label: "🔘 Ko'p variantli (MCQ)", needsAudio: false },
   { key: "true_false", label: "⚖️ To'g'ri / Noto'g'ri", needsAudio: false },
   { key: "fill_blank", label: "✏️ Bo'sh joyni to'ldirish", needsAudio: false },
-  { key: "word_order", label: "🔤 So'z tartibi", needsAudio: false },
+  { key: "gap_fill", label: "␣ Bo'sh joy to'ldirish (Gap fill)", needsAudio: false },
+  { key: "word_order", label: "🔤 So'z tartibi (Word Order)", needsAudio: false },
+  { key: "scrambled_sentence", label: "🔀 So'zlarni tartibga solish", needsAudio: false },
   { key: "matching", label: "🔗 Moslashtirish (Juftliklar)", needsAudio: false },
   { key: "listening", label: "🎧 Tinglab tushunish (Variantli)", needsAudio: true },
   { key: "dictation", label: "🎼 Diktant (Eshitib yozish)", needsAudio: true },
+  { key: "listening_dictation", label: "🎧 Diktant (Audio tinglab yozish)", needsAudio: true },
   { key: "listening_tf", label: "🎧 Listening: True / False / Not Given", needsAudio: true },
   { key: "listening_gap", label: "␣ Listening: Bo'sh joyni to'ldirish", needsAudio: true },
   { key: "listening_order", label: "🧩 Listening: So'zlar tartibi", needsAudio: true },
+  { key: "listening_open", label: "🎧 Listening: Ochiq savol", needsAudio: true },
+  { key: "listening_set", label: "🎧 Listening Set (1 audio + ko'p savol)", needsAudio: true },
   { key: "spelling", label: "🔤 To'g'ri yozish (Imlo)", needsAudio: false },
-  { key: "translation", label: "🔁 Tarjima", needsAudio: false },
+  { key: "translation", label: "🔁 Tarjima qilish", needsAudio: false },
   { key: "speak_sentence", label: "🎙️ Gap tuzib gapirish", needsAudio: false },
   { key: "write_sentence", label: "✍️ Gap tuzib yozish", needsAudio: false },
   { key: "guided_writing", label: "📝 Mavzu bo'yicha yozma mashq", needsAudio: false },
-  { key: "reading_open", label: "📖 Matn bo'yicha ochiq savol", needsAudio: false },
+  { key: "reading_open", label: "📖 Matn bo'yicha ochiq savol", needsAudio: false, needsPassage: true },
   { key: "read_aloud", label: "🔊 Ovoz chiqarib o'qish", needsAudio: false },
+  { key: "paraphrase", label: "🔄 Gapni boshqacha aytish (Paraphrase)", needsAudio: false },
   { key: "dialogue_completion", label: "💬 Dialogni to'ldirish", needsAudio: false },
   { key: "picture_description", label: "🖼️ Rasmni tasvirlash", needsAudio: false },
-  { key: "passage_cloze", label: "📃 Matnni to'ldirish (so'zlar banki)", needsAudio: false },
+  { key: "passage_cloze", label: "📃 Matnni to'ldirish (so'zlar banki)", needsAudio: false, needsPassage: true },
+  { key: "reading_set", label: "📚 Matn va savollar (Reading Set)", needsAudio: false, needsPassage: true },
+  { key: "word_practice", label: "💡 So'z mashqi (Random tur)", needsAudio: false },
 ];
 
 function LessonEditor({
@@ -3728,6 +3898,7 @@ function LessonEditor({
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [passage, setPassage] = useState("");
   const [manualType, setManualType] = useState("multiple_choice");
   const [options, setOptions] = useState("");
   const [correct, setCorrect] = useState("");
@@ -3739,6 +3910,7 @@ function LessonEditor({
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
+  const [editPassage, setEditPassage] = useState("");
   const [editType, setEditType] = useState("multiple_choice");
   const [editOptions, setEditOptions] = useState("");
   const [editCorrect, setEditCorrect] = useState("");
@@ -3749,7 +3921,7 @@ function LessonEditor({
   // AI & Library states
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
   const [topic, setTopic] = useState("");
-  const [count, setCount] = useState(5);
+  const [count, setCount] = useState(10);
   const [types, setTypes] = useState("multiple_choice,true_false,fill_blank,word_order,matching");
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
@@ -3761,18 +3933,19 @@ function LessonEditor({
   }, [initialOpenAddTest]);
   const [showLibraryModal, setShowLibraryModal] = useState(false);
 
-  const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false };
-  const editKindMeta = ALL_TEST_KINDS.find((k) => k.key === editType) || { needsAudio: false };
+  const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false, needsPassage: false };
+  const editKindMeta = ALL_TEST_KINDS.find((k) => k.key === editType) || { needsAudio: false, needsPassage: false };
 
   const startEdit = (lesson: Row) => {
     setEditingLessonId(Number(lesson.id));
     setEditTitle(String(lesson.title || ""));
     const p = (lesson.question_payload as Row) || {};
-    setEditPrompt(String(p.question || ""));
+    setEditPrompt(String(p.question || p.prompt || ""));
+    setEditPassage(String(p.passage || p.context || ""));
     setEditType(String(p.test_type || lesson.source_version || "multiple_choice"));
     const opts = Array.isArray(p.options) ? p.options.join(" | ") : "";
     setEditOptions(opts);
-    setEditCorrect(String(p.correct_answer || ""));
+    setEditCorrect(String(p.correct_answer || p.answer || ""));
     setEditExplanation(String(p.explanation || ""));
     setEditAudioUrl(String(p.audio_url || ""));
   };
@@ -3814,6 +3987,18 @@ function LessonEditor({
       choices = editOptions ? editOptions.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
 
+    const openTypes = [
+      "speak_sentence", "write_sentence", "guided_writing", "reading_open",
+      "listening_open", "read_aloud", "picture_description", "paraphrase", "word_practice",
+    ];
+    if (!answer && !openTypes.includes(editType) && editType !== "matching") {
+      alert("Iltimos, to'g'ri javobni kiriting.");
+      return;
+    }
+
+    const origLesson = lessons.find((l) => Number(l.id) === editingLessonId);
+    const origPayload = (origLesson?.question_payload as Row) || {};
+
     setBusy(true);
     try {
       await apiFetch(`/staff/learning-lessons/${editingLessonId}`, {
@@ -3821,12 +4006,14 @@ function LessonEditor({
         body: {
           title: editTitle.trim(),
           question_payload: {
+            ...origPayload,
             question: editPrompt.trim(),
             options: choices,
-            correct_answer: answer,
+            correct_answer: answer || editPrompt.trim(),
             explanation: editExplanation.trim(),
             test_type: editType,
             audio_url: editAudioUrl.trim() || null,
+            ...(editPassage.trim() ? { passage: editPassage.trim() } : {}),
           },
         },
       });
@@ -3888,7 +4075,11 @@ function LessonEditor({
       choices = options ? options.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
 
-    if (!answer && manualType !== "matching") {
+    const openTypes = [
+      "speak_sentence", "write_sentence", "guided_writing", "reading_open",
+      "listening_open", "read_aloud", "picture_description", "paraphrase", "word_practice",
+    ];
+    if (!answer && !openTypes.includes(manualType) && manualType !== "matching") {
       alert("Iltimos, to'g'ri javobni kiriting.");
       return;
     }
@@ -3904,15 +4095,17 @@ function LessonEditor({
           question_payload: {
             question: prompt.trim(),
             options: choices,
-            correct_answer: answer,
+            correct_answer: answer || prompt.trim(),
             explanation: explanation.trim(),
             test_type: manualType,
             audio_url: audioUrl.trim() || null,
+            ...(passage.trim() ? { passage: passage.trim() } : {}),
           },
         },
       });
       setTitle("");
       setPrompt("");
+      setPassage("");
       setOptions("");
       setCorrect("");
       setExplanation("");
@@ -3966,13 +4159,17 @@ function LessonEditor({
     }
   };
 
-  const attachLibrary = async (contentId: number, cType = "library_node", qCount = count) => {
+  const attachLibrary = async (contentId: number, cType = "library_node", qCount?: number) => {
     if (!contentId) return;
     setBusy(true);
     try {
       await apiFetch(`/staff/learning-modules/${module.id}/library-test`, {
         method: "POST",
-        body: { content_type: cType, content_id: contentId, question_count: qCount },
+        body: {
+          content_type: cType,
+          content_id: contentId,
+          ...(typeof qCount === "number" && qCount > 0 ? { question_count: qCount } : {}),
+        },
       });
       setShowLibraryModal(false);
       setShowAddTestModal(false);
@@ -4709,7 +4906,8 @@ function MaterialsLibraryModal({
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [selectedTest, setSelectedTest] = useState<LibTreeNode | null>(null);
-  const [questionCount, setQuestionCount] = useState(10);
+  const [questionCount, setQuestionCount] = useState(0);
+  const [takeAllQuestions, setTakeAllQuestions] = useState(true);
 
   // Materials Library Search State
   const [matItems, setMatItems] = useState<any[]>([]);
@@ -4816,7 +5014,8 @@ function MaterialsLibraryModal({
         key={node.id}
         onClick={() => {
           setSelectedTest(node);
-          setQuestionCount(node.question_count || 10);
+          setQuestionCount(node.question_count || (node.questions ? node.questions.length : 0));
+          setTakeAllQuestions(true);
         }}
         className={`flex items-center gap-2 rounded-xl px-3 py-2 transition cursor-pointer my-0.5 ${
           isSelected
@@ -4843,7 +5042,8 @@ function MaterialsLibraryModal({
           checked={isSelected}
           onChange={() => {
             setSelectedTest(node);
-            setQuestionCount(node.question_count || 10);
+            setQuestionCount(node.question_count || (node.questions ? node.questions.length : 0));
+            setTakeAllQuestions(true);
           }}
           className="accent-cyan-500"
         />
@@ -4936,7 +5136,8 @@ function MaterialsLibraryModal({
                         key={test.id}
                         onClick={() => {
                           setSelectedTest(test);
-                          setQuestionCount(test.question_count || 10);
+                          setQuestionCount(test.question_count || 0);
+                          setTakeAllQuestions(true);
                         }}
                         className={`flex items-center justify-between p-3 rounded-2xl border-2 transition cursor-pointer ${
                           isSelected
@@ -4965,7 +5166,8 @@ function MaterialsLibraryModal({
                             checked={isSelected}
                             onChange={() => {
                               setSelectedTest(test);
-                              setQuestionCount(test.question_count || 10);
+                              setQuestionCount(test.question_count || 0);
+                              setTakeAllQuestions(true);
                             }}
                             className="accent-cyan-500"
                           />
@@ -5082,7 +5284,8 @@ function MaterialsLibraryModal({
                           checked={isSel}
                           onChange={() => {
                             setSelectedMatItem(item);
-                            setQuestionCount(item.question_count || 10);
+                            setQuestionCount(item.question_count || 0);
+                            setTakeAllQuestions(true);
                           }}
                           className="accent-cyan-500"
                         />
@@ -5114,28 +5317,45 @@ function MaterialsLibraryModal({
 
         {/* Selected Test Action Footer */}
         <div className="border-t border-line p-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-bold text-ink-600 dark:text-slate-300">
-              {t("learning_paths.teacher.ai_count_label")}
-            </span>
-            <input
-              type="number"
-              min="1"
-              max={100}
-              value={questionCount}
-              onChange={(e) => setQuestionCount(Number(e.target.value))}
-              className="w-20 rounded-xl border border-line bg-white dark:bg-slate-800 p-2 text-xs font-bold text-center dark:border-slate-700 dark:text-white"
-            />
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-black text-navy-900 dark:text-white">
+              <input
+                type="checkbox"
+                checked={takeAllQuestions}
+                onChange={(e) => setTakeAllQuestions(e.target.checked)}
+                className="h-4 w-4 rounded accent-cyan-500 cursor-pointer"
+              />
+              <span>
+                Barcha savollarni olish ({selectedTest ? (selectedTest.question_count || "barcha") : (selectedMatItem?.question_count || "barcha")} ta)
+              </span>
+            </label>
+
+            {!takeAllQuestions ? (
+              <div className="flex items-center gap-2 animate-fade-in">
+                <span className="text-xs font-bold text-ink-600 dark:text-slate-300">
+                  miqdori:
+                </span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={questionCount || 1}
+                  onChange={(e) => setQuestionCount(Math.max(1, Number(e.target.value)))}
+                  className="w-20 rounded-xl border border-line bg-white dark:bg-slate-800 p-2 text-xs font-bold text-center dark:border-slate-700 dark:text-white"
+                />
+              </div>
+            ) : null}
           </div>
 
           <button
             type="button"
             disabled={modalTab === "tree" ? !selectedTest : !selectedMatItem}
             onClick={() => {
+              const finalCount = takeAllQuestions ? 0 : questionCount;
               if (modalTab === "tree" && selectedTest) {
-                onSelect(selectedTest.id, "library_node", questionCount);
+                onSelect(selectedTest.id, "library_node", finalCount);
               } else if (modalTab === "materials" && selectedMatItem) {
-                onSelect(selectedMatItem.content_id, selectedMatItem.content_type, questionCount);
+                onSelect(selectedMatItem.content_id, selectedMatItem.content_type, finalCount);
               }
             }}
             className="btn btn-primary text-xs py-2.5 px-6 font-bold disabled:opacity-40"
