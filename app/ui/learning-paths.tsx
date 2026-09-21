@@ -466,9 +466,7 @@ function DuolingoTrack({
 
     // If hasNext, snake trail CONTINUES downwards past the chest to connect seamlessly with the next track!
     if (hasNext) {
-      points.push({ x: cx + 38, y: chestY + 60 });
-      points.push({ x: cx - 38, y: chestY + 120 });
-      points.push({ x: cx, y: chestY + 180 });
+      points.push({ x: cx, y: chestY + 54 });
     }
 
     if (points.length < 2) return "";
@@ -489,18 +487,16 @@ function DuolingoTrack({
 
   const svgHeight = useMemo(() => {
     const base = Math.max(200, modules.length * 116 + 180);
-    return hasNext ? base + 155 : base;
+    return hasNext ? base + 40 : base;
   }, [modules.length, hasNext]);
 
   return (
     <article className={`relative select-none`}>
-      {/* Connected top milestone notch from previous track */}
+      {/* Top continuous road connector coming from previous track */}
       {hasPrev ? (
-        <div className="mx-auto -mb-3 flex justify-center relative z-20">
-          <div className="flex items-center gap-1.5 rounded-full border-2 border-cyan-400 bg-[#001A88] px-3.5 py-1 text-[10px] font-black uppercase tracking-widest text-cyan-300 shadow-md">
-            <span>●</span>
-            <span>Yo'l davomi</span>
-            <span>●</span>
+        <div className="mx-auto -mb-2 flex justify-center relative z-0 pointer-events-none">
+          <div className="w-5 h-5 bg-gradient-to-b from-[#001A88] via-[#002DFF] to-[#001A88] rounded-t-sm relative border-x-2 border-slate-300 dark:border-navy-700 shadow-sm flex items-center justify-center">
+            <div className="w-0.5 h-full border-r-2 border-dashed border-white/80" />
           </div>
         </div>
       ) : null}
@@ -658,17 +654,26 @@ function DuolingoTrack({
               </div>
             </button>
 
-            <span className="mt-2 text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
-              {certAlreadyClaimed
-                ? "🎓 Sertifikat olindi"
-                : chestUnlocked
-                ? "🎓 Sertifikat & Mukofot"
-                : examReady
-                ? "⚡ Yakuniy Imtihon"
-                : "Yakuniy Bosqich"}
-            </span>
+            {chestUnlocked && !certAlreadyClaimed ? (
+              <span className="mt-2 text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
+                🎓 Sertifikat & Mukofot
+              </span>
+            ) : examReady ? (
+              <span className="mt-2 text-xs font-black uppercase tracking-wider text-[#002DFF] dark:text-[#38bdf8]">
+                ⚡ Yakuniy Imtihon
+              </span>
+            ) : null}
           </div>
         </div>
+
+        {/* Bottom continuous road connector leading into next track */}
+        {hasNext ? (
+          <div className="flex justify-center -mt-2 -mb-4 relative z-0 pointer-events-none">
+            <div className="w-5 h-6 bg-gradient-to-b from-[#001A88] via-[#002DFF] to-[#001A88] rounded-b-sm relative border-x-2 border-slate-300 dark:border-navy-700 shadow-sm flex items-center justify-center">
+              <div className="w-0.5 h-full border-r-2 border-dashed border-white/80" />
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Pop-up Modal for Final Chest / Certificate Celebration via createPortal */}
@@ -787,10 +792,6 @@ function DuolingoTrack({
                         <span className="text-5xl">🏆</span>
                       </div>
                     </div>
-
-                    <span className="rounded-full bg-blue-500/15 px-3 py-1 text-xs font-black uppercase tracking-wider text-blue-700 dark:text-blue-300">
-                      Yakuniy Bosqich
-                    </span>
 
                     <h3 className="mt-2 text-2xl font-black text-navy-900 dark:text-white">
                       🎓 Yakuniy Imtihon
@@ -1266,13 +1267,31 @@ function TargetWordBanner({
   exampleSentence?: string;
 }) {
   if (!word) return null;
+  const rawWord = word || "";
+  const posMatch = rawWord.match(/\(([a-zA-Z\s\.,-]+)\)/);
+  const posRaw = posMatch ? posMatch[1].trim().toLowerCase() : "";
+  const posLabel =
+    posRaw === "v" ? "Fe'l" :
+    posRaw === "n" ? "Ot" :
+    posRaw === "adj" ? "Sifat" :
+    posRaw === "adv" ? "Ravish" :
+    posRaw === "n phr" ? "Ot birikmasi" :
+    posRaw === "v phr" ? "Fe'l birikmasi" :
+    posMatch ? posMatch[1].trim() : "";
+  const cleanWord = rawWord.replace(/\s*\([a-zA-Z\s\.,-]+\)\s*/g, " ").trim() || rawWord;
+
   return (
     <div className="rounded-2xl border-2 border-indigo-200 bg-gradient-to-br from-indigo-50/90 to-blue-50/80 p-4 shadow-sm dark:border-indigo-900/60 dark:bg-gradient-to-br dark:from-indigo-950/40 dark:to-blue-950/30">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <span className="text-2xl sm:text-3xl font-black text-[#002DFF] dark:text-[#38bdf8] tracking-tight">
-            {word}
+            {cleanWord}
           </span>
+          {posLabel ? (
+            <span className="rounded-lg border border-blue-300 bg-blue-100 px-2 py-0.5 text-xs font-black text-blue-800 dark:border-blue-700 dark:bg-blue-900/60 dark:text-blue-200">
+              {posLabel}
+            </span>
+          ) : null}
           {phonetic ? (
             <span className="text-sm font-mono font-semibold text-slate-500 dark:text-slate-400">
               {phonetic}
@@ -1280,7 +1299,7 @@ function TargetWordBanner({
           ) : null}
           <button
             type="button"
-            onClick={() => speakWord(word)}
+            onClick={() => speakWord(cleanWord)}
             className="grid h-9 w-9 place-items-center rounded-xl border border-indigo-200 bg-white text-indigo-600 shadow-sm transition hover:bg-indigo-50 active:scale-95 dark:border-indigo-800 dark:bg-navy-800 dark:text-indigo-400"
             title="Ovozini eshitish"
           >
@@ -1321,6 +1340,187 @@ function TargetWordBanner({
       ) : null}
     </div>
   );
+}
+
+export function cleanAnswer(s: string): string {
+  if (!s) return "";
+  let res = String(s).trim().toLowerCase();
+  // Strip option prefixes like "1. ", "a) ", "b. ", "1) ", "A: "
+  res = res.replace(/^[a-d0-9][\.\)\-\:\s]+\s*/i, "");
+  // Strip POS tag parentheticals like " (v)", " (n)", " (adj)", " (n phr)", etc.
+  res = res.replace(/\s*\([a-zA-Z\s\.,-]+\)\s*/g, " ");
+  // Normalize smart quotes and apostrophes
+  res = res.replace(/[\u2018\u2019\u201B\u0060\u00B4]/g, "'");
+  res = res.replace(/[\u201C\u201D]/g, '"');
+  // Strip surrounding punctuation like trailing periods, exclamation marks, commas, quotes
+  res = res.replace(/^["'\s]+|["'\s\.\,\!\?]+$/g, "");
+  // Collapse whitespace
+  res = res.replace(/\s+/g, " ");
+  return res.trim();
+}
+
+export function getCurrentLang(): "uz" | "ru" | "en" {
+  if (typeof window === "undefined") return "uz";
+  try {
+    const stored = (localStorage.getItem("diamond_locale") || localStorage.getItem("lang") || "uz").toLowerCase();
+    if (stored.startsWith("ru")) return "ru";
+    if (stored.startsWith("en")) return "en";
+  } catch {
+    // ignore
+  }
+  return "uz";
+}
+
+export function getWordPracticeCondition(q: any, lang: "uz" | "ru" | "en"): string {
+  if (!q) return "";
+  if (lang === "ru" && q.condition_ru) return String(q.condition_ru);
+  if (lang === "en" && q.condition_en) return String(q.condition_en);
+  if (q.condition_uz) return String(q.condition_uz);
+  if (q.condition) return String(q.condition);
+
+  const mode = q.practice_mode || q.test_type;
+  if (mode === "spelling") {
+    return lang === "ru"
+      ? "Введите правильное написание слова:"
+      : lang === "en"
+      ? "Type the correct spelling of the word:"
+      : "So'zning to'g'ri yozilishini kiriting:";
+  }
+  if (mode === "translation") {
+    return lang === "ru"
+      ? "Введите перевод данного слова:"
+      : lang === "en"
+      ? "Type the translation of the word:"
+      : "Berilgan so'zning tarjimasini kiriting:";
+  }
+  if (mode === "write_sentence") {
+    return lang === "ru"
+      ? "Напишите полное предложение на английском с этим словом:"
+      : lang === "en"
+      ? "Write a complete English sentence using this word:"
+      : "Ushbu so'z qatnashgan to'liq inglizcha gap yozing:";
+  }
+  if (mode === "speak_sentence") {
+    return lang === "ru"
+      ? "Произнесите вслух предложение на английском с этим словом:"
+      : lang === "en"
+      ? "Speak an English sentence aloud using this word:"
+      : "Ushbu so'z qatnashgan inglizcha gapni ovoz chiqarib ayting:";
+  }
+  return lang === "ru"
+    ? "Выполните задание со словом:"
+    : lang === "en"
+    ? "Complete the task with this word:"
+    : "So'z bilan bog'liq topshiriqni bajaring:";
+}
+
+export function extractCorrectCandidates(q: any): string[] {
+  if (!q) return [];
+  const rawList: string[] = [];
+
+  const add = (val: any) => {
+    if (val === null || val === undefined) return;
+    if (Array.isArray(val)) {
+      val.forEach(add);
+      return;
+    }
+    const str = String(val).trim();
+    if (!str) return;
+    rawList.push(str);
+    const cleaned = cleanAnswer(str);
+    if (cleaned) rawList.push(cleaned);
+
+    if (str.includes(";") || str.includes("\n")) {
+      str.split(/[;\n]+/).forEach(add);
+    }
+  };
+
+  add(q.correct_answer);
+  add(q.acceptable_answers);
+  add(q.accepted_answers);
+  add(q.clean_word);
+  add(q.word);
+
+  if (Array.isArray(q.translations)) {
+    q.translations.forEach(add);
+  } else if (typeof q.translations === "string") {
+    q.translations.split(/[,;\n]+/).forEach(add);
+  }
+
+  // If correct_answer matches an option, also add that option and its clean version
+  if (Array.isArray(q.options) && q.correct_answer) {
+    const normCorrect = cleanAnswer(q.correct_answer);
+    q.options.forEach((opt: string, idx: number) => {
+      const normOpt = cleanAnswer(opt);
+      if (
+        normOpt === normCorrect ||
+        cleanAnswer(String(idx + 1)) === normCorrect ||
+        opt.trim().toLowerCase() === String(q.correct_answer).trim().toLowerCase()
+      ) {
+        add(opt);
+        add(String(idx + 1));
+      }
+    });
+  }
+
+  // If question contains '___' and correct_answer is a full sentence
+  const promptText = String(q.passage_template || q.passage || q.question || "");
+  if (promptText.includes("___") && q.correct_answer) {
+    const rawCorr = String(q.correct_answer).trim();
+    const parts = promptText.split("___");
+    if (parts.length === 2) {
+      const prefix = cleanAnswer(parts[0]);
+      const suffix = cleanAnswer(parts[1]);
+      const normCorr = cleanAnswer(rawCorr);
+      if (prefix && normCorr.startsWith(prefix)) {
+        let inside = normCorr.slice(prefix.length).trim();
+        if (suffix && inside.endsWith(suffix)) {
+          inside = inside.slice(0, inside.length - suffix.length).trim();
+        }
+        if (inside) add(inside);
+      }
+      if (rawCorr) {
+        const reconstructed = `${parts[0]}${rawCorr}${parts[1]}`;
+        add(reconstructed);
+      }
+    }
+  }
+
+  return Array.from(new Set(rawList.map((s) => cleanAnswer(s)).filter(Boolean)));
+}
+
+export function isAnswerCorrect(userAns: string, q: any): boolean {
+  if (!userAns || !q) return false;
+  const normUser = cleanAnswer(userAns);
+  if (!normUser) return false;
+
+  const candidates = extractCorrectCandidates(q);
+  if (candidates.includes(normUser)) return true;
+
+  // Also check if user entered an option index like "1" or "2"
+  if (Array.isArray(q.options)) {
+    for (let i = 0; i < q.options.length; i++) {
+      const opt = q.options[i];
+      const normOpt = cleanAnswer(opt);
+      if (normUser === normOpt || normUser === String(i + 1)) {
+        if (candidates.includes(normOpt) || candidates.includes(String(i + 1))) {
+          return true;
+        }
+      }
+    }
+  }
+
+  // Check if candidate matches after stripping all non-alphanumeric punctuation
+  const stripPunct = (s: string) => s.replace(/[^a-z0-9\s]/gi, "").replace(/\s+/g, " ").trim();
+  const strippedUser = stripPunct(normUser);
+  if (strippedUser) {
+    for (const cand of candidates) {
+      const strippedCand = stripPunct(cand);
+      if (strippedUser === strippedCand) return true;
+    }
+  }
+
+  return false;
 }
 
 function InstantVoiceRecorder({
@@ -1655,13 +1855,15 @@ function LessonPlayerModal({
         setMatchingRights(rights);
       }
 
-      // Initialize cloze blanks if passage_cloze or text with ___
+      // Initialize cloze blanks if passage_cloze or text with ___ (only if NOT multiple choice with options)
+      const hasOptions = Array.isArray(q?.options) && q.options.length >= 2;
       const isClozeQ =
-        q?.test_type === "passage_cloze" ||
-        q?.input === "cloze" ||
-        Boolean(q?.passage_template) ||
-        (typeof q?.passage === "string" && q.passage.includes("___")) ||
-        (typeof q?.question === "string" && q.question.includes("___"));
+        !hasOptions &&
+        (q?.test_type === "passage_cloze" ||
+          q?.input === "cloze" ||
+          Boolean(q?.passage_template) ||
+          (typeof q?.passage === "string" && q.passage.includes("___")) ||
+          (typeof q?.question === "string" && q.question.includes("___")));
       if (q && isClozeQ) {
         const tmpl = String(q.passage_template || q.passage || q.question || "");
         const total = (tmpl.match(/___/g) || []).length || (Array.isArray(q.blanks) ? q.blanks.length : 0);
@@ -1699,6 +1901,34 @@ function LessonPlayerModal({
       setFinished(true);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keyboard Navigation: 1-4 for options, Enter for Submit / Next
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input or textarea
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+
+      if (e.key >= "1" && e.key <= "4" && question?.options && !result) {
+        const idx = parseInt(e.key, 10) - 1;
+        if (question.options[idx]) {
+          setSelected(question.options[idx]);
+          playDuolingoSound("pop");
+        }
+      }
+
+      if (e.key === "Enter") {
+        if (result) {
+          next();
+        } else if (selected || clozeBlanks.some((x) => x && x.trim())) {
+          void submit();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selected, result, question, clozeBlanks]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Word Order tile handlers
   const handleTileClick = (tileId: number, word: string) => {
@@ -1740,12 +1970,14 @@ function LessonPlayerModal({
     audioRef.current.play().catch(() => setAudioPlaying(false));
   };
 
+  const hasCurrentOptions = Array.isArray(question?.options) && question.options.length >= 2;
   const isCurrentCloze =
-    question?.test_type === "passage_cloze" ||
-    question?.input === "cloze" ||
-    Boolean(question?.passage_template) ||
-    (typeof question?.passage === "string" && question.passage.includes("___")) ||
-    (typeof question?.question === "string" && question.question.includes("___"));
+    !hasCurrentOptions &&
+    (question?.test_type === "passage_cloze" ||
+      question?.input === "cloze" ||
+      Boolean(question?.passage_template) ||
+      (typeof question?.passage === "string" && question.passage.includes("___")) ||
+      (typeof question?.question === "string" && question.question.includes("___")));
 
   const isReadingSet =
     question?.test_type === "reading_set" ||
@@ -1967,11 +2199,7 @@ function LessonPlayerModal({
       selectedAnswer = Object.entries(matchedPairs).map(([l, r]) => `${l} = ${r}`).join("; ");
       correctAnswerStr = matchingPairs.map((p) => `${p.left} = ${p.right}`).join("; ");
     } else {
-      correct =
-        (correctAns ? normSelected === correctAns : false) ||
-        acceptable.includes(normSelected) ||
-        correctParts.includes(normSelected) ||
-        (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p)));
+      correct = isAnswerCorrect(currentAnsText, question);
     }
 
     const newScore = score + (correct ? 1 : 0);
@@ -2336,6 +2564,21 @@ function LessonPlayerModal({
                   "Topshiriqni bajaring:"}
               </h2>
 
+              {/* Question Condition Banner (especially for word_practice and tasks with clear conditions) */}
+              {question.test_type === "word_practice" || question.practice_mode || question.condition_uz || question.condition ? (
+                <div className="flex items-start gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50/90 p-4 text-amber-950 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
+                  <span className="text-2xl shrink-0 mt-0.5">🎯</span>
+                  <div className="space-y-1">
+                    <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
+                      {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
+                    </span>
+                    <p className="text-sm sm:text-base font-bold leading-snug">
+                      {getWordPracticeCondition(question, getCurrentLang())}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
               {/* Passage / Context if available (hidden for passage_cloze to avoid duplication) */}
               {!isCurrentCloze && (question.passage || question.context) && (question.question?.trim() !== question.passage?.trim()) ? (
                 <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-4 text-sm leading-relaxed text-slate-800 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
@@ -2649,7 +2892,7 @@ function LessonPlayerModal({
 
                 const hasCorrectChoice =
                   Array.isArray(question.options) &&
-                  question.options.some((opt: string) => opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase());
+                  question.options.some((opt: string) => isAnswerCorrect(opt, question));
 
                 const correctParts = String(question.correct_answer || "").includes(";")
                   ? String(question.correct_answer || "").split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
@@ -2921,9 +3164,7 @@ function LessonPlayerModal({
                     <div className="grid gap-3 pt-2">
                       {(question.options || []).map((opt: string, i: number) => {
                         const isSelected = selected === opt;
-                        const isCorrectChoice =
-                          opt.trim().toLowerCase() === String(question.correct_answer || "").trim().toLowerCase() ||
-                          correctParts.includes(opt.trim().toLowerCase());
+                        const isCorrectChoice = isAnswerCorrect(opt, question);
 
                         let cardClass = "border-slate-200 border-b-4 bg-white text-navy-900 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white";
                         if (isSelected && !result) {
@@ -3220,12 +3461,14 @@ function FinalExamPlayerModal({
       setWordBankAssignments({});
       setWrongBlankPositions([]);
 
+      const examHasOptions = Array.isArray(currentQuestion.options) && currentQuestion.options.length >= 2;
       const isClozeQ =
-        currentQuestion.test_type === "passage_cloze" ||
-        currentQuestion.input === "cloze" ||
-        Boolean(currentQuestion.passage_template) ||
-        (typeof currentQuestion.passage === "string" && currentQuestion.passage.includes("___")) ||
-        (typeof currentQuestion.question === "string" && currentQuestion.question.includes("___"));
+        !examHasOptions &&
+        (currentQuestion.test_type === "passage_cloze" ||
+          currentQuestion.input === "cloze" ||
+          Boolean(currentQuestion.passage_template) ||
+          (typeof currentQuestion.passage === "string" && currentQuestion.passage.includes("___")) ||
+          (typeof currentQuestion.question === "string" && currentQuestion.question.includes("___")));
       if (isClozeQ) {
         const tmpl = String(currentQuestion.passage_template || currentQuestion.passage || currentQuestion.question || "");
         const total = (tmpl.match(/___/g) || []).length || (Array.isArray(currentQuestion.blanks) ? currentQuestion.blanks.length : 0);
@@ -3317,12 +3560,14 @@ function FinalExamPlayerModal({
     audioRef.current.play().catch(() => setAudioPlaying(false));
   };
 
+  const examHasCurrentOptions = Array.isArray(currentQuestion?.options) && currentQuestion.options.length >= 2;
   const isExamCloze =
-    currentQuestion?.test_type === "passage_cloze" ||
-    currentQuestion?.input === "cloze" ||
-    Boolean(currentQuestion?.passage_template) ||
-    (typeof currentQuestion?.passage === "string" && currentQuestion.passage.includes("___")) ||
-    (typeof currentQuestion?.question === "string" && currentQuestion.question.includes("___"));
+    !examHasCurrentOptions &&
+    (currentQuestion?.test_type === "passage_cloze" ||
+      currentQuestion?.input === "cloze" ||
+      Boolean(currentQuestion?.passage_template) ||
+      (typeof currentQuestion?.passage === "string" && currentQuestion.passage.includes("___")) ||
+      (typeof currentQuestion?.question === "string" && currentQuestion.question.includes("___")));
 
   const checkAnswer = async (override?: { answer_text?: string; audio_url?: string }) => {
     if (!currentQuestion || result) return;
@@ -3492,11 +3737,7 @@ function FinalExamPlayerModal({
       selectedAnswer = Object.entries(matchedPairs).map(([l, r]) => `${l} = ${r}`).join("; ");
       correctAnswerStr = matchingPairs.map((p) => `${p.left} = ${p.right}`).join("; ");
     } else {
-      correct =
-        (correctAns ? normSelected === correctAns : false) ||
-        acceptable.includes(normSelected) ||
-        correctParts.includes(normSelected) ||
-        (correctParts.length > 0 && correctParts.some((p) => p.includes(normSelected) || normSelected.includes(p)));
+      correct = isAnswerCorrect(currentAnsText, currentQuestion);
     }
 
     const newScore = score + (correct ? 1 : 0);
@@ -3838,6 +4079,21 @@ function FinalExamPlayerModal({
                   "Savolga javob bering:"}
               </h2>
 
+              {/* Question Condition Banner (especially for word_practice and tasks with clear conditions) */}
+              {currentQuestion.test_type === "word_practice" || currentQuestion.practice_mode || currentQuestion.condition_uz || currentQuestion.condition ? (
+                <div className="flex items-start gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50/90 p-4 text-amber-950 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
+                  <span className="text-2xl shrink-0 mt-0.5">🎯</span>
+                  <div className="space-y-1">
+                    <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
+                      {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
+                    </span>
+                    <p className="text-sm sm:text-base font-bold leading-snug">
+                      {getWordPracticeCondition(currentQuestion, getCurrentLang())}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
               {/* Passage / Context if available (hidden for cloze) */}
               {!isExamCloze && (currentQuestion.passage || currentQuestion.context) && (currentQuestion.question?.trim() !== currentQuestion.passage?.trim()) ? (
                 <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 text-sm leading-relaxed text-slate-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
@@ -4064,7 +4320,7 @@ function FinalExamPlayerModal({
 
                 const hasCorrectChoice =
                   Array.isArray(currentQuestion.options) &&
-                  currentQuestion.options.some((opt: string) => opt.trim().toLowerCase() === String(currentQuestion.correct_answer || "").trim().toLowerCase());
+                  currentQuestion.options.some((opt: string) => isAnswerCorrect(opt, currentQuestion));
 
                 const correctParts = String(currentQuestion.correct_answer || "").includes(";")
                   ? String(currentQuestion.correct_answer || "").split(";").map((p) => p.trim().toLowerCase()).filter(Boolean)
@@ -4326,10 +4582,7 @@ function FinalExamPlayerModal({
                     <div className="space-y-2.5">
                       {(Array.isArray(currentQuestion.options) ? currentQuestion.options : []).map((opt: string, i: number) => {
                         const isSelected = selected === opt;
-                        const isCorrectChoice =
-                          result &&
-                          (String(currentQuestion.correct_answer || "").trim().toLowerCase() === String(opt).trim().toLowerCase() ||
-                           correctParts.includes(String(opt).trim().toLowerCase()));
+                        const isCorrectChoice = result && isAnswerCorrect(opt, currentQuestion);
                         const isWrongChoice = result && isSelected && !result.correct;
 
                         return (

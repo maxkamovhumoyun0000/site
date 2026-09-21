@@ -1300,14 +1300,32 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
 
     ru = lang == "Russian"
     study_ru = study_lang == "Russian"
-    word = str(q.get("word") or q.get("prompt") or "").strip()
+    raw_word = str(q.get("word") or q.get("prompt") or "").strip()
+    
+    # Strip part-of-speech tags in parentheses e.g. "beat (v)" -> "beat", pos_tag: "(v)"
+    pos_match = re.search(r"\(([a-zA-Z\s\.,-]+)\)", raw_word)
+    pos_tag = f"({pos_match.group(1).strip()})" if pos_match else None
+    clean_word = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_word).strip() or raw_word
+    word = clean_word
+
     # Guruh tiliga mos tarjima: ruscha guruh -> ruscha, aks holda o'zbekcha.
     tr_uz = str(q.get("translation_uz") or "").strip()
     tr_ru = str(q.get("translation_ru") or "").strip()
     legacy = str(q.get("translation") or "").strip()
     translation = (tr_ru if ru else tr_uz) or legacy or tr_uz or tr_ru
     # Ikkala tarjima ham qabul qilinadi (student boshqa tilda yozsa ham).
-    accepted = [t for t in {translation, tr_uz, tr_ru, legacy} if t]
+    raw_accepted = [t for t in {translation, tr_uz, tr_ru, legacy} if t]
+    accepted = []
+    for item in raw_accepted:
+        accepted.append(item)
+        for part in re.split(r"[,;\n/|]+", item):
+            part_s = part.strip()
+            if part_s and part_s not in accepted:
+                accepted.append(part_s)
+    # Also accept the clean target word itself
+    if clean_word and clean_word not in accepted:
+        accepted.append(clean_word)
+
     instruction = q.get("instruction")
     level = q.get("level")
     variants = list(WORD_PRACTICE_VARIANTS)
@@ -1320,34 +1338,66 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     base: dict[str, Any] = {
         "kind": kind,
         "word": word,
+        "clean_word": clean_word,
+        "raw_word": raw_word,
+        "pos_tag": pos_tag,
         "level": level,
         "instruction": instruction,
         "example_sentence": example_sentence,
+        "meaning": meaning,
+        "translation_uz": tr_uz,
+        "translation_ru": tr_ru,
     }
+
     if kind == "speak_sentence":
         base["prompt"] = q.get("prompt") or (
-            f"Составьте и произнесите предложение со словом «{word}»" if study_ru
+            f"Составьте и произнесите предложение со словом «{word}»" if ru or study_ru
             else f"Make and say a sentence using '{word}'"
         )
+        base["condition"] = (
+            f"🗣️ Устное упражнение: Составьте предложение со словом «{word}» и четко произнесите его в микрофон." if ru
+            else f"🗣️ Ovozli gap tuzish: «{word}» so'zi ishtirokida gap tuzing va mikrofon orqali ayting."
+        )
+        base["condition_uz"] = f"🗣️ Ovozli gap tuzish: «{word}» so'zi ishtirokida gap tuzing va mikrofon orqali ayting."
+        base["condition_ru"] = f"🗣️ Устное упражнение: Составьте предложение со словом «{word}» и четко произнесите его в микрофон."
+        base["condition_en"] = f"🗣️ Speaking exercise: Make a sentence using '{word}' and speak clearly into the microphone."
     elif kind == "write_sentence":
         base["prompt"] = q.get("prompt") or (
-            f"Напишите предложение со словом «{word}»" if study_ru
+            f"Напишите предложение со словом «{word}»" if ru or study_ru
             else f"Write a sentence using '{word}'"
         )
-        # If the teacher supplied a model sentence, retain it for feedback so
-        # a wrong vocabulary sentence can show a concrete correct version.
-        # It remains a model, not the only accepted answer.
+        base["condition"] = (
+            f"✍️ Составление предложения: Напишите полное, осмысленное предложение со словом «{word}»." if ru
+            else f"✍️ Gap yozish: «{word}» so'zi ishtirokida to'liq va mazmunli gap tuzib yozing."
+        )
+        base["condition_uz"] = f"✍️ Gap yozish: «{word}» so'zi ishtirokida to'liq va mazmunli gap tuzib yozing."
+        base["condition_ru"] = f"✍️ Составление предложения: Напишите полное, осмысленное предложение со словом «{word}»."
+        base["condition_en"] = f"✍️ Sentence writing: Write a complete, meaningful sentence using the word '{word}'."
         base["reference_answer"] = example_sentence
     elif kind == "spelling":
         base["prompt"] = q.get("prompt") or (
-            "Правильно напишите слово" if study_ru
+            f"Правильно напишите слово по значению" if ru or study_ru
             else "Spell the word correctly"
         )
-        base["hint"] = meaning or example_sentence  # ta'rif yoki misol gap
+        base["condition"] = (
+            f"🔤 Правописание (Spelling): Напишите английское слово «{word}» без орфографических ошибок." if ru
+            else f"🔤 To'g'ri yozish (Spelling): «{word}» so'zining to'g'ri imlosini kiriting."
+        )
+        base["condition_uz"] = f"🔤 To'g'ri yozish (Spelling): «{word}» so'zining to'g'ri imlosini kiriting."
+        base["condition_ru"] = f"🔤 Правописание (Spelling): Напишите английское слово «{word}» без орфографических ошибок."
+        base["condition_en"] = f"🔤 Spelling: Type the correct English spelling of '{word}' without mistakes."
+        base["hint"] = meaning or translation or example_sentence
         base["answer"] = word
-        base["accepted_answers"] = []
+        base["accepted_answers"] = [word, raw_word]
     else:  # translation — tarjima student tiliga (uz/ru)
         base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
+        base["condition"] = (
+            f"🌐 Перевод: Напишите точный перевод слова «{word}»." if ru
+            else f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+        )
+        base["condition_uz"] = f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+        base["condition_ru"] = f"🌐 Перевод: Напишите точный перевод слова «{word}»."
+        base["condition_en"] = f"🌐 Translation: Write the accurate translation of the word '{word}'."
         base["direction"] = "RU→UZ" if ru else "EN→UZ"
         base["answer"] = translation
         base["accepted_answers"] = accepted
@@ -2861,6 +2911,12 @@ def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:
 
 def _norm_text(value: Any) -> str:
     text = str(value or "").strip().lower()
+    # Normalize quotes/apostrophes
+    text = re.sub(r"['‘’`]", "'", text)
+    text = re.sub(r'["“”]', '"', text)
+    # Strip part-of-speech tags in parentheses e.g. (v), (n), (adj), (adv), (prep)
+    text = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", " ", text)
+    # Strip non-alphanumeric except word characters, apostrophe, hyphen
     text = re.sub(r"[^\w\s'’-]", " ", text, flags=re.UNICODE)
     return re.sub(r"\s+", " ", text).strip()
 
@@ -3234,13 +3290,29 @@ async def _check_with_ai(
 
     # 1. Fast-path: agar o'quvchi javobi etalon/qabul qilingan javobga aynan yoki yaqin mos kelsa
     # (orfoqrafiya/probellar), sun'iy intellekt API sini kutmasdan 0 millisekundda to'g'ri qaytaramiz.
-    ref_answers = [
+    ref_raw = [
         question.get("reference_answer"),
         question.get("answer"),
         question.get("example_sentence"),
+        question.get("word"),
+        question.get("clean_word"),
+        question.get("target_word"),
+        question.get("translation"),
+        question.get("translation_uz"),
+        question.get("translation_ru"),
+        question.get("meaning"),
         *(question.get("accepted_answers") or [])
     ]
-    ref_clean = {_norm_text(r) for r in ref_answers if r}
+    ref_clean = set()
+    for r in ref_raw:
+        if not r: continue
+        r_str = str(r).strip()
+        n = _norm_text(r_str)
+        if n: ref_clean.add(n)
+        for part in re.split(r"[,;\n/|]+", r_str):
+            pn = _norm_text(part)
+            if pn: ref_clean.add(pn)
+
     given_norm = _norm_text(answer)
     if given_norm and ref_clean and (given_norm in ref_clean or any(_levenshtein(given_norm, r) <= 1 for r in ref_clean if len(r) > 3)):
         return "correct", {

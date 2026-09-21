@@ -2832,8 +2832,10 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         if not correct:
             correct = "To'g'ri"
     elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice", "listening_gap"}:
-        if not correct and raw.get("word"):
-            correct = str(raw.get("word"))
+        raw_word = str(raw.get("word") or raw.get("prompt") or "").strip()
+        clean_word = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_word).strip() or raw_word
+        if not correct and raw_word:
+            correct = clean_word
         if not correct and raw.get("answer"):
             correct = str(raw.get("answer"))
         if not question and raw.get("sentence"):
@@ -2960,6 +2962,32 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         wb_set = {str(w).strip().lower() for w in wb if w}
         if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
             res["word_bank"] = []
+
+    if kind == "word_practice":
+        raw_w = str(res.get("word") or res.get("question") or "").strip()
+        clean_w = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_w).strip() or raw_w
+        pos_m = re.search(r"\(([a-zA-Z\s\.,-]+)\)", raw_w)
+        res["word"] = clean_w
+        res["clean_word"] = clean_w
+        res["raw_word"] = raw_w
+        if pos_m:
+            res["pos_tag"] = f"({pos_m.group(1).strip()})"
+        if not res.get("instruction"):
+            res["instruction"] = "So'z mashqi: Ushbu so'zning to'g'ri imlosini, tarjimasini yoki u bilan gap yozing"
+        if not res.get("condition"):
+            res["condition"] = "So'z mashqi — To'g'ri imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi"
+        res["condition_uz"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi."
+        res["condition_ru"] = "Упражнение со словом: Принимается правильное написание, перевод или полное предложение."
+        res["condition_en"] = "Vocabulary practice: Correct spelling, translation, or a complete sentence is accepted."
+        res["correct_answer"] = clean_w
+        acc = list(res.get("acceptable_answers") or [])
+        for candidate in [clean_w, raw_w, res.get("translation"), res.get("translation_uz"), res.get("translation_ru"), res.get("meaning")]:
+            if candidate:
+                for p in re.split(r"[,;\n/|]+", str(candidate)):
+                    ps = p.strip()
+                    if ps and ps not in acc:
+                        acc.append(ps)
+        res["acceptable_answers"] = acc
 
     return res
 
@@ -3368,6 +3396,33 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
                 wb_set = {str(w).strip().lower() for w in wb if w}
                 if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
                     qp["word_bank"] = []
+            q_kind = str(qp.get("kind") or qp.get("test_type") or "")
+            if q_kind == "word_practice":
+                raw_w = str(qp.get("word") or qp.get("question") or qp.get("prompt") or "").strip()
+                clean_w = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_w).strip() or raw_w
+                pos_m = re.search(r"\(([a-zA-Z\s\.,-]+)\)", raw_w)
+                qp["clean_word"] = clean_w
+                qp["word"] = clean_w
+                qp["raw_word"] = raw_w
+                if pos_m:
+                    qp["pos_tag"] = f"({pos_m.group(1).strip()})"
+                if not qp.get("instruction"):
+                    qp["instruction"] = "So'z mashqi: Ushbu so'zning to'g'ri imlosini, tarjimasini yoki u bilan to'liq gap yozing"
+                if not qp.get("condition"):
+                    qp["condition"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi"
+                qp["condition_uz"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi."
+                qp["condition_ru"] = "Упражнение со словом: Принимается правильное написание, перевод или полное предложение."
+                qp["condition_en"] = "Vocabulary practice: Correct spelling, translation, or a complete sentence is accepted."
+                if qp.get("correct_answer") == raw_w or not qp.get("correct_answer"):
+                    qp["correct_answer"] = clean_w
+                acc = list(qp.get("acceptable_answers") or [])
+                for candidate in [clean_w, raw_w, qp.get("translation"), qp.get("translation_uz"), qp.get("translation_ru"), qp.get("meaning")]:
+                    if candidate:
+                        for p in re.split(r"[,;\n/|]+", str(candidate)):
+                            ps = p.strip()
+                            if ps and ps not in acc:
+                                acc.append(ps)
+                qp["acceptable_answers"] = acc
         return item
     finally: conn.close()
 
@@ -3425,14 +3480,31 @@ async def check_learning_lesson_ai(
 
         from backend.library_ai import _check_with_ai, _student_lang, AiTestAnswerRequest
 
+        raw_w = str(qp.get("word") or qp.get("question") or qp.get("prompt") or "").strip()
+        clean_w = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_w).strip() or raw_w
+        acc_list = list(qp.get("acceptable_answers") or [])
+        for candidate in [clean_w, raw_w, qp.get("translation"), qp.get("translation_uz"), qp.get("translation_ru"), qp.get("meaning")]:
+            if candidate:
+                for p in re.split(r"[,;\n/|]+", str(candidate)):
+                    ps = p.strip()
+                    if ps and ps not in acc_list:
+                        acc_list.append(ps)
+
         q_for_ai = {
             "kind": str(qp.get("kind") or qp.get("test_type") or "open"),
             "prompt": str(qp.get("prompt") or qp.get("question") or qp.get("instruction") or ""),
             "instruction": str(qp.get("instruction") or ""),
-            "word": qp.get("word"),
+            "word": clean_w or qp.get("word"),
+            "clean_word": clean_w,
+            "raw_word": raw_w,
             "passage": qp.get("passage") or qp.get("context"),
-            "reference_answer": qp.get("reference_answer") or qp.get("sample_answer") or qp.get("example_sentence") or qp.get("correct_answer"),
+            "reference_answer": qp.get("reference_answer") or qp.get("sample_answer") or qp.get("example_sentence") or clean_w or qp.get("correct_answer"),
             "target_level": qp.get("target_level") or qp.get("level"),
+            "translation": qp.get("translation"),
+            "translation_uz": qp.get("translation_uz"),
+            "translation_ru": qp.get("translation_ru"),
+            "meaning": qp.get("meaning"),
+            "accepted_answers": acc_list,
         }
 
         ai_req = AiTestAnswerRequest(
