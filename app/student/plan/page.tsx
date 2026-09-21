@@ -397,9 +397,11 @@ export default function PersonalPlanPage() {
   const autoTriggered = useRef(false);
 
   // Determine active locale based on the subject
-  const isRussianSubject = selectedSubject.toLowerCase().includes("rus");
-  const localeKey = isRussianSubject ? "ru" : "en";
-  const t = T[localeKey] || T.en;
+  const subLower = (selectedSubject || "").toLowerCase();
+  const isRussianSubject = subLower.includes("rus") || subLower.includes("рус");
+  const isEnglishSubject = subLower.includes("eng") || subLower.includes("ingliz") || subLower.includes("ielts") || subLower.includes("cefr");
+  const localeKey = isRussianSubject ? "ru" : isEnglishSubject ? "en" : "uz";
+  const t = T[localeKey] || T.uz;
 
   const load = useCallback(async (sub?: string) => {
     setLoading(true);
@@ -468,10 +470,10 @@ export default function PersonalPlanPage() {
   const hwStats = analysis?.homework_stats || {};
 
   const tabs = [
-    { id: "overview" as const, label: isRussianSubject ? "📊 Обзор" : "📊 Overview" },
-    { id: "topics" as const, label: isRussianSubject ? "📚 Темы" : "📚 Topics" },
-    { id: "practice" as const, label: isRussianSubject ? "✍️ Практика" : "✍️ Practice" },
-    { id: "history" as const, label: isRussianSubject ? "📅 История" : "📅 History" },
+    { id: "overview" as const, label: isRussianSubject ? "📊 Обзор" : isEnglishSubject ? "📊 Overview" : "📊 Umumiy" },
+    { id: "topics" as const, label: isRussianSubject ? "📚 Темы" : isEnglishSubject ? "📚 Topics" : "📚 Mavzular" },
+    { id: "practice" as const, label: isRussianSubject ? "✍️ Практика" : isEnglishSubject ? "✍️ Practice" : "✍️ Mashq" },
+    { id: "history" as const, label: isRussianSubject ? "📅 История" : isEnglishSubject ? "📅 History" : "📅 Tarix" },
   ];
 
   // Diamondvoy prompts adapted strictly to the subject language
@@ -479,14 +481,20 @@ export default function PersonalPlanPage() {
     if (isRussianSubject) {
       return `Объясните мне тему «${topicName}». Я затрудняюсь в тестах по этой теме. После объяснения с правилами и примерами составьте 10 тестовых вопросов для проверки моих знаний.`;
     }
-    return `Please explain the topic "${topicName}" to me. I am struggling with tests on this topic. After explaining with rules and examples, please generate 10 test questions to check my understanding.`;
+    if (isEnglishSubject) {
+      return `Please explain the topic "${topicName}" to me. I am struggling with tests on this topic. After explaining with rules and examples, please generate 10 test questions to check my understanding.`;
+    }
+    return `Menga «${topicName}» mavzusini tushuntirib bering. Men bu mavzudagi testlarda xatolarga yo'l qo'yyapman. Qoidalar va misollar bilan tushuntirgach, bilimimni tekshirish uchun 10 ta test savolini tuzib bering.`;
   };
 
   const getQuizPrompt = (topicName: string) => {
     if (isRussianSubject) {
       return `Составьте ровно 10 тестовых вопросов по теме «${topicName}». Варианты не должны повторяться, в каждом вопросе должно быть 4 варианта ответов.`;
     }
-    return `Please generate exactly 10 test questions on the topic "${topicName}". Make sure options do not repeat, with 4 options per question.`;
+    if (isEnglishSubject) {
+      return `Please generate exactly 10 test questions on the topic "${topicName}". Make sure options do not repeat, with 4 options per question.`;
+    }
+    return `«${topicName}» mavzusi bo'yicha aynan 10 ta test savolini tuzib bering. Variantlar takrorlanmasin, har bir savolda 4 tadan variant bo'lsin.`;
   };
 
   return (
@@ -554,15 +562,10 @@ export default function PersonalPlanPage() {
                 </p>
               )}
             </div>
-            <button
-              type="button"
-              onClick={generate}
-              disabled={generating || analysis?.status === "processing"}
-              className="inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-cyan-800 bg-cyan-500 px-5 py-3 text-xs font-black uppercase tracking-wider text-white shadow-lg active:translate-y-0.5 active:border-b-2 hover:bg-cyan-600 disabled:opacity-50 transition-all cursor-pointer"
-            >
-              <span>{generating || analysis?.status === "processing" ? "⏳" : "✨"}</span>
-              <span>{hasAnalysis ? t.refresh : t.generate}</span>
-            </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white backdrop-blur-sm shadow-sm">
+              <span>{analysis?.status === "processing" ? "⏳" : "🗓"}</span>
+              <span>{analysis?.status === "processing" ? t.thinking : `${t.weekOf}: ${analysis?.week_start || ""}`}</span>
+            </div>
           </div>
         </div>
 
@@ -682,14 +685,7 @@ export default function PersonalPlanPage() {
                 <div className="text-center py-12 rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm">
                   <span className="text-5xl block mb-3">🤖</span>
                   <p className="text-navy-900 dark:text-white font-black text-lg">{t.noData}</p>
-                  <p className="text-xs sm:text-sm text-ink-500 dark:text-navy-300 mt-1 max-w-sm mx-auto">{t.noDataHint}</p>
-                  <button
-                    onClick={generate}
-                    className="mt-6 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-blue-500/25 active:translate-y-0.5 active:border-b-2 hover:bg-[#1429f2] transition-all cursor-pointer"
-                  >
-                    <span>✨</span>
-                    <span>{t.generate}</span>
-                  </button>
+                  <p className="text-xs sm:text-sm text-ink-500 dark:text-navy-300 mt-2 max-w-md mx-auto leading-relaxed">{t.noDataHint}</p>
                 </div>
               )}
             </div>
@@ -808,7 +804,7 @@ export default function PersonalPlanPage() {
               ) : (
                 <div className="text-center py-12 rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm">
                   <span className="text-4xl block mb-3">✍️</span>
-                  <p className="text-ink-500 dark:text-navy-300 font-bold">{hasAnalysis ? "No practice questions available" : `${t.noData}. Click "${t.generate}".`}</p>
+                  <p className="text-ink-500 dark:text-navy-300 font-bold">{hasAnalysis ? (isRussianSubject ? "Нет практических вопросов" : isEnglishSubject ? "No practice questions available" : "Amaliy savollar mavjud emas") : t.noData}</p>
                 </div>
               )}
             </div>

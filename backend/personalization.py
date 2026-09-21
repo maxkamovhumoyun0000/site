@@ -2243,22 +2243,43 @@ async def delete_learning_lesson(lesson_id: int, authorization: str | None = Hea
 
 
 def _normalize_subject_label(value: str | None) -> str | None:
-    raw = str(value or "").strip().lower()
+    raw = str(value or "").strip()
     if not raw:
         return None
-    if raw in {"english", "eng", "ingliz", "en"}:
+    low = raw.lower()
+    if low in {"english", "eng", "ingliz", "en", "ielts", "cefr"}:
         return "English"
-    if raw in {"russian", "rus", "ru", "русский", "russian language"}:
+    if low in {"russian", "rus", "ru", "русский", "russian language"}:
         return "Russian"
-    if raw in {"matematika", "math", "mathematics"}:
+    if low in {"matematika", "math", "mathematics"}:
         return "Matematika"
-    if raw in {"ona tili"}:
+    if low in {"ona tili", "ona_tili", "uzbek", "o'zbek tili", "oʻzbek tili"}:
         return "Ona tili"
-    if raw in {"tarix", "history"}:
+    if low in {"tarix", "history"}:
         return "Tarix"
-    if raw in {"arab tili", "arabic"}:
+    if low in {"arab tili", "arabic"}:
         return "Arab tili"
-    return None
+    if low in {"fizika", "physics"}:
+        return "Fizika"
+    if low in {"kimyo", "chemistry"}:
+        return "Kimyo"
+    if low in {"biologiya", "biology"}:
+        return "Biologiya"
+    if low in {"geografiya", "geography"}:
+        return "Geografiya"
+    if low in {"informatika", "computer science", "it"}:
+        return "Informatika"
+    return raw.strip().title()
+
+
+def _detect_subject_language(subject: str | None) -> str:
+    """Return 'ru', 'en', or 'uz' based on the subject."""
+    s = str(subject or "").strip().lower()
+    if any(k in s for k in ("rus", "рус")):
+        return "ru"
+    if any(k in s for k in ("eng", "ingliz", "ielts", "cefr")):
+        return "en"
+    return "uz"
 
 
 def _extract_node_questions(payload_obj: Any) -> list[dict]:
@@ -3923,32 +3944,35 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subjec
     acc = stats.get("accuracy_pct", 0)
     hw_comp = stats.get("homework_completed", 0)
     hw_tot = stats.get("homework_total", 0)
-    is_rus = (subject == "Russian")
+    lang = _detect_subject_language(subject)
 
-    if is_rus:
+    raw_weaks = stats.get("weak_topics_by_tests", []) or []
+    err_topic_names = [str(w.get("topic")) for w in raw_weaks[:3] if w.get("topic")]
+
+    if lang == "ru":
         if test_cnt > 0:
+            err_mention = f" Основные затруднения возникли в темах: {', '.join(err_topic_names)}." if err_topic_names else ""
             analysis = (
-                f"Здравствуйте, {user_name}! На этой неделе вы выполнили {test_cnt} тестов с общей точностью {acc}%. "
-                f"Сдано {hw_comp}/{hw_tot} домашних заданий. "
-                f"Регулярная практика — ключ к отличному результату. Закрепите слабые темы, и ваши баллы станут еще выше!"
+                f"Здравствуйте, {user_name}! На этой неделе вы выполнили {test_cnt} тестов с точностью {acc}%. "
+                f"Сдано {hw_comp}/{hw_tot} домашних заданий.{err_mention} "
+                f"Обратите внимание на эти ошибки и повторите правила для закрепления материала!"
             )
         else:
             analysis = (
-                f"Здравствуйте, {user_name}! Начало недели — идеальное время для освоения новых правил русского языка. "
-                f"Уделяйте 10-15 минут в день занятиям с Diamondvoy, чтобы обогатить словарный запас и повысить грамотность!"
+                f"Здравствуйте, {user_name}! Начало недели — отличное время для освоения темы «{subject}». "
+                f"Уделяйте 10-15 минут в день занятиям с Diamondvoy, чтобы не допускать типичных ошибок и повышать баллы!"
             )
 
-        raw_weaks = stats.get("weak_topics_by_tests", []) or []
         weak_topics = []
         for item in raw_weaks[:4]:
             t_name = str(item.get("topic") or "Грамматика и орфография")
             weak_topics.append({
                 "topic": t_name,
                 "level": "medium" if item.get("errors", 0) < 3 else "weak",
-                "explanation": f"В теме «{t_name}» рекомендуется повторить основные правила написания и синтаксиса.",
+                "explanation": f"В теме «{t_name}» рекомендуется повторить правила, где чаще всего допускаются неточности.",
                 "rules": [
-                    f"Вспомните ключевые правила и орфограммы по теме «{t_name}».",
-                    "Обращайте внимание на окончания, приставки и контекст предложения.",
+                    f"Вспомните ключевые правила по теме «{t_name}».",
+                    "Обращайте внимание на окончания, контекст и условия применения правил.",
                 ],
             })
 
@@ -3975,9 +3999,9 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subjec
             ]
 
         recs = [
-            "Выполните 5 практических упражнений ниже для закрепления правил русского языка.",
+            "Выполните 5 практических упражнений ниже для закрепления правил.",
             "Откройте Тетрадь Ошибок (Mistakes Notebook) и заново решите вопросы, где ошиблись.",
-            "Возьмите за привычку ежедневно проходить хотя бы один тест или мини-викторину.",
+            "Регулярно проходите мини-тесты, чтобы закрепить слабые темы.",
         ]
 
         practice_qs = [
@@ -3987,7 +4011,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subjec
                 "correct": "пр..брежный",
                 "topic": "Правописание приставок ПРЕ- и ПРИ-",
                 "difficulty": "easy",
-                "explanation": "Приставка ПРИ- пишется в значении приближения, присоединения, нахождения рядом: прибрежный (возле берега).",
+                "explanation": "Приставка ПРИ- пишется в значении приближения, присоединения, нахождения рядом: прибрежный.",
             },
             {
                 "question": "Укажите предложение с ошибкой в согласовании:",
@@ -3995,7 +4019,7 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subjec
                 "correct": "Вкусное кофе стояло на столе",
                 "topic": "Род несклоняемых существительных",
                 "difficulty": "medium",
-                "explanation": "Слово «кофе» в литературном русском языке мужского рода: «Вкусный кофе стоял на столе».",
+                "explanation": "Слово «кофе» мужского рода: «Вкусный кофе стоял на столе».",
             },
             {
                 "question": "В каком слове пишется НН?",
@@ -4028,154 +4052,265 @@ def _build_smart_fallback_analysis(stats: dict[str, Any], user_name: str, subjec
             "weak_topics": weak_topics,
             "recommendations": recs,
             "practice_questions": practice_qs,
-            "encouragement": "Каждый пройденный шаг приближает вас к отличному знанию языка. Продолжайте учиться! 🌟",
+            "encouragement": "Каждый пройденный шаг приближает вас к отличному знанию предмета. Продолжайте учиться! 🌟",
         }
 
-    # English default
-    if test_cnt > 0:
-        analysis = (
-            f"Hello, {user_name}! This week you completed {test_cnt} tests with an overall accuracy of {acc}%. "
-            f"You finished {hw_comp}/{hw_tot} homework assignments. "
-            f"Consistency is essential for English fluency. Focus on your weak topics to boost your scores even higher!"
-        )
-    else:
-        analysis = (
-            f"Hello, {user_name}! The start of the week is the perfect time to build your English skills. "
-            f"Spend 10-15 minutes each day with Diamondvoy to expand your vocabulary and solidify grammar rules!"
-        )
+    elif lang == "en":
+        if test_cnt > 0:
+            err_mention = f" Most mistakes occurred in: {', '.join(err_topic_names)}." if err_topic_names else ""
+            analysis = (
+                f"Hello, {user_name}! This week you completed {test_cnt} tests with an overall accuracy of {acc}%. "
+                f"You finished {hw_comp}/{hw_tot} homework assignments.{err_mention} "
+                f"Focusing on these specific mistakes will rapidly improve your test scores!"
+            )
+        else:
+            analysis = (
+                f"Hello, {user_name}! The start of the week is the perfect time to build your English skills. "
+                f"Spend 10-15 minutes each day with Diamondvoy to master core rules and eliminate recurring errors!"
+            )
 
-    raw_weaks = stats.get("weak_topics_by_tests", []) or []
-    weak_topics = []
-    for item in raw_weaks[:4]:
-        t_name = str(item.get("topic") or "General Grammar")
-        weak_topics.append({
-            "topic": t_name,
-            "level": "medium" if item.get("errors", 0) < 3 else "weak",
-            "explanation": f"Reviewing rules and time markers for '{t_name}' will help you avoid careless mistakes.",
-            "rules": [
-                f"Remember the core formula and typical use cases for '{t_name}'.",
-                "Pay close attention to key time indicators and sentence structure.",
-            ],
-        })
-
-    if not weak_topics:
-        weak_topics = [
-            {
-                "topic": "Present Simple vs Present Continuous",
-                "level": "medium",
-                "explanation": "Notice the difference between repeated routines (Simple) and actions happening right now (Continuous).",
+        weak_topics = []
+        for item in raw_weaks[:4]:
+            t_name = str(item.get("topic") or "General Grammar")
+            weak_topics.append({
+                "topic": t_name,
+                "level": "medium" if item.get("errors", 0) < 3 else "weak",
+                "explanation": f"Reviewing core patterns and common traps for '{t_name}' will prevent careless mistakes.",
                 "rules": [
-                    "For daily habits and general facts: Present Simple (always, usually, every day).",
-                    "For ongoing actions happening right now: Present Continuous (now, at the moment).",
+                    f"Remember the core formula and typical use cases for '{t_name}'.",
+                    "Pay close attention to key time indicators and sentence structure.",
                 ],
+            })
+
+        if not weak_topics:
+            weak_topics = [
+                {
+                    "topic": "Present Simple vs Present Continuous",
+                    "level": "medium",
+                    "explanation": "Notice the difference between repeated routines (Simple) and actions happening right now (Continuous).",
+                    "rules": [
+                        "For daily habits and general facts: Present Simple (always, usually, every day).",
+                        "For ongoing actions happening right now: Present Continuous (now, at the moment).",
+                    ],
+                },
+                {
+                    "topic": "Past Simple Irregular Verbs",
+                    "level": "weak",
+                    "explanation": "Memorize common V2 irregular forms and remember that negatives use 'did not + V1'.",
+                    "rules": [
+                        "Go -> Went, See -> Saw, Buy -> Bought, Make -> Made.",
+                        "In questions and negatives, the main verb stays in base form: Did you see? (NOT Did you saw).",
+                    ],
+                },
+            ]
+
+        recs = [
+            "Complete the 5 practice questions below to reinforce these rules.",
+            "Open your Mistakes Notebook to re-attempt questions you missed previously.",
+            "Make it a daily habit to review weak areas and take mini-tests.",
+        ]
+
+        practice_qs = [
+            {
+                "question": "She _____ to English classes every Tuesday and Thursday.",
+                "options": ["go", "goes", "is going", "went"],
+                "correct": "goes",
+                "topic": "Present Simple",
+                "difficulty": "easy",
+                "explanation": "Third-person singular subjects (he, she, it) take the -s/-es verb ending in Present Simple.",
             },
             {
-                "topic": "Past Simple Irregular Verbs",
-                "level": "weak",
-                "explanation": "Memorize common V2 irregular forms and remember that negatives use 'did not + V1'.",
-                "rules": [
-                    "Go -> Went, See -> Saw, Buy -> Bought, Make -> Made.",
-                    "In questions and negatives, the main verb stays in base form: Did you see? (NOT Did you saw).",
-                ],
+                "question": "Look at the window! It _____ heavily right now.",
+                "options": ["rains", "is raining", "rained", "has rained"],
+                "correct": "is raining",
+                "topic": "Present Continuous",
+                "difficulty": "easy",
+                "explanation": "'Look!' and 'right now' indicate an action happening at this exact moment (is + V-ing).",
+            },
+            {
+                "question": "Yesterday they _____ a great time at the amusement park.",
+                "options": ["have", "had", "having", "has"],
+                "correct": "had",
+                "topic": "Past Simple",
+                "difficulty": "easy",
+                "explanation": "'Yesterday' signals the Past Simple tense, and the past form of 'have' is 'had'.",
+            },
+            {
+                "question": "He hasn't finished reading the book _____.",
+                "options": ["already", "yet", "just", "since"],
+                "correct": "yet",
+                "topic": "Present Perfect",
+                "difficulty": "medium",
+                "explanation": "Negative Present Perfect sentences typically end with 'yet'.",
+            },
+            {
+                "question": "If you study consistently, you _____ the exam easily.",
+                "options": ["pass", "will pass", "passed", "would pass"],
+                "correct": "will pass",
+                "topic": "First Conditional",
+                "difficulty": "medium",
+                "explanation": "In First Conditional: If + Present Simple (study), main clause uses will + V1 (will pass).",
             },
         ]
 
-    recs = [
-        "Complete the 5 practice questions below to reinforce these grammar rules.",
-        "Open your Mistakes Notebook to re-attempt questions you missed previously.",
-        "Make it a daily habit to take at least one Daily Quiz or mini-test.",
-    ]
+        return {
+            "analysis": analysis,
+            "weak_topics": weak_topics,
+            "recommendations": recs,
+            "practice_questions": practice_qs,
+            "encouragement": "Every step you take brings you closer to mastery. Keep practicing! 🌟",
+        }
 
-    practice_qs = [
-        {
-            "question": "She _____ to English classes every Tuesday and Thursday.",
-            "options": ["go", "goes", "is going", "went"],
-            "correct": "goes",
-            "topic": "Present Simple",
-            "difficulty": "easy",
-            "explanation": "Third-person singular subjects (he, she, it) take the -s/-es verb ending in Present Simple.",
-        },
-        {
-            "question": "Look at the window! It _____ heavily right now.",
-            "options": ["rains", "is raining", "rained", "has rained"],
-            "correct": "is raining",
-            "topic": "Present Continuous",
-            "difficulty": "easy",
-            "explanation": "'Look!' and 'right now' indicate an action happening at this exact moment (is + V-ing).",
-        },
-        {
-            "question": "Yesterday they _____ a great time at the amusement park.",
-            "options": ["have", "had", "having", "has"],
-            "correct": "had",
-            "topic": "Past Simple",
-            "difficulty": "easy",
-            "explanation": "'Yesterday' signals the Past Simple tense, and the past form of 'have' is 'had'.",
-        },
-        {
-            "question": "He hasn't finished reading the book _____.",
-            "options": ["already", "yet", "just", "since"],
-            "correct": "yet",
-            "topic": "Present Perfect",
-            "difficulty": "medium",
-            "explanation": "Negative Present Perfect sentences typically end with 'yet'.",
-        },
-        {
-            "question": "If you study consistently, you _____ the exam easily.",
-            "options": ["pass", "will pass", "passed", "would pass"],
-            "correct": "will pass",
-            "topic": "First Conditional",
-            "difficulty": "medium",
-            "explanation": "In First Conditional: If + Present Simple (study), main clause uses will + V1 (will pass).",
-        },
-    ]
+    else:
+        # Default: UZBEK
+        if test_cnt > 0:
+            err_mention = f" Asosan «{', '.join(err_topic_names)}» mavzularida xatoliklar ko'proq uchradi." if err_topic_names else ""
+            analysis = (
+                f"Salom, {user_name}! Bu hafta siz {test_cnt} ta test ishlab, {acc}% aniqlik ko'rsatdingiz. "
+                f"Uy vazifalaridan {hw_comp}/{hw_tot} tasi topshirildi.{err_mention} "
+                f"Ushbu asosiy xatolar ustida ishlab, bilimlaringizni yanada mustahkamlang!"
+            )
+        else:
+            analysis = (
+                f"Salom, {user_name}! Hafta boshlanishi — {subject} fanidan yangi bilimlarni o'zlashtirish uchun qulay fursat. "
+                f"Har kuni Diamondvoy bilan 10-15 daqiqa mashq qiling, asosiy xatolarni bartaraf etib, yuqori natijalarga erishing!"
+            )
 
-    return {
-        "analysis": analysis,
-        "weak_topics": weak_topics,
-        "recommendations": recs,
-        "practice_questions": practice_qs,
-        "encouragement": "Every step you take brings you closer to fluency. Keep practicing! 🌟",
-    }
+        weak_topics = []
+        for item in raw_weaks[:4]:
+            t_name = str(item.get("topic") or f"{subject} asosiy qoidalari")
+            weak_topics.append({
+                "topic": t_name,
+                "level": "medium" if item.get("errors", 0) < 3 else "weak",
+                "explanation": f"«{t_name}» mavzusida testlarda xatolarga yo'l qo'yilgan. Qoidalarni takrorlash tavsiya etiladi.",
+                "rules": [
+                    f"«{t_name}» bo'yicha asosiy qoidalar va formulalarni qayta ko'rib chiqing.",
+                    "Savol shartini diqqat bilan o'qing va shoshmasdan tahlil qiling.",
+                ],
+            })
+
+        if not weak_topics:
+            weak_topics = [
+                {
+                    "topic": f"{subject} asosiy tushunchalari",
+                    "level": "medium",
+                    "explanation": "Mavzu bo'yicha tayanch atamalar va qoidalarni mustahkamlash zarur.",
+                    "rules": [
+                        "Har bir qoidaga mos kamida ikkitadan misol keltiring.",
+                        "Xato daftarchangizga tushgan savollarni qayta ishlab chiqing.",
+                    ],
+                },
+            ]
+
+        recs = [
+            "Quyida keltirilgan 5 ta amaliy mashqni bajarib, bilimlaringizni sinab ko'ring.",
+            "«Xatolar daftari» bo'limiga kirib, oldin noto'g'ri ishlangan savollarni qaytadan yeching.",
+            "Har kuni kamida bitta test yoki kundalik viktorina ishlashni odat qiling.",
+        ]
+
+        practice_qs = [
+            {
+                "question": f"{subject} fani bo'yicha mustahkamlash savoli: Qaysi javob to'g'ri berilgan?",
+                "options": ["A varianti (To'g'ri qoida)", "B varianti (Noto'g'ri)", "C varianti (Chalg'ituvchi)", "D varianti (Xato)"],
+                "correct": "A varianti (To'g'ri qoida)",
+                "topic": f"{subject} asoslari",
+                "difficulty": "easy",
+                "explanation": "Qoidaga to'liq mos keluvchi variant to'g'ri deb qabul qilinadi.",
+            },
+            {
+                "question": "Qoidalarni qo'llashda eng muhim omil nima?",
+                "options": ["Savol sharti va mantiqiy bog'liqlikni tushunish", "Faqat yodlash", "Shoshilib belgilash", "Tasodifiy tanlash"],
+                "correct": "Savol sharti va mantiqiy bog'liqlikni tushunish",
+                "topic": "Tahlil qilish",
+                "difficulty": "easy",
+                "explanation": "Savolni to'g'ri o'qib, tahlil qilish xatolardan xalos qiladi.",
+            },
+            {
+                "question": "Mavzuni to'liq o'zlashtirish uchun nima qilish kerak?",
+                "options": ["Qoidani o'rganib, amaliy mashqlar bilan mustahkamlash", "Faqat bir marta o'qish", "Mashqlarni bajarmaslik", "Testlarni o'tkazib yuborish"],
+                "correct": "Qoidani o'rganib, amaliy mashqlar bilan mustahkamlash",
+                "topic": "O'quv metodikasi",
+                "difficulty": "easy",
+                "explanation": "Nazariya va amaliyot uyg'unligi yuqori natija beradi.",
+            },
+            {
+                "question": "Xatolarni bartaraf etishning eng samarali yo'li nima?",
+                "options": ["Xato qilingan savol sababini tushunib, qayta ishlash", "Xatoga e'tibor bermaslik", "Faqat to'g'ri javoblarni yodlash", "Test ishlashni to'xtatish"],
+                "correct": "Xato qilingan savol sababini tushunib, qayta ishlash",
+                "topic": "Xatolar ustida ishlash",
+                "difficulty": "easy",
+                "explanation": "O'z xatosi sababini tahlil qilgan o'quvchi keyingi safar adashmaydi.",
+            },
+            {
+                "question": "Haftalik o'quv rejasiga qat'iy rioya qilish nimani ta'minlaydi?",
+                "options": ["Muntazam o'sish va bilimlarning mustahkamligini", "Vaqt yo'qotishni", "Faqat baholarni", "Hech narsani o'zgartirmaydi"],
+                "correct": "Muntazam o'sish va bilimlarning mustahkamligini",
+                "topic": "Rejalashtirish",
+                "difficulty": "easy",
+                "explanation": "Muntazamlik va intizom har qanday fanda muvaffaqiyat garovidir.",
+            },
+        ]
+
+        return {
+            "analysis": analysis,
+            "weak_topics": weak_topics,
+            "recommendations": recs,
+            "practice_questions": practice_qs,
+            "encouragement": "Har bir harakat sizni yuksak marralarga yaqinlashtiradi. O'rganishdan to'xtamang! 🌟",
+        }
 
 
 async def _generate_ai_analysis(stats: dict[str, Any], user_name: str, subject: str = "English") -> dict[str, Any]:
     """Call AI to produce weekly analysis in the student's target subject language."""
     import aiohttp
-    is_rus = (subject == "Russian")
+    lang = _detect_subject_language(subject)
 
     weak_topics = []
     for item in stats.get("weak_topics_by_tests", []):
-        err_word = "ошибок" if is_rus else "errors"
-        weak_topics.append(f"- {item['topic']} ({item['errors']} {err_word})")
+        err_w = "ошибок" if lang == "ru" else ("errors" if lang == "en" else "ta xato")
+        weak_topics.append(f"- {item['topic']} ({item['errors']} {err_w})")
     for item in stats.get("weak_topics_by_mistakes", []):
         sub = str(item.get("subject") or "")
         topic = str(item.get("topic_key") or "")
         cnt = int(item.get("cnt") or 0)
-        unr_word = "нерешенных ошибок" if is_rus else "unresolved mistakes"
-        weak_topics.append(f"- {sub} / {topic} ({cnt} {unr_word})")
+        unr_w = "нерешенных ошибок" if lang == "ru" else ("unresolved mistakes" if lang == "en" else "ta tuzatilmagan xato")
+        weak_topics.append(f"- {sub} / {topic} ({cnt} {unr_w})")
 
-    if is_rus:
+    mistakes_list = [
+        f"- {m.get('topic_key') or 'Savol'}: {str(m.get('question_text') or '')[:120]}"
+        for m in (stats.get("sample_mistakes") or [])
+        if m.get("question_text") or m.get("topic_key")
+    ]
+    sample_mistakes_str = "\n".join(mistakes_list) if mistakes_list else ("None recorded." if lang == "en" else ("Ошибок не зафиксировано." if lang == "ru" else "Xatolar qayd etilmagan."))
+
+    if lang == "ru":
         weak_str = "\n".join(weak_topics) if weak_topics else "Слабые темы пока не выявлены."
         source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "Ошибок пока не зафиксировано."
         prompt = f"""Ты — персональный AI-тьютор Diamondvoy на платформе Diamond Education.
 Ученик: {user_name}
-Предмет: Русский язык
+Предмет: {subject}
 
 Статистика за неделю:
 - Количество тестов: {stats.get('test_count', 0)}
 - Верно: {stats.get('total_correct', 0)}, Неверно: {stats.get('total_wrong', 0)}, Пропущено: {stats.get('total_skipped', 0)}
 - Точность: {stats.get('accuracy_pct', 0)}%
 - Домашние задания: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} выполнено ({stats.get('homework_completion_pct', 0)}%)
-- Learning Path: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} пройдено ({stats.get('learning_path_accuracy_pct', 0)}%)
 
 Слабые темы:
 {weak_str}
 
+Конкретные недавние ошибки ученика:
+{sample_mistakes_str}
+
 Источники ошибок: {source_str}
 
-Верни строго JSON объект следующей структуры (ВСЕ ТЕКСТЫ, ОБЪЯСНЕНИЯ И ВОПРОСЫ НА РУССКОМ ЯЗЫКЕ!):
+Требования к еженедельному анализу:
+1. Текст анализа ('analysis') должен быть кратким и четким (2-4 предложения), не слишком перегруженным или сложным, но ОБЯЗАТЕЛЬНО назвать главные ошибки ученика за эту неделю и темы, где они допущены.
+2. ВСЕ ТЕКСТЫ, ОБЪЯСНЕНИЯ, ВОПРОСЫ И ПРАВИЛА ДОЛЖНЫ БЫТЬ СТРОГО НА РУССКОМ ЯЗЫКЕ!
+
+Верни строго JSON объект следующей структуры:
 {{
-  "analysis": "Подробный анализ недели ученика (3-5 предложений, доброжелательно, с указанием сильных и слабых сторон)",
+  "analysis": "Краткий понятный анализ недели (2-4 предложения) с обязательным указанием главных ошибок ученика",
   "weak_topics": [
     {{"topic": "название темы", "level": "weak/medium", "explanation": "почему здесь возникают трудности", "rules": ["1-е правило", "2-е правило"]}}
   ],
@@ -4191,25 +4326,19 @@ async def _generate_ai_analysis(stats: dict[str, Any], user_name: str, subject: 
 }}
 
 В practice_questions должно быть не менее 5 легких практических вопросов по слабым темам. Только валидный JSON."""
-    else:
+
+    elif lang == "en":
         weak_str = "\n".join(weak_topics) if weak_topics else "No weak topics detected yet."
         source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "No mistakes recorded yet."
-        mistakes_list = [
-            f"- {m.get('topic_key') or 'General'}: {str(m.get('question_text') or '')[:100]}"
-            for m in (stats.get("sample_mistakes") or [])
-            if m.get("question_text") or m.get("topic_key")
-        ]
-        sample_mistakes_str = "\n".join(mistakes_list) if mistakes_list else "None recorded."
         prompt = f"""You are Diamondvoy, the personal AI tutor at Diamond Education.
 Student: {user_name}
-Target Subject: English
+Target Subject: {subject}
 
 This week's statistics:
 - Test count: {stats.get('test_count', 0)}
 - Correct: {stats.get('total_correct', 0)}, Wrong: {stats.get('total_wrong', 0)}, Skipped: {stats.get('total_skipped', 0)}
 - Overall accuracy: {stats.get('accuracy_pct', 0)}%
 - Homework: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} completed ({stats.get('homework_completion_pct', 0)}%)
-- Learning Path: {stats.get('learning_path_passed', 0)}/{stats.get('learning_path_count', 0)} passed ({stats.get('learning_path_accuracy_pct', 0)}%)
 
 Weak topics:
 {weak_str}
@@ -4219,9 +4348,13 @@ Recent student errors:
 
 Mistake sources: {source_str}
 
-Return ONLY a valid JSON object with the following structure (ALL TEXTS, EXPLANATIONS, AND QUESTIONS STRICTLY IN ENGLISH!):
+Analysis requirements:
+1. The analysis text ('analysis') should be concise and clear (2-4 sentences), not overly dense or deep, but it MUST explicitly state the student's key mistakes and weak topics from this week.
+2. ALL TEXTS, EXPLANATIONS, AND QUESTIONS MUST BE STRICTLY IN ENGLISH!
+
+Return ONLY a valid JSON object with the following structure:
 {{
-  "analysis": "Detailed weekly analysis of student performance (3-5 encouraging sentences highlighting areas of improvement)",
+  "analysis": "Concise weekly analysis (2-4 sentences) highlighting the student's key mistakes and areas for improvement",
   "weak_topics": [
     {{"topic": "topic name", "level": "weak/medium", "explanation": "why student struggled here", "rules": ["rule 1", "rule 2"]}}
   ],
@@ -4238,10 +4371,55 @@ Return ONLY a valid JSON object with the following structure (ALL TEXTS, EXPLANA
 
 practice_questions must include at least 5 easy practice questions covering the weak topics. Return ONLY JSON."""
 
+    else:
+        # Default: UZBEK for all other subjects (Matematika, Ona tili, Tarix, Fizika, Kimyo, Biologiya, etc.)
+        weak_str = "\n".join(weak_topics) if weak_topics else "Zaif mavzular aniqlanmadi."
+        source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "Xatolar qayd etilmagan."
+        prompt = f"""Siz Diamond Education platformasidagi shaxsiy AI repetitor — Diamondvoysiz.
+O'quvchi: {user_name}
+Fan: {subject}
+
+Ushbu haftadagi statistika:
+- Ishlangan testlar: {stats.get('test_count', 0)} ta
+- To'g'ri: {stats.get('total_correct', 0)}, Xato: {stats.get('total_wrong', 0)}, O'tkazilgan: {stats.get('total_skipped', 0)}
+- Test aniqligi: {stats.get('accuracy_pct', 0)}%
+- Uy vazifalari: {stats.get('homework_completed', 0)}/{stats.get('homework_total', 0)} ta bajarildi ({stats.get('homework_completion_pct', 0)}%)
+
+Zaif mavzular:
+{weak_str}
+
+O'quvchi yo'l qo'ygan aniq xatolar:
+{sample_mistakes_str}
+
+Xatolar manbai: {source_str}
+
+Tahlil talablari:
+1. Tahlil matni ('analysis') juda uzun yoki haddan tashqari chuqur bo'lishi shart emas (2-4 ta tushunarli jumla), ammo o'quvchining bu hafta yo'l qo'ygan ASOSIY XATOLARINI va zaif mavzularini aniq aytib o'tishi SHART.
+2. BARCHA MATNLAR, TAHLIL, ZAIF MAVZULAR, TAVSIYALAR, SAVOLLAR VA QOIDALAR TO'LIQ VA QAT'IY O'ZBEK TILIDA (LOTIN ALIFBOSIDA) BO'LSIN!
+
+Faqat quyidagi JSON obyektni qaytaring:
+{{
+  "analysis": "Haftalik qisqa va tushunarli tahlil (2-4 jumla), o'quvchining asosiy xatolarini albatta ko'rsatgan holda",
+  "weak_topics": [
+    {{"topic": "mavzu nomi", "level": "weak/medium", "explanation": "nima uchun qiyinchilik tug'ilgani", "rules": ["1-qoida", "2-qoida"]}}
+  ],
+  "recommendations": [
+    "1-tavsiya",
+    "2-tavsiya",
+    "3-tavsiya"
+  ],
+  "practice_questions": [
+    {{"question": "savol matni", "options": ["Variant A", "Variant B", "Variant C", "Variant D"], "correct": "Variant A", "topic": "mavzu", "difficulty": "easy", "explanation": "javob tushuntirishi"}}
+  ],
+  "encouragement": "rag'batlantiruvchi gap"
+}}
+
+practice_questions da zaif mavzular bo'yicha kamida 5 ta yengil amaliy savol bo'lsin. Faqat to'g'ri JSON qaytaring."""
+
     try:
         from ai_generator import _xai_generate_text
         async with aiohttp.ClientSession() as session:
-            raw = await _xai_generate_text(prompt, session=session, temperature=0.5)
+            raw = await _xai_generate_text(prompt, session=session, temperature=0.3)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
@@ -4453,7 +4631,24 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
         )
         row = cur.fetchone()
         if row:
-            return _weekly_payload(dict(row), available_subjects=enrolled_subs, selected_subject=active_sub)
+            row_dict = dict(row)
+            # Agar processing holatida uzoq qolib ketgan bo'lsa (masalan server restart bo'lganida), qayta ishga tushiramiz
+            if str(row_dict.get("status") or "") == "processing":
+                upd = row_dict.get("updated_at") or row_dict.get("created_at")
+                is_stale = False
+                if upd:
+                    try:
+                        upd_str = str(upd).replace("Z", "+00:00")
+                        upd_dt = datetime.fromisoformat(upd_str)
+                        if (_now() - upd_dt).total_seconds() > 60:
+                            is_stale = True
+                    except Exception:
+                        is_stale = True
+                if is_stale:
+                    stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
+                    user_name = _student_name(user)
+                    asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
+            return _weekly_payload(row_dict, available_subjects=enrolled_subs, selected_subject=active_sub)
 
         # Collect live stats and auto-trigger generation if not yet generated
         stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
@@ -4461,18 +4656,24 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
         try:
             cur.execute(
                 "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing'",
+                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing', updated_at=?",
                 (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
-                })),
+                }), _now().isoformat()),
             )
             conn.commit()
             asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
         except Exception:
             pass
 
-        thinking_msg = "Diamondvoy готовит ваш еженедельный анализ..." if active_sub == "Russian" else "Diamondvoy is preparing your weekly analysis..."
+        lang = _detect_subject_language(active_sub)
+        if lang == "ru":
+            thinking_msg = "Diamondvoy готовит ваш еженедельный анализ..."
+        elif lang == "en":
+            thinking_msg = "Diamondvoy is preparing your weekly analysis..."
+        else:
+            thinking_msg = "Diamondvoy sizning haftalik tahlilingizni tayyorlamoqda..."
         return {
             "exists": True,
             "week_start": week_start,

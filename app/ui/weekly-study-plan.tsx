@@ -137,18 +137,27 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
   const thinking = loading || generating || analysis?.status === "processing" || analysis?.status === "not_generated";
 
   // Prompts adapted strictly to subject language
+  const subLower = (selectedSubject || "").toLowerCase();
+  const isEnglish = subLower.includes("eng") || subLower.includes("ingliz") || subLower.includes("ielts") || subLower.includes("cefr");
+
   const getLearnPrompt = (topic: string) => {
     if (isRussian) {
       return `Объясните мне тему «${topic}». Я затрудняюсь в тестах по этой теме. После объяснения с правилами и примерами составьте 10 тестовых вопросов для проверки моих знаний.`;
     }
-    return `Please explain the topic "${topic}" to me. I am struggling with tests on this topic. After explaining with rules and examples, please generate 10 test questions to check my understanding.`;
+    if (isEnglish) {
+      return `Please explain the topic "${topic}" to me. I am struggling with tests on this topic. After explaining with rules and examples, please generate 10 test questions to check my understanding.`;
+    }
+    return `Menga «${topic}» mavzusini tushuntirib bering. Men bu mavzudagi testlarda xatolarga yo'l qo'yyapman. Qoidalar va misollar bilan tushuntirgach, bilimimni tekshirish uchun 10 ta test savolini tuzib bering.`;
   };
 
   const getQuizPrompt = (topic: string) => {
     if (isRussian) {
       return `Составьте ровно 10 тестовых вопросов по теме «${topic}». Варианты не должны повторяться, в каждом вопросе должно быть 4 варианта ответов.`;
     }
-    return `Please generate exactly 10 test questions on the topic "${topic}". Make sure options do not repeat, with 4 options per question.`;
+    if (isEnglish) {
+      return `Please generate exactly 10 test questions on the topic "${topic}". Make sure options do not repeat, with 4 options per question.`;
+    }
+    return `«${topic}» mavzusi bo'yicha aynan 10 ta test savolini tuzib bering. Variantlar takrorlanmasin, har bir savolda 4 tadan variant bo'lsin.`;
   };
 
   return (
@@ -290,22 +299,14 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
                   <span>{isRussian ? "Анализ Diamondvoy" : tt("plan.weekly.analysis", "Diamondvoy tahlili")}</span>
                 </h3>
               </div>
-              {!selectedHistory ? (
-                <button
-                  className="rounded-xl border-2 border-b-4 border-slate-200 bg-white px-3.5 py-1.5 text-xs font-black uppercase text-navy-900 shadow-sm active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-700 dark:bg-navy-800 dark:text-white"
-                  disabled={generating}
-                  onClick={generate}
-                >
-                  {isRussian ? "Обновить" : tt("plan.weekly.refresh", "Yangilash")}
-                </button>
-              ) : (
+              {selectedHistory ? (
                 <button
                   className="rounded-xl border-2 border-b-4 border-slate-200 bg-white px-3.5 py-1.5 text-xs font-black uppercase text-navy-900 shadow-sm active:translate-y-0.5 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                   onClick={() => setSelectedHistory(null)}
                 >
                   {isRussian ? "Вернуться к текущей неделе" : tt("plan.weekly.backCurrent", "Joriy haftaga qaytish")}
                 </button>
-              )}
+              ) : null}
             </div>
             <p className="mt-4 whitespace-pre-line text-sm leading-7 text-navy-950 dark:text-navy-100 font-medium">
               {shown.analysis}
