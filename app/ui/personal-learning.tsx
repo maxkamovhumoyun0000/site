@@ -51,7 +51,14 @@ export function PersonalLearningPanel({ apiFetch, role, view }: { apiFetch: (pat
   })();
 
   return <div className="flex flex-col gap-5 pb-10 animate-fade-in">
-    <section className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-navy-950 to-indigo-800 p-5 text-white shadow-premium sm:p-7"><div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" /><p className="relative text-xs font-black uppercase tracking-[.18em] text-cyan-200">Diamondvoy · {student ? "O'quv vositalari" : "Ish vositalari"}</p><h2 className="relative mt-2 text-2xl font-black">{title}</h2><p className="relative mt-2 max-w-2xl text-sm text-white/75">{view === "pomodoro" ? "Diqqat bilan ishlash va statistikangiz." : "Studentlar qiynalayotgan mavzular va tavsiyalar."}</p></section>
+    {view !== "pomodoro" ? (
+      <section className="relative overflow-hidden rounded-3xl border border-cyan-500/20 bg-gradient-to-br from-navy-950 to-indigo-800 p-5 text-white shadow-premium sm:p-7">
+        <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-cyan-400/20 blur-3xl" />
+        <p className="relative text-xs font-black uppercase tracking-[.18em] text-cyan-200">Diamondvoy · {student ? "O'quv vositalari" : "Ish vositalari"}</p>
+        <h2 className="relative mt-2 text-2xl font-black">{title}</h2>
+        <p className="relative mt-2 max-w-2xl text-sm text-white/75">Studentlar qiynalayotgan mavzular va tavsiyalar.</p>
+      </section>
+    ) : null}
     {notice ? <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm font-semibold text-cyan-800 dark:text-cyan-100">{notice}</div> : null}
 
     {!student && view === "student-insights" ? <>
