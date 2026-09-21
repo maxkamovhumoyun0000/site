@@ -672,7 +672,17 @@ function AnswerInput({
           })}
         </div>
         <button
-          onClick={() => onSubmit({ blanks: answers })}
+          onClick={() => {
+            const subAnswers = subs.map((s, i) => {
+              const ans = answers[i] || "";
+              const optIdx = (s.options || []).indexOf(ans);
+              return {
+                choice_index: optIdx >= 0 ? optIdx : undefined,
+                answer_text: ans,
+              };
+            });
+            onSubmit({ blanks: answers, sub_answers: subAnswers });
+          }}
           disabled={disabled || answers.some((x) => !x.trim())}
           className="w-full rounded-2xl bg-cyan-600 py-3 font-black text-white disabled:opacity-60"
         >

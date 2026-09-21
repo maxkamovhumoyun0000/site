@@ -31824,9 +31824,20 @@ def _homework_proof_images_from_payload(payload: HomeworkSubmitRequest) -> list[
 
 def _attach_homework_runtime_fields(row: dict) -> dict:
     kind = _normalize_homework_kind(row.get("homework_kind"))
+    hw_id = int(row.get("id") or row.get("homework_id") or 0)
+    has_attached_test = False
+    if hw_id > 0:
+        if row.get("has_test") is not None:
+            has_attached_test = bool(row.get("has_test"))
+        else:
+            test_row = _safe_call(lambda: get_content_test("homework", hw_id, include_inactive=False, include_answers=False), None)
+            has_attached_test = bool(test_row and (test_row.get("questions") or []))
+
+    if has_attached_test and kind == "list":
+        kind = "both"
     row["homework_kind"] = kind
     row["requires_upload"] = kind in {"list", "both"}
-    row["requires_test"] = kind in {"test", "both"}
+    row["requires_test"] = kind in {"test", "both"} or has_attached_test
     row["proof_images"] = _homework_proof_images_from_row(row)
     row["dpoints_delta"] = float(row.get("dpoints_delta") if row.get("dpoints_delta") is not None else row.get("dcoin_delta") or 0.0)
     # Deadline o'tib, hech narsa topshirilmagan — avtomatik "qilinmadi".
@@ -55462,6 +55473,25 @@ async def teacher_send_material(
         due_at_str = parsed_due_at.strftime("%Y-%m-%d %H:%M:%S")
     else:
         due_at_str = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    # Materialga bog'langan test bormi tekshiramiz
+    attached_test = _safe_call(lambda: get_content_test("material", int(material_id), include_inactive=False, include_answers=True), None)
+    if not attached_test:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT payload_json FROM library_nodes WHERE kind='test' AND (file_url=? OR title=?) LIMIT 1", (file_url, title))
+            ln_row = cur.fetchone()
+            if ln_row:
+                p_raw = ln_row.get("payload_json") if isinstance(ln_row, dict) else ln_row[0]
+                p_obj = json.loads(str(p_raw or "{}"))
+                if p_obj.get("questions"):
+                    attached_test = {"questions": p_obj.get("questions")}
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    hw_kind = "both" if (attached_test and attached_test.get("questions")) else "list"
     try:
         hw = create_homework(
             teacher_id=teacher_id,
@@ -55472,12 +55502,22 @@ async def teacher_send_material(
             due_at=due_at_str,
             image_url=file_url,
             dcoin_effect=0.0,
-            homework_kind="list",
+            homework_kind=hw_kind,
             requires_file=False,
             requires_voice_message=False,
             idempotency_key=payload.idempotency_key,
         )
         replayed = bool((hw or {}).pop("_idempotent_replay", False))
+        hw_id = int((hw or {}).get("id") or 0)
+        if hw_id > 0 and attached_test and not replayed:
+            save_content_test(
+                "homework",
+                hw_id,
+                json.dumps(attached_test.get("questions"), ensure_ascii=False),
+                teacher_id,
+                title=f"{title} testi",
+                raw_questions=True,
+            )
         if hw and not replayed:
             increment_material_download(int(material_id))
         return {

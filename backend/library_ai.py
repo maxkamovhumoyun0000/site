@@ -2713,13 +2713,12 @@ async def ai_test_answer(
     meta = AI_TEST_TYPES.get(kind, {})
     subject = _student_subject(user)
 
-    if kind == "listening_set" and any(
+    if kind in {"listening_set", "reading_set"} and any(
         str(s.get("type") or "") == "open" for s in (question.get("sub_questions") or [])
     ):
-        # `listening_set` avtomatik tur hisoblanadi, ammo uning ichidagi
-        # ochiq savolni server solishtira olmaydi. Uni aynan shu yerda AIga
-        # yuborish kerak; avval bunday sub-savol jimgina to'g'ri deb ketardi.
-        verdict, feedback = await _check_listening_set_with_ai(
+        # Aralash setlar (listening_set yoki reading_set) ichidagi ochiq savollar
+        # parallel ravishda AI tomonidan tekshiriladi.
+        verdict, feedback = await _check_multi_set_with_ai(
             question, payload, subject, x_language
         )
     elif meta.get("check") == "auto" and question.get("check") != "ai":
@@ -2867,12 +2866,14 @@ def _norm_text(value: Any) -> str:
 
 
 def _check_listening_set_sub_answer(sub: dict, given_item: dict) -> tuple[bool, dict]:
-    """Bitta shared-audio sub-savolini tekshiradi; javob hech qachon default tanlanmaydi."""
-    sub_type = str(sub.get("type") or "mcq")
-    if sub_type in {"mcq", "tf"}:
+    """Bitta sub-savolni tekshiradi (mcq, tf, order, matching, gap, dictation, short)."""
+    sub_type = str(sub.get("type") or "mcq").strip().lower()
+    if sub_type in {"mcq", "tf", "choice", "multiple_choice", "true_false", "true_false_ng"}:
         chosen = given_item.get("choice_index")
         correct = int(sub.get("correct_index") or 0)
         options = sub.get("options") or []
+        if not options and sub_type in {"tf", "true_false", "true_false_ng"}:
+            options = ["True", "False", "Not Given"]
         if chosen is None:
             ans_str = _norm_text(given_item.get("answer_text") or given_item.get("answer") or given_item.get("choice") or "")
             if ans_str:
@@ -2889,53 +2890,76 @@ def _check_listening_set_sub_answer(sub: dict, given_item: dict) -> tuple[bool, 
         return ok, {
             "correct_answer": options[correct] if not ok and 0 <= correct < len(options) else None
         }
-    if sub_type in {"gap", "dictation", "short"}:
-        expected = {_norm_text(sub.get("answer")), _norm_text(sub.get("correct_answer")), *[_norm_text(x) for x in (sub.get("accepted_answers") or [])]}
+    if sub_type in {"gap", "dictation", "short", "fill_blank", "gap_fill"}:
+        expected = {
+            _norm_text(sub.get("answer")),
+            _norm_text(sub.get("correct_answer")),
+            _norm_text(sub.get("correct")),
+            *[_norm_text(x) for x in (sub.get("accepted_answers") or [])]
+        }
         expected.discard("")
         given = _norm_text(given_item.get("answer_text") or given_item.get("answer") or given_item.get("choice") or "")
-        return given in expected, {"reason": "Javob bo'sh" if not given else None}
-    if sub_type == "order":
-        expected = _norm_text(sub.get("answer"))
+        ok = given in expected or (bool(given) and any(_levenshtein(given, e) <= 1 for e in expected if len(e) > 3))
+        return ok, {"reason": "Javob bo'sh" if not given else None}
+    if sub_type in {"order", "word_order", "scrambled_sentence"}:
+        expected = _norm_text(sub.get("answer") or sub.get("target_sentence") or " ".join(sub.get("tokens") or []))
         given = _norm_text(" ".join(given_item.get("order") or []) or given_item.get("answer_text"))
         return bool(given and given == expected), {"hint": "So'zlar tartibini qayta ko'ring" if given != expected else None}
-    if sub_type == "matching":
+    if sub_type in {"matching", "pairs"}:
         expected = {str(p.get("left")): str(p.get("right")) for p in (sub.get("pairs") or [])}
         received = given_item.get("pairs") or {}
         received = {str(k): str(v) for k, v in received.items()} if isinstance(received, dict) else {}
         wrong = [left for left, right in expected.items() if _norm_text(received.get(left)) != _norm_text(right)]
         return not wrong, {"wrong_items": wrong, "wrong_count": len(wrong)}
-    # `open` is intentionally handled by _check_listening_set_with_ai.
+    # `open` is handled by _check_multi_set_with_ai.
     return False, {"reason": "Ochiq savol AI baholashini kutmoqda"}
 
 
-async def _check_listening_set_with_ai(
+async def _check_multi_set_with_ai(
     question: dict, payload: AiTestAnswerRequest, subject: str, x_language: str | None
 ) -> tuple[str, dict]:
-    """Aralash listening set: auto turlar + faqat open turlari uchun AI tekshiruvi."""
-    wrong_positions: list[int] = []
-    details: list[dict] = []
+    """Aralash listening/reading set: auto turlar + open turlari uchun tezkor parallel AI tekshiruvi."""
+    subs = question.get("sub_questions") or []
     answers = payload.sub_answers or []
-    for index, sub in enumerate(question.get("sub_questions") or []):
+    blanks = payload.blanks or []
+
+    async def _evaluate_sub(index: int, sub: dict):
         given = answers[index] if index < len(answers) and isinstance(answers[index], dict) else {}
-        if str(sub.get("type") or "") == "open":
+        if not given and index < len(blanks):
+            given = {"answer_text": str(blanks[index] or "")}
+        elif not given and payload.answer_text:
+            parts = [p.strip() for p in re.split(r"\||\n", str(payload.answer_text))]
+            if index < len(parts):
+                given = {"answer_text": re.sub(r"^\d+[\.\)]\s*", "", parts[index])}
+
+        sub_type = str(sub.get("type") or "").strip().lower()
+        if sub_type == "open":
             virtual_question = {
-                "kind": "listening_open",
+                "kind": "reading_open" if question.get("kind") == "reading_set" else "listening_open",
                 "prompt": str(sub.get("prompt") or ""),
-                "reference_answer": str(sub.get("reference_answer") or ""),
+                "reference_answer": str(sub.get("reference_answer") or sub.get("answer") or ""),
                 "instruction": question.get("instruction"),
                 "audio_url": question.get("audio_url"),
+                "passage": question.get("passage"),
             }
             virtual_payload = AiTestAnswerRequest(
                 question_index=payload.question_index,
-                answer_text=str(given.get("answer_text") or ""),
+                answer_text=str(given.get("answer_text") or given.get("answer") or ""),
             )
             verdict, detail = await _check_with_ai(virtual_question, virtual_payload, subject, x_language)
-            ok = verdict == "correct"
+            return index, verdict == "correct", detail
         else:
             ok, detail = _check_listening_set_sub_answer(sub, given)
+            return index, ok, detail
+
+    results = await asyncio.gather(*[_evaluate_sub(i, s) for i, s in enumerate(subs)])
+    wrong_positions: list[int] = []
+    details: list[dict] = []
+    for index, ok, detail in sorted(results, key=lambda x: x[0]):
         details.append({"position": index + 1, "verdict": "correct" if ok else "wrong", "feedback": detail})
         if not ok:
             wrong_positions.append(index + 1)
+
     if not wrong_positions:
         return "correct", {"sub_feedback": details}
     return "wrong", {
@@ -2944,6 +2968,9 @@ async def _check_listening_set_with_ai(
         "hint": f"{len(wrong_positions)} ta savolni qayta ko'ring",
         "sub_feedback": details,
     }
+
+
+_check_listening_set_with_ai = _check_multi_set_with_ai
 
 
 def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict]:
@@ -3037,46 +3064,23 @@ def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict
             "wrong_count": len(wrong_positions),
             "hint": f"{len(wrong_positions)} ta bo'sh joy noto'g'ri",
         }
-    if kind == "reading_set":
+    if kind in ("reading_set", "listening_set"):
         subs = question.get("sub_questions") or []
         wrong_positions = []
         details = []
+        answers = payload.sub_answers or []
+        blanks = payload.blanks or []
         for i, s in enumerate(subs):
-            expected_set = {
-                _norm_text(s.get("answer")),
-                _norm_text(s.get("correct_answer")),
-                _norm_text(s.get("correct")),
-                *[_norm_text(x) for x in (s.get("accepted_answers") or [])]
-            }
-            expected_set.discard("")
-            options = s.get("options") or []
-
-            # Extract given answer for sub-question i
-            given_raw = ""
-            if payload.sub_answers and i < len(payload.sub_answers):
-                item = payload.sub_answers[i]
-                if isinstance(item, dict):
-                    if item.get("choice_index") is not None and options:
-                        try:
-                            ci = int(item["choice_index"])
-                            if 0 <= ci < len(options):
-                                given_raw = options[ci]
-                        except Exception:
-                            pass
-                    if not given_raw:
-                        given_raw = str(item.get("answer_text") or item.get("answer") or item.get("choice") or "")
-                else:
-                    given_raw = str(item or "")
-            elif payload.blanks and i < len(payload.blanks):
-                given_raw = str(payload.blanks[i] or "")
-            elif payload.answer_text:
+            given = answers[i] if i < len(answers) and isinstance(answers[i], dict) else {}
+            if not given and i < len(blanks):
+                given = {"answer_text": str(blanks[i] or "")}
+            elif not given and payload.answer_text:
                 parts = [p.strip() for p in re.split(r"\||\n", str(payload.answer_text))]
                 if i < len(parts):
-                    given_raw = re.sub(r"^\d+[\.\)]\s*", "", parts[i])
+                    given = {"answer_text": re.sub(r"^\d+[\.\)]\s*", "", parts[i])}
 
-            given = _norm_text(given_raw)
-            ok = given in expected_set if expected_set else bool(given)
-            details.append({"position": i + 1, "verdict": "correct" if ok else "wrong", "given": given_raw})
+            ok, detail = _check_listening_set_sub_answer(s, given)
+            details.append({"position": i + 1, "verdict": "correct" if ok else "wrong", "feedback": detail})
             if not ok:
                 wrong_positions.append(i + 1)
 
@@ -3196,6 +3200,9 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
     return "\n\n".join(parts)
 
 
+_AI_CHECK_CACHE: dict[tuple[str, str], tuple[str, dict]] = {}
+
+
 async def _check_with_ai(
     question: dict, payload: AiTestAnswerRequest, subject: str, x_language: str | None
 ) -> tuple[str, dict]:
@@ -3225,7 +3232,38 @@ async def _check_with_ai(
     if not answer:
         return "wrong", {"feedback": "Javob bo'sh qoldirilgan."}
 
-    from ai_generator import XAI_ENDPOINT, _get_xai_api_key, _xai_apply_payload_tuning, get_grok_model_candidates
+    # 1. Fast-path: agar o'quvchi javobi etalon/qabul qilingan javobga aynan yoki yaqin mos kelsa
+    # (orfoqrafiya/probellar), sun'iy intellekt API sini kutmasdan 0 millisekundda to'g'ri qaytaramiz.
+    ref_answers = [
+        question.get("reference_answer"),
+        question.get("answer"),
+        question.get("example_sentence"),
+        *(question.get("accepted_answers") or [])
+    ]
+    ref_clean = {_norm_text(r) for r in ref_answers if r}
+    given_norm = _norm_text(answer)
+    if given_norm and ref_clean and (given_norm in ref_clean or any(_levenshtein(given_norm, r) <= 1 for r in ref_clean if len(r) > 3)):
+        return "correct", {
+            "is_correct": True,
+            "grammar_ok": True,
+            "pronunciation_ok": True if spoken else None,
+            "level_ok": True,
+            "feedback": "Barakalla, javobingiz to'g'ri!",
+            "score": 10.0,
+            "transcript": answer if spoken else None,
+            "was_spoken": spoken,
+        }
+
+    # 2. Xotira keshidan tekshirish (bir xil savol/javob takror kelsa darhol natija beradi)
+    cache_key = (f"{kind}:{question.get('prompt') or ''}:{question.get('word') or ''}", given_norm)
+    if cache_key in _AI_CHECK_CACHE:
+        cached_verdict, cached_data = _AI_CHECK_CACHE[cache_key]
+        cached_copy = dict(cached_data)
+        cached_copy["transcript"] = answer if spoken else None
+        cached_copy["was_spoken"] = spoken
+        return cached_verdict, cached_copy
+
+    from ai_generator import XAI_ENDPOINT, _get_xai_api_key, _xai_apply_payload_tuning, _xai_model_supports_reasoning_effort, get_grok_model_candidates
     import aiohttp
 
     api_key = _safe(lambda: _get_xai_api_key())
@@ -3239,19 +3277,22 @@ async def _check_with_ai(
                 body = {
                     "model": model,
                     "messages": [
-                        {"role": "system", "content": "You are a precise language-exercise grader. Output only JSON."},
+                        {"role": "system", "content": "You are a fast, precise language-exercise grader. Output only JSON."},
                         {"role": "user", "content": prompt},
                     ],
-                    "temperature": 0.2,
-                    "max_tokens": 650,
+                    "temperature": 0.1,
+                    "max_tokens": 350,
                 }
                 _xai_apply_payload_tuning(body, model=model, stream=False)
+                # Mashq tekshirishda uzoq reasoning kutish kerak emas — 'low' bilan tezkor yakunlaydi
+                if _xai_model_supports_reasoning_effort(model):
+                    body["reasoning_effort"] = "low"
                 try:
                     async with session.post(
                         XAI_ENDPOINT,
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         json=body,
-                        timeout=aiohttp.ClientTimeout(total=20),
+                        timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
                         if resp.status == 200:
                             data = await resp.json(content_type=None)
@@ -3266,31 +3307,30 @@ async def _check_with_ai(
 
     parsed = _extract_json_object(raw)
     if not parsed:
-        # Fallback if AI response failed or was unparseable:
-        # Check if student's answer exactly or nearly matches reference answer
-        ref_answers = [question.get("reference_answer"), question.get("answer"), *(question.get("accepted_answers") or [])]
-        ref_clean = {_norm_text(r) for r in ref_answers if r}
-        given_norm = _norm_text(answer)
+        # AI javob bermasa yoki tarmoq xatosi bo'lsa:
         if given_norm and ref_clean and (given_norm in ref_clean or any(_levenshtein(given_norm, r) <= 1 for r in ref_clean)):
             return "correct", {
                 "is_correct": True,
                 "feedback": "Javob to'g'ri!",
-                "score": 100,
+                "score": 10.0,
                 "transcript": answer if spoken else None,
                 "was_spoken": spoken,
             }
         raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
     verdict = "correct" if bool(parsed.get("is_correct")) else "wrong"
     if verdict == "wrong" and not str(parsed.get("corrected") or "").strip():
-        # A teacher-provided example is the reliable fallback if the model
-        # forgot the field.  The normal prompt above requires a bespoke
-        # correction for open-ended sentences.
         fallback = str(question.get("reference_answer") or question.get("example_sentence") or "").strip()
         if fallback:
             parsed["corrected"] = fallback
         parsed["feedback"] = str(parsed.get("feedback") or "Xato joylarini tuzatib, gapni qayta yozing.")
     parsed["transcript"] = answer if spoken else None
     parsed["was_spoken"] = spoken
+
+    # Natijani keshga yozish (eng ko'pi 2000 ta yozuv)
+    _AI_CHECK_CACHE[cache_key] = (verdict, parsed)
+    if len(_AI_CHECK_CACHE) > 2000:
+        _AI_CHECK_CACHE.pop(next(iter(_AI_CHECK_CACHE)))
+
     return verdict, parsed
 
 
