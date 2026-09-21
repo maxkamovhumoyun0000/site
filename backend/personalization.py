@@ -889,9 +889,11 @@ def _plan_payload(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 class PomodoroRequest(BaseModel):
-    mode: str = Field(pattern="^(work|short_break|long_break)$")
-    planned_seconds: int = Field(ge=60, le=14400)
-    completed_seconds: int = Field(default=0, ge=0, le=14400)
+    mode: str = Field(default="work")
+    phase: str | None = None
+    planned_seconds: int = Field(default=1500, ge=1, le=86400)
+    completed_seconds: int = Field(default=0, ge=0, le=86400)
+    seconds: int | None = None
     completed: bool = False
 
 
@@ -1094,26 +1096,102 @@ def _pomodoro_routes(prefix: str, roles: set[str]):
     async def pomodoro_summary(authorization: str | None = Header(default=None)):
         user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
         try:
-            cur=conn.cursor(); cur.execute("SELECT COALESCE(SUM(completed_seconds),0) AS total, COUNT(*) AS sessions FROM pomodoro_sessions WHERE user_id=? AND created_at>=?", (int(user["id"]), (_now()-timedelta(days=7)).isoformat())); row=dict(cur.fetchone() or {}); return {"week_seconds": int(row.get("total") or 0), "sessions": int(row.get("sessions") or 0)}
+            cur=conn.cursor()
+            today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            cur.execute("SELECT COALESCE(SUM(completed_seconds),0) AS today_sec, COUNT(*) AS today_sessions FROM pomodoro_sessions WHERE user_id=? AND (created_at>=? OR completed_at>=?)", (int(user["id"]), today_start, today_start))
+            t_row = dict(cur.fetchone() or {})
+            cur.execute("SELECT COALESCE(SUM(completed_seconds),0) AS total, COUNT(*) AS sessions FROM pomodoro_sessions WHERE user_id=? AND created_at>=?", (int(user["id"]), (_now()-timedelta(days=7)).isoformat()))
+            row=dict(cur.fetchone() or {})
+            return {
+                "week_seconds": int(row.get("total") or 0),
+                "week_focused_minutes": int((row.get("total") or 0) // 60),
+                "sessions": int(row.get("sessions") or 0),
+                "today_focused_minutes": int((t_row.get("today_sec") or 0) // 60),
+                "completed_cycles": int(t_row.get("today_sessions") or 0),
+            }
         finally: conn.close()
+
+    @router.get(f"/{prefix}/pomodoro/sessions")
+    async def get_pomodoro_sessions(authorization: str | None = Header(default=None)):
+        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
+        try:
+            cur=conn.cursor()
+            cur.execute(
+                "SELECT id, mode, planned_seconds, completed_seconds, completed_at, created_at FROM pomodoro_sessions WHERE user_id=? ORDER BY id DESC LIMIT 50",
+                (int(user["id"]),)
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+            today_start = _now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            cur.execute(
+                "SELECT COALESCE(SUM(completed_seconds),0) AS today_seconds, COUNT(*) AS today_count FROM pomodoro_sessions WHERE user_id=? AND (created_at>=? OR completed_at>=?)",
+                (int(user["id"]), today_start, today_start)
+            )
+            today_row = dict(cur.fetchone() or {})
+
+            cur.execute(
+                "SELECT COALESCE(SUM(completed_seconds),0) AS week_seconds, COUNT(*) AS week_sessions FROM pomodoro_sessions WHERE user_id=? AND created_at>=?",
+                (int(user["id"]), (_now()-timedelta(days=7)).isoformat())
+            )
+            week_row = dict(cur.fetchone() or {})
+
+            formatted = []
+            for r in rows:
+                c_sec = int(r.get("completed_seconds") or 0)
+                p_sec = int(r.get("planned_seconds") or 0)
+                formatted.append({
+                    "id": int(r.get("id") or 0),
+                    "mode": str(r.get("mode") or "work"),
+                    "duration_minutes": max(1, (c_sec if c_sec > 0 else p_sec) // 60),
+                    "planned_seconds": p_sec,
+                    "completed_seconds": c_sec,
+                    "completed_at": str(r.get("completed_at") or ""),
+                    "created_at": str(r.get("created_at") or ""),
+                    "completed": bool(r.get("completed_at") or c_sec > 0),
+                })
+
+            return {
+                "sessions": formatted,
+                "today_count": int(today_row.get("today_count") or 0),
+                "today_minutes": int((today_row.get("today_seconds") or 0) // 60),
+                "week_seconds": int(week_row.get("week_seconds") or 0),
+                "week_sessions": int(week_row.get("week_sessions") or 0),
+            }
+        finally: conn.close()
+
     @router.post(f"/{prefix}/pomodoro/sessions")
     async def save_pomodoro(payload: PomodoroRequest, authorization: str | None = Header(default=None)):
         user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
         try:
             cur=conn.cursor()
+            mode = payload.mode or payload.phase or "work"
+            planned_sec = payload.planned_seconds if payload.planned_seconds else (payload.seconds or 1500)
+            completed_sec = payload.completed_seconds if payload.completed_seconds else (payload.seconds or (planned_sec if payload.completed else 0))
+            is_completed = payload.completed or completed_sec > 0
+            comp_time = _now().isoformat() if is_completed else None
             try:
-                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?) RETURNING id", (int(user["id"]), payload.mode, payload.planned_seconds, payload.completed_seconds, _now().isoformat() if payload.completed else None))
+                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?) RETURNING id", (int(user["id"]), mode, planned_sec, completed_sec, comp_time))
                 row=cur.fetchone()
                 sid=int(dict(row)["id"]) if row else 0
             except Exception:
-                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?)", (int(user["id"]), payload.mode, payload.planned_seconds, payload.completed_seconds, _now().isoformat() if payload.completed else None))
+                cur.execute("INSERT INTO pomodoro_sessions(user_id, mode, planned_seconds, completed_seconds, completed_at) VALUES(?,?,?,?,?)", (int(user["id"]), mode, planned_sec, completed_sec, comp_time))
                 sid=int(getattr(cur, "lastrowid", 0) or 0)
             conn.commit(); return {"id": sid}
         finally: conn.close()
 
+    @router.delete(f"/{prefix}/pomodoro/sessions/{{session_id}}")
+    async def delete_pomodoro_session(session_id: int, authorization: str | None = Header(default=None)):
+        user=_user(authorization); _require(user, roles); ensure_schema(); conn=get_conn()
+        try:
+            cur=conn.cursor()
+            cur.execute("DELETE FROM pomodoro_sessions WHERE id=? AND user_id=?", (session_id, int(user["id"])))
+            conn.commit()
+            return {"deleted": True, "id": session_id}
+        finally: conn.close()
+
 
 _bookmark_routes("student", {"student"}); _bookmark_routes("staff", {"teacher", "support"})
-_pomodoro_routes("student", {"student"}); _pomodoro_routes("staff", {"teacher", "support"})
+_pomodoro_routes("student", {"student"}); _pomodoro_routes("staff", {"teacher", "support"}); _pomodoro_routes("teacher", {"teacher", "support"})
 
 
 @router.post("/student/study-rooms")

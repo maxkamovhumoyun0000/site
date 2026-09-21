@@ -2,258 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 
-export type PomodoroMode = "work" | "short_break" | "long_break";
-
-export interface PomodoroTask {
-  id: string;
-  text: string;
-  done: boolean;
-  pomodoros: number;
+export interface CompletedSessionItem {
+  id: number;
+  mode: string;
+  duration_minutes: number;
+  planned_seconds: number;
+  completed_seconds: number;
+  completed_at: string;
+  created_at: string;
+  completed: boolean;
 }
 
-export interface DistractionNote {
-  id: string;
-  text: string;
-  time: string;
+export interface PomodoroSessionsResponse {
+  sessions: CompletedSessionItem[];
+  today_count: number;
+  today_minutes: number;
+  week_seconds: number;
+  week_sessions: number;
 }
-
-export interface PomodoroSettings {
-  workMinutes: number;
-  shortBreakMinutes: number;
-  longBreakMinutes: number;
-  autoStartBreaks: boolean;
-  autoStartFocus: boolean;
-  ambientSound: "none" | "rain" | "ocean" | "forest" | "cafe" | "binaural";
-  volume: number;
-  tickSound: boolean;
-}
-
-const DEFAULT_SETTINGS: PomodoroSettings = {
-  workMinutes: 25,
-  shortBreakMinutes: 5,
-  longBreakMinutes: 15,
-  autoStartBreaks: false,
-  autoStartFocus: false,
-  ambientSound: "none",
-  volume: 0.5,
-  tickSound: false,
-};
-
-// Web Audio Ambient Synthesizer
-class AmbientAudioEngine {
-  private ctx: AudioContext | null = null;
-  private noiseNode: AudioNode | null = null;
-  private gainNode: GainNode | null = null;
-  private oscillators: OscillatorNode[] = [];
-  private lfo: OscillatorNode | null = null;
-
-  unlock() {
-    try {
-      this.initCtx();
-      if (this.ctx && this.ctx.state === "suspended") {
-        void this.ctx.resume();
-      }
-    } catch {
-      // Audio not permitted yet
-    }
-  }
-
-  private initCtx() {
-    if (!this.ctx) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.ctx = new AudioCtx();
-    }
-    if (this.ctx.state === "suspended") {
-      void this.ctx.resume();
-    }
-  }
-
-  playChime() {
-    // 10-second repeating tit-tit alarm — plays 5 rapid double-beeps over 10 seconds
-    try {
-      this.initCtx();
-      if (!this.ctx) return;
-      const ctx = this.ctx;
-      const totalBeeps = 10;
-      const beepInterval = 1.0; // 1 second between each beep pair
-      for (let i = 0; i < totalBeeps; i++) {
-        const t = ctx.currentTime + i * beepInterval;
-        // First beep of the pair
-        const osc1 = ctx.createOscillator();
-        const gain1 = ctx.createGain();
-        osc1.type = "square";
-        osc1.frequency.setValueAtTime(880, t);
-        gain1.gain.setValueAtTime(0.0, t);
-        gain1.gain.linearRampToValueAtTime(0.35, t + 0.01);
-        gain1.gain.setValueAtTime(0.35, t + 0.09);
-        gain1.gain.linearRampToValueAtTime(0.0, t + 0.12);
-        osc1.connect(gain1);
-        gain1.connect(ctx.destination);
-        osc1.start(t);
-        osc1.stop(t + 0.15);
-        // Second beep of the pair
-        const osc2 = ctx.createOscillator();
-        const gain2 = ctx.createGain();
-        osc2.type = "square";
-        osc2.frequency.setValueAtTime(1100, t + 0.18);
-        gain2.gain.setValueAtTime(0.0, t + 0.18);
-        gain2.gain.linearRampToValueAtTime(0.35, t + 0.19);
-        gain2.gain.setValueAtTime(0.35, t + 0.27);
-        gain2.gain.linearRampToValueAtTime(0.0, t + 0.30);
-        osc2.connect(gain2);
-        gain2.connect(ctx.destination);
-        osc2.start(t + 0.18);
-        osc2.stop(t + 0.33);
-      }
-    } catch {
-      // Audio not permitted or unsupported
-    }
-  }
-
-  playTick() {
-    try {
-      this.initCtx();
-      if (!this.ctx) return;
-      const now = this.ctx.currentTime;
-      const osc = this.ctx.createOscillator();
-      const gain = this.ctx.createGain();
-      osc.type = "triangle";
-      osc.frequency.setValueAtTime(1200, now);
-      gain.gain.setValueAtTime(0.02, now);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.03);
-      osc.connect(gain);
-      gain.connect(this.ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.04);
-    } catch {
-      // Safe fallback
-    }
-  }
-
-  setAmbient(type: PomodoroSettings["ambientSound"], volume: number) {
-    this.stopAmbient();
-    if (type === "none" || volume <= 0) return;
-
-    try {
-      this.initCtx();
-      if (!this.ctx) return;
-
-      this.gainNode = this.ctx.createGain();
-      this.gainNode.gain.setValueAtTime(volume * 0.4, this.ctx.currentTime);
-      this.gainNode.connect(this.ctx.destination);
-
-      if (type === "binaural") {
-        // 432Hz deep focus alpha drone (432Hz + 440Hz -> 8Hz alpha wave)
-        const osc1 = this.ctx.createOscillator();
-        const osc2 = this.ctx.createOscillator();
-        const pan1 = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
-        const pan2 = this.ctx.createStereoPanner ? this.ctx.createStereoPanner() : null;
-
-        osc1.type = "sine";
-        osc1.frequency.setValueAtTime(216, this.ctx.currentTime);
-        osc2.type = "sine";
-        osc2.frequency.setValueAtTime(224, this.ctx.currentTime);
-
-        if (pan1 && pan2) {
-          pan1.pan.setValueAtTime(-0.8, this.ctx.currentTime);
-          pan2.pan.setValueAtTime(0.8, this.ctx.currentTime);
-          osc1.connect(pan1);
-          pan1.connect(this.gainNode);
-          osc2.connect(pan2);
-          pan2.connect(this.gainNode);
-        } else {
-          osc1.connect(this.gainNode);
-          osc2.connect(this.gainNode);
-        }
-
-        osc1.start();
-        osc2.start();
-        this.oscillators = [osc1, osc2];
-        return;
-      }
-
-      // Noise generator for rain, ocean, cafe, forest
-      const bufferSize = this.ctx.sampleRate * 2;
-      const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-      const output = noiseBuffer.getChannelData(0);
-      let b0 = 0, b1 = 0, b2 = 0;
-      for (let i = 0; i < bufferSize; i++) {
-        const white = Math.random() * 2 - 1;
-        // Pink noise approximation
-        b0 = 0.99886 * b0 + white * 0.0555179;
-        b1 = 0.99332 * b1 + white * 0.0750759;
-        b2 = 0.96900 * b2 + white * 0.1538520;
-        output[i] = (b0 + b1 + b2 + white * 0.5362) * 0.11;
-      }
-
-      const whiteNoise = this.ctx.createBufferSource();
-      whiteNoise.buffer = noiseBuffer;
-      whiteNoise.loop = true;
-
-      const filter = this.ctx.createBiquadFilter();
-
-      if (type === "rain") {
-        filter.type = "lowpass";
-        filter.frequency.setValueAtTime(950, this.ctx.currentTime);
-      } else if (type === "ocean") {
-        filter.type = "lowpass";
-        filter.frequency.setValueAtTime(450, this.ctx.currentTime);
-
-        // LFO for rhythmic waves
-        this.lfo = this.ctx.createOscillator();
-        const lfoGain = this.ctx.createGain();
-        this.lfo.frequency.setValueAtTime(0.12, this.ctx.currentTime); // Wave every 8s
-        lfoGain.gain.setValueAtTime(320, this.ctx.currentTime);
-        this.lfo.connect(lfoGain);
-        lfoGain.connect(filter.frequency);
-        this.lfo.start();
-      } else if (type === "forest") {
-        filter.type = "bandpass";
-        filter.frequency.setValueAtTime(700, this.ctx.currentTime);
-        filter.Q.setValueAtTime(1.8, this.ctx.currentTime);
-      } else if (type === "cafe") {
-        filter.type = "lowpass";
-        filter.frequency.setValueAtTime(600, this.ctx.currentTime);
-      }
-
-      whiteNoise.connect(filter);
-      filter.connect(this.gainNode);
-      whiteNoise.start();
-      this.noiseNode = whiteNoise;
-    } catch {
-      // Audio not permitted
-    }
-  }
-
-  setVolume(vol: number) {
-    if (this.gainNode && this.ctx) {
-      this.gainNode.gain.setValueAtTime(vol * 0.4, this.ctx.currentTime);
-    }
-  }
-
-  stopAmbient() {
-    try {
-      if (this.noiseNode && "stop" in this.noiseNode) {
-        (this.noiseNode as AudioScheduledSourceNode).stop();
-        this.noiseNode.disconnect();
-      }
-      this.noiseNode = null;
-      if (this.lfo) {
-        this.lfo.stop();
-        this.lfo.disconnect();
-        this.lfo = null;
-      }
-      this.oscillators.forEach(o => {
-        try { o.stop(); o.disconnect(); } catch { /* noop */ }
-      });
-      this.oscillators = [];
-    } catch {
-      // Ignore cleanup error
-    }
-  }
-}
-
-const audioEngine = typeof window !== "undefined" ? new AmbientAudioEngine() : null;
 
 export interface PomodoroStudioProps {
   apiFetch?: (url: string, options?: RequestInit) => Promise<unknown>;
@@ -261,480 +27,286 @@ export interface PomodoroStudioProps {
   initialSummary?: { week_seconds?: number; sessions?: number };
 }
 
-export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary }: PomodoroStudioProps) {
-  const [settings, setSettings] = useState<PomodoroSettings>(DEFAULT_SETTINGS);
-  const [mode, setMode] = useState<PomodoroMode>("work");
-  const [secondsLeft, setSecondsLeft] = useState(DEFAULT_SETTINGS.workMinutes * 60);
+function playCompletionChime() {
+  if (typeof window === "undefined") return;
+  try {
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const totalBeeps = 5;
+    const beepInterval = 0.8;
+    for (let i = 0; i < totalBeeps; i++) {
+      const t = ctx.currentTime + i * beepInterval;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(i % 2 === 0 ? 880 : 1046.5, t);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.3, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.38);
+    }
+  } catch {
+    // Audio context may be restricted
+  }
+}
+
+export function PomodoroFocusStudio({
+  apiFetch,
+  role = "student",
+  initialSummary,
+}: PomodoroStudioProps) {
+  const [totalSeconds, setTotalSeconds] = useState(25 * 60);
+  const [secondsLeft, setSecondsLeft] = useState(25 * 60);
   const [isRunning, setIsRunning] = useState(false);
-  const [cyclesCompleted, setCyclesCompleted] = useState(0);
-  const [todayCompletedCount, setTodayCompletedCount] = useState(0);
-  const [todayFocusMinutes, setTodayFocusMinutes] = useState(0);
-  const [weekSummary, setWeekSummary] = useState(initialSummary || { week_seconds: 0, sessions: 0 });
-  const [currentGoal, setCurrentGoal] = useState("");
-  const [tasks, setTasks] = useState<PomodoroTask[]>([]);
-  const [newTaskText, setNewTaskText] = useState("");
-  const [distractions, setDistractions] = useState<DistractionNote[]>([]);
-  const [newDistraction, setNewDistraction] = useState("");
-  const [showSettings, setShowSettings] = useState(false);
-  const [showTips, setShowTips] = useState(false);
-  const [isZenMode, setIsZenMode] = useState(false);
+  const [isEditingTime, setIsEditingTime] = useState(false);
+  const [editMinutesInput, setEditMinutesInput] = useState("25");
+  const [editSecondsInput, setEditSecondsInput] = useState("00");
+
+  const [completedSessions, setCompletedSessions] = useState<CompletedSessionItem[]>([]);
+  const [todayCount, setTodayCount] = useState(0);
+  const [todayMinutes, setTodayMinutes] = useState(0);
+  const [weekSeconds, setWeekSeconds] = useState(initialSummary?.week_seconds || 0);
+  const [weekSessions, setWeekSessions] = useState(initialSummary?.sessions || 0);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const prefix = role === "student" ? "/student" : "/staff";
 
-  // Load saved state from localStorage
+  // Load custom timer duration from localStorage
   useEffect(() => {
     try {
-      const savedSettings = localStorage.getItem("diamond_pomodoro_settings");
-      if (savedSettings) setSettings(prev => ({ ...prev, ...JSON.parse(savedSettings) }));
-
-      const savedGoal = localStorage.getItem("diamond_pomodoro_goal");
-      if (savedGoal) setCurrentGoal(savedGoal);
-
-      const savedTasks = localStorage.getItem("diamond_pomodoro_tasks");
-      if (savedTasks) setTasks(JSON.parse(savedTasks));
-
-      const savedDistractions = localStorage.getItem("diamond_pomodoro_distractions");
-      if (savedDistractions) setDistractions(JSON.parse(savedDistractions));
-
-      const savedToday = localStorage.getItem("diamond_pomodoro_today");
-      if (savedToday) {
-        const parsed = JSON.parse(savedToday);
-        const todayStr = new Date().toDateString();
-        if (parsed.date === todayStr) {
-          setTodayCompletedCount(parsed.count || 0);
-          setTodayFocusMinutes(parsed.minutes || 0);
+      const savedDuration = localStorage.getItem("diamond_pomodoro_duration_sec");
+      if (savedDuration) {
+        const val = parseInt(savedDuration, 10);
+        if (!isNaN(val) && val > 0 && val <= 86400) {
+          setTotalSeconds(val);
+          setSecondsLeft(val);
+          setEditMinutesInput(String(Math.floor(val / 60)));
+          setEditSecondsInput(String(val % 60).padStart(2, "0"));
         }
       }
     } catch {
-      // Storage access fail safe
+      // LocalStorage access fallback
     }
   }, []);
 
-  // Save settings when changed
-  const updateSettings = (partial: Partial<PomodoroSettings>) => {
-    setSettings(prev => {
-      const updated = { ...prev, ...partial };
-      try {
-        localStorage.setItem("diamond_pomodoro_settings", JSON.stringify(updated));
-      } catch { /* noop */ }
-      return updated;
-    });
-  };
-
-  // Sync mode duration to seconds
-  const getModeTotalSeconds = (m: PomodoroMode = mode) => {
-    if (m === "work") return settings.workMinutes * 60;
-    if (m === "short_break") return settings.shortBreakMinutes * 60;
-    return settings.longBreakMinutes * 60;
-  };
-
-  // Switch phase
-  const switchMode = (newMode: PomodoroMode, autoStart = false) => {
-    setIsRunning(false);
-    setMode(newMode);
-    setSecondsLeft(getModeTotalSeconds(newMode));
-    if (autoStart) {
-      setTimeout(() => setIsRunning(true), 250);
+  // Fetch completed sessions from backend
+  const fetchSessions = async () => {
+    if (!apiFetch) return;
+    setIsLoadingSessions(true);
+    try {
+      const res = (await apiFetch(`${prefix}/pomodoro/sessions`)) as PomodoroSessionsResponse;
+      if (res && Array.isArray(res.sessions)) {
+        setCompletedSessions(res.sessions);
+        setTodayCount(res.today_count || 0);
+        setTodayMinutes(res.today_minutes || 0);
+        setWeekSeconds(res.week_seconds || 0);
+        setWeekSessions(res.week_sessions || 0);
+      }
+    } catch {
+      // Offline fallback
+    } finally {
+      setIsLoadingSessions(false);
     }
   };
+
+  useEffect(() => {
+    void fetchSessions();
+  }, [prefix]);
 
   // Handle timer completion
-  const handlePhaseComplete = async () => {
-    audioEngine?.playChime();
+  const handleComplete = async () => {
+    setIsRunning(false);
+    playCompletionChime();
+    setNotice("🎉 Ajoyib natija! Pomodoro fokus sessiyasi muvaffaqiyatli yakunlandi.");
 
-    if (mode === "work") {
-      const earnedMins = settings.workMinutes;
-      const newCycles = cyclesCompleted + 1;
-      const newTodayCount = todayCompletedCount + 1;
-      const newTodayMins = todayFocusMinutes + earnedMins;
+    const durationMin = Math.max(1, Math.round(totalSeconds / 60));
+    const nowIso = new Date().toISOString();
 
-      setCyclesCompleted(newCycles);
-      setTodayCompletedCount(newTodayCount);
-      setTodayFocusMinutes(newTodayMins);
+    // Optimistic update
+    const optimisticSession: CompletedSessionItem = {
+      id: Date.now(),
+      mode: "work",
+      duration_minutes: durationMin,
+      planned_seconds: totalSeconds,
+      completed_seconds: totalSeconds,
+      completed_at: nowIso,
+      created_at: nowIso,
+      completed: true,
+    };
+    setCompletedSessions((prev) => [optimisticSession, ...prev]);
+    setTodayCount((c) => c + 1);
+    setTodayMinutes((m) => m + durationMin);
+    setWeekSeconds((w) => w + totalSeconds);
+    setWeekSessions((s) => s + 1);
 
+    // Save to backend
+    if (apiFetch) {
       try {
-        localStorage.setItem(
-          "diamond_pomodoro_today",
-          JSON.stringify({ date: new Date().toDateString(), count: newTodayCount, minutes: newTodayMins })
-        );
-      } catch { /* noop */ }
-
-      // Save to backend if available
-      if (apiFetch) {
-        try {
-          await apiFetch(`${prefix}/pomodoro/sessions`, {
-            method: "POST",
-            body: JSON.stringify({
-              mode: "work",
-              planned_seconds: settings.workMinutes * 60,
-              completed_seconds: settings.workMinutes * 60,
-              completed: true,
-            }),
-          });
-          const summaryRes = await apiFetch(`${prefix}/pomodoro/summary`);
-          if (summaryRes && typeof summaryRes === "object") {
-            setWeekSummary(summaryRes as { week_seconds?: number; sessions?: number });
-          }
-        } catch {
-          // Offline fallback
-        }
+        await apiFetch(`${prefix}/pomodoro/sessions`, {
+          method: "POST",
+          body: JSON.stringify({
+            mode: "work",
+            planned_seconds: totalSeconds,
+            completed_seconds: totalSeconds,
+            completed: true,
+          }),
+        });
+        await fetchSessions();
+      } catch {
+        // Fallback
       }
-
-      setNotice("🎉 Ajoyib natija! 25 daqiqa to'liq diqqat yakunlandi.");
-
-      // Switch to long break after every 4 cycles, else short break
-      if (newCycles % 4 === 0) {
-        switchMode("long_break", settings.autoStartBreaks);
-      } else {
-        switchMode("short_break", settings.autoStartBreaks);
-      }
-    } else {
-      setNotice("☕ Tanaffus tugadi! Yangi diqqat sessiyasiga tayyormisiz?");
-      switchMode("work", settings.autoStartFocus);
     }
+
+    setSecondsLeft(totalSeconds);
   };
 
-  // Timer loop
+  // Timer interval
   useEffect(() => {
     if (isRunning) {
-      // Start ambient sound if selected
-      if (settings.ambientSound !== "none" && audioEngine) {
-        audioEngine.setAmbient(settings.ambientSound, settings.volume);
-      }
-
       timerRef.current = setInterval(() => {
-        setSecondsLeft(prev => {
-          if (settings.tickSound && audioEngine) {
-            audioEngine.playTick();
-          }
+        setSecondsLeft((prev) => {
           if (prev <= 1) {
-            void handlePhaseComplete();
+            void handleComplete();
             return 0;
           }
           return prev - 1;
         });
       }, 1000);
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-      audioEngine?.stopAmbient();
+    } else if (timerRef.current) {
+      clearInterval(timerRef.current);
     }
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      audioEngine?.stopAmbient();
     };
-  }, [isRunning, mode, settings]);
+  }, [isRunning, totalSeconds]);
 
-  // Ambient sound selector change
-  const handleAmbientChange = (sound: PomodoroSettings["ambientSound"]) => {
-    updateSettings({ ambientSound: sound });
-    if (audioEngine) {
-      if (sound === "none") {
-        audioEngine.stopAmbient();
-      } else if (isRunning) {
-        audioEngine.setAmbient(sound, settings.volume);
+  // Toggle Start / Pause
+  const toggleRunning = () => {
+    if (isEditingTime) {
+      applyEditTime();
+    }
+    setIsRunning((r) => !r);
+  };
+
+  // Reset
+  const handleReset = () => {
+    setIsRunning(false);
+    setSecondsLeft(totalSeconds);
+  };
+
+  // Apply edited time
+  const applyEditTime = () => {
+    let m = parseInt(editMinutesInput, 10);
+    let s = parseInt(editSecondsInput, 10);
+    if (isNaN(m) || m < 0) m = 0;
+    if (isNaN(s) || s < 0) s = 0;
+    if (m === 0 && s === 0) m = 25;
+    const newSec = m * 60 + s;
+    setTotalSeconds(newSec);
+    setSecondsLeft(newSec);
+    setIsEditingTime(false);
+    try {
+      localStorage.setItem("diamond_pomodoro_duration_sec", String(newSec));
+    } catch {
+      // LocalStorage access fallback
+    }
+  };
+
+  // Delete session
+  const handleDeleteSession = async (sessionId: number) => {
+    setCompletedSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (apiFetch) {
+      try {
+        await apiFetch(`${prefix}/pomodoro/sessions/${sessionId}`, { method: "DELETE" });
+        await fetchSessions();
+      } catch {
+        // Fallback
       }
     }
   };
 
-  // Reset current phase
-  const handleReset = () => {
-    setIsRunning(false);
-    setSecondsLeft(getModeTotalSeconds(mode));
+  // Format display digits
+  const displayMinutes = String(Math.floor(secondsLeft / 60)).padStart(2, "0");
+  const displaySeconds = String(secondsLeft % 60).padStart(2, "0");
+  const progressRatio = totalSeconds > 0 ? (totalSeconds - secondsLeft) / totalSeconds : 0;
+  const strokeDash = Math.round(progressRatio * 283);
+
+  // Format timestamp helper
+  const formatTimestamp = (dateStr: string) => {
+    if (!dateStr) return "Yaqinda";
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      const today = new Date();
+      const isToday =
+        d.getDate() === today.getDate() &&
+        d.getMonth() === today.getMonth() &&
+        d.getFullYear() === today.getFullYear();
+      const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      if (isToday) return `Bugun, ${timeStr}`;
+      const day = String(d.getDate()).padStart(2, "0");
+      const month = String(d.getMonth() + 1).padStart(2, "0");
+      return `${day}.${month}.${d.getFullYear()}, ${timeStr}`;
+    } catch {
+      return dateStr;
+    }
   };
-
-  // Add a task
-  const addTask = () => {
-    if (!newTaskText.trim()) return;
-    const next: PomodoroTask = { id: Date.now().toString(), text: newTaskText.trim(), done: false, pomodoros: 0 };
-    const updated = [next, ...tasks];
-    setTasks(updated);
-    setNewTaskText("");
-    try { localStorage.setItem("diamond_pomodoro_tasks", JSON.stringify(updated)); } catch { /* noop */ }
-  };
-
-  const toggleTask = (id: string) => {
-    const updated = tasks.map(t => (t.id === id ? { ...t, done: !t.done } : t));
-    setTasks(updated);
-    try { localStorage.setItem("diamond_pomodoro_tasks", JSON.stringify(updated)); } catch { /* noop */ }
-  };
-
-  const deleteTask = (id: string) => {
-    const updated = tasks.filter(t => t.id !== id);
-    setTasks(updated);
-    try { localStorage.setItem("diamond_pomodoro_tasks", JSON.stringify(updated)); } catch { /* noop */ }
-  };
-
-  // Add distraction note
-  const addDistraction = () => {
-    if (!newDistraction.trim()) return;
-    const now = new Date();
-    const timeStr = `${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}`;
-    const next: DistractionNote = { id: Date.now().toString(), text: newDistraction.trim(), time: timeStr };
-    const updated = [next, ...distractions];
-    setDistractions(updated);
-    setNewDistraction("");
-    try { localStorage.setItem("diamond_pomodoro_distractions", JSON.stringify(updated)); } catch { /* noop */ }
-  };
-
-  const deleteDistraction = (id: string) => {
-    const updated = distractions.filter(d => d.id !== id);
-    setDistractions(updated);
-    try { localStorage.setItem("diamond_pomodoro_distractions", JSON.stringify(updated)); } catch { /* noop */ }
-  };
-
-  // Calculate progress
-  const totalSeconds = getModeTotalSeconds(mode);
-  const progressPercent = Math.max(0, Math.min(100, ((totalSeconds - secondsLeft) / totalSeconds) * 100));
-  const strokeDash = (progressPercent / 100) * 283;
-
-  const minutesStr = Math.floor(secondsLeft / 60).toString().padStart(2, "0");
-  const secondsStr = (secondsLeft % 60).toString().padStart(2, "0");
-
-  // Diamond Education brand colors: navy→royal blue (work), cyan→teal (short break), amber→gold (long break)
-  const modeColor =
-    mode === "work"
-      ? "from-[#0B2A6B] to-[#1E56CC]"
-      : mode === "short_break"
-      ? "from-[#00B8D9] to-[#00897B]"
-      : "from-[#FFB300] to-[#F57F17]";
-
-  const modeBadge =
-    mode === "work" ? "🎯 Chuqur Diqqat" : mode === "short_break" ? "☕ Qisqa Tanaffus" : "🌴 Uzun Tanaffus";
 
   return (
-    <div
-      className={`relative w-full rounded-3xl transition-all duration-500 ${
-        isZenMode
-          ? "fixed inset-0 z-50 flex flex-col items-center justify-center bg-gray-950 p-6 text-white"
-          : "p-4 sm:p-7 bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-premium"
-      }`}
-    >
-      {!isZenMode && (
-        <>
-          <div className={`absolute -right-16 -top-16 h-56 w-56 rounded-full blur-3xl pointer-events-none transition-all duration-1000 ${
-            mode === "work" ? "bg-cyan-500/15" : mode === "short_break" ? "bg-emerald-500/15" : "bg-amber-500/15"
-          }`} />
-          <div className={`absolute -left-16 -bottom-16 h-56 w-56 rounded-full blur-3xl pointer-events-none transition-all duration-1000 ${
-            mode === "work" ? "bg-blue-600/15" : mode === "short_break" ? "bg-teal-500/15" : "bg-orange-500/15"
-          }`} />
-        </>
-      )}
-
+    <div className="w-full space-y-6">
       {/* Notice Banner */}
       {notice && (
-        <div className="mb-4 flex items-center justify-between rounded-2xl bg-cyan-500/15 border border-cyan-500/30 p-3 text-xs font-bold text-cyan-800 dark:text-cyan-200">
+        <div className="flex items-center justify-between rounded-2xl bg-cyan-500/15 border border-cyan-500/30 p-3.5 text-xs font-bold text-cyan-800 dark:text-cyan-200 shadow-sm animate-fade-in">
           <span>{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} className="ml-2 hover:opacity-80">✕</button>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="ml-2 hover:opacity-80 p-1"
+          >
+            ✕
+          </button>
         </div>
       )}
 
-      {/* Header Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-line dark:border-white/10">
-        <div>
-          <h2 className="text-xl font-black text-navy-900 dark:text-white flex items-center gap-2">
-            💎 Pomodoro Focus Studio
-            <span className="rounded-full bg-[#1E56CC]/10 px-2.5 py-0.5 text-xs font-bold text-[#1E56CC] dark:text-[#7EB3FF]">
-              {modeBadge}
+      {/* Main Minimalist Timer Card */}
+      <div className="relative overflow-hidden rounded-3xl bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-premium p-6 sm:p-8 flex flex-col items-center justify-center">
+        <div className="absolute -right-16 -top-16 h-60 w-60 rounded-full blur-3xl bg-[#1E56CC]/15 pointer-events-none" />
+        <div className="absolute -left-16 -bottom-16 h-60 w-60 rounded-full blur-3xl bg-cyan-500/15 pointer-events-none" />
+
+        <div className="w-full flex items-center justify-between pb-3 border-b border-line dark:border-white/10 mb-6">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-[#1E56CC]/10 text-lg">
+              ⏱️
             </span>
-          </h2>
-          <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
-            Diqqatni jamlash va charchoqlarni oldini olish uchun maxsus vositalar
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsZenMode(z => !z)}
-            className="rounded-xl border border-line dark:border-white/10 px-3 py-1.5 text-xs font-bold text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/5 transition flex items-center gap-1.5"
-            title="Zen (To'liq ekran) rejimi"
-          >
-            {isZenMode ? "🗗 Chiqish" : "🔲 Zen Rejim"}
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowTips(t => !t)}
-            className="rounded-xl border border-line dark:border-white/10 px-3 py-1.5 text-xs font-bold text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/5 transition"
-          >
-            💡 Qoidalar
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowSettings(s => !s)}
-            className="rounded-xl border border-line dark:border-white/10 px-3 py-1.5 text-xs font-bold text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/5 transition"
-          >
-            ⚙️ Sozlamalar
-          </button>
-        </div>
-      </div>
-
-      {/* Pomodoro Rules Drawer */}
-      {showTips && (
-        <div className="mt-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 p-4 text-xs leading-relaxed text-amber-900 dark:text-amber-200">
-          <h4 className="font-black text-sm mb-1.5">Pomodoro usulining 5 ta oltin qoidasi:</h4>
-          <ol className="list-decimal pl-4 space-y-1">
-            <li><strong>1 sessiya = 1 vazifa:</strong> Butun diqqat faqat bitta ishga qaratiladi, ko'p vazifalilik taqiqlanadi.</li>
-            <li><strong>Chalg'ishlarni yozib qo'ying:</strong> Miyaga kelgan har qanday o'y-fikrni pastdagi <em>Chalg'ishlar daftarchasiga</em> yozing va darhol o'qishga qayting.</li>
-            <li><strong>Tanaffusda ekrandan uzoqlashing:</strong> Tanaffus vaqtida telefonga qaramang, biroz qimirlang, ko'zni dam oldiring va suv iching.</li>
-            <li><strong>Har 4 siklda katta dam oling:</strong> 4 ta pomodoro (100 daqiqa) o'tgach, 15-20 daqiqa uzun tanaffus qiling.</li>
-            <li><strong>Yutuqlarni nishonlang:</strong> Har bir yakunlangan sessiya sizni maqsadingizga 1 qadam yaqinlashtiradi!</li>
-          </ol>
-        </div>
-      )}
-
-      {/* Settings Modal Drawer */}
-      {showSettings && (
-        <div className="mt-4 rounded-2xl bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 p-4">
-          <h4 className="font-black text-sm text-navy-900 dark:text-white mb-3">Vaqt va Bildirishnomalar Sozlamalari</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
-              <label className="text-xs font-bold text-ink-600 dark:text-navy-300 block mb-1">
-                Diqqat vaqti (daqiqa)
-              </label>
-              <input
-                type="number"
-                min="5"
-                max="90"
-                value={settings.workMinutes}
-                onChange={e => {
-                  const val = Number(e.target.value);
-                  updateSettings({ workMinutes: val });
-                  if (mode === "work" && !isRunning) setSecondsLeft(val * 60);
-                }}
-                className="w-full rounded-xl border border-line dark:border-white/10 bg-transparent p-2 text-sm font-bold text-navy-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-bold text-ink-600 dark:text-navy-300 block mb-1">
-                Qisqa tanaffus (daqiqa)
-              </label>
-              <input
-                type="number"
-                min="1"
-                max="30"
-                value={settings.shortBreakMinutes}
-                onChange={e => {
-                  const val = Number(e.target.value);
-                  updateSettings({ shortBreakMinutes: val });
-                  if (mode === "short_break" && !isRunning) setSecondsLeft(val * 60);
-                }}
-                className="w-full rounded-xl border border-line dark:border-white/10 bg-transparent p-2 text-sm font-bold text-navy-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-bold text-ink-600 dark:text-navy-300 block mb-1">
-                Uzun tanaffus (daqiqa)
-              </label>
-              <input
-                type="number"
-                min="5"
-                max="60"
-                value={settings.longBreakMinutes}
-                onChange={e => {
-                  const val = Number(e.target.value);
-                  updateSettings({ longBreakMinutes: val });
-                  if (mode === "long_break" && !isRunning) setSecondsLeft(val * 60);
-                }}
-                className="w-full rounded-xl border border-line dark:border-white/10 bg-transparent p-2 text-sm font-bold text-navy-900 dark:text-white"
-              />
+              <h2 className="text-lg font-black text-navy-900 dark:text-white">Pomodoro Taymer</h2>
+              <p className="text-xs text-ink-500 dark:text-navy-300">
+                Vaqtni o'zgartirish uchun raqam ustiga bosing
+              </p>
             </div>
           </div>
-
-          <div className="mt-3 flex flex-wrap gap-4 pt-3 border-t border-line dark:border-white/10">
-            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.autoStartBreaks}
-                onChange={e => updateSettings({ autoStartBreaks: e.target.checked })}
-                className="rounded text-cyan-600"
-              />
-              Tanaffusni avtomatik boshlash
-            </label>
-            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.autoStartFocus}
-                onChange={e => updateSettings({ autoStartFocus: e.target.checked })}
-                className="rounded text-cyan-600"
-              />
-              Diqqatni avtomatik davom ettirish
-            </label>
-            <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.tickSound}
-                onChange={e => updateSettings({ tickSound: e.target.checked })}
-                className="rounded text-cyan-600"
-              />
-              Soat chiqillash ovozi (Sekundomer tiktak)
-            </label>
-          </div>
-        </div>
-      )}
-
-      {/* Main Focus Studio Area */}
-      <div className="mt-6 flex flex-col items-center">
-        {/* Phase Selector Tabs */}
-        <div className="inline-flex rounded-full bg-gray-100 dark:bg-navy-800 p-1 mb-6 border border-line dark:border-white/10">
-          <button
-            type="button"
-            onClick={() => switchMode("work")}
-            className={`px-5 py-2 rounded-full text-xs font-black transition ${
-              mode === "work"
-                ? "bg-gradient-to-r from-[#0B2A6B] to-[#1E56CC] text-white shadow-md"
-                : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
-            }`}
-          >
-            🎯 Diqqat ({settings.workMinutes}m)
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode("short_break")}
-            className={`px-5 py-2 rounded-full text-xs font-black transition ${
-              mode === "short_break"
-                ? "bg-gradient-to-r from-[#00B8D9] to-[#00897B] text-white shadow-md"
-                : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
-            }`}
-          >
-            ☕ Qisqa tanaffus ({settings.shortBreakMinutes}m)
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode("long_break")}
-            className={`px-5 py-2 rounded-full text-xs font-black transition ${
-              mode === "long_break"
-                ? "bg-gradient-to-r from-[#FFB300] to-[#F57F17] text-white shadow-md"
-                : "text-ink-600 dark:text-navy-200 hover:text-navy-900 dark:hover:text-white"
-            }`}
-          >
-            🌴 Uzun tanaffus ({settings.longBreakMinutes}m)
-          </button>
+          <span className="rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 px-3 py-1 text-xs font-bold flex items-center gap-1.5">
+            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+            Sinxronlangan
+          </span>
         </div>
 
-        {/* Current Focus Goal Input */}
-        <div className="w-full max-w-md mb-6">
-          <input
-            type="text"
-            value={currentGoal}
-            onChange={e => {
-              setCurrentGoal(e.target.value);
-              try { localStorage.setItem("diamond_pomodoro_goal", e.target.value); } catch { /* noop */ }
-            }}
-            placeholder="🎯 Hozirgi sessiya maqsadi nima? (masalan: IELTS Reading 2-matn)"
-            className="w-full rounded-2xl border border-line dark:border-white/15 bg-surface-soft dark:bg-white/5 px-4 py-2.5 text-center text-sm font-bold text-navy-900 dark:text-white placeholder:text-ink-400 dark:placeholder:text-navy-400 focus:border-cyan-500 focus:outline-none transition"
-          />
-        </div>
-
-        {/* Circular Countdown Ring */}
-        <div className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center">
+        {/* Circular Dial with Direct Editable Digits */}
+        <div className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center my-2">
           <svg className="absolute inset-0 -rotate-90" width="100%" height="100%" viewBox="0 0 100 100">
             <circle
               cx="50"
               cy="50"
-              r="45"
+              r="44"
               fill="none"
               stroke="currentColor"
               strokeWidth="5"
@@ -743,282 +315,253 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
             <circle
               cx="50"
               cy="50"
-              r="45"
+              r="44"
               fill="none"
-              stroke="url(#timerGradient)"
+              stroke="url(#timerGradientWeb)"
               strokeWidth="5"
               strokeDasharray={`${strokeDash} 283`}
               strokeLinecap="round"
               className="transition-all duration-1000 ease-linear"
             />
             <defs>
-              <linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor={mode === "work" ? "#0B2A6B" : mode === "short_break" ? "#00B8D9" : "#FFB300"} />
-                <stop offset="100%" stopColor={mode === "work" ? "#1E56CC" : mode === "short_break" ? "#00897B" : "#F57F17"} />
+              <linearGradient id="timerGradientWeb" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="#0B2A6B" />
+                <stop offset="100%" stopColor="#1E56CC" />
               </linearGradient>
             </defs>
           </svg>
 
-          <div className="text-center z-10">
-            <span className={`text-6xl sm:text-7xl font-mono font-black tracking-tight text-navy-900 dark:text-white ${isRunning ? "animate-pulse" : ""}`}>
-              {minutesStr}:{secondsStr}
-            </span>
-            <p className="text-xs font-black uppercase tracking-widest text-ink-500 dark:text-navy-400 mt-2">
-              {modeBadge}
-            </p>
-            {/* 4-cycle indicator dots */}
-            <div className="mt-3 flex items-center justify-center gap-1.5">
-              {[0, 1, 2, 3].map(i => {
-                const filled = (cyclesCompleted % 4) > i;
-                return (
-                  <span
-                    key={i}
-                    title={`Sikl ${i + 1}`}
-                    className={`h-2.5 w-2.5 rounded-full transition-all ${
-                      filled ? "bg-[#1E56CC] scale-110 shadow-sm shadow-blue-500/40" : "bg-gray-300 dark:bg-navy-700"
-                    }`}
+          <div className="text-center z-10 flex flex-col items-center">
+            {isEditingTime ? (
+              <div className="flex flex-col items-center gap-2 p-2 bg-gray-50 dark:bg-navy-800 rounded-2xl border border-line dark:border-white/10 shadow-lg">
+                <div className="flex items-center gap-1 text-4xl font-mono font-black text-navy-900 dark:text-white">
+                  <input
+                    type="number"
+                    min="0"
+                    max="180"
+                    value={editMinutesInput}
+                    onChange={(e) => setEditMinutesInput(e.target.value)}
+                    className="w-16 text-center rounded-xl bg-white dark:bg-navy-900 border border-line dark:border-white/20 p-1 focus:outline-none focus:border-[#1E56CC]"
+                    autoFocus
                   />
-                );
-              })}
-            </div>
+                  <span>:</span>
+                  <input
+                    type="number"
+                    min="0"
+                    max="59"
+                    value={editSecondsInput}
+                    onChange={(e) => setEditSecondsInput(e.target.value)}
+                    className="w-16 text-center rounded-xl bg-white dark:bg-navy-900 border border-line dark:border-white/20 p-1 focus:outline-none focus:border-[#1E56CC]"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={applyEditTime}
+                    className="px-3 py-1 rounded-xl bg-[#1E56CC] text-white text-xs font-bold hover:bg-[#1542a3] transition"
+                  >
+                    ✓ Saqlash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingTime(false)}
+                    className="px-3 py-1 rounded-xl bg-gray-200 dark:bg-white/10 text-ink-700 dark:text-white text-xs font-bold hover:opacity-80 transition"
+                  >
+                    Bekor
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isRunning) {
+                    setEditMinutesInput(String(Math.floor(secondsLeft / 60)));
+                    setEditSecondsInput(String(secondsLeft % 60).padStart(2, "0"));
+                    setIsEditingTime(true);
+                  }
+                }}
+                title={isRunning ? "Vaqtni o'zgartirish uchun avval pauza qiling" : "Vaqtni o'zgartirish uchun bosing"}
+                className={`group flex flex-col items-center rounded-2xl p-2 transition hover:bg-black/5 dark:hover:bg-white/5 ${
+                  isRunning ? "cursor-default" : "cursor-pointer"
+                }`}
+              >
+                <span
+                  className={`text-6xl sm:text-7xl font-mono font-black tracking-tight text-navy-900 dark:text-white transition group-hover:scale-105 ${
+                    isRunning ? "animate-pulse text-[#1E56CC] dark:text-[#7EB3FF]" : ""
+                  }`}
+                >
+                  {displayMinutes}:{displaySeconds}
+                </span>
+                {!isRunning && (
+                  <span className="mt-1 text-2xs font-bold text-ink-400 dark:text-navy-400 group-hover:text-[#1E56CC] dark:group-hover:text-[#7EB3FF] flex items-center gap-1">
+                    ✏️ Tahrirlash
+                  </span>
+                )}
+              </button>
+            )}
+
+            <span className="mt-2 rounded-full bg-[#1E56CC]/10 dark:bg-[#1E56CC]/20 px-3 py-0.5 text-xs font-bold text-[#1E56CC] dark:text-[#7EB3FF]">
+              {isRunning ? "⚡ Taymer ishlamoqda" : "Diqqat vaqti"}
+            </span>
           </div>
         </div>
 
-        {/* Primary Controls */}
-        <div className="mt-8 flex items-center gap-3">
+        {/* 3 Main Action Buttons: Start/Stop, Reset, Time Edit */}
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <button
             type="button"
-            onClick={() => {
-              audioEngine?.unlock();
-              setIsRunning(r => !r);
-            }}
-            className={`px-8 py-3.5 rounded-2xl text-white font-black text-base shadow-xl transition-all hover:scale-105 active:scale-95 bg-gradient-to-r ${modeColor}`}
+            onClick={toggleRunning}
+            className={`min-w-36 px-8 py-3.5 rounded-2xl font-black text-base text-white shadow-xl transition-all transform hover:scale-105 active:scale-95 flex items-center justify-center gap-2 ${
+              isRunning
+                ? "bg-amber-500 hover:bg-amber-600 shadow-amber-500/25"
+                : "bg-gradient-to-r from-[#0B2A6B] to-[#1E56CC] hover:from-[#081e4d] hover:to-[#1744a4] shadow-blue-500/25"
+            }`}
           >
             {isRunning ? "⏸ Pauza" : "▶ Boshlash"}
           </button>
+
           <button
             type="button"
             onClick={handleReset}
-            className="px-4 py-3.5 rounded-2xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5 text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/10 font-bold text-sm transition"
+            className="px-5 py-3.5 rounded-2xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5 text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/10 font-bold text-sm transition flex items-center gap-1.5"
             title="Qayta o'rnatish"
           >
             ↺ Reset
           </button>
+
           <button
             type="button"
-            onClick={() => void handlePhaseComplete()}
-            className="px-4 py-3.5 rounded-2xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5 text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/10 font-bold text-sm transition"
-            title="Keyingi bosqichga o'tish"
+            onClick={() => {
+              if (isRunning) setIsRunning(false);
+              setEditMinutesInput(String(Math.floor(totalSeconds / 60)));
+              setEditSecondsInput(String(totalSeconds % 60).padStart(2, "0"));
+              setIsEditingTime(true);
+            }}
+            className="px-5 py-3.5 rounded-2xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5 text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/10 font-bold text-sm transition flex items-center gap-1.5"
+            title="Vaqtni o'zgartirish"
           >
-            ⏭ O'tkazish
+            ⏱️ {Math.floor(totalSeconds / 60)} daq
           </button>
-        </div>
-
-        {/* Ambient Soundscapes Bar */}
-        <div className="mt-7 w-full max-w-xl rounded-2xl border border-line dark:border-white/10 bg-surface-soft/60 dark:bg-white/5 p-3.5">
-          <div className="flex flex-wrap items-center justify-between gap-2 mb-2.5">
-            <span className="text-xs font-black uppercase tracking-wider text-ink-600 dark:text-navy-300 flex items-center gap-1.5">
-              🎧 Diqqat foni (Tabiat & Oq shovqin):
-            </span>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-ink-400">Ovoz:</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={settings.volume}
-                onChange={e => {
-                  const vol = parseFloat(e.target.value);
-                  updateSettings({ volume: vol });
-                  audioEngine?.setVolume(vol);
-                }}
-                className="w-20 accent-cyan-500 cursor-pointer"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-1.5">
-            {[
-              { key: "none", label: "🔇 O'chirilgan" },
-              { key: "rain", label: "🌧️ Yomg'ir" },
-              { key: "ocean", label: "🌊 Dengiz to'lqini" },
-              { key: "forest", label: "🌲 O'rmon shamoli" },
-              { key: "cafe", label: "☕ Qahvaxona" },
-              { key: "binaural", label: "🧠 432Hz Alfa dron" },
-            ].map(snd => (
-              <button
-                key={snd.key}
-                type="button"
-                onClick={() => handleAmbientChange(snd.key as PomodoroSettings["ambientSound"])}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition ${
-                  settings.ambientSound === snd.key
-                    ? "bg-cyan-500 text-white shadow-sm"
-                    : "bg-white/80 dark:bg-white/5 text-ink-700 dark:text-navy-200 hover:bg-white dark:hover:bg-white/10 border border-line dark:border-white/10"
-                }`}
-              >
-                {snd.label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
-      {/* Focus Productivity Tools: Tasks + Distraction Pad + Stats */}
-      <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* 1. Task Checklist */}
-        <div className="rounded-2xl border border-line dark:border-white/10 bg-surface-soft/40 dark:bg-white/5 p-4 flex flex-col">
-          <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center justify-between mb-3">
-            <span>📋 Sessiya Vazifalari</span>
-            <span className="text-xs text-ink-400 font-normal">
-              {tasks.filter(t => t.done).length}/{tasks.length}
-            </span>
-          </h3>
-
-          <div className="flex gap-2 mb-3">
-            <input
-              type="text"
-              value={newTaskText}
-              onChange={e => setNewTaskText(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && addTask()}
-              placeholder="Vazifa qo'shish..."
-              className="min-w-0 flex-1 rounded-xl border border-line dark:border-white/10 bg-white dark:bg-navy-800 px-3 py-1.5 text-xs font-medium text-navy-900 dark:text-white focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={addTask}
-              className="rounded-xl bg-cyan-500 hover:bg-cyan-600 text-white px-3 py-1.5 text-xs font-bold transition"
-            >
-              +
-            </button>
-          </div>
-
-          <div className="min-h-28 max-h-48 overflow-y-auto space-y-1.5 pr-1">
-            {tasks.length ? (
-              tasks.map(t => (
-                <div
-                  key={t.id}
-                  className="flex items-center justify-between rounded-xl bg-white/80 dark:bg-navy-800/80 p-2 text-xs border border-line dark:border-white/5"
-                >
-                  <label className="flex items-center gap-2 cursor-pointer min-w-0 flex-1">
-                    <input
-                      type="checkbox"
-                      checked={t.done}
-                      onChange={() => toggleTask(t.id)}
-                      className="rounded text-cyan-600"
-                    />
-                    <span className={`truncate ${t.done ? "line-through text-ink-400" : "font-semibold text-navy-900 dark:text-white"}`}>
-                      {t.text}
-                    </span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => deleteTask(t.id)}
-                    className="ml-2 text-ink-400 hover:text-rose-500"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-center text-ink-400 py-6">
-                Ushbu pomodoro davomida qilmoqchi bo'lgan vazifalarni qo'shing.
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* 2. Distraction Capture Pad */}
-        <div className="rounded-2xl border border-line dark:border-white/10 bg-surface-soft/40 dark:bg-white/5 p-4 flex flex-col">
-          <h3 className="text-sm font-black text-navy-900 dark:text-white flex items-center justify-between mb-1">
-            <span>🧠 Chalg'ishlar Daftarchasi</span>
-            <span className="text-xs text-amber-500 font-bold">Anti-chalg'ish</span>
-          </h3>
-          <p className="text-2xs text-ink-400 mb-3">
-            Miyangizga kelgan fikrni shu yerga yozing-u, sessiyadan keyin bajaring!
-          </p>
-
-          <div className="flex gap-2 mb-3">
-            <input
-              type="text"
-              value={newDistraction}
-              onChange={e => setNewDistraction(e.target.value)}
-              onKeyDown={e => e.key === "Enter" && addDistraction()}
-              placeholder="Masalan: Telegramga qarash..."
-              className="min-w-0 flex-1 rounded-xl border border-line dark:border-white/10 bg-white dark:bg-navy-800 px-3 py-1.5 text-xs font-medium text-navy-900 dark:text-white focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={addDistraction}
-              className="rounded-xl bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 text-xs font-bold transition"
-            >
-              Yozish
-            </button>
-          </div>
-
-          <div className="min-h-28 max-h-48 overflow-y-auto space-y-1.5 pr-1">
-            {distractions.length ? (
-              distractions.map(d => (
-                <div
-                  key={d.id}
-                  className="flex items-center justify-between rounded-xl bg-amber-500/10 p-2 text-xs border border-amber-500/20"
-                >
-                  <div className="min-w-0 flex-1 pr-2">
-                    <span className="text-navy-900 dark:text-white font-medium block truncate">{d.text}</span>
-                    <span className="text-2xs text-ink-400">{d.time} da qayd etildi</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => deleteDistraction(d.id)}
-                    className="text-ink-400 hover:text-rose-500"
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-center text-ink-400 py-6">
-                Hozircha chalg'ituvchi fikrlar yo'q. Diqqat 100%!
-              </p>
-            )}
-          </div>
-        </div>
-
-        {/* 3. Stats & Daily Progress */}
-        <div className="rounded-2xl border border-line dark:border-white/10 bg-surface-soft/40 dark:bg-white/5 p-4 flex flex-col justify-between">
+      {/* Expanded Completed Sessions Section */}
+      <div className="rounded-3xl bg-white dark:bg-navy-900 border border-line dark:border-white/10 shadow-premium p-6 sm:p-8">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-line dark:border-white/10">
           <div>
-            <h3 className="text-sm font-black text-navy-900 dark:text-white mb-3">
-              📊 Diqqat Statistikasi
+            <h3 className="text-lg font-black text-navy-900 dark:text-white flex items-center gap-2">
+              🏆 Tugatilgan Sessiyalar
+              <span className="rounded-full bg-[#1E56CC]/10 px-2.5 py-0.5 text-xs font-bold text-[#1E56CC] dark:text-[#7EB3FF]">
+                {completedSessions.length} ta
+              </span>
             </h3>
+            <p className="text-xs text-ink-500 dark:text-navy-300 mt-0.5">
+              Ilova va sayt o'rtasida to'liq sinxronlangan natijalar
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => void fetchSessions()}
+            disabled={isLoadingSessions}
+            className="rounded-xl border border-line dark:border-white/10 px-3.5 py-1.5 text-xs font-bold text-ink-700 dark:text-navy-200 hover:bg-black/5 dark:hover:bg-white/5 transition flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {isLoadingSessions ? "Yangilanmoqda..." : "🔄 Yangilash"}
+          </button>
+        </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="rounded-xl bg-white dark:bg-navy-800 p-3 border border-line dark:border-white/5 text-center">
-                <span className="text-2xl font-black text-red-500 block">{todayCompletedCount}</span>
-                <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">Bugungi Pomodoro</span>
+        {/* Aggregate Stats Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-5">
+          <div className="rounded-2xl bg-surface-soft dark:bg-white/5 p-4 border border-line dark:border-white/5 text-center">
+            <span className="text-2xl font-black text-[#1E56CC] dark:text-[#7EB3FF] block">
+              {todayCount}
+            </span>
+            <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">
+              Bugungi sessiyalar
+            </span>
+          </div>
+
+          <div className="rounded-2xl bg-surface-soft dark:bg-white/5 p-4 border border-line dark:border-white/5 text-center">
+            <span className="text-2xl font-black text-emerald-500 block">
+              {todayMinutes}m
+            </span>
+            <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">
+              Bugungi fokus
+            </span>
+          </div>
+
+          <div className="rounded-2xl bg-surface-soft dark:bg-white/5 p-4 border border-line dark:border-white/5 text-center">
+            <span className="text-2xl font-black text-cyan-500 block">
+              {Math.round(weekSeconds / 60)}m
+            </span>
+            <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">
+              Haftalik vaqt
+            </span>
+          </div>
+
+          <div className="rounded-2xl bg-surface-soft dark:bg-white/5 p-4 border border-line dark:border-white/5 text-center">
+            <span className="text-2xl font-black text-purple-500 block">
+              {weekSessions || completedSessions.length}
+            </span>
+            <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">
+              Jami yakunlangan
+            </span>
+          </div>
+        </div>
+
+        {/* Detailed Session List */}
+        <div className="space-y-2.5">
+          {completedSessions.length > 0 ? (
+            completedSessions.map((item, idx) => (
+              <div
+                key={item.id || idx}
+                className="group flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-surface-soft/60 dark:bg-white/5 hover:bg-surface-soft dark:hover:bg-white/10 p-3.5 border border-line dark:border-white/5 transition"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-black text-sm">
+                    ✓
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-navy-900 dark:text-white">
+                        {item.duration_minutes} daqiqa fokus
+                      </span>
+                      <span className="rounded-md bg-emerald-500/10 px-2 py-0.5 text-2xs font-bold text-emerald-600 dark:text-emerald-400">
+                        Yakunlandi
+                      </span>
+                    </div>
+                    <span className="text-xs text-ink-400 dark:text-navy-400">
+                      {formatTimestamp(item.completed_at || item.created_at)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-mono font-medium text-ink-500 dark:text-navy-300">
+                    +{item.duration_minutes} min
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteSession(item.id)}
+                    className="opacity-0 group-hover:opacity-100 text-ink-400 hover:text-rose-500 p-1 transition"
+                    title="O'chirish"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
-              <div className="rounded-xl bg-white dark:bg-navy-800 p-3 border border-line dark:border-white/5 text-center">
-                <span className="text-2xl font-black text-cyan-500 block">{todayFocusMinutes}m</span>
-                <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">Bugungi Diqqat</span>
-              </div>
-              <div className="rounded-xl bg-white dark:bg-navy-800 p-3 border border-line dark:border-white/5 text-center">
-                <span className="text-2xl font-black text-emerald-500 block">
-                  {Math.round(Number(weekSummary.week_seconds || 0) / 60)}m
-                </span>
-                <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">Haftalik vaqt</span>
-              </div>
-              <div className="rounded-xl bg-white dark:bg-navy-800 p-3 border border-line dark:border-white/5 text-center">
-                <span className="text-2xl font-black text-purple-500 block">
-                  {weekSummary.sessions || todayCompletedCount}
-                </span>
-                <span className="text-2xs font-bold uppercase tracking-wider text-ink-500 dark:text-navy-300">Haftalik sessiya</span>
-              </div>
+            ))
+          ) : (
+            <div className="py-12 text-center rounded-2xl bg-surface-soft/40 dark:bg-white/5 border border-dashed border-line dark:border-white/10">
+              <span className="text-4xl block mb-2">🌱</span>
+              <p className="text-sm font-bold text-navy-900 dark:text-white">
+                Hozircha tugatilgan sessiyalar yo'q
+              </p>
+              <p className="text-xs text-ink-400 mt-1 max-w-sm mx-auto">
+                Taymerni ishga tushiring va belgilangan vaqt to'lgach, sessiyangiz avtomatik tarzda bu yerda aks etadi.
+              </p>
             </div>
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-line dark:border-white/10 flex items-center justify-between text-xs text-ink-500 dark:text-navy-400">
-            <span>Ketma-ketlik sikli: <strong>{cyclesCompleted} ta</strong></span>
-            <span className="text-emerald-600 font-bold">✓ Faol intizom</span>
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -1033,9 +576,10 @@ export function PomodoroWidget() {
   useEffect(() => {
     if (running) {
       ref.current = setInterval(() => {
-        setSeconds(s => {
+        setSeconds((s) => {
           if (s <= 1) {
             setRunning(false);
+            playCompletionChime();
             return 0;
           }
           return s - 1;
@@ -1055,10 +599,12 @@ export function PomodoroWidget() {
   return (
     <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-gray-800 text-sm font-mono font-semibold text-gray-800 dark:text-gray-200">
       <span>🍅</span>
-      <span>{mm}:{ss}</span>
+      <span>
+        {mm}:{ss}
+      </span>
       <button
         type="button"
-        onClick={() => setRunning(r => !r)}
+        onClick={() => setRunning((r) => !r)}
         className="text-xs px-2 py-0.5 rounded-full bg-red-500 text-white hover:bg-red-600 transition"
       >
         {running ? "⏸" : "▶"}
