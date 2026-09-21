@@ -11640,8 +11640,15 @@ def _diamondvoy_limit_status(user_id: int) -> dict[str, Any]:
         )
         row = dict(cur.fetchone() or {})
         window_start = _parse_utc_timestamp(str(row.get("window_start") or "")) if row.get("window_start") else None
-        if window_start is not None and now - window_start < timedelta(hours=24):
-            used = max(0, int(row.get("free_count_used") or 0))
+        if window_start is not None:
+            now_local = datetime.now(TASHKENT_TZ)
+            try:
+                window_local = window_start.astimezone(TASHKENT_TZ)
+                if now_local.date() == window_local.date():
+                    used = max(0, int(row.get("free_count_used") or 0))
+            except Exception:
+                if now - window_start < timedelta(hours=24):
+                    used = max(0, int(row.get("free_count_used") or 0))
     except Exception:
         used = 0
     finally:
@@ -12135,8 +12142,20 @@ def _diamondvoy_apply_usage(user: dict, role: str, *, has_images: bool, has_text
         cur.execute("SELECT user_id, window_start, free_count_used, dcoin_spent FROM diamondvoy_usage WHERE user_id=? LIMIT 1", (user_id,))
         row = dict(cur.fetchone() or {})
         window_start = _parse_utc_timestamp(str(row.get("window_start") or "")) if row.get("window_start") else None
-        free_used = int(row.get("free_count_used") or 0)
-        if not row or window_start is None or now - window_start >= timedelta(hours=24):
+        now_local = datetime.now(TASHKENT_TZ)
+        is_new_day = False
+        if not row or window_start is None:
+            is_new_day = True
+        else:
+            try:
+                window_local = window_start.astimezone(TASHKENT_TZ)
+                if now_local.date() > window_local.date():
+                    is_new_day = True
+            except Exception:
+                if now - window_start >= timedelta(hours=24):
+                    is_new_day = True
+
+        if is_new_day:
             window_start = now
             free_used = 0
             cur.execute(
@@ -12159,14 +12178,16 @@ def _diamondvoy_apply_usage(user: dict, role: str, *, has_images: bool, has_text
     finally:
         conn.close()
 
-    # Har bir faol sovga bonusi asosiy rolling-24-hour limitga qo'shiladi.
-    # Entitlement DB orqali olinadi, shuning uchun client bu qiymatni soxtalashtira olmaydi.
+    # Har bir faol sovga bonusi asosiy limitga qo'shiladi.
     boost = _safe_call(lambda: get_diamondvoy_limit_boost_summary(user_id), {}) or {}
     base_limit = max(0, int(settings.get("free_limit") or 3))
     bonus_messages = max(0, int(boost.get("bonus_messages") or 0))
     current_limit = base_limit + bonus_messages
     if free_used >= current_limit:
-        raise HTTPException(status_code=403, detail=f"DiamondVoy uchun kunlik {current_limit} ta so'rov limitingiz tugadi.")
+        raise HTTPException(
+            status_code=403,
+            detail="Limitingiz qolmadi. Limit har kuni soat 00:00 da yangilanadi.",
+        )
 
     # Har qanday so'rov limitdan bitta olib tashlaydi, d'coin olinmaydi
     charge_amount = 0.0
@@ -16894,8 +16915,8 @@ async def _weekly_personal_plan_analyzer_worker() -> None:
         try:
             now_local = datetime.now(TASHKENT_TZ)
             today_str = now_local.strftime("%Y-%m-%d")
-            if now_local.weekday() == dispatch_dow and now_local.hour == dispatch_hour and last_run_day != today_str:
-                logger.info("weekly_personal_plan_analyzer_worker: starting Sunday 12:00 PM batch...")
+            if now_local.weekday() == dispatch_dow and 12 <= now_local.hour < 13 and last_run_day != today_str:
+                logger.info("weekly_personal_plan_analyzer_worker: starting Sunday 12:00 PM - 1:00 PM batch...")
                 try:
                     from backend.personalization import generate_weekly_analysis_for_all_students
                 except ImportError:
@@ -16905,7 +16926,7 @@ async def _weekly_personal_plan_analyzer_worker() -> None:
                 logger.info("weekly_personal_plan_analyzer_worker completed successfully: %s", res)
         except Exception:
             logger.exception("weekly_personal_plan_analyzer_worker iteration failed")
-        await asyncio.sleep(300)
+        await asyncio.sleep(60)
 
 
 async def _weekly_review_worker() -> None:
@@ -16963,10 +16984,10 @@ def _run_weekly_review_penalty_job() -> None:
 
 async def _study_room_presence_worker() -> None:
     """Sweep inactive study room members and auto-close empty rooms."""
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
     while True:
         try:
-            await asyncio.sleep(12)
+            await asyncio.sleep(4)
             c = get_conn()
             try:
                 cur = c.cursor()

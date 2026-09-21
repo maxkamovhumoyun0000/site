@@ -47,6 +47,17 @@ class AmbientAudioEngine {
   private oscillators: OscillatorNode[] = [];
   private lfo: OscillatorNode | null = null;
 
+  unlock() {
+    try {
+      this.initCtx();
+      if (this.ctx && this.ctx.state === "suspended") {
+        void this.ctx.resume();
+      }
+    } catch {
+      // Audio not permitted yet
+    }
+  }
+
   private initCtx() {
     if (!this.ctx) {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -777,7 +788,10 @@ export function PomodoroFocusStudio({ apiFetch, role = "student", initialSummary
         <div className="mt-8 flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setIsRunning(r => !r)}
+            onClick={() => {
+              audioEngine?.unlock();
+              setIsRunning(r => !r);
+            }}
             className={`px-8 py-3.5 rounded-2xl text-white font-black text-base shadow-xl transition-all hover:scale-105 active:scale-95 bg-gradient-to-r ${modeColor}`}
           >
             {isRunning ? "⏸ Pauza" : "▶ Boshlash"}

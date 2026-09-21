@@ -1217,7 +1217,7 @@ def _sweep_study_room_presence(cur: Any, room_id: int | None = None) -> list[int
        is automatically closed, closed_at is set, and temporary files/messages are cleaned up.
     """
     now = _now()
-    cutoff = (now - timedelta(seconds=30)).isoformat()
+    cutoff = (now - timedelta(seconds=10)).isoformat()
     now_iso = now.isoformat()
 
     # Step 1: Mark timed-out / disconnected members as left
@@ -1488,8 +1488,8 @@ async def leave_study_room(room_id: int, authorization: str | None = Header(defa
         # Mark caller left
         cur.execute("UPDATE study_room_members SET left_at=? WHERE room_id=? AND user_id=? AND left_at IS NULL", (now_iso, room_id, user_id))
 
-        # Check remaining active members (active in last 30s)
-        cutoff = (_now() - timedelta(seconds=30)).isoformat()
+        # Check remaining active members (active in last 10s)
+        cutoff = (_now() - timedelta(seconds=10)).isoformat()
         cur.execute(
             "SELECT user_id FROM study_room_members WHERE room_id=? AND left_at IS NULL AND ((last_seen_at IS NOT NULL AND last_seen_at >= ?) OR (last_seen_at IS NULL AND joined_at >= ?)) ORDER BY joined_at ASC",
             (room_id, cutoff, cutoff)
@@ -3819,6 +3819,13 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
         (user_id, week_start, week_end),
     )
     mistake_sources = _dicts(cur.fetchall())
+    cur.execute(
+        "SELECT topic_key, question_text, explanation FROM mistake_notebook_items "
+        "WHERE user_id=? AND DATE(created_at)>=? AND DATE(created_at)<=? "
+        "ORDER BY id DESC LIMIT 3",
+        (user_id, week_start, week_end),
+    )
+    sample_mistakes = _dicts(cur.fetchall())
 
     # Homework stats
     cur.execute(
@@ -3878,6 +3885,7 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
         "weak_topics_by_tests": [{"topic": t, "errors": e} for t, e in weak_by_tests],
         "weak_topics_by_mistakes": weak_by_mistakes,
         "mistake_sources": mistake_sources,
+        "sample_mistakes": sample_mistakes,
         "homework_total": hw_total,
         "homework_completed": hw_completed,
         "homework_completion_pct": round(hw_completed / hw_total * 100, 1) if hw_total > 0 else 0,
@@ -4164,6 +4172,12 @@ async def _generate_ai_analysis(stats: dict[str, Any], user_name: str, subject: 
     else:
         weak_str = "\n".join(weak_topics) if weak_topics else "No weak topics detected yet."
         source_str = ", ".join(f"{item.get('source_type')}: {item.get('count')}" for item in stats.get("mistake_sources", [])) or "No mistakes recorded yet."
+        mistakes_list = [
+            f"- {m.get('topic_key') or 'General'}: {str(m.get('question_text') or '')[:100]}"
+            for m in (stats.get("sample_mistakes") or [])
+            if m.get("question_text") or m.get("topic_key")
+        ]
+        sample_mistakes_str = "\n".join(mistakes_list) if mistakes_list else "None recorded."
         prompt = f"""You are Diamondvoy, the personal AI tutor at Diamond Education.
 Student: {user_name}
 Target Subject: English
@@ -4177,6 +4191,9 @@ This week's statistics:
 
 Weak topics:
 {weak_str}
+
+Recent student errors:
+{sample_mistakes_str}
 
 Mistake sources: {source_str}
 
