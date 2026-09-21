@@ -968,7 +968,7 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     if isinstance(raw_answers, list):
         for a in raw_answers:
             if isinstance(a, dict):
-                ans = str(a.get("answer") or a.get("value") or "").strip()
+                ans = str(a.get("answer") or a.get("value") or a.get("correct_answer") or a.get("correct") or "").strip()
                 acc = a.get("accepted_answers") or a.get("accepted") or []
                 accepted = [str(x).strip() for x in acc if str(x).strip()] if isinstance(acc, list) else []
             else:
@@ -976,6 +976,10 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
                 accepted = []
             if ans:
                 answers.append({"answer": ans, "accepted_answers": accepted})
+    if not answers and (item.get("answer") or item.get("correct_answer") or item.get("correct")):
+        single = str(item.get("answer") or item.get("correct_answer") or item.get("correct")).strip()
+        if single:
+            answers.append({"answer": single, "accepted_answers": []})
 
     # `sentences` formatidan yagona matn quramiz.
     if not passage and isinstance(item.get("sentences"), list):
@@ -1076,6 +1080,8 @@ def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
                 sub["correct_index"] = max(0, min(len(sub["options"]) - 1, int(raw.get("correct_index") or 0)))
             except Exception:
                 sub["correct_index"] = 0
+            sub["answer"] = sub["options"][sub["correct_index"]]
+            sub["correct_answer"] = sub["answer"]
         elif sub_type == "tf":
             sub["options"] = ["True", "False", "Not Given"]
             raw_correct = raw.get("correct") if raw.get("correct") is not None else raw.get("correct_index")
@@ -1084,18 +1090,22 @@ def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
             else:
                 values = {"true": 0, "false": 1, "not given": 2, "not_given": 2, "ng": 2}
                 sub["correct_index"] = values.get(str(raw_correct or "True").strip().lower(), 0)
+            sub["answer"] = sub["options"][sub["correct_index"]]
+            sub["correct_answer"] = sub["answer"]
         elif sub_type in {"gap", "dictation", "short"}:
-            answer = str(raw.get("answer") or raw.get("reference_answer") or "").strip()
+            answer = str(raw.get("answer") or raw.get("correct_answer") or raw.get("correct") or raw.get("reference_answer") or "").strip()
             if not answer:
                 continue
             sub["answer"] = answer
+            sub["correct_answer"] = answer
             accepted = raw.get("accepted_answers") or raw.get("accepted") or []
             sub["accepted_answers"] = [str(x).strip() for x in accepted if str(x).strip()] if isinstance(accepted, list) else []
         elif sub_type == "order":
-            answer = str(raw.get("answer") or "").strip()
+            answer = str(raw.get("answer") or raw.get("correct_answer") or raw.get("correct") or "").strip()
             if not answer:
                 continue
             sub["answer"] = answer
+            sub["correct_answer"] = answer
             tokens = raw.get("tokens")
             sub["tokens"] = [str(x).strip() for x in tokens if str(x).strip()] if isinstance(tokens, list) and tokens else answer.replace(".", "").split()
         elif sub_type == "matching":
@@ -1110,10 +1120,11 @@ def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
                 continue
             sub["pairs"] = pairs
         else:  # open — reference is needed for a strict, explainable AI check.
-            reference = str(raw.get("reference_answer") or raw.get("answer") or "").strip()
+            reference = str(raw.get("reference_answer") or raw.get("answer") or raw.get("correct_answer") or "").strip()
             if not reference:
                 continue
             sub["reference_answer"] = reference
+            sub["answer"] = reference
         normalized.append(sub)
     return normalized
 
@@ -1129,23 +1140,39 @@ def _normalize_reading_set(item: dict) -> dict | None:
         if not isinstance(raw, dict):
             continue
         prompt = str(raw.get("prompt") or raw.get("question") or "").strip()
-        answer = str(raw.get("answer") or "").strip()
-        if not prompt or not answer:
-            continue
+        answer = str(
+            raw.get("answer")
+            or raw.get("correct_answer")
+            or raw.get("correct")
+            or raw.get("reference_answer")
+            or ""
+        ).strip()
         stype = str(raw.get("type") or raw.get("subtype") or "").strip().lower()
         options = [str(o).strip() for o in (raw.get("options") or []) if str(o).strip()]
-        if stype in {"true_false", "tfng", "true_false_not_given"}:
+        if stype in {"true_false", "tfng", "true_false_not_given", "tf"}:
             stype = "true_false_ng"
         if stype not in READING_SUBTYPES:
             stype = "choice" if options else "short"
         if stype == "true_false_ng" and not options:
             options = ["True", "False", "Not given"]
+        if not answer and options:
+            ci = raw.get("correct_index")
+            if ci is not None:
+                try:
+                    idx = int(ci)
+                    if 0 <= idx < len(options):
+                        answer = options[idx]
+                except Exception:
+                    pass
+        if not prompt or not answer:
+            continue
         accepted = raw.get("accepted_answers") or []
         subs.append({
             "type": stype,
             "prompt": prompt,
             "options": options,
             "answer": answer,
+            "correct_answer": answer,
             "accepted_answers": [str(a).strip() for a in accepted if str(a).strip()],
         })
     if not subs:
@@ -1718,11 +1745,13 @@ async def library_ai_import_screenshot(
 
     async def _run_ai(session) -> str:
         if vision_urls:
-            task = system_prompt + "\n\nTASK: " + user_prompt
+            task = "TASK: " + user_prompt
             if extracted:
                 task += "\n\nAdditional extracted text from the same material:\n" + extracted
             chunks: list[str] = []
-            async for chunk in _xai_generate_text_stream_with_images(task, vision_urls, session=session):
+            async for chunk in _xai_generate_text_stream_with_images(
+                task, vision_urls, session=session, system_content=system_prompt
+            ):
                 chunks.append(str(chunk or ""))
             return "".join(chunks).strip()
         task = (
@@ -1908,7 +1937,13 @@ def _extract_vocab_items(text: str, lang: str = "uz") -> list[dict]:
 
 def _resolve_local_path(url: str):
     """Yuklangan fayl serverdagi haqiqiy yo'lini topadi (bir nechta upload papka)."""
-    from backend.main import HOMEWORK_UPLOAD_DIR
+    from backend.main import (
+        HOMEWORK_UPLOAD_DIR,
+        MEDIA_UPLOAD_DIR,
+        COURSE_UPLOAD_DIR,
+        ARTICLE_UPLOAD_DIR,
+        CHAT_UPLOAD_DIR,
+    )
 
     name = Path(urlparse(str(url or "")).path).name
     if not name:
@@ -1916,6 +1951,10 @@ def _resolve_local_path(url: str):
     candidates = [
         HOMEWORK_UPLOAD_DIR / name,
         HOMEWORK_UPLOAD_DIR.parent / "homework_uploads" / name,
+        MEDIA_UPLOAD_DIR / name,
+        COURSE_UPLOAD_DIR / name,
+        ARTICLE_UPLOAD_DIR / name,
+        CHAT_UPLOAD_DIR / name,
     ]
     for cand in candidates:
         try:
@@ -1951,7 +1990,20 @@ def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], 
         # 1. Rasm — to'g'ridan vision API ga
         if ext in _IMAGE_EXTS:
             if len(vision_urls) < _MAX_VISION_IMAGES:
-                vision_urls.append(_abs_url(url))
+                local_img = _resolve_local_path(url)
+                if local_img and local_img.is_file():
+                    mime = mimetypes.guess_type(local_img.name)[0] or "image/jpeg"
+                    try:
+                        raw_bytes = local_img.read_bytes()
+                        if raw_bytes and len(raw_bytes) <= 10 * 1024 * 1024:
+                            b64 = base64.b64encode(raw_bytes).decode("ascii")
+                            vision_urls.append(f"data:{mime};base64,{b64}")
+                        else:
+                            vision_urls.append(_abs_url(url))
+                    except Exception:
+                        vision_urls.append(_abs_url(url))
+                else:
+                    vision_urls.append(_abs_url(url))
             continue
 
         # Barcha boshqa turlar uchun lokal faylni topamiz
@@ -1967,7 +2019,20 @@ def _prepare_import_sources(urls: list[str], owner_id: int) -> tuple[list[str], 
             if rendered:
                 for served in rendered:
                     if len(vision_urls) < _MAX_VISION_IMAGES:
-                        vision_urls.append(_abs_url(served))
+                        local_img = _resolve_local_path(served)
+                        if local_img and local_img.is_file():
+                            mime = mimetypes.guess_type(local_img.name)[0] or "image/png"
+                            try:
+                                raw_bytes = local_img.read_bytes()
+                                if raw_bytes and len(raw_bytes) <= 10 * 1024 * 1024:
+                                    b64 = base64.b64encode(raw_bytes).decode("ascii")
+                                    vision_urls.append(f"data:{mime};base64,{b64}")
+                                else:
+                                    vision_urls.append(_abs_url(served))
+                            except Exception:
+                                vision_urls.append(_abs_url(served))
+                        else:
+                            vision_urls.append(_abs_url(served))
             # Vision keeps page layout, while extracted text lets us enforce
             # the no-invented-numbering rule deterministically for PDFs.
             text = _extract_pdf_text(local)
@@ -2291,22 +2356,89 @@ def _read_text_file(path) -> str:
 
 def _extract_json_object(raw: str) -> dict:
     text = str(raw or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
-        text = re.sub(r"```\s*$", "", text).strip()
+    if not text:
+        return {}
+
+    # 1. Clean markdown code fences if wrapped
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if fence_match:
+        try:
+            cand = fence_match.group(1).strip()
+            parsed = json.loads(cand)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    # Clean leading/trailing fences
+    cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+    cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    cleaned = (
+        cleaned.lstrip("\ufeff")
+        .replace("“", '"')
+        .replace("”", '"')
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+    # Direct json.loads
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             return parsed
     except Exception:
         pass
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+
+    # 2. Balanced JSON slice
+    try:
+        from ai_generator import _balanced_json_object_slice
+        first_brace = cleaned.find("{")
+        if first_brace >= 0:
+            slice_str = _balanced_json_object_slice(cleaned, first_brace)
+            if slice_str:
+                try:
+                    parsed = json.loads(slice_str)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    # Fix trailing commas before } or ]
+                    fixed = re.sub(r",\s*([}\]])", r"\1", slice_str)
+                    try:
+                        parsed = json.loads(fixed)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 3. Greedy regex fallback with trailing commas fix
+    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if match:
+        cand = match.group(0)
         try:
-            parsed = json.loads(match.group(0))
-            return parsed if isinstance(parsed, dict) else {}
+            parsed = json.loads(cand)
+            if isinstance(parsed, dict):
+                return parsed
         except Exception:
-            return {}
+            fixed = re.sub(r",\s*([}\]])", r"\1", cand)
+            try:
+                parsed = json.loads(fixed)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        # Fallback to ast.literal_eval
+        try:
+            import ast
+            py_cand = re.sub(r"\bnull\b", "None", cand)
+            py_cand = re.sub(r"\btrue\b", "True", py_cand, flags=re.IGNORECASE)
+            py_cand = re.sub(r"\bfalse\b", "False", py_cand, flags=re.IGNORECASE)
+            parsed = ast.literal_eval(py_cand)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
     return {}
 
 
@@ -2740,20 +2872,27 @@ def _check_listening_set_sub_answer(sub: dict, given_item: dict) -> tuple[bool, 
     if sub_type in {"mcq", "tf"}:
         chosen = given_item.get("choice_index")
         correct = int(sub.get("correct_index") or 0)
+        options = sub.get("options") or []
+        if chosen is None:
+            ans_str = _norm_text(given_item.get("answer_text") or given_item.get("answer") or given_item.get("choice") or "")
+            if ans_str:
+                for opt_idx, opt in enumerate(options):
+                    if _norm_text(opt) == ans_str:
+                        chosen = opt_idx
+                        break
         if chosen is None:
             return False, {"reason": "Javob tanlanmadi"}
         try:
             ok = int(chosen) == correct
         except (TypeError, ValueError):
             ok = False
-        options = sub.get("options") or []
         return ok, {
             "correct_answer": options[correct] if not ok and 0 <= correct < len(options) else None
         }
     if sub_type in {"gap", "dictation", "short"}:
-        expected = {_norm_text(sub.get("answer")), *[_norm_text(x) for x in (sub.get("accepted_answers") or [])]}
+        expected = {_norm_text(sub.get("answer")), _norm_text(sub.get("correct_answer")), *[_norm_text(x) for x in (sub.get("accepted_answers") or [])]}
         expected.discard("")
-        given = _norm_text(given_item.get("answer_text"))
+        given = _norm_text(given_item.get("answer_text") or given_item.get("answer") or given_item.get("choice") or "")
         return given in expected, {"reason": "Javob bo'sh" if not given else None}
     if sub_type == "order":
         expected = _norm_text(sub.get("answer"))
@@ -2900,20 +3039,54 @@ def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict
         }
     if kind == "reading_set":
         subs = question.get("sub_questions") or []
-        given_list = payload.blanks or []
         wrong_positions = []
+        details = []
         for i, s in enumerate(subs):
-            expected_set = {_norm_text(s.get("answer")), *[_norm_text(x) for x in (s.get("accepted_answers") or [])]}
-            expected_set = {e for e in expected_set if e}
-            given = _norm_text(given_list[i]) if i < len(given_list) else ""
-            if given not in expected_set:
+            expected_set = {
+                _norm_text(s.get("answer")),
+                _norm_text(s.get("correct_answer")),
+                _norm_text(s.get("correct")),
+                *[_norm_text(x) for x in (s.get("accepted_answers") or [])]
+            }
+            expected_set.discard("")
+            options = s.get("options") or []
+
+            # Extract given answer for sub-question i
+            given_raw = ""
+            if payload.sub_answers and i < len(payload.sub_answers):
+                item = payload.sub_answers[i]
+                if isinstance(item, dict):
+                    if item.get("choice_index") is not None and options:
+                        try:
+                            ci = int(item["choice_index"])
+                            if 0 <= ci < len(options):
+                                given_raw = options[ci]
+                        except Exception:
+                            pass
+                    if not given_raw:
+                        given_raw = str(item.get("answer_text") or item.get("answer") or item.get("choice") or "")
+                else:
+                    given_raw = str(item or "")
+            elif payload.blanks and i < len(payload.blanks):
+                given_raw = str(payload.blanks[i] or "")
+            elif payload.answer_text:
+                parts = [p.strip() for p in re.split(r"\||\n", str(payload.answer_text))]
+                if i < len(parts):
+                    given_raw = re.sub(r"^\d+[\.\)]\s*", "", parts[i])
+
+            given = _norm_text(given_raw)
+            ok = given in expected_set if expected_set else bool(given)
+            details.append({"position": i + 1, "verdict": "correct" if ok else "wrong", "given": given_raw})
+            if not ok:
                 wrong_positions.append(i + 1)
+
         if not wrong_positions:
-            return "correct", {}
+            return "correct", {"sub_feedback": details}
         return "wrong", {
             "wrong_positions": wrong_positions,
             "wrong_count": len(wrong_positions),
             "hint": f"{len(wrong_positions)} ta savol noto'g'ri",
+            "sub_feedback": details,
         }
     expected = [question.get("answer"), *(question.get("accepted_answers") or [])]
     normalized = {_norm_text(e) for e in expected if e}
@@ -3062,10 +3235,7 @@ async def _check_with_ai(
     raw = ""
     try:
         async with aiohttp.ClientSession() as session:
-            # Exercise checks are short and must feel immediate.  Use the
-            # primary Diamond/Grok model once with a compact response rather
-            # than making students wait for a second long fallback attempt.
-            for model in get_grok_model_candidates()[:1]:
+            for model in get_grok_model_candidates()[:3]:
                 body = {
                     "model": model,
                     "messages": [
@@ -3076,23 +3246,39 @@ async def _check_with_ai(
                     "max_tokens": 650,
                 }
                 _xai_apply_payload_tuning(body, model=model, stream=False)
-                async with session.post(
-                    XAI_ENDPOINT,
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=body,
-                    timeout=aiohttp.ClientTimeout(total=25),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                        raw = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
-                        if raw:
-                            break
+                try:
+                    async with session.post(
+                        XAI_ENDPOINT,
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json=body,
+                        timeout=aiohttp.ClientTimeout(total=20),
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                            raw = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+                            if raw:
+                                break
+                except Exception as model_err:
+                    logger.warning("ai-test model %s check error: %s", model, model_err)
+                    continue
     except Exception as exc:
         logger.exception("ai-test grading failed kind=%s: %s", kind, exc)
-        raise HTTPException(status_code=503, detail="AI tekshirish vaqtincha ishlamayapti, qayta urinib ko'ring")
 
     parsed = _extract_json_object(raw)
     if not parsed:
+        # Fallback if AI response failed or was unparseable:
+        # Check if student's answer exactly or nearly matches reference answer
+        ref_answers = [question.get("reference_answer"), question.get("answer"), *(question.get("accepted_answers") or [])]
+        ref_clean = {_norm_text(r) for r in ref_answers if r}
+        given_norm = _norm_text(answer)
+        if given_norm and ref_clean and (given_norm in ref_clean or any(_levenshtein(given_norm, r) <= 1 for r in ref_clean)):
+            return "correct", {
+                "is_correct": True,
+                "feedback": "Javob to'g'ri!",
+                "score": 100,
+                "transcript": answer if spoken else None,
+                "was_spoken": spoken,
+            }
         raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
     verdict = "correct" if bool(parsed.get("is_correct")) else "wrong"
     if verdict == "wrong" and not str(parsed.get("corrected") or "").strip():

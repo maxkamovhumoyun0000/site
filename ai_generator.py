@@ -589,6 +589,7 @@ async def _xai_generate_text_stream_with_images(
     image_urls: list[str],
     *,
     session: aiohttp.ClientSession,
+    system_content: str | None = None,
 ):
     """
     OpenAI-compatible vision streaming for xAI/Grok.
@@ -607,7 +608,7 @@ async def _xai_generate_text_stream_with_images(
         if clean_url:
             content.append({"type": "image_url", "image_url": {"url": clean_url, "detail": image_detail}})
 
-    system_content = (
+    eff_system = str(system_content or "").strip() or (
         "You are Diamondvoy, a school tutoring assistant. "
         "Analyze attached images only when they are educational materials "
         "(tests, grammar, reading, math problems, homework, books, notebooks, or study material). "
@@ -626,7 +627,7 @@ async def _xai_generate_text_stream_with_images(
             payload = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": system_content},
+                    {"role": "system", "content": eff_system},
                     {"role": "user", "content": content},
                 ],
                 "temperature": 0.55,
@@ -638,7 +639,7 @@ async def _xai_generate_text_stream_with_images(
                 XAI_ENDPOINT,
                 headers=headers,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=150),
+                timeout=aiohttp.ClientTimeout(total=60),
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
