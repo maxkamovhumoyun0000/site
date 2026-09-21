@@ -1572,6 +1572,9 @@ function LessonPlayerModal({
   const [wordBankAssignments, setWordBankAssignments] = useState<Record<number, number>>({});
   const [wrongBlankPositions, setWrongBlankPositions] = useState<number[]>([]);
 
+  // For Reading Set and Listening Set sub-questions
+  const [subAnswers, setSubAnswers] = useState<string[]>([]);
+
   // Hidden Audio Element ref
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -1604,6 +1607,7 @@ function LessonPlayerModal({
     setMatchingLefts([]);
     setMatchingRights([]);
     setClozeBlanks([]);
+    setSubAnswers([]);
     setUsedWordBank(new Set());
     setWordBankAssignments({});
     setWrongBlankPositions([]);
@@ -1743,13 +1747,37 @@ function LessonPlayerModal({
     (typeof question?.passage === "string" && question.passage.includes("___")) ||
     (typeof question?.question === "string" && question.question.includes("___"));
 
+  const isReadingSet =
+    question?.test_type === "reading_set" ||
+    question?.kind === "reading_set" ||
+    question?.input === "reading_set" ||
+    (Array.isArray(question?.sub_questions) && question.sub_questions.length > 0 && !question?.audio_url);
+
+  const isListeningSet =
+    question?.test_type === "listening_set" ||
+    question?.kind === "listening_set" ||
+    question?.input === "listening_set" ||
+    (Array.isArray(question?.sub_questions) && question.sub_questions.length > 0 && Boolean(question?.audio_url));
+
+  const isSetQuestion = isReadingSet || isListeningSet;
+
   const submit = async (override?: { answer_text?: string; audio_url?: string }) => {
     if (!question || result) return;
     const lesson = lessons[currentIndex];
     const isCloze = isCurrentCloze;
+    const isSet = isSetQuestion;
+    const subs = Array.isArray(question?.sub_questions) ? question.sub_questions : [];
     const audioUrl = override?.audio_url;
 
-    if (!audioUrl && !selected && !override?.answer_text && matchingPairs.length === 0 && (!isCloze || clozeBlanks.every((x) => !x || !x.trim()))) return;
+    if (
+      !audioUrl &&
+      !selected &&
+      !override?.answer_text &&
+      matchingPairs.length === 0 &&
+      (!isCloze || clozeBlanks.every((x) => !x || !x.trim())) &&
+      (!isSet || subs.length === 0 || subAnswers.length < subs.length || subAnswers.every((x) => !x || !x.trim()))
+    )
+      return;
 
     const currentAnsText = override?.answer_text !== undefined ? override.answer_text : selected;
     const normSelected = currentAnsText.trim().toLowerCase();
@@ -1805,6 +1833,7 @@ function LessonPlayerModal({
         "word_practice",
       ].includes(qKind) ||
       (!isCloze &&
+        !isSet &&
         question?.test_type !== "matching" &&
         matchingPairs.length === 0 &&
         question?.test_type !== "word_order" &&
@@ -1848,6 +1877,31 @@ function LessonPlayerModal({
       } finally {
         setLoading(false);
       }
+    } else if (isSet) {
+      let wrongSubs = 0;
+      const subLabels: string[] = [];
+      const expLabels: string[] = [];
+
+      for (let i = 0; i < subs.length; i++) {
+        const s = subs[i];
+        const given = (subAnswers[i] || "").trim().toLowerCase();
+        const expectedAnswers = [
+          String(s.answer || s.correct_answer || s.correct || "").trim().toLowerCase(),
+          ...(Array.isArray(s.accepted_answers) ? s.accepted_answers.map((x: any) => String(x).trim().toLowerCase()) : []),
+        ].filter(Boolean);
+
+        const ok = expectedAnswers.length > 0
+          ? expectedAnswers.some((exp) => exp === given || given.includes(exp) || exp.includes(given))
+          : Boolean(given);
+        if (!ok) wrongSubs++;
+
+        subLabels.push(`${i + 1}. ${subAnswers[i] || "—"}`);
+        expLabels.push(`${i + 1}. ${s.answer || s.correct_answer || (expectedAnswers[0] || "")}`);
+      }
+
+      correct = wrongSubs === 0 && subs.length > 0;
+      selectedAnswer = subLabels.join(" | ");
+      correctAnswerStr = expLabels.join(" | ");
     } else if (isCloze) {
       const blanks = Array.isArray(question.blanks) ? question.blanks : [];
       const wrongPositions: number[] = [];
@@ -2203,7 +2257,11 @@ function LessonPlayerModal({
               {/* Category Pill */}
               <div className="flex items-center justify-between">
                 <span className="rounded-xl bg-slate-100 px-3 py-1 text-xs font-black uppercase tracking-wider text-slate-600 dark:bg-navy-800 dark:text-navy-300">
-                  {isCurrentCloze || question.test_type === "passage_cloze"
+                  {isReadingSet
+                    ? "📚 Matn va savollar (Reading Set)"
+                    : isListeningSet
+                    ? "🎧 Audio va savollar (Listening Set)"
+                    : isCurrentCloze || question.test_type === "passage_cloze"
                     ? "📝 Matnni to'ldiring"
                     : question.test_type === "speak_sentence" || question.kind === "speak_sentence"
                     ? "🗣️ Ovozli gap tuzish"
@@ -2352,6 +2410,83 @@ function LessonPlayerModal({
                     </div>
                   );
                 }
+
+                // ─── Exercise Type: Reading Set & Listening Set (Materials Library & Homework) ───
+                if (isSetQuestion) {
+                  const subs = Array.isArray(question.sub_questions) ? question.sub_questions : [];
+                  const setSub = (i: number, v: string) => {
+                    setSubAnswers((prev) => {
+                      const next = [...prev];
+                      while (next.length < subs.length) next.push("");
+                      next[i] = v;
+                      return next;
+                    });
+                  };
+                  const currentAnswers = Array.from({ length: subs.length }, (_, i) => subAnswers[i] || "");
+
+                  return (
+                    <div className="space-y-4 pt-1">
+                      {isReadingSet && question.passage && (
+                        <div className="max-h-64 overflow-y-auto rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-4 text-sm leading-relaxed text-slate-800 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200 whitespace-pre-wrap font-medium">
+                          <div className="flex items-center gap-1.5 text-xs font-black uppercase text-indigo-700 dark:text-indigo-300 mb-1.5">
+                            <span>📖</span>
+                            <span>Matnni diqqat bilan o'qing:</span>
+                          </div>
+                          {question.passage}
+                        </div>
+                      )}
+                      <div className="space-y-3">
+                        {subs.map((s: any, i: number) => {
+                          const opts = Array.isArray(s.options) && s.options.length > 0
+                            ? s.options
+                            : (s.type === "tf" || s.type === "true_false_ng" ? ["True", "False", "Not Given"] : []);
+                          return (
+                            <div key={i} className="rounded-2xl border-2 border-slate-200 bg-white p-3.5 shadow-sm dark:border-navy-700 dark:bg-navy-800">
+                              <p className="mb-2.5 text-xs font-black text-navy-900 dark:text-white">
+                                {i + 1}. {s.prompt || s.question || `Savol ${i + 1}`}
+                              </p>
+                              {opts.length > 0 ? (
+                                <div className="flex flex-wrap gap-2">
+                                  {opts.map((opt: string) => {
+                                    const isChosen = currentAnswers[i]?.trim().toLowerCase() === opt.trim().toLowerCase();
+                                    return (
+                                      <button
+                                        key={opt}
+                                        type="button"
+                                        disabled={Boolean(result)}
+                                        onClick={() => {
+                                          playDuolingoSound("pop");
+                                          setSub(i, opt);
+                                        }}
+                                        className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-xs font-black transition-all active:translate-y-1 active:border-b-2 ${
+                                          isChosen
+                                            ? "border-[#1899d6] bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]"
+                                            : "border-slate-200 bg-white text-navy-900 hover:bg-slate-50 dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+                                        }`}
+                                      >
+                                        {opt}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <input
+                                  type="text"
+                                  value={currentAnswers[i]}
+                                  disabled={Boolean(result)}
+                                  onChange={(e) => setSub(i, e.target.value)}
+                                  placeholder="Javobingizni yozing..."
+                                  className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs font-bold text-navy-900 focus:border-[#84d8ff] focus:outline-none dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                }
+
                 // ─── Exercise Type 0: Passage Cloze (Materials Library / Homework style) ───
                 if (isCurrentCloze) {
                   const template = String(question.passage_template || question.passage || question.question || "");
@@ -2919,6 +3054,11 @@ function LessonPlayerModal({
               (() => {
                 const canSubmit = isCurrentCloze
                   ? clozeBlanks.length > 0 && clozeBlanks.every((x) => x && x.trim())
+                  : isSetQuestion
+                  ? Array.isArray(question.sub_questions) &&
+                    question.sub_questions.length > 0 &&
+                    subAnswers.length >= question.sub_questions.length &&
+                    subAnswers.every((x) => x && x.trim())
                   : question.test_type === "matching" || matchingPairs.length > 0
                   ? matchingPairs.length > 0 && Object.keys(matchedPairs).length >= matchingPairs.length
                   : question.test_type === "word_order" || question.test_type === "listening_order" || question.test_type === "scrambled_sentence"

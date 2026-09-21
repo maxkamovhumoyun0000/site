@@ -2708,7 +2708,15 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     raw_opts = raw.get("options") or raw.get("choices") or []
     options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
 
-    correct = raw.get("correct_answer", raw.get("correct", raw.get("answer")))
+    correct = (
+        raw.get("correct_answer")
+        or raw.get("correct")
+        or raw.get("answer")
+        or raw.get("reference_answer")
+        or raw.get("sample_answer")
+        or raw.get("target_sentence")
+        or raw.get("word")
+    )
     index = raw.get("correct_option_index", raw.get("correct_index"))
     if correct is None and isinstance(index, int) and 0 <= index < len(options):
         correct = options[index]
@@ -2727,26 +2735,40 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice", "listening_gap"}:
         if not correct and raw.get("word"):
             correct = str(raw.get("word"))
+        if not correct and raw.get("answer"):
+            correct = str(raw.get("answer"))
         if not question and raw.get("sentence"):
             question = str(raw.get("sentence"))
     elif kind in {"word_order", "scrambled_sentence", "listening_order"}:
         if not correct and raw.get("target_sentence"):
             correct = str(raw.get("target_sentence"))
+        if not correct and raw.get("answer"):
+            correct = str(raw.get("answer"))
+        if not correct and raw.get("sentence"):
+            correct = str(raw.get("sentence"))
     elif kind in {"listening", "dictation", "listening_dictation", "listening_open", "listening_set"}:
         if not correct and raw.get("answer"):
             correct = str(raw.get("answer"))
 
     if not question:
-        question = instruction or (str(raw.get("prompt") or "").strip() if str(raw.get("prompt") or "").strip() != passage else "")
-        if not question:
-            if passage:
-                question = "Matnni o'qing va topshiriqni bajaring:"
-            elif raw.get("context"):
-                question = "Topshiriqni bajaring:"
-            else:
-                question = "Savol"
+        if kind == "reading_set":
+            question = instruction or "Matnni o'qing va savollarga javob bering:"
+        elif kind == "listening_set":
+            question = instruction or "Audioni tinglang va savollarga javob bering:"
+        else:
+            question = instruction or (str(raw.get("prompt") or "").strip() if str(raw.get("prompt") or "").strip() != passage else "")
+            if not question:
+                if passage:
+                    question = "Matnni o'qing va topshiriqni bajaring:"
+                elif raw.get("context"):
+                    question = "Topshiriqni bajaring:"
+                else:
+                    question = "Savol"
     elif passage and question.strip() == passage.strip():
-        question = instruction or "Matnni o'qing va topshiriqni bajaring:"
+        if kind == "reading_set":
+            question = instruction or "Matnni o'qing va savollarga javob bering:"
+        else:
+            question = instruction or "Matnni o'qing va topshiriqni bajaring:"
 
     res = {
         "question": question,
