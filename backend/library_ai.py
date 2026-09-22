@@ -232,7 +232,7 @@ AUDIO_ASSET_KINDS = {k for k, v in AI_TEST_TYPES.items() if v["needs_audio_asset
 POLYMORPHIC_KINDS = {k for k, v in AI_TEST_TYPES.items() if v.get("polymorphic")}
 
 #: word_practice studentga tushganda shu turlardan biriga random aylanadi.
-WORD_PRACTICE_VARIANTS = ["speak_sentence", "write_sentence", "spelling", "translation"]
+WORD_PRACTICE_VARIANTS = ["speak_sentence", "read_aloud", "write_sentence", "spelling", "translation"]
 
 #: AI turli nom bilan qaytarishi mumkin — ularni bizning kanonik turlarga moslaymiz.
 _KIND_SYNONYMS: dict[str, str] = {
@@ -1291,7 +1291,7 @@ def _group_consecutive_gap_fill(questions: list[dict]) -> list[dict]:
     return out
 
 
-def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "English") -> dict:
+def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "English", chosen_kind: str | None = None) -> dict:
     """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha).
 
     Ko'rsatma (prompt) o'rganilayotgan til (study_lang: English/Russian) da yoziladi.
@@ -1315,28 +1315,32 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     translation = (tr_ru if ru else tr_uz) or legacy or tr_uz or tr_ru
     # Ikkala tarjima ham qabul qilinadi (student boshqa tilda yozsa ham).
     raw_accepted = [t for t in {translation, tr_uz, tr_ru, legacy} if t]
-    accepted = []
+    accepted_translations = []
     for item in raw_accepted:
-        accepted.append(item)
+        accepted_translations.append(item)
         for part in re.split(r"[,;\n/|]+", item):
             part_s = part.strip()
-            if part_s and part_s not in accepted:
-                accepted.append(part_s)
-    # Also accept the clean target word itself
-    if clean_word and clean_word not in accepted:
-        accepted.append(clean_word)
+            if part_s and part_s not in accepted_translations:
+                accepted_translations.append(part_s)
 
     instruction = q.get("instruction")
     level = q.get("level")
     variants = list(WORD_PRACTICE_VARIANTS)
     if not translation and "translation" in variants:
         variants.remove("translation")
-    kind = random.choice(variants) if variants else "write_sentence"
+
+    req_kind = chosen_kind or q.get("practice_mode")
+    if req_kind and str(req_kind) in variants:
+        kind = str(req_kind)
+    else:
+        kind = random.choice(variants) if variants else "write_sentence"
+
     example_sentence = str(q.get("example_sentence") or "").strip() or None
-    # meaning / definition — spelling uchun hint sifatida ishlatiladi
     meaning = str(q.get("meaning") or q.get("definition") or "").strip() or None
     base: dict[str, Any] = {
         "kind": kind,
+        "test_type": kind,
+        "practice_mode": kind,
         "word": word,
         "clean_word": clean_word,
         "raw_word": raw_word,
@@ -1350,6 +1354,8 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     }
 
     if kind == "speak_sentence":
+        base["input"] = "audio"
+        base["check"] = "ai"
         base["prompt"] = q.get("prompt") or (
             f"Составьте и произнесите предложение со словом «{word}»" if ru or study_ru
             else f"Make and say a sentence using '{word}'"
@@ -1361,7 +1367,28 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
         base["condition_uz"] = f"🗣️ Ovozli gap tuzish: «{word}» so'zi ishtirokida gap tuzing va mikrofon orqali ayting."
         base["condition_ru"] = f"🗣️ Устное упражнение: Составьте предложение со словом «{word}» и четко произнесите его в микрофон."
         base["condition_en"] = f"🗣️ Speaking exercise: Make a sentence using '{word}' and speak clearly into the microphone."
+        base["reference_answer"] = example_sentence or word
+        base["accepted_answers"] = [example_sentence] if example_sentence else []
+    elif kind == "read_aloud":
+        base["input"] = "audio"
+        base["check"] = "ai"
+        base["prompt"] = q.get("prompt") or (
+            f"Произнесите слово четко: «{word}»" if ru or study_ru
+            else f"Pronounce the word clearly: '{word}'"
+        )
+        base["condition"] = (
+            f"🎙️ Произношение: Произнесите слово «{word}» четко в микрофон." if ru
+            else f"🎙️ Ovozli talaffuz: «{word}» so'zini aniq talaffuz qiling va mikrofon orqali ayting."
+        )
+        base["condition_uz"] = f"🎙️ Ovozli talaffuz: «{word}» so'zini aniq talaffuz qiling va mikrofon orqali ayting."
+        base["condition_ru"] = f"🎙️ Произношение: Произнесите слово «{word}» четко в микрофон."
+        base["condition_en"] = f"🎙️ Pronunciation: Pronounce the word '{word}' clearly into the microphone."
+        base["reference_answer"] = word
+        base["target_word"] = word
+        base["accepted_answers"] = [word, clean_word, raw_word]
     elif kind == "write_sentence":
+        base["input"] = "text"
+        base["check"] = "ai"
         base["prompt"] = q.get("prompt") or (
             f"Напишите предложение со словом «{word}»" if ru or study_ru
             else f"Write a sentence using '{word}'"
@@ -1374,7 +1401,10 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
         base["condition_ru"] = f"✍️ Составление предложения: Напишите полное, осмысленное предложение со словом «{word}»."
         base["condition_en"] = f"✍️ Sentence writing: Write a complete, meaningful sentence using the word '{word}'."
         base["reference_answer"] = example_sentence
+        base["accepted_answers"] = [example_sentence] if example_sentence else []
     elif kind == "spelling":
+        base["input"] = "text"
+        base["check"] = "auto"
         base["prompt"] = q.get("prompt") or (
             f"Правильно напишите слово по значению" if ru or study_ru
             else "Spell the word correctly"
@@ -1388,8 +1418,11 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
         base["condition_en"] = f"🔤 Spelling: Type the correct English spelling of '{word}' without mistakes."
         base["hint"] = meaning or translation or example_sentence
         base["answer"] = word
-        base["accepted_answers"] = [word, raw_word]
+        base["correct_answer"] = word
+        base["accepted_answers"] = [word, clean_word, raw_word]
     else:  # translation — tarjima student tiliga (uz/ru)
+        base["input"] = "text"
+        base["check"] = "auto"
         base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
         base["condition"] = (
             f"🌐 Перевод: Напишите точный перевод слова «{word}»." if ru
@@ -1400,7 +1433,8 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
         base["condition_en"] = f"🌐 Translation: Write the accurate translation of the word '{word}'."
         base["direction"] = "RU→UZ" if ru else "EN→UZ"
         base["answer"] = translation
-        base["accepted_answers"] = accepted
+        base["correct_answer"] = translation
+        base["accepted_answers"] = accepted_translations
     return base
 
 
@@ -3272,7 +3306,7 @@ async def _check_with_ai(
 
     if input_mode == "audio" or (input_mode == "audio_or_text" and payload.audio_url) or payload.audio_url:
         spoken = True
-        if not answer and payload.audio_url:
+        if (not answer or answer == "[Audio answer]") and payload.audio_url:
             try:
                 answer = await _transcribe(payload.audio_url, subject, x_language)
             except Exception as exc:

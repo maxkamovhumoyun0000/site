@@ -2655,8 +2655,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
         "   * 'fill_blank': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
         "   * 'word_order': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
-        "   * 'matching': 4 full choices where ONE is correct, e.g. 'options': ['1-A, 2-B, 3-C', '1-B, 2-A, 3-C', ...]. NEVER list individual true pairs as options with a combined semicolon answer!\n"
-        "- 'correct_answer': the exact single correct answer string (must match one of the choices in 'options' for multiple_choice/true_false/matching)\n"
+        "   * 'matching': MUST provide 'pairs': [{'left': 'word1', 'right': 'meaning1'}, {'left': 'word2', 'right': 'meaning2'}, ...]. 'correct_answer': 'word1 = meaning1; word2 = meaning2'. 'options': []. NEVER output choices like '1-A, 2-B'!\n"
+        "- 'correct_answer': the exact single correct answer string (must match one of the choices in 'options' for multiple_choice/true_false, or pairs for matching)\n"
         "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
     )
 
@@ -2726,7 +2726,21 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                     options = []
                 elif norm_correct not in norm_opts and len(options) >= 2:
                     options.append(correct)
-            elif q_type in ("multiple_choice", "matching"):
+            elif q_type == "matching":
+                pairs = result.get("pairs") or []
+                if not pairs and options:
+                    for opt in options:
+                        if "=" in opt:
+                            l, r = opt.split("=", 1)
+                            pairs.append({"left": l.strip(), "right": r.strip()})
+                        elif " - " in opt:
+                            l, r = opt.split(" - ", 1)
+                            pairs.append({"left": l.strip(), "right": r.strip()})
+                if pairs:
+                    options = [p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")]
+                    if not correct or "1-A" in correct:
+                        correct = "; ".join(f"{p.get('left')} = {p.get('right')}" for p in pairs if isinstance(p, dict))
+            elif q_type == "multiple_choice":
                 if ";" in correct or "\n" in correct:
                     delim = ";" if ";" in correct else "\n"
                     parts = [p.strip() for p in correct.split(delim) if p.strip()]
@@ -2754,6 +2768,11 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                 "explanation": explanation,
                 "test_type": q_type,
             }
+            if q_type == "matching" and result.get("pairs"):
+                pairs = result["pairs"]
+                question_payload["pairs"] = pairs
+                question_payload["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
+                question_payload["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
             items.append({
                 "title": f"{payload.topic} · {index + 1}",
                 "source_kind": "ai",
@@ -2910,14 +2929,36 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
                 elif " - " in opt:
                     p_left, p_right = opt.split(" - ", 1)
                     parsed_pairs.append({"left": p_left.strip(), "right": p_right.strip()})
+                elif ":" in opt and not opt.startswith("http"):
+                    p_left, p_right = opt.split(":", 1)
+                    parsed_pairs.append({"left": p_left.strip(), "right": p_right.strip()})
             if parsed_pairs:
                 pairs = parsed_pairs
+
+        # Universal fallback parser for AI or legacy questions with 1-A, 2-B format
+        if not pairs:
+            expl = str(res.get("explanation") or raw.get("explanation") or "")
+            q_text = str(res.get("question") or raw.get("question") or "")
+            left_matches = re.findall(r'(?:^|\s)(?:\d+[\.\)]\s*)([a-zA-Z\w\s\'-]+?)(?=(?:\s+\d+[\.\)]|$))', q_text)
+            if left_matches:
+                extracted_lefts = [w.strip() for w in left_matches if w.strip()]
+                pairs_from_expl = []
+                for left_word in extracted_lefts:
+                    m = re.search(rf'\b{re.escape(left_word)}\b\s*(?:means|is|refer to|equals|tarjimasi|—|-|:)\s*([^,;.\n]+)', expl, re.IGNORECASE)
+                    if m:
+                        meaning = m.group(1).strip()
+                        meaning = re.sub(r'\s*\([A-Za-z0-9]\)\s*', '', meaning).strip()
+                        pairs_from_expl.append({"left": left_word, "right": meaning})
+                if len(pairs_from_expl) >= 2:
+                    pairs = pairs_from_expl
+
         if pairs:
             res["pairs"] = pairs
-            if not res.get("left_items"):
-                res["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
-            if not res.get("right_items"):
-                res["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
+            res["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
+            res["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
+            res["options"] = list(res["right_items"])
+            if not res.get("correct_answer") or "1-A" in str(res.get("correct_answer")):
+                res["correct_answer"] = "; ".join(f"{p.get('left')} = {p.get('right')}" for p in pairs if isinstance(p, dict))
 
     # Special handling for word_order / scrambled_sentence
     elif kind in {"word_order", "scrambled_sentence", "listening_order"}:
@@ -2972,22 +3013,9 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         res["raw_word"] = raw_w
         if pos_m:
             res["pos_tag"] = f"({pos_m.group(1).strip()})"
-        if not res.get("instruction"):
-            res["instruction"] = "So'z mashqi: Ushbu so'zning to'g'ri imlosini, tarjimasini yoki u bilan gap yozing"
-        if not res.get("condition"):
-            res["condition"] = "So'z mashqi — To'g'ri imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi"
-        res["condition_uz"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi."
-        res["condition_ru"] = "Упражнение со словом: Принимается правильное написание, перевод или полное предложение."
-        res["condition_en"] = "Vocabulary practice: Correct spelling, translation, or a complete sentence is accepted."
+        res["test_type"] = "word_practice"
+        res["kind"] = "word_practice"
         res["correct_answer"] = clean_w
-        acc = list(res.get("acceptable_answers") or [])
-        for candidate in [clean_w, raw_w, res.get("translation"), res.get("translation_uz"), res.get("translation_ru"), res.get("meaning")]:
-            if candidate:
-                for p in re.split(r"[,;\n/|]+", str(candidate)):
-                    ps = p.strip()
-                    if ps and ps not in acc:
-                        acc.append(ps)
-        res["acceptable_answers"] = acc
 
     return res
 
@@ -3397,32 +3425,23 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
                 if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
                     qp["word_bank"] = []
             q_kind = str(qp.get("kind") or qp.get("test_type") or "")
-            if q_kind == "word_practice":
-                raw_w = str(qp.get("word") or qp.get("question") or qp.get("prompt") or "").strip()
-                clean_w = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_w).strip() or raw_w
-                pos_m = re.search(r"\(([a-zA-Z\s\.,-]+)\)", raw_w)
-                qp["clean_word"] = clean_w
-                qp["word"] = clean_w
-                qp["raw_word"] = raw_w
-                if pos_m:
-                    qp["pos_tag"] = f"({pos_m.group(1).strip()})"
-                if not qp.get("instruction"):
-                    qp["instruction"] = "So'z mashqi: Ushbu so'zning to'g'ri imlosini, tarjimasini yoki u bilan to'liq gap yozing"
-                if not qp.get("condition"):
-                    qp["condition"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi"
-                qp["condition_uz"] = "So'z mashqi: So'z imlosi, tarjimasi yoki u bilan tuzilgan to'liq gap qabul qilinadi."
-                qp["condition_ru"] = "Упражнение со словом: Принимается правильное написание, перевод или полное предложение."
-                qp["condition_en"] = "Vocabulary practice: Correct spelling, translation, or a complete sentence is accepted."
-                if qp.get("correct_answer") == raw_w or not qp.get("correct_answer"):
-                    qp["correct_answer"] = clean_w
-                acc = list(qp.get("acceptable_answers") or [])
-                for candidate in [clean_w, raw_w, qp.get("translation"), qp.get("translation_uz"), qp.get("translation_ru"), qp.get("meaning")]:
-                    if candidate:
-                        for p in re.split(r"[,;\n/|]+", str(candidate)):
-                            ps = p.strip()
-                            if ps and ps not in acc:
-                                acc.append(ps)
-                qp["acceptable_answers"] = acc
+            if q_kind in {"word_practice", "vocabulary", "vocab"} or qp.get("practice_mode") in {"word_practice", "random"}:
+                import random as _rnd
+                from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name
+                # Deterministic single task per student & lesson (homework-like behavior)
+                lesson_seed = int(item.get("id") or 0) * 10007 + uid
+                r = _rnd.Random(lesson_seed)
+                cand_variants = ["spelling", "translation", "write_sentence", "speak_sentence", "read_aloud"]
+                tr_has = bool(qp.get("translation") or qp.get("translation_uz") or qp.get("translation_ru"))
+                if not tr_has and "translation" in cand_variants:
+                    cand_variants.remove("translation")
+                chosen_v = str(qp.get("practice_mode") or "").strip()
+                if chosen_v not in cand_variants:
+                    chosen_v = r.choice(cand_variants)
+                s_lang = _student_lang(user)
+                st_lang = _study_language_name(str(item.get("track_subject") or "English"))
+                mat = _materialize_word_practice(qp, lang=s_lang, study_lang=st_lang, chosen_kind=chosen_v)
+                qp.update(mat)
         return item
     finally: conn.close()
 
@@ -3467,6 +3486,8 @@ async def check_learning_lesson_ai(
         subject = (payload.subject if payload and payload.subject else None) or track_subject or "English"
         answer = str((payload.answer_text if payload else "") or "").strip()
         audio_url = (payload.audio_url if payload else None) or None
+        if answer == "[Audio answer]":
+            answer = ""
 
         if not answer and not audio_url:
             return {

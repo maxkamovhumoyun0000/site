@@ -253,8 +253,8 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
         </p>
       ) : null}
 
-      {/* Tracks List */}
-      <div className="flex flex-col space-y-4">
+      {/* Unified Tracks List Card */}
+      <div className="overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-xl dark:border-navy-800 dark:bg-navy-950">
         {filteredTracks.map((track, i) => {
           const nextTrack = filteredTracks[i + 1];
           const nextTrackUnlocked = nextTrack ? !nextTrack.locked : false;
@@ -1003,19 +1003,14 @@ function DuolingoNode({
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
   const topicKeys = (Array.isArray(module.topic_keys) ? module.topic_keys : [])
     .map((t: any) => String(t || "").trim())
-    .filter(Boolean);
-  const totalTopics = Math.min(5, Math.max(1, module.total_topics || (topicKeys.length > 0 ? topicKeys.length : 1)));
+    .filter((t: string) => Boolean(t) && !t.toLowerCase().includes("test"));
+  const hasRealTopics = topicKeys.length > 0;
+  const totalTopics = hasRealTopics ? Math.min(5, topicKeys.length) : 1;
   const completedTopics = isLocked
     ? 0
-    : Math.min(
-        totalTopics,
-        Math.max(
-          0,
-          isPassed
-            ? totalTopics
-            : (module.completed_topics ?? (totalTopics > 1 && lessons.length > 0 ? Math.min(totalTopics - 1, Math.floor((lessons.filter((l: any) => l.passed).length / lessons.length) * totalTopics)) : 0))
-        )
-      );
+    : isPassed
+    ? totalTopics
+    : (module.completed_topics ?? 0);
   const moduleImage = module.image_url || image(module.cover_key || "star");
 
   const handleNodeClick = () => {
@@ -1134,60 +1129,60 @@ function DuolingoNode({
                 </p>
               </div>
 
-              {/* Topics Breakdown List (1 to 5 topics) */}
-              <div className="mt-4 space-y-2 text-left w-full">
-                <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  <span>Modul mavzulari ({completedTopics}/{totalTopics})</span>
-                  <span className="text-[10px] text-[#002DFF] dark:text-[#38bdf8] font-black">
-                    {Math.round((completedTopics / totalTopics) * 100)}%
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {Array.from({ length: totalTopics }, (_, tIdx) => {
-                    const lesson = lessons[tIdx];
-                    const topicTitle = lesson?.title || topicKeys[tIdx] || `Mavzu ${tIdx + 1}`;
-                    const isTopPassed = isPassed || tIdx < completedTopics;
-                    const isTopActive = !isLocked && !isPassed && tIdx === completedTopics;
+              {/* Topics Breakdown List (only if module has real syllabus topics) */}
+              {hasRealTopics ? (
+                <div className="mt-4 space-y-2 text-left w-full">
+                  <div className="flex items-center justify-between text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    <span>Modul mavzulari ({completedTopics}/{totalTopics})</span>
+                    <span className="text-[10px] text-[#002DFF] dark:text-[#38bdf8] font-black">
+                      {Math.round((completedTopics / totalTopics) * 100)}%
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {topicKeys.slice(0, totalTopics).map((topTitle: string, tIdx: number) => {
+                      const isTopPassed = isPassed || tIdx < completedTopics;
+                      const isTopActive = !isLocked && !isPassed && tIdx === completedTopics;
 
-                    return (
-                      <div
-                        key={tIdx}
-                        className={`flex items-center justify-between rounded-xl border p-2 text-xs font-bold transition ${
-                          isTopPassed
-                            ? "border-[#1429F2]/30 bg-blue-50/70 text-[#0C188B] dark:border-[#00F0FF]/30 dark:bg-[#00F0FF]/10 dark:text-[#00F0FF]"
-                            : isTopActive
-                            ? "border-[#002DFF] bg-blue-50 text-[#002DFF] dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300 shadow-xs"
-                            : "border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-800/40"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span
-                            className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black ${
-                              isTopPassed
-                                ? "bg-[#1429F2] text-white dark:bg-[#00F0FF] dark:text-[#010954]"
-                                : isTopActive
-                                ? "bg-[#002DFF] text-white"
-                                : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                            }`}
-                          >
-                            {tIdx + 1}
+                      return (
+                        <div
+                          key={tIdx}
+                          className={`flex items-center justify-between rounded-xl border p-2 text-xs font-bold transition ${
+                            isTopPassed
+                              ? "border-[#1429F2]/30 bg-blue-50/70 text-[#0C188B] dark:border-[#00F0FF]/30 dark:bg-[#00F0FF]/10 dark:text-[#00F0FF]"
+                              : isTopActive
+                              ? "border-[#002DFF] bg-blue-50 text-[#002DFF] dark:border-blue-700 dark:bg-blue-950/30 dark:text-blue-300 shadow-xs"
+                              : "border-slate-200 bg-slate-50 text-slate-400 dark:border-slate-800 dark:bg-slate-800/40"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-black ${
+                                isTopPassed
+                                  ? "bg-[#1429F2] text-white dark:bg-[#00F0FF] dark:text-[#010954]"
+                                  : isTopActive
+                                  ? "bg-[#002DFF] text-white"
+                                  : "bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                              }`}
+                            >
+                              {tIdx + 1}
+                            </span>
+                            <span className="truncate">{topTitle}</span>
+                          </div>
+                          <span className="shrink-0 text-[11px] font-black">
+                            {isTopPassed ? "✅ Bajarildi" : isTopActive ? "⚡ Joriy" : "🔒"}
                           </span>
-                          <span className="truncate">{topicTitle}</span>
                         </div>
-                        <span className="shrink-0 text-[11px] font-black">
-                          {isTopPassed ? "✅ Bajarildi" : isTopActive ? "⚡ Joriy" : "🔒"}
-                        </span>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              ) : null}
 
               <div className="mt-4 space-y-2">
                 <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                   <span className="flex items-center gap-1.5">
                     <span>📝</span>
-                    <span>Jami savollar: {lessons.length} ta</span>
+                    <span>{hasRealTopics ? `Jami savollar: ${lessons.length} ta` : `Modul testi: ${lessons.length} ta savol`}</span>
                   </span>
                   {isPassed ? (
                     <span className="text-[#002DFF] dark:text-[#00F0FF] font-black">✓ {score}% (O'tilgan)</span>
@@ -1219,17 +1214,17 @@ function DuolingoNode({
                   isPassed
                     ? "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
                     : isFailed
-                    ? "border-rose-700 bg-rose-600 hover:bg-rose-700"
+                    ? "border-rose-700 bg-rose-600 hover:bg-rose-500"
                     : "border-[#001A88] bg-[#002DFF] hover:bg-[#1429f2]"
                 }`}
               >
                 {isPassed
-                  ? "Qayta takrorlash 🔄"
+                  ? "Qayta topshirish 🔄"
                   : isFailed
                   ? "Qayta topshirish 🔄"
-                  : completedTopics > 0
-                  ? `${completedTopics + 1}-mavzuni boshlash ➔`
-                  : "Darsni boshlash →"}
+                  : hasRealTopics
+                  ? (completedTopics > 0 ? `${completedTopics + 1}-mavzuni boshlash ➔` : "Darsni boshlash →")
+                  : "Testni boshlash ➔"}
               </button>
             </div>
           </div>,
@@ -1407,6 +1402,13 @@ export function getWordPracticeCondition(q: any, lang: "uz" | "ru" | "en"): stri
       ? "Speak an English sentence aloud using this word:"
       : "Ushbu so'z qatnashgan inglizcha gapni ovoz chiqarib ayting:";
   }
+  if (mode === "read_aloud") {
+    return lang === "ru"
+      ? "Произнесите слово четко в микрофон:"
+      : lang === "en"
+      ? "Pronounce the word clearly into the microphone:"
+      : "So'zni aniq talaffuz qilib mikrofon orqali ayting:";
+  }
   return lang === "ru"
     ? "Выполните задание со словом:"
     : lang === "en"
@@ -1434,6 +1436,43 @@ export function extractCorrectCandidates(q: any): string[] {
       str.split(/[;\n]+/).forEach(add);
     }
   };
+
+  const mode = q.practice_mode || q.test_type || q.kind;
+
+  // If spelling: ONLY accept spelling of the word!
+  if (mode === "spelling") {
+    add(q.clean_word);
+    add(q.word);
+    add(q.correct_answer);
+    add(q.answer);
+    return Array.from(new Set(rawList.map((s) => cleanAnswer(s)).filter(Boolean)));
+  }
+
+  // If translation: ONLY accept translation candidates!
+  if (mode === "translation") {
+    add(q.answer);
+    add(q.correct_answer);
+    add(q.translation);
+    add(q.translation_uz);
+    add(q.translation_ru);
+    add(q.accepted_answers);
+    add(q.acceptable_answers);
+    if (Array.isArray(q.translations)) {
+      q.translations.forEach(add);
+    } else if (typeof q.translations === "string") {
+      q.translations.split(/[,;\n]+/).forEach(add);
+    }
+    return Array.from(new Set(rawList.map((s) => cleanAnswer(s)).filter(Boolean)));
+  }
+
+  // If read_aloud (pronunciation):
+  if (mode === "read_aloud") {
+    add(q.clean_word);
+    add(q.word);
+    add(q.target_word);
+    add(q.correct_answer);
+    return Array.from(new Set(rawList.map((s) => cleanAnswer(s)).filter(Boolean)));
+  }
 
   add(q.correct_answer);
   add(q.acceptable_answers);
@@ -1825,7 +1864,9 @@ function LessonPlayerModal({
         q?.kind === "speak_sentence" ||
         q?.kind === "read_aloud" ||
         q?.kind === "speaking_repeat" ||
-        q?.kind === "speaking_response";
+        q?.kind === "speaking_response" ||
+        q?.practice_mode === "speak_sentence" ||
+        q?.practice_mode === "read_aloud";
       setVoiceMode(Boolean(isVoice));
 
       // Initialize matching if matching test or pairs provided
@@ -2624,7 +2665,9 @@ function LessonPlayerModal({
                   question.kind === "speak_sentence" ||
                   question.kind === "read_aloud" ||
                   question.kind === "speaking_repeat" ||
-                  question.kind === "speaking_response";
+                  question.kind === "speaking_response" ||
+                  question.practice_mode === "speak_sentence" ||
+                  question.practice_mode === "read_aloud";
                 const isVoiceOrText = question.input === "audio_or_text" || isVoiceQuestion;
 
                 // ─── Voice Exercise (Instant Voice Recorder with auto-check on release) ───
@@ -3519,7 +3562,9 @@ function FinalExamPlayerModal({
       currentQuestion?.kind === "speak_sentence" ||
       currentQuestion?.kind === "read_aloud" ||
       currentQuestion?.kind === "speaking_repeat" ||
-      currentQuestion?.kind === "speaking_response";
+      currentQuestion?.kind === "speaking_response" ||
+      currentQuestion?.practice_mode === "speak_sentence" ||
+      currentQuestion?.practice_mode === "read_aloud";
     setVoiceMode(Boolean(isVoice));
     setResult(null);
   }, [currentIndex, currentQuestion]);
@@ -4129,7 +4174,9 @@ function FinalExamPlayerModal({
                   currentQuestion.kind === "speak_sentence" ||
                   currentQuestion.kind === "read_aloud" ||
                   currentQuestion.kind === "speaking_repeat" ||
-                  currentQuestion.kind === "speaking_response";
+                  currentQuestion.kind === "speaking_response" ||
+                  currentQuestion.practice_mode === "speak_sentence" ||
+                  currentQuestion.practice_mode === "read_aloud";
                 const isVoiceOrText = currentQuestion.input === "audio_or_text" || isVoiceQuestion;
 
                 // ─── Voice Exercise (Instant Voice Recorder with auto-check on release) ───
@@ -6050,6 +6097,11 @@ function LessonEditor({
   const [explanation, setExplanation] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
   const [audioUploading, setAudioUploading] = useState(false);
+  const [matchingPairs, setMatchingPairs] = useState<{ left: string; right: string }[]>([
+    { left: "", right: "" },
+    { left: "", right: "" },
+  ]);
+  const [mcqOptions, setMcqOptions] = useState<string[]>(["", "", "", ""]);
 
   // Lesson Edit states
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
@@ -6065,6 +6117,11 @@ function LessonEditor({
   const [editHint, setEditHint] = useState("");
   const [editDirection, setEditDirection] = useState("");
   const [editWordCount, setEditWordCount] = useState(0);
+  const [editMatchingPairs, setEditMatchingPairs] = useState<{ left: string; right: string }[]>([
+    { left: "", right: "" },
+    { left: "", right: "" },
+  ]);
+  const [editMcqOptions, setEditMcqOptions] = useState<string[]>(["", "", "", ""]);
 
   // AI & Library states
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
@@ -6093,7 +6150,8 @@ function LessonEditor({
     const p = (lesson.question_payload as Row) || {};
     setEditPrompt(String(p.question || p.prompt || ""));
     setEditPassage(String(p.passage || p.context || ""));
-    setEditType(String(p.test_type || lesson.source_version || "multiple_choice"));
+    const tType = String(p.test_type || lesson.source_version || "multiple_choice");
+    setEditType(tType);
     const opts = Array.isArray(p.options) ? p.options.join(" | ") : "";
     setEditOptions(opts);
     setEditCorrect(String(p.correct_answer || p.answer || ""));
@@ -6102,6 +6160,41 @@ function LessonEditor({
     setEditHint(String(p.hint || p.definition || ""));
     setEditDirection(String(p.direction || ""));
     setEditWordCount(Number(p.word_count || 0));
+
+    // Structured matching pairs extraction
+    const rawPairs = Array.isArray(p.pairs) && p.pairs.length > 0
+      ? p.pairs.map((pr: any) => ({ left: String(pr.left || ""), right: String(pr.right || "") }))
+      : [];
+    if (rawPairs.length > 0) {
+      setEditMatchingPairs(rawPairs);
+    } else if (tType === "matching" && p.options) {
+      const parsed: { left: string; right: string }[] = [];
+      const items = Array.isArray(p.options) ? p.options : String(p.options).split("|");
+      for (const item of items) {
+        const str = String(item).trim();
+        if (str.includes("=")) {
+          const [l, r] = str.split("=").map((s) => s.trim());
+          if (l && r) parsed.push({ left: l, right: r });
+        } else if (str.includes(" - ")) {
+          const [l, r] = str.split(" - ").map((s) => s.trim());
+          if (l && r) parsed.push({ left: l, right: r });
+        }
+      }
+      setEditMatchingPairs(parsed.length >= 2 ? parsed : [{ left: "", right: "" }, { left: "", right: "" }]);
+    } else {
+      setEditMatchingPairs([{ left: "", right: "" }, { left: "", right: "" }]);
+    }
+
+    // Structured MCQ options extraction
+    const optsList = Array.isArray(p.options) ? p.options.map(String).filter(Boolean) : [];
+    if (optsList.length >= 2) {
+      setEditMcqOptions(optsList);
+    } else if (opts) {
+      const splitOpts = opts.split("|").map((s) => s.trim()).filter(Boolean);
+      setEditMcqOptions(splitOpts.length >= 2 ? splitOpts : ["", "", "", ""]);
+    } else {
+      setEditMcqOptions(["", "", "", ""]);
+    }
   };
 
   const saveEdit = async () => {
@@ -6123,35 +6216,47 @@ function LessonEditor({
       choices = ["To'g'ri", "Noto'g'ri"];
       if (!answer) answer = "To'g'ri";
     } else if (editType === "multiple_choice" || editType === "listening") {
-      choices = editOptions.split("|").map((x) => x.trim()).filter(Boolean);
+      const cleanMcq = editMcqOptions.map((s) => s.trim()).filter(Boolean);
+      if (cleanMcq.length >= 2) {
+        choices = cleanMcq;
+      } else {
+        choices = editOptions.split("|").map((x) => x.trim()).filter(Boolean);
+      }
       if (choices.length < 2) {
-        alert("Variantli test uchun kamida 2 ta variant kiriting (| bilan ajrating).");
+        alert("Variantli test uchun kamida 2 ta variant kiriting.");
         return;
       }
-      if (!choices.includes(answer)) {
+      if (answer && !choices.includes(answer)) {
         choices.push(answer);
       }
-    } else if (editType === "matching") {
-      choices = editOptions.split("|").map((x) => x.trim()).filter(Boolean);
-      for (const c of choices) {
-        if (c.includes("=")) {
-          const [l, r] = c.split("=").map((s) => s.trim());
-          if (l && r) pairs.push({ left: l, right: r });
-        } else if (c.includes(" - ")) {
-          const [l, r] = c.split(" - ").map((s) => s.trim());
-          if (l && r) pairs.push({ left: l, right: r });
-        }
+      if (!answer) {
+        alert("Iltimos, to'g'ri javobni tanlang.");
+        return;
       }
-      if (pairs.length < 2 && choices.length >= 2) {
-        for (let i = 0; i < choices.length - 1; i += 2) {
-          pairs.push({ left: choices[i], right: choices[i + 1] });
+    } else if (editType === "matching") {
+      const cleanPairs = editMatchingPairs
+        .map((p) => ({ left: p.left.trim(), right: p.right.trim() }))
+        .filter((p) => p.left && p.right);
+      if (cleanPairs.length >= 2) {
+        pairs = cleanPairs;
+      } else {
+        choices = editOptions.split("|").map((x) => x.trim()).filter(Boolean);
+        for (const c of choices) {
+          if (c.includes("=")) {
+            const [l, r] = c.split("=").map((s) => s.trim());
+            if (l && r) pairs.push({ left: l, right: r });
+          } else if (c.includes(" - ")) {
+            const [l, r] = c.split(" - ").map((s) => s.trim());
+            if (l && r) pairs.push({ left: l, right: r });
+          }
         }
       }
       if (pairs.length < 2) {
-        alert("Moslashtirish uchun kamida 2 ta juftlik kiriting (masalan: olma = apple | kitob = book).");
+        alert("Moslashtirish uchun kamida 2 ta to'liq juftlik kiriting (Chap tomon va O'ng tomon).");
         return;
       }
-      if (!answer && pairs.length) answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+      answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+      choices = pairs.map((p) => `${p.left} = ${p.right}`);
     } else {
       choices = editOptions ? editOptions.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
@@ -6239,35 +6344,47 @@ function LessonEditor({
       choices = ["To'g'ri", "Noto'g'ri"];
       if (!answer) answer = "To'g'ri";
     } else if (manualType === "multiple_choice" || manualType === "listening") {
-      choices = options.split("|").map((x) => x.trim()).filter(Boolean);
+      const cleanMcq = mcqOptions.map((s) => s.trim()).filter(Boolean);
+      if (cleanMcq.length >= 2) {
+        choices = cleanMcq;
+      } else {
+        choices = options.split("|").map((x) => x.trim()).filter(Boolean);
+      }
       if (choices.length < 2) {
-        alert("Variantli test uchun kamida 2 ta variant kiriting (| bilan ajrating).");
+        alert("Variantli test uchun kamida 2 ta variant kiriting.");
         return;
       }
-      if (!choices.includes(answer)) {
+      if (answer && !choices.includes(answer)) {
         choices.push(answer);
       }
-    } else if (manualType === "matching") {
-      choices = options.split("|").map((x) => x.trim()).filter(Boolean);
-      for (const c of choices) {
-        if (c.includes("=")) {
-          const [l, r] = c.split("=").map((s) => s.trim());
-          if (l && r) pairs.push({ left: l, right: r });
-        } else if (c.includes(" - ")) {
-          const [l, r] = c.split(" - ").map((s) => s.trim());
-          if (l && r) pairs.push({ left: l, right: r });
-        }
+      if (!answer) {
+        alert("Iltimos, to'g'ri javobni tanlang.");
+        return;
       }
-      if (pairs.length < 2 && choices.length >= 2) {
-        for (let i = 0; i < choices.length - 1; i += 2) {
-          pairs.push({ left: choices[i], right: choices[i + 1] });
+    } else if (manualType === "matching") {
+      const cleanPairs = matchingPairs
+        .map((p) => ({ left: p.left.trim(), right: p.right.trim() }))
+        .filter((p) => p.left && p.right);
+      if (cleanPairs.length >= 2) {
+        pairs = cleanPairs;
+      } else {
+        choices = options.split("|").map((x) => x.trim()).filter(Boolean);
+        for (const c of choices) {
+          if (c.includes("=")) {
+            const [l, r] = c.split("=").map((s) => s.trim());
+            if (l && r) pairs.push({ left: l, right: r });
+          } else if (c.includes(" - ")) {
+            const [l, r] = c.split(" - ").map((s) => s.trim());
+            if (l && r) pairs.push({ left: l, right: r });
+          }
         }
       }
       if (pairs.length < 2) {
-        alert("Moslashtirish uchun kamida 2 ta juftlik kiriting (masalan: olma = apple | kitob = book).");
+        alert("Moslashtirish uchun kamida 2 ta to'liq juftlik kiriting (Chap tomon va O'ng tomon).");
         return;
       }
-      if (!answer && pairs.length) answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+      answer = pairs.map((p) => `${p.left} = ${p.right}`).join("; ");
+      choices = pairs.map((p) => `${p.left} = ${p.right}`);
     } else {
       choices = options ? options.split("|").map((x) => x.trim()).filter(Boolean) : [];
     }
@@ -6323,6 +6440,8 @@ function LessonEditor({
       setHint("");
       setDirection("");
       setWordCount(0);
+      setMatchingPairs([{ left: "", right: "" }, { left: "", right: "" }]);
+      setMcqOptions(["", "", "", ""]);
       setShowAddTestModal(false);
       await onSaved();
     } catch (err) {
@@ -6529,26 +6648,134 @@ function LessonEditor({
                         placeholder={t("learning_paths.teacher.question_prompt")}
                       />
 
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <input
-                          value={editOptions}
-                          onChange={(e) => setEditOptions(e.target.value)}
-                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                          placeholder={
-                            editType === "matching"
-                              ? "Juftliklar: olma = apple | kitob = book"
-                              : editType === "true_false" || editType === "listening_tf"
-                              ? "To'g'ri | Noto'g'ri"
-                              : `${t("learning_paths.teacher.options")}: A | B | C | D`
-                          }
-                        />
-                        <input
-                          value={editCorrect}
-                          onChange={(e) => setEditCorrect(e.target.value)}
-                          className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                          placeholder={t("learning_paths.teacher.correct_answer")}
-                        />
-                      </div>
+                      {editType === "matching" ? (
+                        <div className="space-y-2 rounded-xl border border-line bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-900/40">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-slate-700 dark:text-slate-300">🔗 Moslashtirish juftliklari</span>
+                            <span className="text-[10px] text-slate-400">Har bir qatorda chap va o'ng mos so'zni yozing</span>
+                          </div>
+                          {editMatchingPairs.map((pair, pIdx) => (
+                            <div key={pIdx} className="flex items-center gap-2">
+                              <span className="text-xs font-black text-slate-400 w-4">{pIdx + 1}.</span>
+                              <input
+                                value={pair.left}
+                                onChange={(e) => {
+                                  const next = [...editMatchingPairs];
+                                  next[pIdx] = { ...next[pIdx], left: e.target.value };
+                                  setEditMatchingPairs(next);
+                                }}
+                                placeholder="Chap tomon"
+                                className="flex-1 rounded-xl border border-slate-200 bg-white p-2 text-xs font-bold text-navy-900 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                              />
+                              <span className="text-sm font-black text-purple-600 dark:text-purple-400">➔</span>
+                              <input
+                                value={pair.right}
+                                onChange={(e) => {
+                                  const next = [...editMatchingPairs];
+                                  next[pIdx] = { ...next[pIdx], right: e.target.value };
+                                  setEditMatchingPairs(next);
+                                }}
+                                placeholder="O'ng tomon"
+                                className="flex-1 rounded-xl border border-slate-200 bg-white p-2 text-xs font-bold text-navy-900 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                              />
+                              {editMatchingPairs.length > 2 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditMatchingPairs(editMatchingPairs.filter((_, i) => i !== pIdx))}
+                                  className="rounded-lg p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50"
+                                  title="O'chirish"
+                                >
+                                  ✕
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setEditMatchingPairs([...editMatchingPairs, { left: "", right: "" }])}
+                            className="mt-1 inline-flex items-center gap-1.5 rounded-xl border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-black text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300 transition-colors"
+                          >
+                            + Juftlik qo'shish
+                          </button>
+                        </div>
+                      ) : editType === "multiple_choice" || editType === "listening" ? (
+                        <div className="space-y-2 rounded-xl border border-line bg-slate-50/50 p-3 dark:border-slate-700 dark:bg-slate-900/40">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-black text-slate-700 dark:text-slate-300">📝 Variantlar</span>
+                            <span className="text-[10px] text-slate-400">To'g'ri javobni radio orqali tanlang</span>
+                          </div>
+                          {editMcqOptions.map((opt, oIdx) => (
+                            <div key={oIdx} className="flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name={`inline_edit_mcq_${editingLessonId}`}
+                                checked={editCorrect === opt && opt.trim() !== ""}
+                                onChange={() => setEditCorrect(opt)}
+                                className="h-4 w-4 accent-purple-600 cursor-pointer"
+                                title="To'g'ri javob sifatida belgilash"
+                              />
+                              <input
+                                value={opt}
+                                onChange={(e) => {
+                                  const next = [...editMcqOptions];
+                                  const oldVal = next[oIdx];
+                                  next[oIdx] = e.target.value;
+                                  setEditMcqOptions(next);
+                                  if (editCorrect === oldVal) setEditCorrect(e.target.value);
+                                }}
+                                placeholder={`${oIdx + 1}-variant`}
+                                className={`flex-1 rounded-xl border p-2 text-xs font-bold transition-all ${
+                                  editCorrect === opt && opt.trim() !== ""
+                                    ? "border-emerald-500 bg-emerald-50/60 text-emerald-900 dark:border-emerald-500/50 dark:bg-emerald-950/30 dark:text-emerald-200"
+                                    : "border-slate-200 bg-white text-navy-900 focus:border-purple-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                                }`}
+                              />
+                              {editMcqOptions.length > 2 ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const removed = editMcqOptions[oIdx];
+                                    setEditMcqOptions(editMcqOptions.filter((_, i) => i !== oIdx));
+                                    if (editCorrect === removed) setEditCorrect("");
+                                  }}
+                                  className="rounded-lg p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50"
+                                  title="O'chirish"
+                                >
+                                  ✕
+                                </button>
+                              ) : null}
+                            </div>
+                          ))}
+                          {editMcqOptions.length < 6 ? (
+                            <button
+                              type="button"
+                              onClick={() => setEditMcqOptions([...editMcqOptions, ""])}
+                              className="mt-1 inline-flex items-center gap-1.5 rounded-xl border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-black text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300 transition-colors"
+                            >
+                              + Variant qo'shish
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          <input
+                            value={editOptions}
+                            onChange={(e) => setEditOptions(e.target.value)}
+                            className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                            placeholder={
+                              editType === "true_false" || editType === "listening_tf"
+                                ? "To'g'ri | Noto'g'ri"
+                                : `${t("learning_paths.teacher.options")}: A | B | C | D`
+                            }
+                          />
+                          <input
+                            value={editCorrect}
+                            onChange={(e) => setEditCorrect(e.target.value)}
+                            className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                            placeholder={t("learning_paths.teacher.correct_answer")}
+                          />
+                        </div>
+                      )}
 
                       {/* Contextual Extra Inputs for Inline Edit */}
                       {editKindMeta.needsPassage ? (
@@ -7064,12 +7291,113 @@ function LessonEditor({
                         className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                       />
                     ) : manualType === "matching" ? (
-                      <input
-                        value={options}
-                        onChange={(e) => setOptions(e.target.value)}
-                        placeholder="Juftliklar: book = kitob | pen = ruchka | cat = mushuk (| bilan)"
-                        className="w-full rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
-                      />
+                      <div className="space-y-2 rounded-2xl border border-line bg-slate-50/50 p-3.5 dark:border-slate-700 dark:bg-slate-900/40">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-slate-700 dark:text-slate-300">🔗 Moslashtirish juftliklari</span>
+                          <span className="text-[10px] font-bold text-slate-400">Har bir qatorda chap va o'ng mos so'zni yozing</span>
+                        </div>
+                        {matchingPairs.map((pair, pIdx) => (
+                          <div key={pIdx} className="flex items-center gap-2">
+                            <span className="text-xs font-black text-slate-400 w-4">{pIdx + 1}.</span>
+                            <input
+                              value={pair.left}
+                              onChange={(e) => {
+                                const next = [...matchingPairs];
+                                next[pIdx] = { ...next[pIdx], left: e.target.value };
+                                setMatchingPairs(next);
+                              }}
+                              placeholder="Chap tomon (masalan: Book)"
+                              className="flex-1 rounded-xl border border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                            />
+                            <span className="text-sm font-black text-purple-600 dark:text-purple-400">➔</span>
+                            <input
+                              value={pair.right}
+                              onChange={(e) => {
+                                const next = [...matchingPairs];
+                                next[pIdx] = { ...next[pIdx], right: e.target.value };
+                                setMatchingPairs(next);
+                              }}
+                              placeholder="O'ng tomon (masalan: Kitob)"
+                              className="flex-1 rounded-xl border border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                            />
+                            {matchingPairs.length > 2 ? (
+                              <button
+                                type="button"
+                                onClick={() => setMatchingPairs(matchingPairs.filter((_, i) => i !== pIdx))}
+                                className="rounded-lg p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50"
+                                title="O'chirish"
+                              >
+                                ✕
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => setMatchingPairs([...matchingPairs, { left: "", right: "" }])}
+                          className="mt-1 inline-flex items-center gap-1.5 rounded-xl border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-black text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300 transition-colors"
+                        >
+                          + Juftlik qo'shish
+                        </button>
+                      </div>
+                    ) : manualType === "multiple_choice" || manualType === "listening" ? (
+                      <div className="space-y-2 rounded-2xl border border-line bg-slate-50/50 p-3.5 dark:border-slate-700 dark:bg-slate-900/40">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-slate-700 dark:text-slate-300">📝 Variantlar (kamida 2 ta)</span>
+                          <span className="text-[10px] font-bold text-slate-400">To'g'ri javobni radio orqali tanlang</span>
+                        </div>
+                        {mcqOptions.map((opt, oIdx) => (
+                          <div key={oIdx} className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name={`manual_mcq_correct_${module.id}`}
+                              checked={correct === opt && opt.trim() !== ""}
+                              onChange={() => setCorrect(opt)}
+                              className="h-4 w-4 accent-purple-600 cursor-pointer"
+                              title="To'g'ri javob sifatida belgilash"
+                            />
+                            <input
+                              value={opt}
+                              onChange={(e) => {
+                                const next = [...mcqOptions];
+                                const oldVal = next[oIdx];
+                                next[oIdx] = e.target.value;
+                                setMcqOptions(next);
+                                if (correct === oldVal) setCorrect(e.target.value);
+                              }}
+                              placeholder={`${oIdx + 1}-variant matni`}
+                              className={`flex-1 rounded-xl border p-2.5 text-xs font-bold transition-all ${
+                                correct === opt && opt.trim() !== ""
+                                  ? "border-emerald-500 bg-emerald-50/60 text-emerald-900 dark:border-emerald-500/50 dark:bg-emerald-950/30 dark:text-emerald-200"
+                                  : "border-slate-200 bg-white text-navy-900 focus:border-purple-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                              }`}
+                            />
+                            {mcqOptions.length > 2 ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const removed = mcqOptions[oIdx];
+                                  setMcqOptions(mcqOptions.filter((_, i) => i !== oIdx));
+                                  if (correct === removed) setCorrect("");
+                                }}
+                                className="rounded-lg p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/50"
+                                title="O'chirish"
+                              >
+                                ✕
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                        {mcqOptions.length < 6 ? (
+                          <button
+                            type="button"
+                            onClick={() => setMcqOptions([...mcqOptions, ""])}
+                            className="mt-1 inline-flex items-center gap-1.5 rounded-xl border border-purple-300 bg-purple-50 px-3 py-1.5 text-xs font-black text-purple-700 hover:bg-purple-100 dark:border-purple-800 dark:bg-purple-950/40 dark:text-purple-300 transition-colors"
+                          >
+                            + Variant qo'shish
+                          </button>
+                        ) : null}
+                      </div>
                     ) : (
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         <input
