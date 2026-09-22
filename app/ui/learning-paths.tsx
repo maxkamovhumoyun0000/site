@@ -3,6 +3,8 @@ import { FormEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 import { useWebT } from "./web-i18n";
 import { TestCompletionActions, type TestReviewItem } from "./test-completion-actions";
+import { LearningQuestionEditor, libraryQuestionDraft } from "./learning-question-editor";
+import { AI_TEST_KIND_META, type AiTestKind, type AiTestQuestion } from "./ai-test-editor";
 
 type Row = Record<string, any>;
 type ApiFetch = (path: string, options?: any) => Promise<any>;
@@ -6105,6 +6107,7 @@ function LessonEditor({
 
   // Lesson Edit states
   const [editingLessonId, setEditingLessonId] = useState<number | null>(null);
+  const [libraryEditor, setLibraryEditor] = useState<{ id?: number; title: string; questions: AiTestQuestion[] } | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [editPassage, setEditPassage] = useState("");
@@ -6145,6 +6148,11 @@ function LessonEditor({
   const editKindMeta = ALL_TEST_KINDS.find((k) => k.key === editType) || { needsAudio: false, needsPassage: false };
 
   const startEdit = (lesson: Row) => {
+    const draft = libraryQuestionDraft(lesson.question_payload || {});
+    if (draft) {
+      setLibraryEditor({ id: Number(lesson.id), title: String(lesson.title || ""), questions: [draft] });
+      return;
+    }
     setEditingLessonId(Number(lesson.id));
     setEditTitle(String(lesson.title || ""));
     const p = (lesson.question_payload as Row) || {};
@@ -6286,6 +6294,7 @@ function LessonEditor({
             correct_answer: answer || editPrompt.trim(),
             explanation: editExplanation.trim(),
             test_type: editType,
+            kind: editType,
             audio_url: editAudioUrl.trim() || null,
             ...(editPassage.trim() ? { passage: editPassage.trim() } : {}),
             ...(pairs.length > 0
@@ -6468,19 +6477,14 @@ function LessonEditor({
         alert("Diamondvoy savol yarata olmadi. Iltimos, boshqa mavzu bilan qayta urinib ko'ring.");
         return;
       }
-      const basePos = lessons.length;
-      for (let i = 0; i < items.length; i++) {
-        const item = items[i];
-        await apiFetch(`/staff/learning-modules/${module.id}/lessons`, {
-          method: "POST",
-          body: {
-            title: item.title || `${topic.trim()} · ${i + 1}`,
-            source_kind: "ai",
-            position: basePos + i,
-            question_payload: item.question_payload,
-          },
-        });
-      }
+      await apiFetch(`/staff/learning-modules/${module.id}/lessons/batch`, {
+        method: "POST",
+        body: { items: items.map((item: Row, i: number) => ({
+          title: item.title || `${topic.trim()} · ${i + 1}`,
+          source_kind: "ai",
+          question_payload: item.question_payload,
+        })) },
+      });
       setTopic("");
       setShowAddTestModal(false);
       await onSaved();
@@ -6526,6 +6530,36 @@ function LessonEditor({
 
   return (
     <div className="mt-4 border-t border-line/60 pt-4 dark:border-slate-800 space-y-4">
+      {libraryEditor && <LearningQuestionEditor
+        initialTitle={libraryEditor.title}
+        initialQuestions={libraryEditor.questions}
+        editing={!!libraryEditor.id}
+        upload={uploadAudioFile}
+        onClose={() => setLibraryEditor(null)}
+        onSaveToLibrary={async (draftTitle, questions) => {
+          await apiFetch("/teacher/library", { method: "POST", body: {
+            title: draftTitle, kind: "test", is_public: false, payload: { questions },
+          } });
+        }}
+        onSave={async (draftTitle, questions) => {
+          if (libraryEditor.id) {
+            await apiFetch(`/staff/learning-lessons/${libraryEditor.id}`, {
+              method: "PATCH", body: { title: draftTitle, question_payload: questions[0] },
+            });
+          } else {
+            await apiFetch(`/staff/learning-modules/${module.id}/lessons/batch`, {
+              method: "POST", body: { items: questions.map((question, i) => ({
+                title: questions.length === 1 ? draftTitle : `${draftTitle} · ${i + 1}`,
+                source_kind: "manual", question_payload: question,
+              })) },
+            });
+          }
+          await onSaved();
+        }}
+      />}
+      <button type="button" className="rounded-xl bg-cyan-600 px-4 py-3 font-bold text-white" onClick={() => setLibraryEditor({ title: "", questions: [] })}>
+        ✍️ Kutubxona muharriri · Barcha mashq turlari
+      </button>
       {/* ─── Moduldagi mavjud testlar ro'yxati (Tahrirlash va O'chirish) ─── */}
       <div className="rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a]">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -6591,7 +6625,7 @@ function LessonEditor({
                           onChange={(e) => setEditType(e.target.value)}
                           className="rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs font-semibold dark:border-slate-700 dark:text-white"
                         >
-                          {ALL_TEST_KINDS.map((k) => (
+                          {ALL_TEST_KINDS.filter((k) => !AI_TEST_KIND_META[k.key as AiTestKind]).map((k) => (
                             <option key={k.key} value={k.key}>
                               {k.label}
                             </option>
@@ -7134,13 +7168,17 @@ function LessonEditor({
               {/* TAB 3: Manual Test Builder */}
               {addMode === "manual" ? (
                 <div className="space-y-4 animate-fade-in">
+                  <button type="button" className="rounded-xl bg-cyan-600 px-4 py-3 font-bold text-white" onClick={() => {
+                    setShowAddTestModal(false);
+                    setLibraryEditor({ title, questions: [] });
+                  }}>Kutubxona muharriri · Barcha mashq turlari</button>
                   <div className="rounded-2xl border-2 border-purple-500/20 bg-purple-500/5 p-4 sm:p-5 space-y-3 dark:bg-purple-950/20 dark:border-purple-500/30">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-black uppercase tracking-wider text-purple-900 dark:text-purple-300">
                         {t("learning_paths.teacher.manual_title")}
                       </span>
                       <span className="rounded-full bg-purple-500/20 px-2.5 py-0.5 text-[10px] font-black text-purple-800 dark:text-purple-200">
-                        {t("learning_paths.teacher.manual_kinds_count")}
+                        MCQ · True/False · Fill blank · Word order
                       </span>
                     </div>
 
@@ -7167,7 +7205,7 @@ function LessonEditor({
                         }}
                         className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
-                        {ALL_TEST_KINDS.map((k) => (
+                        {ALL_TEST_KINDS.filter((k) => !AI_TEST_KIND_META[k.key as AiTestKind]).map((k) => (
                           <option key={k.key} value={k.key}>
                             {k.label}
                           </option>
@@ -8289,4 +8327,3 @@ function ModuleDetailModal({
     </div>
   );
 }
-

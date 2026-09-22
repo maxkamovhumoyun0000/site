@@ -2256,6 +2256,51 @@ class LearningLessonUpdate(BaseModel):
     required: bool | None = None
 
 
+class LearningLessonBatchRequest(BaseModel):
+    items: list[LearningLessonRequest] = Field(min_length=1, max_length=100)
+
+
+@router.post("/staff/learning-modules/{module_id}/lessons/batch")
+async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatchRequest, authorization: str | None = Header(default=None)):
+    """Append a complete editor/AI draft atomically, preserving library fields."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        questions = []
+        for item in payload.items:
+            if not item.question_payload:
+                raise HTTPException(status_code=422, detail="Question payload is required")
+            questions.append(_learning_library_question(item.question_payload))
+        cur.execute("SELECT MAX(position) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,))
+        last = dict(cur.fetchone() or {}).get("value")
+        position = int(last) + 1 if last is not None else 0
+        created = []
+        for item, question in zip(payload.items, questions):
+            cur.execute(
+                "INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",
+                (module_id, item.title, item.source_kind, item.source_id,
+                 question["test_type"], json.dumps(question, ensure_ascii=False),
+                 item.duration_seconds, position, 1 if item.required else 0),
+            )
+            created.append(int(cur.lastrowid or 0))
+            position += 1
+        conn.commit()
+        return {"created_lesson_ids": created, "question_count": len(created)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @router.patch("/staff/learning-lessons/{lesson_id}")
 async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, authorization: str | None = Header(default=None)):
     """Edit an existing lesson/test in a learning module."""
@@ -2279,7 +2324,7 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
             params.append(payload.title.strip())
         if payload.question_payload is not None:
             updates.append("question_payload_json=?")
-            params.append(json.dumps(payload.question_payload, ensure_ascii=False))
+            params.append(json.dumps(_learning_library_question(payload.question_payload), ensure_ascii=False))
         if payload.position is not None:
             updates.append("position=?")
             params.append(payload.position)
@@ -2515,6 +2560,13 @@ def get_total_question_bank_count() -> int:
         conn.close()
 
 
+def _learning_visible_library_ids(user: dict[str, Any]) -> set[int] | None:
+    if _role(user) in {"admin", "superadmin"}:
+        return None
+    from db import list_library_nodes
+    return {int(node["id"]) for node in list_library_nodes(int(user["id"])).get("nodes", [])}
+
+
 @router.get("/staff/teacher-library-tree")
 async def staff_teacher_library_tree(authorization: str | None = Header(default=None)):
     """Fetch teacher library folders and test nodes for attaching to learning modules, isolated strictly to the teacher's subject."""
@@ -2526,8 +2578,11 @@ async def staff_teacher_library_tree(authorization: str | None = Header(default=
     allowed_subs = [s.lower() for s in _teacher_allowed_subjects(user)] if role == "teacher" else None
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, parent_id, kind, title, description, subject, level, payload_json FROM library_nodes WHERE kind IN ('folder', 'test') ORDER BY sort_order ASC, id ASC")
+        cur.execute("SELECT id, parent_id, owner_id, kind, title, description, subject, level, payload_json FROM library_nodes WHERE kind IN ('folder', 'test') ORDER BY sort_order ASC, id ASC")
         raw_rows = _dicts(cur.fetchall())
+        visible_ids = _learning_visible_library_ids(user)
+        if visible_ids is not None:
+            raw_rows = [row for row in raw_rows if int(row["id"]) in visible_ids]
         all_nodes = []
         for r in raw_rows:
             try:
@@ -2537,6 +2592,7 @@ async def staff_teacher_library_tree(authorization: str | None = Header(default=
             qs = _extract_node_questions(p_obj)
             all_nodes.append({
                 "id": int(r["id"]),
+                "owner_id": int(r.get("owner_id") or 0),
                 "parent_id": int(r["parent_id"]) if r.get("parent_id") is not None else None,
                 "kind": str(r["kind"]),
                 "title": str(r["title"] or ""),
@@ -2556,7 +2612,9 @@ async def staff_teacher_library_tree(authorization: str | None = Header(default=
             for n in all_nodes:
                 if n["kind"] == "test":
                     n_sub = (n.get("subject") or "").strip().lower()
-                    if n_sub:
+                    if not n_sub and n.get("owner_id") == int(user["id"]):
+                        match = True
+                    elif n_sub:
                         match = any(sub in n_sub or n_sub in sub for sub in allowed_subs)
                     else:
                         # Fallback check on title
@@ -2621,14 +2679,17 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     needed_count = payload.question_count or 10
 
     # 1. Efficiency check: Retrieve from question bank if enough questions exist or bank has >= 2000 total questions
-    total_bank = get_total_question_bank_count()
     bank_questions = get_questions_from_bank(
         subject=track_subject,
         topic=payload.topic,
         count=needed_count,
         difficulty=payload.level or "medium",
     )
-    if len(bank_questions) >= needed_count or (total_bank >= 2000 and len(bank_questions) >= min(5, needed_count)):
+    # The legacy bank has no columns for pairs, passages, media or nested items.
+    # Reuse only self-contained questions of the types the teacher requested.
+    bank_questions = [q for q in bank_questions if q.get("test_type") in types_list
+                      and q.get("test_type") in {"multiple_choice", "true_false", "fill_blank", "word_order"}]
+    if len(bank_questions) >= needed_count and set(types_list).issubset({q.get("test_type") for q in bank_questions}):
         chosen_bank = bank_questions[:needed_count]
         items = []
         for index, bq in enumerate(chosen_bank):
@@ -2649,7 +2710,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt\n"
-        "- 'test_type': one of ('multiple_choice', 'true_false', 'fill_blank', 'word_order', 'matching')\n"
+        f"- 'test_type': one of ({types_str}); use only the requested types.\n"
+        "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
         "- 'options': array of string choices strictly following these rules:\n"
         "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"
         "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
@@ -2762,6 +2824,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
 
             explanation = str(result.get("explanation") or "").strip()
             question_payload = {
+                **result,
                 "question": q_text,
                 "options": options,
                 "correct_answer": correct,
@@ -2816,6 +2879,32 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         raise HTTPException(status_code=502, detail=f"Diamondvoy returned an invalid test response: {exc}")
 
 
+def _structured_string_list(raw: Any) -> list[str]:
+    """Keep learning-path payloads compatible with old comma-delimited tests."""
+    if isinstance(raw, str):
+        source = raw.strip()
+        if not source:
+            return []
+        try:
+            decoded = json.loads(source)
+        except Exception:
+            decoded = None
+        values = decoded if isinstance(decoded, list) else re.split(r"[,;|\n\r]+", source)
+    elif isinstance(raw, (list, tuple, set)):
+        values = raw
+    else:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
 def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a content-library test question to portable module format for all test types, preserving audio and extra metadata."""
     if not isinstance(raw, dict):
@@ -2823,20 +2912,19 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     kind = str(raw.get("kind") or raw.get("test_type") or "multiple_choice").strip().lower()
     question = str(raw.get("question") or raw.get("prompt") or raw.get("text") or raw.get("title") or raw.get("sentence") or raw.get("word") or "").strip()
 
-    raw_opts = raw.get("options") or raw.get("choices") or []
-    options = [str(x) for x in raw_opts] if isinstance(raw_opts, list) else []
+    raw_opts = raw.get("options") if raw.get("options") is not None else raw.get("choices")
+    options = _structured_string_list(raw_opts)
 
-    correct = (
-        raw.get("correct_answer")
-        or raw.get("correct")
-        or raw.get("answer")
-        or raw.get("reference_answer")
-        or raw.get("sample_answer")
-        or raw.get("target_sentence")
-        or raw.get("word")
-    )
-    index = raw.get("correct_option_index", raw.get("correct_index"))
-    if correct is None and isinstance(index, int) and 0 <= index < len(options):
+    correct = next((raw[key] for key in (
+        "correct_answer", "correct", "answer", "reference_answer",
+        "sample_answer", "target_sentence", "word",
+    ) if raw.get(key) is not None and raw.get(key) != ""), None)
+    index_raw = raw.get("correct_index", raw.get("correct_option_index"))
+    try:
+        index = int(index_raw) if index_raw is not None else None
+    except (TypeError, ValueError):
+        index = None
+    if (correct is None or kind == "listening") and index is not None and 0 <= index < len(options):
         correct = options[index]
 
     explanation = str(raw.get("explanation") or raw.get("meaning") or "")
@@ -2847,9 +2935,11 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
 
     if kind in {"true_false", "boolean", "listening_tf"}:
         if not options:
-            options = ["To'g'ri", "Noto'g'ri"]
-        if not correct:
-            correct = "To'g'ri"
+            options = ["True", "False", "Not given"] if kind == "listening_tf" else ["To'g'ri", "Noto'g'ri"]
+        if isinstance(correct, bool):
+            correct = options[0 if correct else 1]
+        if correct is None or (kind == "listening_tf" and isinstance(index, int)):
+            correct = options[index] if isinstance(index, int) and 0 <= index < len(options) else options[0]
     elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice", "listening_gap"}:
         raw_word = str(raw.get("word") or raw.get("prompt") or "").strip()
         clean_word = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_word).strip() or raw_word
@@ -2890,7 +2980,11 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         else:
             question = instruction or "Matnni o'qing va topshiriqni bajaring:"
 
+    accepted_answers = _structured_string_list(
+        raw.get("accepted_answers") if raw.get("accepted_answers") is not None else raw.get("acceptable_answers")
+    )
     res = {
+        **raw,
         "question": question,
         "options": options,
         "correct_answer": str(correct if correct is not None else (options[0] if options else "")),
@@ -2900,22 +2994,66 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         "instruction": instruction,
         "test_type": kind,
         "kind": kind,
+        "accepted_answers": accepted_answers,
+        "acceptable_answers": accepted_answers,
         "check": raw.get("check") or ("ai" if kind in {"speak_sentence", "write_sentence", "guided_writing", "translation", "reading_open", "read_aloud", "paraphrase", "dialogue_completion", "picture_description", "listening_open", "word_practice", "open"} else "auto"),
     }
+    # Library editors and older app runners use different names for these lists.
+    # Keep both representations so imports remain editable and runnable.
+    if kind == "passage_cloze":
+        blanks = raw.get("answers") or raw.get("blanks") or []
+        normalized_blanks: list[dict[str, Any]] = []
+        if isinstance(blanks, list):
+            for blank in blanks:
+                item = dict(blank) if isinstance(blank, dict) else {"answer": blank}
+                if item.get("accepted_answers") is not None or item.get("acceptable_answers") is not None:
+                    item["accepted_answers"] = _structured_string_list(
+                        item.get("accepted_answers") if item.get("accepted_answers") is not None else item.get("acceptable_answers")
+                    )
+                normalized_blanks.append(item)
+        res["answers"] = normalized_blanks
+        res["blanks"] = normalized_blanks
+    if kind in {"reading_set", "listening_set"}:
+        subs = raw.get("questions") if kind == "reading_set" else raw.get("sub_questions")
+        subs = subs or raw.get("sub_questions") or raw.get("questions") or []
+        res["sub_questions"] = []
+        for sub in subs:
+            if not isinstance(sub, dict):
+                continue
+            sub = dict(sub)
+            sub_options = _structured_string_list(sub.get("options"))
+            sub["options"] = sub_options
+            if sub.get("accepted_answers") is not None or sub.get("acceptable_answers") is not None:
+                sub["accepted_answers"] = _structured_string_list(
+                    sub.get("accepted_answers") if sub.get("accepted_answers") is not None else sub.get("acceptable_answers")
+                )
+            try:
+                sub_index = int(sub.get("correct_index", sub.get("correct_option_index")))
+            except (TypeError, ValueError):
+                sub_index = None
+            if not sub.get("answer") and sub_index is not None and 0 <= sub_index < len(sub_options):
+                sub["answer"] = sub_options[sub_index]
+            res["sub_questions"].append(sub)
     # Preserve rich polymorphic fields from materials library & homeworks
     for extra_key in (
         "passage", "context", "questions", "pairs", "matches",
         "cloze_text", "word_bank", "sentence", "target_sentence",
-        "hints", "sample_answer", "acceptable_answers", "tokens",
-        "distractors", "left_items", "right_items", "sub_questions",
-        "passage_template", "blank_count", "blanks", "answers",
+        "hints", "sample_answer", "tokens",
+        "distractors", "left_items", "right_items",
+        "passage_template", "blank_count", "answers",
         "hint", "word_count", "example_sentence", "direction",
         "word", "meaning", "reference_answer", "needs_audio_upload",
         "translation", "translation_uz", "translation_ru", "level",
         "pronunciation", "phonetic", "target_level",
     ):
         if extra_key in raw and raw[extra_key] is not None:
-            res[extra_key] = raw[extra_key]
+            if kind == "passage_cloze" and extra_key == "answers":
+                continue
+            res[extra_key] = (
+                _structured_string_list(raw[extra_key])
+                if extra_key in {"word_bank", "tokens", "distractors", "left_items", "right_items"}
+                else raw[extra_key]
+            )
 
     # Special handling for matching / pairs
     if kind == "matching":
@@ -3020,6 +3158,46 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     return res
 
 
+def _learning_exam_questions(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Expose set questions individually to the web and native final-exam runners."""
+    question = _learning_library_question(raw)
+    if not question:
+        return []
+    kind = question["test_type"]
+    if kind in {"reading_set", "listening_set"}:
+        result = []
+        aliases = {"mcq": "multiple_choice", "true_false_ng": "true_false",
+                   "tf": "true_false", "gap": "gap_fill", "short": "gap_fill",
+                   "order": "word_order", "open": "reading_open"}
+        for sub in question.get("sub_questions") or []:
+            sub_kind = str(sub.get("type") or sub.get("kind") or "gap_fill")
+            if sub_kind == "open" and kind == "listening_set":
+                sub_kind = "listening_open"
+            item = _learning_library_question({
+                "passage": question.get("passage") or question.get("context") or "",
+                "audio_url": question.get("audio_url") or "",
+                **sub, "kind": aliases.get(sub_kind, sub_kind),
+            })
+            if item:
+                result.append(item)
+        return result
+    if kind == "passage_cloze":
+        result = []
+        passage = str(question.get("passage") or question.get("passage_template") or "")
+        blank_number = iter(range(1, 1001))
+        numbered_passage = re.sub(r"___|===|\[blank\]", lambda _: f"[{next(blank_number)}]", passage)
+        for index, blank in enumerate(question.get("blanks") or []):
+            blank = blank if isinstance(blank, dict) else {"answer": blank}
+            result.append(_learning_library_question({
+                **blank, "kind": "gap_fill",
+                "prompt": f"{index + 1}-bo'sh joyni to'ldiring.",
+                "passage": numbered_passage,
+                "audio_url": question.get("audio_url") or "",
+            }))
+        return result
+    return [question]
+
+
 @router.post("/staff/learning-modules/{module_id}/library-test")
 async def attach_learning_library_test(module_id: int, payload: LearningLibraryTestAttachRequest, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
@@ -3030,6 +3208,9 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
 
         # Support real teacher library test nodes (from library_nodes table)
         if payload.content_type in {"teacher_library", "library_node", "test"}:
+            visible_ids = _learning_visible_library_ids(user)
+            if visible_ids is not None and payload.content_id not in visible_ids:
+                raise HTTPException(status_code=403, detail="Bu testga ruxsatingiz yo'q")
             cur.execute("SELECT id, title, payload_json FROM library_nodes WHERE id=? AND kind='test'", (payload.content_id,))
             node_row = cur.fetchone()
             if not node_row:
@@ -3061,7 +3242,7 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
 
         questions=[item for item in (_learning_library_question(dict(raw)) for raw in (test.get("questions") or [])) if item]
         if not questions: raise HTTPException(status_code=422,detail="Bu testda qo'llab-quvvatlanadigan savollar topilmadi")
-        cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,)); position=int(dict(cur.fetchone() or {}).get("value") or -1)+1
+        cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_lessons WHERE module_id=?", (module_id,)); position=int(dict(cur.fetchone() or {}).get("value", -1))+1
         created=[]
         target_questions = questions
         if payload.question_count is not None and payload.question_count > 0:
@@ -3098,18 +3279,21 @@ async def staff_materials_search(q: str = "", content_type: str = "", authorizat
     try:
         cur = conn.cursor()
         items = []
+        visible_ids = _learning_visible_library_ids(user)
         all_types = {"book", "video", "homework", "ai_generated", "library_node"}
         search_types = [content_type] if content_type in all_types else ["library_node", "book", "video", "homework", "ai_generated"]
         for ct in search_types:
             try:
                 if ct == "library_node":
                     if q.strip():
-                        cur.execute("SELECT id, title, subject, payload_json FROM library_nodes WHERE kind='test' AND title LIKE ? ORDER BY title LIMIT 40", (f"%{q.strip()}%",))
+                        cur.execute("SELECT id, owner_id, title, subject, payload_json FROM library_nodes WHERE kind='test' AND title LIKE ? ORDER BY title LIMIT 40", (f"%{q.strip()}%",))
                     else:
-                        cur.execute("SELECT id, title, subject, payload_json FROM library_nodes WHERE kind='test' ORDER BY title LIMIT 40")
+                        cur.execute("SELECT id, owner_id, title, subject, payload_json FROM library_nodes WHERE kind='test' ORDER BY title LIMIT 40")
                     for row in _dicts(cur.fetchall()):
+                        if visible_ids is not None and int(row["id"]) not in visible_ids:
+                            continue
                         n_sub = (row.get("subject") or "").strip().lower()
-                        if allowed_subs:
+                        if allowed_subs and not (not n_sub and int(row.get("owner_id") or 0) == int(user["id"])):
                             if n_sub:
                                 if not any(sub in n_sub or n_sub in sub for sub in allowed_subs):
                                     continue
@@ -3404,7 +3588,7 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
             if not previous or str(dict(previous).get("status") or "") != "passed":
                 raise HTTPException(status_code=423, detail="Oldingi modulni muvaffaqiyatli yakunlang")
         try:
-            item["question_payload"] = json.loads(str(item.pop("question_payload_json", None) or "{}"))
+            item["question_payload"] = _learning_library_question(json.loads(str(item.pop("question_payload_json", None) or "{}")))
         except Exception:
             item["question_payload"] = {}
         if isinstance(item.get("question_payload"), dict):
@@ -3773,21 +3957,15 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
                 payload = {}
             if not payload:
                 continue
-            q_item = {
-                "id": idx + 1,
-                "lesson_id": l["lesson_id"],
-                "module_id": l["module_id"],
-                "module_title": l.get("module_title") or "",
-                "title": l.get("title") or f"Savol {idx + 1}",
-                "prompt": payload.get("prompt") or payload.get("question") or l.get("title") or "",
-                "question": payload.get("question") or payload.get("prompt") or l.get("title") or "",
-                "options": payload.get("options") or [],
-                "correct_answer": payload.get("correct_answer") or payload.get("correct") or "",
-                "explanation": payload.get("explanation") or "",
-                "test_type": payload.get("test_type") or "multiple_choice",
-                "audio_url": payload.get("audio_url"),
-            }
-            questions.append(q_item)
+            for question in _learning_exam_questions(payload):
+                questions.append({
+                    **question,
+                    "id": len(questions) + 1,
+                    "lesson_id": l["lesson_id"],
+                    "module_id": l["module_id"],
+                    "module_title": l.get("module_title") or "",
+                    "title": l.get("title") or f"Savol {idx + 1}",
+                })
 
         random.shuffle(questions)
 

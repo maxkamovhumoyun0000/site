@@ -438,6 +438,59 @@ function FullField({ label, required, children }: { label: string; required?: bo
   );
 }
 
+/** Each stored list value gets its own field; commas remain valid only for legacy imports. */
+function StringListEditor({
+  label,
+  values,
+  onChange,
+  placeholder = "Qiymatni kiriting",
+  addLabel = "Qiymat qo'shish",
+}: {
+  label: string;
+  values: string[];
+  onChange: (values: string[]) => void;
+  placeholder?: string;
+  addLabel?: string;
+}) {
+  const update = (index: number, value: string) => {
+    const next = [...values];
+    next[index] = value;
+    onChange(next);
+  };
+  return (
+    <FullField label={label}>
+      <div className="space-y-2">
+        {values.map((value, index) => (
+          <div key={index} className="flex items-center gap-2">
+            <span className="w-5 text-right text-xs font-black text-ink-400 dark:text-navy-400">{index + 1}.</span>
+            <input
+              value={value}
+              onChange={(event) => update(index, event.target.value)}
+              className={INPUT_CLS}
+              placeholder={placeholder}
+            />
+            <button
+              type="button"
+              aria-label={`${label}: ${index + 1}-qiymatni o'chirish`}
+              onClick={() => onChange(values.filter((_, itemIndex) => itemIndex !== index))}
+              className="shrink-0 text-red-500 hover:text-red-600"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange([...values, ""])}
+          className="rounded-xl border border-line bg-surface-soft px-3 py-1.5 text-xs font-black dark:border-white/10 dark:bg-white/5 dark:text-white"
+        >
+          + {addLabel}
+        </button>
+      </div>
+    </FullField>
+  );
+}
+
 // ─── Har bir kind uchun karta bloki ──────────────────────────────────────────
 
 type PatchFn = (p: Partial<AiTestQuestion>) => void;
@@ -520,9 +573,13 @@ function TranslationCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
       <Field label="To'g'ri tarjima *" required>
         <input value={String(q.answer || "")} onChange={(e) => patch({ answer: e.target.value })} className={INPUT_CLS} placeholder="U besh yildan beri Londonda yashaydi." />
       </Field>
-      <Field label="Qabul qilinadigan boshqa tarjimalar">
-        <input value={(q.accepted_answers || []).join(", ")} onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} className={INPUT_CLS} placeholder="vergul bilan ajratib yozing" />
-      </Field>
+      <StringListEditor
+        label="Qabul qilinadigan boshqa tarjimalar"
+        values={q.accepted_answers || []}
+        onChange={(accepted_answers) => patch({ accepted_answers })}
+        placeholder="Muqobil to'g'ri tarjima"
+        addLabel="tarjima qo'shish"
+      />
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
     </>
   );
@@ -739,14 +796,7 @@ function DictationCard({
       <FullField label="To'g'ri matn (diktant javob) *" required>
         <textarea value={String(q.answer || "")} onChange={(e) => patch({ answer: e.target.value })} className={`${INPUT_CLS} min-h-[70px]`} placeholder="Yesterday the weather was cold and rainy." />
       </FullField>
-      <FullField label="Qabul qilinadigan boshqa variantlar">
-        <input
-          value={(q.accepted_answers || []).join(", ")}
-          onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          className={INPUT_CLS}
-          placeholder="vergul bilan ajrating"
-        />
-      </FullField>
+      <StringListEditor label="Qabul qilinadigan boshqa variantlar" values={q.accepted_answers || []} onChange={(accepted_answers) => patch({ accepted_answers })} placeholder="Muqobil to'g'ri javob" addLabel="variant qo'shish" />
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
     </>
   );
@@ -775,7 +825,7 @@ function ListeningTextCard({ q, patch, uploading, onUpload, mode }: { q: AiTestQ
       <FullField label="Studentga topshiriq *" required><textarea value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={`${INPUT_CLS} min-h-[56px]`} placeholder={isOpen ? "Audioni tinglang. Nima uchun speaker kechikdi?" : mode === "gap" ? "Audioni tinglang va bo'sh joyni to'ldiring: She arrived ___." : "Audioni tinglang va eshitganingizni yozing."} /></FullField>
       {isOpen ? <ReferenceAnswerField value={q.reference_answer} onChange={(v) => patch({ reference_answer: v })} /> : <>
         <FullField label="To'g'ri javob *" required><input value={String(q.answer || "")} onChange={(e) => patch({ answer: e.target.value })} className={INPUT_CLS} placeholder="student yozishi kerak bo'lgan javob" /></FullField>
-        <FullField label="Qabul qilinadigan boshqa javoblar"><input value={(q.accepted_answers || []).join(", ")} onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} className={INPUT_CLS} placeholder="vergul bilan ajrating" /></FullField>
+        <StringListEditor label="Qabul qilinadigan boshqa javoblar" values={q.accepted_answers || []} onChange={(accepted_answers) => patch({ accepted_answers })} placeholder="Muqobil to'g'ri javob" addLabel="javob qo'shish" />
       </>}
       {!isOpen && <FullField label="Hint (ixtiyoriy)"><input value={String(q.hint || "")} onChange={(e) => patch({ hint: e.target.value })} className={INPUT_CLS} placeholder="Studentga ko'rinadigan qisqa yo'riqnoma" /></FullField>}
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
@@ -816,6 +866,7 @@ function ListeningSetCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion
               {needsChoice && <div className="space-y-1">{options.map((option, optionIndex) => <div key={optionIndex} className="flex gap-2"><input type="radio" checked={Number(sub.correct_index ?? 0) === optionIndex} onChange={() => patchSub(index, { ...sub, correct_index: optionIndex })} className="accent-cyan-500" /><input value={option} onChange={(e) => { const nextOptions = [...options]; nextOptions[optionIndex] = e.target.value; patchSub(index, { ...sub, options: nextOptions }); }} className={INPUT_CLS} placeholder={`${optionIndex + 1}-variant`} /></div>)}</div>}
               {type === "tf" && <select value={String(sub.correct_index ?? 0)} onChange={(e) => patchSub(index, { ...sub, correct_index: Number(e.target.value) })} className={INPUT_CLS}><option value="0">True</option><option value="1">False</option><option value="2">Not Given</option></select>}
               {needsAnswer && <input value={String(sub.answer || "")} onChange={(e) => patchSub(index, { ...sub, answer: e.target.value, tokens: type === "order" ? e.target.value.replace(/[.,!?;:]/g, "").split(/\s+/).filter(Boolean) : sub.tokens })} className={INPUT_CLS} placeholder={type === "order" ? "To'g'ri gap" : "To'g'ri javob"} />}
+              {needsAnswer && type !== "order" && <StringListEditor label="Muqobil to'g'ri javoblar" values={sub.accepted_answers || []} onChange={(accepted_answers) => patchSub(index, { ...sub, accepted_answers })} placeholder="Muqobil javob" addLabel="javob qo'shish" />}
               {type === "matching" && <div className="space-y-2">{pairs.map((pair, pairIndex) => <div key={pairIndex} className="flex gap-2"><input value={pair.left} onChange={(e) => { const next = [...pairs]; next[pairIndex] = { ...next[pairIndex], left: e.target.value }; patchSub(index, { ...sub, pairs: next }); }} className={INPUT_CLS} placeholder="Chap tomon" /><span className="pt-2 font-black text-ink-400">→</span><input value={pair.right} onChange={(e) => { const next = [...pairs]; next[pairIndex] = { ...next[pairIndex], right: e.target.value }; patchSub(index, { ...sub, pairs: next }); }} className={INPUT_CLS} placeholder="O'ng tomon" />{pairs.length > 2 && <button type="button" onClick={() => patchSub(index, { ...sub, pairs: pairs.filter((_, i) => i !== pairIndex) })} className="text-red-500">✕</button>}</div>)}<button type="button" onClick={() => patchSub(index, { ...sub, pairs: [...pairs, { left: "", right: "" }] })} className="text-xs font-black text-cyan-700 dark:text-cyan-200">+ Juftlik</button></div>}
               {type === "open" && <input value={String(sub.reference_answer || "")} onChange={(e) => patchSub(index, { ...sub, reference_answer: e.target.value })} className={INPUT_CLS} placeholder="Namuna javob (AI tekshirishi uchun majburiy)" />}
             </div>;
@@ -839,14 +890,7 @@ function SpellingCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
       <Field label="Ta'rif / hint (ixtiyoriy)">
         <input value={String(q.hint || "")} onChange={(e) => patch({ hint: e.target.value })} className={INPUT_CLS} placeholder="Something you need; not optional." />
       </Field>
-      <FullField label="Qabul qilinadigan boshqa yozilishlar">
-        <input
-          value={(q.accepted_answers || []).join(", ")}
-          onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          className={INPUT_CLS}
-          placeholder="Muqobil to'g'ri yozilishlar (vergul bilan)"
-        />
-      </FullField>
+      <StringListEditor label="Qabul qilinadigan boshqa yozilishlar" values={q.accepted_answers || []} onChange={(accepted_answers) => patch({ accepted_answers })} placeholder="Muqobil to'g'ri yozilish" addLabel="yozilish qo'shish" />
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
       {word && (
         <div className="sm:col-span-2 rounded-xl bg-surface-soft px-3 py-2 text-xs font-semibold text-ink-500 dark:bg-white/5 dark:text-navy-300">
@@ -948,14 +992,7 @@ function ScrambledCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
           </div>
         </div>
       )}
-      <FullField label="Chalg'ituvchi so'zlar (vergul bilan, ixtiyoriy)">
-        <input
-          value={(q.distractors || []).join(", ")}
-          onChange={(e) => patch({ distractors: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          className={INPUT_CLS}
-          placeholder="was, going, the"
-        />
-      </FullField>
+      <StringListEditor label="Chalg'ituvchi so'zlar (ixtiyoriy)" values={q.distractors || []} onChange={(distractors) => patch({ distractors })} placeholder="Chalg'ituvchi so'z" addLabel="so'z qo'shish" />
       <p className="sm:col-span-2 -mt-1 text-[11px] font-semibold text-ink-400 dark:text-navy-400">
         Chalg'ituvchi so'zlar gapga kirmaydi — student ularni aralashgan holda ko'radi.
       </p>
@@ -977,14 +1014,7 @@ function GapFillCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
       <Field label="To'g'ri javob *" required>
         <input value={String(q.answer || "")} onChange={(e) => patch({ answer: e.target.value })} className={INPUT_CLS} placeholder="goes" />
       </Field>
-      <FullField label="Qabul qilinadigan boshqa javoblar">
-        <input
-          value={(q.accepted_answers || []).join(", ")}
-          onChange={(e) => patch({ accepted_answers: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          className={INPUT_CLS}
-          placeholder="vergul bilan ajrating"
-        />
-      </FullField>
+      <StringListEditor label="Qabul qilinadigan boshqa javoblar" values={q.accepted_answers || []} onChange={(accepted_answers) => patch({ accepted_answers })} placeholder="Muqobil to'g'ri javob" addLabel="javob qo'shish" />
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
     </>
   );
@@ -1032,19 +1062,23 @@ function PassageClozeCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
                   className={INPUT_CLS}
                   placeholder="to'g'ri so'z"
                 />
+                <StringListEditor
+                  label={`${ai + 1}-bo'sh joy uchun muqobil javoblar`}
+                  values={a?.accepted_answers || []}
+                  onChange={(accepted_answers) => {
+                    const next = [...(q.answers || [])];
+                    next[ai] = { ...next[ai], accepted_answers };
+                    patch({ answers: next });
+                  }}
+                  placeholder="Muqobil to'g'ri so'z"
+                  addLabel="javob qo'shish"
+                />
               </div>
             ))}
           </div>
         </div>
       )}
-      <FullField label="So'zlar banki (vergul bilan; javoblar avtomatik qo'shiladi)">
-        <input
-          value={(q.word_bank || []).join(", ")}
-          onChange={(e) => patch({ word_bank: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
-          className={INPUT_CLS}
-          placeholder="fly, get, have, leave, drive"
-        />
-      </FullField>
+      <StringListEditor label="So'zlar banki" values={q.word_bank || []} onChange={(word_bank) => patch({ word_bank })} placeholder="So'z" addLabel="so'z qo'shish" />
     </>
   );
 }
@@ -1175,7 +1209,7 @@ function ReadingSetCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
                 )}
 
                 {/* Qisqa javob (non-TF, non-choice) */}
-                {!isTfng && !isChoice && (
+                {!isTfng && !isChoice && <>
                   <input
                     value={String(rq.answer || "")}
                     onChange={(e) => {
@@ -1186,7 +1220,18 @@ function ReadingSetCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
                     className={INPUT_CLS}
                     placeholder="To'g'ri javob"
                   />
-                )}
+                  <StringListEditor
+                    label="Muqobil to'g'ri javoblar"
+                    values={rq.accepted_answers || []}
+                    onChange={(accepted_answers) => {
+                      const next = [...(q.questions || [])];
+                      next[ri] = { ...next[ri], accepted_answers };
+                      patch({ questions: next });
+                    }}
+                    placeholder="Muqobil javob"
+                    addLabel="javob qo'shish"
+                  />
+                </>}
               </div>
             );
           })}

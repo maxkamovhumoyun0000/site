@@ -18,12 +18,15 @@ Bu modul uchta katta blokni beradi:
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from hashlib import sha256
 import json
 import logging
 import mimetypes
 import os
 import random
 import re
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -720,6 +723,60 @@ def _json_obj(raw: Any) -> dict:
         return {}
 
 
+def _normalize_string_list(raw: Any, *, limit: int | None = None) -> list[str]:
+    """Return one canonical list for editor arrays and legacy delimited text."""
+    values: list[Any]
+    if isinstance(raw, str):
+        source = raw.strip()
+        if not source:
+            return []
+        try:
+            parsed = json.loads(source)
+        except Exception:
+            parsed = None
+        values = parsed if isinstance(parsed, list) else re.split(r"[,;|\n\r]+", source)
+    elif isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        return []
+
+    clean: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        clean.append(text)
+        if limit is not None and len(clean) >= limit:
+            break
+    return clean
+
+
+def _choice_index(raw: dict, options: list[str], default: int = 0) -> int:
+    """Resolve an indexed or text answer without treating index zero as absent."""
+    raw_index = raw.get("correct_index")
+    if raw_index is None:
+        raw_index = raw.get("correct_option_index")
+    if raw_index is not None:
+        try:
+            return max(0, min(len(options) - 1, int(raw_index)))
+        except (TypeError, ValueError):
+            pass
+    answer = None
+    for key in ("answer", "correct_answer", "correct"):
+        if raw.get(key) is not None:
+            answer = raw[key]
+            break
+    if answer is not None:
+        expected = _norm_text(answer)
+        for index, option in enumerate(options):
+            if _norm_text(option) == expected:
+                return index
+    return max(0, min(len(options) - 1, default)) if options else 0
+
+
 def _normalize_questions(raw: Any) -> list[dict]:
     """Yangi test turlari uchun savollarni normallashtiradi va validatsiya qiladi."""
     if isinstance(raw, str):
@@ -782,6 +839,13 @@ def _normalize_questions(raw: Any) -> list[dict]:
             # word_count: guided_writing uchun minimal so'zlar soni
             "word_count": None,
         }
+        accepted_raw = item.get("accepted_answers")
+        if accepted_raw is None:
+            accepted_raw = item.get("acceptable_answers")
+        if accepted_raw is None:
+            accepted_raw = item.get("accepted")
+        if accepted_raw is not None:
+            question["accepted_answers"] = _normalize_string_list(accepted_raw)
         _wc = item.get("word_count") or item.get("min_words") or item.get("min_word_count")
         if _wc:
             try:
@@ -831,32 +895,22 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                tokens = item.get("tokens")
-                question["tokens"] = (
-                    [str(t).strip() for t in tokens if str(t).strip()]
-                    if isinstance(tokens, list) and tokens
-                    else answer.replace(".", "").split()
-                )
+                tokens = _normalize_string_list(item.get("tokens"))
+                question["tokens"] = tokens or answer.replace(".", "").split()
                 # AI qo'shimcha (chalg'ituvchi) so'zlarni ham beradi — ular pulga aralashtiriladi.
                 distractors = item.get("distractors") or item.get("extra_words")
-                question["distractors"] = (
-                    [str(d).strip() for d in distractors if str(d).strip()]
-                    if isinstance(distractors, list) else []
-                )
+                question["distractors"] = _normalize_string_list(distractors)
             elif kind == "listening":
-                options = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
+                options = _normalize_string_list(item.get("options"), limit=6)
                 if len(options) < 2:
                     continue
                 question["options"] = options[:4]
-                try:
-                    question["correct_index"] = max(0, min(len(question["options"]) - 1, int(item.get("correct_index") or item.get("correct_option_index") or 0)))
-                except Exception:
-                    question["correct_index"] = 0
+                question["correct_index"] = _choice_index(item, question["options"])
             elif kind == "listening_tf":
                 # True/False/NG — always 3 fixed options
                 question["options"] = ["True", "False", "Not Given"]
                 # correct field: 'True'|'False'|'Not Given' or 0|1|2
-                raw_correct = item.get("correct") or item.get("correct_index") or "True"
+                raw_correct = item.get("correct") if item.get("correct") is not None else item.get("correct_index", "True")
                 if isinstance(raw_correct, int):
                     question["correct_index"] = max(0, min(2, raw_correct))
                 else:
@@ -867,26 +921,16 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                accepted = item.get("accepted_answers")
-                question["accepted_answers"] = (
-                    [str(a).strip() for a in accepted if str(a).strip()] if isinstance(accepted, list) else []
-                )
+                question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
             elif kind == "listening_order":
                 answer = str(item.get("answer") or "").strip()
                 if not answer:
                     continue
                 question["answer"] = answer
-                tokens = item.get("tokens")
-                question["tokens"] = (
-                    [str(t).strip() for t in tokens if str(t).strip()]
-                    if isinstance(tokens, list) and tokens
-                    else answer.replace(".", "").split()
-                )
+                tokens = _normalize_string_list(item.get("tokens"))
+                question["tokens"] = tokens or answer.replace(".", "").split()
                 distractors = item.get("distractors") or item.get("extra_words")
-                question["distractors"] = (
-                    [str(d).strip() for d in distractors if str(d).strip()]
-                    if isinstance(distractors, list) else []
-                )
+                question["distractors"] = _normalize_string_list(distractors)
             elif kind == "listening_set":
                 # Bitta audio ichida MCQ, T/F/NG, diktant, tartiblash, juftlash
                 # va AI baholaydigan ochiq savol aralash kelishi mumkin.
@@ -901,10 +945,7 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     continue
                 question["word"] = word
                 question["answer"] = str(item.get("answer") or word).strip()
-                accepted = item.get("accepted_answers")
-                question["accepted_answers"] = (
-                    [str(a).strip() for a in accepted if str(a).strip()] if isinstance(accepted, list) else []
-                )
+                question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
                 # Ta'rif hint: agar yo'q bo'lsa, prompt dan olamiz
                 if not question["hint"] and question["prompt"] and question["prompt"] != word:
                     question["hint"] = question["prompt"]
@@ -913,10 +954,7 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                accepted = item.get("accepted_answers")
-                question["accepted_answers"] = (
-                    [str(a).strip() for a in accepted if str(a).strip()] if isinstance(accepted, list) else []
-                )
+                question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
         else:
             question["reference_answer"] = str(item.get("reference_answer") or item.get("answer") or "").strip() or None
             question["target_level"] = str(item.get("target_level") or item.get("level") or "").strip() or None
@@ -970,7 +1008,7 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
             if isinstance(a, dict):
                 ans = str(a.get("answer") or a.get("value") or a.get("correct_answer") or a.get("correct") or "").strip()
                 acc = a.get("accepted_answers") or a.get("accepted") or []
-                accepted = [str(x).strip() for x in acc if str(x).strip()] if isinstance(acc, list) else []
+                accepted = _normalize_string_list(acc)
             else:
                 ans = str(a or "").strip()
                 accepted = []
@@ -1025,9 +1063,7 @@ def _normalize_passage_cloze(item: dict) -> dict | None:
     # Agar manbada box yo'q bo'lsa (masalan, fe'l zamonlari yoki qavsdagi so'zlar mashqlari),
     # javoblarni sun'iy ravishda bankka qo'shmaymiz — aks holda o'quvchiga tayyor javob ko'rinib qoladi.
     bank_raw = item.get("word_bank") or item.get("bank") or item.get("options") or []
-    bank = [str(w).strip() for w in bank_raw if str(w).strip()] if isinstance(bank_raw, list) else []
-    seen: set[str] = set()
-    bank = [w for w in bank if not (w.lower() in seen or seen.add(w.lower()))]
+    bank = _normalize_string_list(bank_raw)
     if bank:
         import random as _r
         _r.shuffle(bank)
@@ -1072,24 +1108,16 @@ def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
             continue
         sub: dict[str, Any] = {"type": sub_type, "prompt": prompt}
         if sub_type == "mcq":
-            options = [str(x).strip() for x in (raw.get("options") or []) if str(x).strip()]
+            options = _normalize_string_list(raw.get("options"), limit=6)
             if len(options) < 2 or len({x.casefold() for x in options}) != len(options):
                 continue
             sub["options"] = options[:6]
-            try:
-                sub["correct_index"] = max(0, min(len(sub["options"]) - 1, int(raw.get("correct_index") or 0)))
-            except Exception:
-                sub["correct_index"] = 0
+            sub["correct_index"] = _choice_index(raw, sub["options"])
             sub["answer"] = sub["options"][sub["correct_index"]]
             sub["correct_answer"] = sub["answer"]
         elif sub_type == "tf":
             sub["options"] = ["True", "False", "Not Given"]
-            raw_correct = raw.get("correct") if raw.get("correct") is not None else raw.get("correct_index")
-            if isinstance(raw_correct, int):
-                sub["correct_index"] = max(0, min(2, raw_correct))
-            else:
-                values = {"true": 0, "false": 1, "not given": 2, "not_given": 2, "ng": 2}
-                sub["correct_index"] = values.get(str(raw_correct or "True").strip().lower(), 0)
+            sub["correct_index"] = _choice_index(raw, sub["options"])
             sub["answer"] = sub["options"][sub["correct_index"]]
             sub["correct_answer"] = sub["answer"]
         elif sub_type in {"gap", "dictation", "short"}:
@@ -1099,15 +1127,15 @@ def _normalize_listening_set_sub_questions(raw_subs: Any) -> list[dict]:
             sub["answer"] = answer
             sub["correct_answer"] = answer
             accepted = raw.get("accepted_answers") or raw.get("accepted") or []
-            sub["accepted_answers"] = [str(x).strip() for x in accepted if str(x).strip()] if isinstance(accepted, list) else []
+            sub["accepted_answers"] = _normalize_string_list(accepted)
         elif sub_type == "order":
             answer = str(raw.get("answer") or raw.get("correct_answer") or raw.get("correct") or "").strip()
             if not answer:
                 continue
             sub["answer"] = answer
             sub["correct_answer"] = answer
-            tokens = raw.get("tokens")
-            sub["tokens"] = [str(x).strip() for x in tokens if str(x).strip()] if isinstance(tokens, list) and tokens else answer.replace(".", "").split()
+            tokens = _normalize_string_list(raw.get("tokens"))
+            sub["tokens"] = tokens or answer.replace(".", "").split()
         elif sub_type == "matching":
             pairs = []
             for pair in raw.get("pairs") or []:
@@ -1148,33 +1176,33 @@ def _normalize_reading_set(item: dict) -> dict | None:
             or ""
         ).strip()
         stype = str(raw.get("type") or raw.get("subtype") or "").strip().lower()
-        options = [str(o).strip() for o in (raw.get("options") or []) if str(o).strip()]
+        options = _normalize_string_list(raw.get("options"), limit=6)
         if stype in {"true_false", "tfng", "true_false_not_given", "tf"}:
             stype = "true_false_ng"
         if stype not in READING_SUBTYPES:
             stype = "choice" if options else "short"
         if stype == "true_false_ng" and not options:
             options = ["True", "False", "Not given"]
-        if not answer and options:
-            ci = raw.get("correct_index")
-            if ci is not None:
-                try:
-                    idx = int(ci)
-                    if 0 <= idx < len(options):
-                        answer = options[idx]
-                except Exception:
-                    pass
+        correct_index = None
+        if stype in {"choice", "true_false_ng"} and options:
+            correct_index = _choice_index(raw, options)
+            answer = options[correct_index]
         if not prompt or not answer:
             continue
-        accepted = raw.get("accepted_answers") or []
-        subs.append({
+        accepted = _normalize_string_list(
+            raw.get("accepted_answers") if raw.get("accepted_answers") is not None else raw.get("accepted")
+        )
+        sub: dict[str, Any] = {
             "type": stype,
             "prompt": prompt,
             "options": options,
             "answer": answer,
             "correct_answer": answer,
-            "accepted_answers": [str(a).strip() for a in accepted if str(a).strip()],
-        })
+            "accepted_answers": accepted,
+        }
+        if correct_index is not None:
+            sub["correct_index"] = correct_index
+        subs.append(sub)
     if not subs:
         return None
     return {"passage": passage, "sub_questions": subs}
@@ -1210,8 +1238,7 @@ def _cloze_from_gap_fill_run(run: list[dict]) -> dict:
         # Ketma-ket gaplar faqat yangi qatorda qoladi. Raqam manbada yo'q
         # bo'lsa, uni sun'iy yaratish mumkin emas.
         lines.append(prompt)
-        acc = q.get("accepted_answers") or []
-        answers.append({"answer": ans, "accepted_answers": [str(a).strip() for a in acc if str(a).strip()]})
+        answers.append({"answer": ans, "accepted_answers": _normalize_string_list(q.get("accepted_answers"))})
         if not instruction and q.get("instruction"):
             instruction = q.get("instruction")
     passage = "\n".join(lines)
@@ -3276,9 +3303,9 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
     )
     parts.append(
         f"Write every explanation field in {result_language}. Do not translate the student's own answer.\n"
-        "When is_correct is false, corrected is REQUIRED: write the complete, natural corrected/model answer, "
-        "not only an error fragment. For a word-sentence task it must use the required word correctly.\n"
-        "Return ONLY valid JSON, no markdown:\n"
+        "When is_correct is false, corrected is REQUIRED: write the complete, natural corrected/model answer. "
+        "Include at most two grammar errors and one pronunciation error. Keep feedback under 20 words.\n"
+        "Return ONLY compact valid JSON, no markdown:\n"
         '{"is_correct":true,'
         '"grammar_ok":true,"pronunciation_ok":true,"level_ok":true,'
         '"corrected":"the corrected version of the answer",'
@@ -3290,7 +3317,145 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
     return "\n\n".join(parts)
 
 
-_AI_CHECK_CACHE: dict[tuple[str, str], tuple[str, dict]] = {}
+_AI_CHECK_CACHE_MAX_ENTRIES = 4000
+# 0 means no time-based expiry. Identical answers stay warm until the process
+# restarts or the bounded LRU cache needs room for newer feedback.
+_AI_CHECK_CACHE_TTL_SECONDS = 0.0
+_AI_CHECK_CACHE: OrderedDict[str, tuple[float, str, dict]] = OrderedDict()
+_AI_CHECK_INFLIGHT: dict[str, asyncio.Task[tuple[str, dict]]] = {}
+
+
+def _ai_grading_cache_key(
+    question: dict, answer: str, subject: str, result_language: str, spoken: bool
+) -> str:
+    """Hash every rubric value so cached feedback cannot cross exercises."""
+    rubric = {
+        "kind": str(question.get("kind") or ""),
+        "prompt": str(question.get("prompt") or ""),
+        "instruction": str(question.get("instruction") or ""),
+        "word": str(question.get("word") or ""),
+        "passage": str(question.get("passage") or ""),
+        "reference_answer": str(question.get("reference_answer") or ""),
+        "example_sentence": str(question.get("example_sentence") or ""),
+        "accepted_answers": _normalize_string_list(question.get("accepted_answers")),
+        "translations": [
+            str(question.get("translation") or ""),
+            str(question.get("translation_uz") or ""),
+            str(question.get("translation_ru") or ""),
+        ],
+        "target_level": str(question.get("target_level") or question.get("level") or ""),
+        "subject": str(subject or ""),
+        "result_language": str(result_language or ""),
+        "spoken": bool(spoken),
+        "answer": _norm_text(answer),
+    }
+    encoded = json.dumps(rubric, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _ai_grading_cache_get(key: str, *, now: float | None = None) -> tuple[str, dict] | None:
+    cached = _AI_CHECK_CACHE.get(key)
+    if not cached:
+        return None
+    created_at, verdict, data = cached
+    current = time.monotonic() if now is None else now
+    if _AI_CHECK_CACHE_TTL_SECONDS > 0 and current - created_at >= _AI_CHECK_CACHE_TTL_SECONDS:
+        _AI_CHECK_CACHE.pop(key, None)
+        return None
+    _AI_CHECK_CACHE.move_to_end(key)
+    return verdict, dict(data)
+
+
+def _ai_grading_cache_put(
+    key: str, verdict: str, data: dict, *, now: float | None = None
+) -> None:
+    _AI_CHECK_CACHE[key] = (time.monotonic() if now is None else now, verdict, dict(data))
+    _AI_CHECK_CACHE.move_to_end(key)
+    while len(_AI_CHECK_CACHE) > _AI_CHECK_CACHE_MAX_ENTRIES:
+        _AI_CHECK_CACHE.popitem(last=False)
+
+
+def _ai_grading_timeout_seconds() -> float:
+    try:
+        return max(3.0, min(15.0, float(os.getenv("AI_TEST_GRADING_TIMEOUT_SECONDS") or "8")))
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def _ai_grading_model_limit() -> int:
+    try:
+        return max(1, min(3, int(os.getenv("AI_TEST_GRADING_MODEL_LIMIT") or "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
+async def _fast_ai_grading_request(prompt: str) -> str:
+    """Call only the fast grader path; retries belong to the student's next attempt."""
+    from ai_generator import (
+        XAI_ENDPOINT,
+        X_GROK_CONV_ID,
+        _get_xai_api_key,
+        _xai_apply_payload_tuning,
+        _xai_model_supports_reasoning_effort,
+        get_grok_model_candidates,
+    )
+    import aiohttp
+
+    api_key = _safe(lambda: _get_xai_api_key())
+    if not api_key:
+        raise HTTPException(status_code=503, detail="AI servis sozlanmagan")
+    timeout_seconds = _ai_grading_timeout_seconds()
+    started_at = time.monotonic()
+    async with aiohttp.ClientSession() as session:
+        for model in get_grok_model_candidates()[:_ai_grading_model_limit()]:
+            body = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "Fast, strict exercise grader. Output compact JSON only."},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.0,
+                "max_tokens": 220,
+            }
+            _xai_apply_payload_tuning(body, model=model, stream=False)
+            if _xai_model_supports_reasoning_effort(model):
+                body["reasoning_effort"] = "low"
+            try:
+                async with session.post(
+                    XAI_ENDPOINT,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "x-grok-conv-id": f"{X_GROK_CONV_ID}:grader",
+                    },
+                    json=body,
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                ) as response:
+                    if response.status != 200:
+                        logger.warning(
+                            "ai-test grade provider status=%s model=%s elapsed_ms=%s",
+                            response.status,
+                            model,
+                            int((time.monotonic() - started_at) * 1000),
+                        )
+                        continue
+                    data = await response.json(content_type=None)
+                    raw = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+                    if raw:
+                        logger.info(
+                            "ai-test grade provider_ok model=%s elapsed_ms=%s",
+                            model,
+                            int((time.monotonic() - started_at) * 1000),
+                        )
+                        return raw
+            except Exception as error:
+                logger.warning(
+                    "ai-test grade provider_error model=%s elapsed_ms=%s error=%s",
+                    model,
+                    int((time.monotonic() - started_at) * 1000),
+                    type(error).__name__,
+                )
+    raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
 
 
 async def _check_with_ai(
@@ -3360,84 +3525,49 @@ async def _check_with_ai(
             "was_spoken": spoken,
         }
 
-    # 2. Xotira keshidan tekshirish (bir xil savol/javob takror kelsa darhol natija beradi)
-    cache_key = (f"{kind}:{question.get('prompt') or ''}:{question.get('word') or ''}", given_norm)
-    if cache_key in _AI_CHECK_CACHE:
-        cached_verdict, cached_data = _AI_CHECK_CACHE[cache_key]
-        cached_copy = dict(cached_data)
-        cached_copy["transcript"] = answer if spoken else None
-        cached_copy["was_spoken"] = spoken
-        return cached_verdict, cached_copy
+    # 2. Cache is keyed by the complete grading rubric, language, answer, and
+    # input mode. It is therefore safe to reuse feedback across students.
+    result_language = _ai_result_language(x_language)
+    cache_key = _ai_grading_cache_key(question, answer, subject, result_language, spoken)
+    cached = _ai_grading_cache_get(cache_key)
+    if cached:
+        cached_verdict, cached_data = cached
+        cached_data["transcript"] = answer if spoken else None
+        cached_data["was_spoken"] = spoken
+        logger.info("ai-test grade cache_hit=1 inflight=0 kind=%s", kind)
+        return cached_verdict, cached_data
 
-    from ai_generator import XAI_ENDPOINT, _get_xai_api_key, _xai_apply_payload_tuning, _xai_model_supports_reasoning_effort, get_grok_model_candidates
-    import aiohttp
+    async def grade_and_cache() -> tuple[str, dict]:
+        raw = await _fast_ai_grading_request(
+            _ai_check_prompt(question, answer, subject, result_language, spoken)
+        )
+        parsed = _extract_json_object(raw)
+        if not parsed:
+            raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
+        verdict = "correct" if bool(parsed.get("is_correct")) else "wrong"
+        if verdict == "wrong" and not str(parsed.get("corrected") or "").strip():
+            fallback = str(question.get("reference_answer") or question.get("example_sentence") or "").strip()
+            if fallback:
+                parsed["corrected"] = fallback
+            parsed["feedback"] = str(parsed.get("feedback") or "Xato joylarini tuzatib, gapni qayta yozing.")
+        _ai_grading_cache_put(cache_key, verdict, parsed)
+        return verdict, parsed
 
-    api_key = _safe(lambda: _get_xai_api_key())
-    if not api_key:
-        raise HTTPException(status_code=503, detail="AI servis sozlanmagan")
-    prompt = _ai_check_prompt(question, answer, subject, _ai_result_language(x_language), spoken)
-    raw = ""
+    task = _AI_CHECK_INFLIGHT.get(cache_key)
+    is_shared_request = task is not None
+    if task is None:
+        task = asyncio.create_task(grade_and_cache())
+        _AI_CHECK_INFLIGHT[cache_key] = task
     try:
-        async with aiohttp.ClientSession() as session:
-            for model in get_grok_model_candidates()[:3]:
-                body = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": "You are a fast, precise language-exercise grader. Output only JSON."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 350,
-                }
-                _xai_apply_payload_tuning(body, model=model, stream=False)
-                # Mashq tekshirishda uzoq reasoning kutish kerak emas — 'low' bilan tezkor yakunlaydi
-                if _xai_model_supports_reasoning_effort(model):
-                    body["reasoning_effort"] = "low"
-                try:
-                    async with session.post(
-                        XAI_ENDPOINT,
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json=body,
-                        timeout=aiohttp.ClientTimeout(total=15),
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                            raw = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
-                            if raw:
-                                break
-                except Exception as model_err:
-                    logger.warning("ai-test model %s check error: %s", model, model_err)
-                    continue
-    except Exception as exc:
-        logger.exception("ai-test grading failed kind=%s: %s", kind, exc)
-
-    parsed = _extract_json_object(raw)
-    if not parsed:
-        # AI javob bermasa yoki tarmoq xatosi bo'lsa:
-        if given_norm and ref_clean and (given_norm in ref_clean or any(_levenshtein(given_norm, r) <= 1 for r in ref_clean)):
-            return "correct", {
-                "is_correct": True,
-                "feedback": "Javob to'g'ri!",
-                "score": 10.0,
-                "transcript": answer if spoken else None,
-                "was_spoken": spoken,
-            }
-        raise HTTPException(status_code=503, detail="AI javobi tushunarsiz, qayta urinib ko'ring")
-    verdict = "correct" if bool(parsed.get("is_correct")) else "wrong"
-    if verdict == "wrong" and not str(parsed.get("corrected") or "").strip():
-        fallback = str(question.get("reference_answer") or question.get("example_sentence") or "").strip()
-        if fallback:
-            parsed["corrected"] = fallback
-        parsed["feedback"] = str(parsed.get("feedback") or "Xato joylarini tuzatib, gapni qayta yozing.")
-    parsed["transcript"] = answer if spoken else None
-    parsed["was_spoken"] = spoken
-
-    # Natijani keshga yozish (eng ko'pi 2000 ta yozuv)
-    _AI_CHECK_CACHE[cache_key] = (verdict, parsed)
-    if len(_AI_CHECK_CACHE) > 2000:
-        _AI_CHECK_CACHE.pop(next(iter(_AI_CHECK_CACHE)))
-
-    return verdict, parsed
+        verdict, data = await asyncio.shield(task)
+    finally:
+        if task.done() and _AI_CHECK_INFLIGHT.get(cache_key) is task:
+            _AI_CHECK_INFLIGHT.pop(cache_key, None)
+    response = dict(data)
+    response["transcript"] = answer if spoken else None
+    response["was_spoken"] = spoken
+    logger.info("ai-test grade cache_hit=0 inflight=%s kind=%s", int(is_shared_request), kind)
+    return verdict, response
 
 
 # ═══════════════════════════════════════════════════════════════════════════
