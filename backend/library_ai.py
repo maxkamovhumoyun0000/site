@@ -114,6 +114,23 @@ AI_TEST_TYPES: dict[str, dict[str, Any]] = {
         "check": "ai", "input": "audio_or_text", "needs_audio_asset": False,
         "retry_until_correct": True,
     },
+    # ── Audio talab qilmaydigan universal tanlov turlari ───────────────────
+    # Kitob sahifasi, Materiallar kutubxonasi va Learning Path bir xil
+    # struktura bilan ishlaydi. `listening` faqat haqiqiy audio mashq uchun.
+    "multiple_choice": {
+        "label_uz": "Ko'p variantli savol",
+        "label_ru": "Вопрос с вариантами",
+        "label_en": "Multiple choice",
+        "check": "auto", "input": "choice", "needs_audio_asset": False,
+        "retry_until_correct": True,
+    },
+    "true_false": {
+        "label_uz": "To'g'ri / Noto'g'ri",
+        "label_ru": "Верно / Неверно",
+        "label_en": "True / False",
+        "check": "auto", "input": "choice", "needs_audio_asset": False,
+        "retry_until_correct": True,
+    },
     # ── Avtomatik tekshiriladigan turlar (AI chaqirilmaydi, tez ishlaydi) ───
     "listening": {
         "label_uz": "Tinglab tushunish",
@@ -239,10 +256,11 @@ WORD_PRACTICE_VARIANTS = ["speak_sentence", "read_aloud", "write_sentence", "spe
 
 #: AI turli nom bilan qaytarishi mumkin — ularni bizning kanonik turlarga moslaymiz.
 _KIND_SYNONYMS: dict[str, str] = {
-    "multiple_choice": "listening",
-    "mcq": "listening",
-    "choice": "listening",
-    "true_false": "listening",
+    "mcq": "multiple_choice",
+    "choice": "multiple_choice",
+    "multiple-choice": "multiple_choice",
+    "true-false": "true_false",
+    "tf": "true_false",
     "fill_in_the_blank": "gap_fill",
     "fill_blank": "gap_fill",
     "fill_gap": "gap_fill",
@@ -798,7 +816,11 @@ def _normalize_questions(raw: Any) -> list[dict]:
             if item.get("pairs"):
                 kind = "matching"
             elif item.get("options"):
-                kind = "listening"
+                # Options by themselves never prove that an audio source
+                # exists. Image/PDF imports and Learning Path use this
+                # universal, non-audio type; only an explicit listening kind
+                # may require an audio file.
+                kind = "multiple_choice"
             elif item.get("tokens"):
                 kind = "scrambled_sentence"
             elif item.get("word") and not item.get("answer"):
@@ -891,7 +913,7 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     continue
                 question["pairs"] = clean_pairs
             elif kind in {"scrambled_sentence"}:
-                answer = str(item.get("answer") or "").strip()
+                answer = str(item.get("answer") or item.get("correct_answer") or "").strip()
                 if not answer:
                     continue
                 question["answer"] = answer
@@ -900,11 +922,15 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 # AI qo'shimcha (chalg'ituvchi) so'zlarni ham beradi — ular pulga aralashtiriladi.
                 distractors = item.get("distractors") or item.get("extra_words")
                 question["distractors"] = _normalize_string_list(distractors)
-            elif kind == "listening":
+            elif kind in {"multiple_choice", "listening"}:
                 options = _normalize_string_list(item.get("options"), limit=6)
                 if len(options) < 2:
                     continue
                 question["options"] = options[:4]
+                question["correct_index"] = _choice_index(item, question["options"])
+            elif kind == "true_false":
+                options = _normalize_string_list(item.get("options"), limit=2)
+                question["options"] = options if len(options) >= 2 else ["True", "False"]
                 question["correct_index"] = _choice_index(item, question["options"])
             elif kind == "listening_tf":
                 # True/False/NG — always 3 fixed options
@@ -917,13 +943,13 @@ def _normalize_questions(raw: Any) -> list[dict]:
                     mapping = {"true": 0, "false": 1, "not given": 2, "ng": 2, "not_given": 2}
                     question["correct_index"] = mapping.get(str(raw_correct).strip().lower(), 0)
             elif kind in ("listening_dictation", "listening_gap"):
-                answer = str(item.get("answer") or "").strip()
+                answer = str(item.get("answer") or item.get("correct_answer") or "").strip()
                 if not answer:
                     continue
                 question["answer"] = answer
                 question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
             elif kind == "listening_order":
-                answer = str(item.get("answer") or "").strip()
+                answer = str(item.get("answer") or item.get("correct_answer") or "").strip()
                 if not answer:
                     continue
                 question["answer"] = answer
@@ -944,19 +970,21 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not word:
                     continue
                 question["word"] = word
-                question["answer"] = str(item.get("answer") or word).strip()
+                question["answer"] = str(item.get("answer") or item.get("correct_answer") or word).strip()
                 question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
                 # Ta'rif hint: agar yo'q bo'lsa, prompt dan olamiz
                 if not question["hint"] and question["prompt"] and question["prompt"] != word:
                     question["hint"] = question["prompt"]
             else:  # dictation, gap_fill
-                answer = str(item.get("answer") or "").strip()
+                answer = str(item.get("answer") or item.get("correct_answer") or "").strip()
                 if not answer:
                     continue
                 question["answer"] = answer
                 question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
         else:
-            question["reference_answer"] = str(item.get("reference_answer") or item.get("answer") or "").strip() or None
+            question["reference_answer"] = str(
+                item.get("reference_answer") or item.get("answer") or item.get("correct_answer") or ""
+            ).strip() or None
             question["target_level"] = str(item.get("target_level") or item.get("level") or "").strip() or None
             if kind == "word_practice":
                 # So'z mashqi: studentga tushganda random turga aylanadi.
@@ -1493,7 +1521,7 @@ def _question_for_student(question: dict) -> dict:
         "audio_url": question.get("audio_url"),
         "level": question.get("level"),
     }
-    if kind == "listening":
+    if kind in {"multiple_choice", "listening", "true_false"}:
         out["options"] = question.get("options") or []
     elif kind == "listening_tf":
         out["options"] = question.get("options") or ["True", "False", "Not Given"]
@@ -1722,6 +1750,10 @@ def _import_system_prompt(
         "   by its number ('1. get — ___\\n2. see — ___'). Continuous prose stays as flowing text.\n"
         "2. Use the question kind that matches each printed exercise exactly.\n"
         "2b. Every question MUST have its own 'kind' field (exact snake_case from allowed list).\n"
+        "2c. A printed multiple-choice or True/False exercise with NO audio source MUST use\n"
+        "    'multiple_choice' or 'true_false' respectively. Include options as a JSON array and\n"
+        "    correct_index as a zero-based integer. Use any 'listening*' kind ONLY when the\n"
+        "    source visibly includes an audio/listening instruction; never invent an audio task.\n"
         "3. Keep target-language content exactly as written. Don't translate unless the exercise is a translation task.\n"
         "4. For every auto-checked type provide the exact expected answer.\n"
         "4b. For 'scrambled_sentence' add 'distractors': 2–4 extra plausible words not in the correct sentence.\n"
@@ -3092,7 +3124,7 @@ _check_listening_set_with_ai = _check_multi_set_with_ai
 
 def _check_auto(question: dict, payload: AiTestAnswerRequest) -> tuple[str, dict]:
     kind = str(question.get("kind") or "")
-    if kind == "listening":
+    if kind in {"multiple_choice", "listening", "true_false"}:
         options = question.get("options") or []
         correct = int(question.get("correct_index") or 0)
         chosen = payload.choice_index

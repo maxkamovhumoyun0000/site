@@ -6049,9 +6049,7 @@ async function uploadAudioFile(file: File): Promise<string | null> {
 const ALL_TEST_KINDS = [
   { key: "multiple_choice", label: "🔘 Ko'p variantli (MCQ)", needsAudio: false },
   { key: "true_false", label: "⚖️ To'g'ri / Noto'g'ri", needsAudio: false },
-  { key: "fill_blank", label: "✏️ Bo'sh joyni to'ldirish", needsAudio: false },
   { key: "gap_fill", label: "␣ Bo'sh joy to'ldirish (Gap fill)", needsAudio: false },
-  { key: "word_order", label: "🔤 So'z tartibi (Word Order)", needsAudio: false },
   { key: "scrambled_sentence", label: "🔀 So'zlarni tartibga solish", needsAudio: false },
   { key: "matching", label: "🔗 Moslashtirish (Juftliklar)", needsAudio: false },
   { key: "listening", label: "🎧 Tinglab tushunish (Variantli)", needsAudio: true },
@@ -6130,7 +6128,7 @@ function LessonEditor({
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(10);
-  const [types, setTypes] = useState("multiple_choice,true_false,fill_blank,word_order,matching");
+  const [types, setTypes] = useState("multiple_choice,true_false,gap_fill,scrambled_sentence,matching");
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
   const [hint, setHint] = useState("");
@@ -6469,7 +6467,7 @@ function LessonEditor({
         body: {
           topic: topic.trim(),
           question_count: count,
-          test_types: (types || "multiple_choice,true_false,fill_blank,word_order,matching").split(",").map((value) => value.trim()).filter(Boolean),
+          test_types: (types || "multiple_choice,true_false,gap_fill,scrambled_sentence,matching").split(",").map((value) => value.trim()).filter(Boolean),
         },
       });
       const items = Array.isArray(result?.items) ? result.items : (result ? [result] : []);
@@ -7141,12 +7139,12 @@ function LessonEditor({
                         onChange={(e) => setTypes(e.target.value)}
                         className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
-                        <option value="multiple_choice,true_false,fill_blank,word_order,matching">🎲 Barchasi aralash (MCQ + True/False + Bo'sh joy + So'z tartibi + Moslashtirish) — Standart</option>
-                        <option value="multiple_choice,true_false,fill_blank">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
+                        <option value="multiple_choice,true_false,gap_fill,scrambled_sentence,matching">🎲 Barchasi aralash (MCQ + True/False + Bo'sh joy + So'z tartibi + Moslashtirish) — Standart</option>
+                        <option value="multiple_choice,true_false,gap_fill">Aralash (Ko'p tanlovli + True/False + Bo'sh joy to'ldirish)</option>
                         <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
                         <option value="true_false">Faqat To'g'ri / Noto'g'ri (True / False)</option>
-                        <option value="fill_blank">Faqat Bo'sh joyni to'ldirish (Fill in blank)</option>
-                        <option value="word_order">Faqat So'z tartibi (Word Order)</option>
+                        <option value="gap_fill">Faqat Bo'sh joyni to'ldirish (Fill in blank)</option>
+                        <option value="scrambled_sentence">Faqat So'z tartibi (Word Order)</option>
                         <option value="matching">Faqat Moslashtirish (Matching Pairs)</option>
                         <option value="translation">Faqat Tarjima mashqlari</option>
                         <option value="spelling">Faqat Imlo (Spelling)</option>
@@ -7205,7 +7203,10 @@ function LessonEditor({
                         }}
                         className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
-                        {ALL_TEST_KINDS.filter((k) => !AI_TEST_KIND_META[k.key as AiTestKind]).map((k) => (
+                        {ALL_TEST_KINDS.filter((k) => [
+                          "multiple_choice", "true_false", "gap_fill",
+                          "scrambled_sentence", "matching",
+                        ].includes(k.key)).map((k) => (
                           <option key={k.key} value={k.key}>
                             {k.label}
                           </option>
@@ -7270,9 +7271,9 @@ function LessonEditor({
                       onChange={(e) => setPrompt(e.target.value)}
                       rows={2}
                       placeholder={
-                        manualType === "fill_blank" || manualType === "listening_gap"
+                        manualType === "fill_blank" || manualType === "gap_fill" || manualType === "listening_gap"
                           ? "Savol matni (bo'sh joy uchun _____ ishlating): He _____ a teacher."
-                          : manualType === "word_order" || manualType === "listening_order"
+                          : manualType === "word_order" || manualType === "scrambled_sentence" || manualType === "listening_order"
                           ? "Aralash so'zlar: teacher / is / He / a"
                           : manualType === "matching"
                           ? "Ko'rsatma: So'zlarni o'zbekcha tarjimasi bilan moslashtiring"
@@ -7306,7 +7307,7 @@ function LessonEditor({
                           ✕ Noto'g'ri
                         </label>
                       </div>
-                    ) : manualType === "fill_blank" || manualType === "listening_gap" ? (
+                    ) : manualType === "fill_blank" || manualType === "gap_fill" || manualType === "listening_gap" ? (
                       <div className="grid gap-2.5 sm:grid-cols-2">
                         <input
                           value={correct}
@@ -7321,7 +7322,7 @@ function LessonEditor({
                           className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
                         />
                       </div>
-                    ) : manualType === "word_order" || manualType === "listening_order" ? (
+                    ) : manualType === "word_order" || manualType === "scrambled_sentence" || manualType === "listening_order" ? (
                       <input
                         value={correct}
                         onChange={(e) => setCorrect(e.target.value)}

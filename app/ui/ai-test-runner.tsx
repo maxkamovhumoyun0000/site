@@ -14,7 +14,7 @@ import { useWebT } from "./web-i18n";
 type Kind =
   | "speak_sentence" | "write_sentence" | "guided_writing" | "translation"
   | "reading_open" | "read_aloud" | "paraphrase" | "dialogue_completion"
-  | "picture_description" | "listening" | "dictation" | "listening_tf"
+  | "picture_description" | "multiple_choice" | "true_false" | "listening" | "dictation" | "listening_tf"
   | "listening_dictation" | "listening_open" | "listening_gap"
   | "listening_order" | "listening_set" | "spelling"
   | "matching" | "scrambled_sentence" | "gap_fill" | "passage_cloze" | "reading_set";
@@ -257,6 +257,8 @@ const KIND_TITLE: Record<Kind, string> = {
   paraphrase: "Boshqacha aytib bering",
   dialogue_completion: "Dialogni to'ldiring",
   picture_description: "Rasmni tasvirlang",
+  multiple_choice: "To'g'ri variantni tanlang",
+  true_false: "True yoki False ni tanlang",
   listening: "Tinglang va tanlang",
   dictation: "Tinglang va yozing",
   listening_tf: "Tinglang va True / False / Not Given ni tanlang",

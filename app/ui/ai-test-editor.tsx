@@ -18,6 +18,8 @@ export type AiTestKind =
   | "paraphrase"
   | "dialogue_completion"
   | "picture_description"
+  | "multiple_choice"
+  | "true_false"
   | "listening"
   | "dictation"
   | "listening_tf"
@@ -138,6 +140,16 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Rasm beriladi, student tasvirlaydi. Yozma yoki ovozli.",
     check: "ai", input: "audio_or_text", needsAudio: false, icon: "🖼️",
   },
+  multiple_choice: {
+    label: "Ko'p variantli savol",
+    hint: "Audio talab qilinmaydi. Student variantlardan bittasini tanlaydi.",
+    check: "auto", input: "choice", needsAudio: false, icon: "🔘",
+  },
+  true_false: {
+    label: "To'g'ri / Noto'g'ri",
+    hint: "Audio talab qilinmaydi. Student True yoki False javobini tanlaydi.",
+    check: "auto", input: "choice", needsAudio: false, icon: "⚖️",
+  },
   listening: {
     label: "Tinglab tushunish",
     hint: "Audio yuklash SHART. Variantlardan to'g'risini tanlaydi, avtomatik tekshiriladi. Bitta audio uchun bir nechta savol qo'shish mumkin.",
@@ -226,6 +238,8 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
   const base: AiTestQuestion = { kind, prompt: "", instruction: "" };
   switch (kind) {
     case "matching": return { ...base, pairs: [{ left: "", right: "" }, { left: "", right: "" }] };
+    case "multiple_choice": return { ...base, options: ["", "", "", ""], correct_index: 0 };
+    case "true_false": return { ...base, options: ["True", "False"], correct_index: 0 };
     case "listening": return { ...base, audio_url: "", options: ["", "", "", ""], correct_index: 0 };
     case "listening_tf": return { ...base, audio_url: "", correct_index: 0 };
     case "listening_dictation": return { ...base, audio_url: "", answer: "", accepted_answers: [], hint: "" };
@@ -300,7 +314,7 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
     if (meta.needsAudio && !String(q.audio_url || "").trim()) {
       return `${n}-mashq (${meta.label}) uchun audio fayl yuklanishi shart.`;
     }
-    if (q.kind === "listening") {
+    if (q.kind === "multiple_choice" || q.kind === "listening") {
       const opts = (q.options || []).map((o) => String(o || "").trim()).filter(Boolean);
       if (!String(q.prompt || "").trim()) return `${n}-mashqda savol matni bo'lishi kerak.`;
       if (opts.length < 2) return `${n}-mashqda kamida 2 ta variant bo'lishi kerak.`;
@@ -309,7 +323,7 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
       if (!Number.isInteger(idx) || idx < 0 || idx >= opts.length) return `${n}-mashqda to'g'ri variant belgilanmagan.`;
       continue;
     }
-    if (q.kind === "listening_tf") {
+    if (q.kind === "true_false" || q.kind === "listening_tf") {
       if (!String(q.prompt || "").trim()) return `${n}-mashqda audio asosidagi savol matni bo'lishi kerak.`;
       continue;
     }
@@ -765,6 +779,36 @@ function ListeningCard({
         </p>
       </div>
 
+      <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
+    </>
+  );
+}
+
+// Printed/image/PDF questions use this card. Unlike ListeningCard, it never
+// asks the teacher to upload audio.
+function UniversalChoiceCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
+  const isTrueFalse = q.kind === "true_false";
+  const options = q.options || (isTrueFalse ? ["True", "False"] : ["", ""]);
+  const maxOptions = isTrueFalse ? 2 : 5;
+  return (
+    <>
+      <FullField label="Savol matni *" required>
+        <textarea value={String(q.prompt || "")} onChange={(e) => patch({ prompt: e.target.value })} className={`${INPUT_CLS} min-h-[56px]`} placeholder={isTrueFalse ? "The passage says that Alex arrived early." : "What is the correct answer?"} />
+      </FullField>
+      <InstructionField value={q.instruction} onChange={(instruction) => patch({ instruction })} />
+      <div className={SECTION_CLS}>
+        <label className={LABEL_CLS}>Javob variantlari * <span className="font-semibold normal-case text-ink-400">(to'g'risini belgilang)</span></label>
+        <div className="space-y-2">
+          {options.map((option, index) => (
+            <div key={`choice-${index}`} className="flex items-center gap-2">
+              <input type="radio" name={`ai-correct-${q.prompt}`} checked={Number(q.correct_index ?? 0) === index} onChange={() => patch({ correct_index: index })} className="h-4 w-4 shrink-0 accent-cyan-500" />
+              <input value={option} onChange={(e) => { const next = [...options]; next[index] = e.target.value; patch({ options: next }); }} className={INPUT_CLS} placeholder={`${String.fromCharCode(65 + index)}. Variant ${index + 1}`} />
+              {!isTrueFalse && options.length > 2 && <button type="button" onClick={() => { const next = options.filter((_, optionIndex) => optionIndex !== index); patch({ options: next, correct_index: Math.min(Number(q.correct_index ?? 0), next.length - 1) }); }} className="shrink-0 text-red-400 hover:text-red-600">✕</button>}
+            </div>
+          ))}
+        </div>
+        {!isTrueFalse && options.length < maxOptions && <button type="button" onClick={() => patch({ options: [...options, ""] })} className="mt-2 rounded-xl border border-line bg-surface-soft px-3 py-1.5 text-xs font-black dark:border-white/10 dark:bg-white/5 dark:text-white">+ Variant</button>}
+      </div>
       <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
     </>
   );
@@ -1426,6 +1470,9 @@ export function AiTestEditor({
               {q.kind === "dialogue_completion" && <DialogueCompletionCard q={q} patch={patchQ} />}
               {q.kind === "picture_description" && (
                 <PictureDescriptionCard q={q} patch={patchQ} uploading={isUploading("image_url")} onUpload={uploadQ} />
+              )}
+              {(q.kind === "multiple_choice" || q.kind === "true_false") && (
+                <UniversalChoiceCard q={q} patch={patchQ} />
               )}
               {q.kind === "listening" && (
                 <ListeningCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />

@@ -1939,7 +1939,7 @@ class LearningAiLessonRequest(BaseModel):
     instruction: str | None = Field(default=None, max_length=1000)
     question_count: int = Field(default=1, ge=1, le=30)
     test_types: list[str] = Field(
-        default_factory=lambda: ["multiple_choice", "true_false", "fill_blank", "word_order", "matching"],
+        default_factory=lambda: ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching"],
         max_length=12,
     )
 
@@ -2649,6 +2649,72 @@ async def staff_teacher_library_tree(authorization: str | None = Header(default=
         conn.close()
 
 
+_LEARNING_AI_KIND_ALIASES = {
+    "mcq": "multiple_choice",
+    "choice": "multiple_choice",
+    "multiple-choice": "multiple_choice",
+    "true-false": "true_false",
+    "tf": "true_false",
+    "fill_blank": "gap_fill",
+    "fill_in_the_blank": "gap_fill",
+    "word_order": "scrambled_sentence",
+    "order_words": "scrambled_sentence",
+}
+
+
+def _canonical_learning_ai_kind(value: Any) -> str:
+    raw = str(value or "multiple_choice").strip().lower()
+    return _LEARNING_AI_KIND_ALIASES.get(raw, raw)
+
+
+def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: int) -> dict[str, Any] | None:
+    """Use the Materials Library contract for every Diamondvoy lesson test.
+
+    This is deliberately a lazy import: the library router imports main only
+    inside endpoints, so the server keeps its normal route initialization
+    order while both authoring flows share the same canonical normalizer.
+    """
+    from backend.library_ai import _normalize_questions
+
+    kind = _canonical_learning_ai_kind(
+        raw.get("kind") or raw.get("test_type") or raw.get("question_type")
+    )
+    prepared = dict(raw)
+    prepared["kind"] = kind
+    prepared["test_type"] = kind
+    prepared["prompt"] = str(
+        raw.get("prompt") or raw.get("question") or f"{topic} savoli {position}"
+    ).strip()
+    if prepared.get("answer") in (None, "") and raw.get("correct_answer") not in (None, ""):
+        prepared["answer"] = raw.get("correct_answer")
+
+    normalized = _normalize_questions([prepared])
+    if not normalized:
+        return None
+    question = normalized[0]
+    question["question"] = str(question.get("prompt") or prepared["prompt"])
+    question["test_type"] = str(question.get("kind") or kind)
+    question["explanation"] = str(raw.get("explanation") or "").strip()
+
+    options = list(question.get("options") or [])
+    if question["test_type"] in {"multiple_choice", "true_false", "listening", "listening_tf"}:
+        correct_index = int(question.get("correct_index") or 0)
+        question["correct_answer"] = (
+            options[correct_index] if 0 <= correct_index < len(options) else ""
+        )
+    elif question["test_type"] == "matching":
+        pairs = question.get("pairs") or []
+        question["correct_answer"] = "; ".join(
+            f"{pair.get('left')} = {pair.get('right')}"
+            for pair in pairs if isinstance(pair, dict)
+        )
+    else:
+        question["correct_answer"] = str(
+            question.get("answer") or question.get("reference_answer") or ""
+        )
+    return question
+
+
 @router.post("/staff/learning-modules/{module_id}/ai-question")
 async def generate_learning_ai_question(module_id: int, payload: LearningAiLessonRequest, authorization: str | None = Header(default=None)):
     """Generate AI test questions using Diamondvoy (xAI / Gemini) with question bank reuse and auto-save."""
@@ -2668,12 +2734,12 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     finally:
         conn.close()
 
-    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "fill_blank", "word_order", "matching"]
+    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching"]
     raw_types = [str(t).strip() for t in (payload.test_types or []) if str(t).strip()]
     if not raw_types or any(k in raw_types for k in ("mixed", "all", "aralash", "barchasi")):
         types_list = DEFAULT_MIXED_TEST_TYPES
     else:
-        types_list = raw_types
+        types_list = list(dict.fromkeys(_canonical_learning_ai_kind(kind) for kind in raw_types))
     types_str = ", ".join(types_list)
 
     needed_count = payload.question_count or 10
@@ -2685,12 +2751,24 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         count=needed_count,
         difficulty=payload.level or "medium",
     )
-    # The legacy bank has no columns for pairs, passages, media or nested items.
-    # Reuse only self-contained questions of the types the teacher requested.
-    bank_questions = [q for q in bank_questions if q.get("test_type") in types_list
-                      and q.get("test_type") in {"multiple_choice", "true_false", "fill_blank", "word_order"}]
-    if len(bank_questions) >= needed_count and set(types_list).issubset({q.get("test_type") for q in bank_questions}):
-        chosen_bank = bank_questions[:needed_count]
+    # The bank includes old naming variants. Normalize those questions through
+    # the Materials Library contract before they reach a Learning Path.
+    normalized_bank = []
+    for index, bank_question in enumerate(bank_questions):
+        canonical_kind = _canonical_learning_ai_kind(bank_question.get("test_type"))
+        if canonical_kind not in types_list:
+            continue
+        normalized = _learning_ai_question_payload(
+            {**bank_question, "test_type": canonical_kind},
+            topic=payload.topic,
+            position=index + 1,
+        )
+        if normalized:
+            normalized_bank.append(normalized)
+    if len(normalized_bank) >= needed_count and set(types_list).issubset(
+        {str(question.get("test_type") or "") for question in normalized_bank}
+    ):
+        chosen_bank = normalized_bank[:needed_count]
         items = []
         for index, bq in enumerate(chosen_bank):
             items.append({
@@ -2715,8 +2793,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "- 'options': array of string choices strictly following these rules:\n"
         "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"
         "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
-        "   * 'fill_blank': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
-        "   * 'word_order': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
+        "   * 'gap_fill': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
+        "   * 'scrambled_sentence': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
         "   * 'matching': MUST provide 'pairs': [{'left': 'word1', 'right': 'meaning1'}, {'left': 'word2', 'right': 'meaning2'}, ...]. 'correct_answer': 'word1 = meaning1; word2 = meaning2'. 'options': []. NEVER output choices like '1-A, 2-B'!\n"
         "- 'correct_answer': the exact single correct answer string (must match one of the choices in 'options' for multiple_choice/true_false, or pairs for matching)\n"
         "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
@@ -2770,7 +2848,9 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             if not isinstance(result, dict):
                 continue
             q_text = str(result.get("question") or f"{payload.topic} savoli {index + 1}").strip()
-            q_type = str(result.get("test_type") or types_list[index % len(types_list)] or "multiple_choice").strip().lower()
+            q_type = _canonical_learning_ai_kind(
+                result.get("test_type") or types_list[index % len(types_list)]
+            )
             raw_opts = result.get("options")
             options = [str(x).strip() for x in raw_opts] if isinstance(raw_opts, list) else []
             correct = str(result.get("correct_answer") or "").strip()
@@ -2799,6 +2879,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                             l, r = opt.split(" - ", 1)
                             pairs.append({"left": l.strip(), "right": r.strip()})
                 if pairs:
+                    result = {**result, "pairs": pairs}
                     options = [p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")]
                     if not correct or "1-A" in correct:
                         correct = "; ".join(f"{p.get('left')} = {p.get('right')}" for p in pairs if isinstance(p, dict))
@@ -2836,12 +2917,17 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                 question_payload["pairs"] = pairs
                 question_payload["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
                 question_payload["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
+            question_payload = _learning_ai_question_payload(
+                question_payload, topic=payload.topic, position=index + 1
+            )
+            if not question_payload:
+                continue
             items.append({
                 "title": f"{payload.topic} · {index + 1}",
                 "source_kind": "ai",
                 "question_payload": question_payload,
             })
-            library_questions.append({**question_payload, "kind": q_type})
+            library_questions.append(question_payload)
 
         if not items:
             raise ValueError("No valid questions generated")

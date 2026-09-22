@@ -66,6 +66,33 @@ def test_learning_path_contract_canonicalizes_repeatable_legacy_values():
     assert result["word_bank"] == ["first", "second"]
 
 
+def test_diamondvoy_learning_generator_uses_the_materials_library_contract():
+    choice = personalization._learning_ai_question_payload({
+        "test_type": "multiple_choice",
+        "question": "Choose the verb.",
+        "options": ["run", "blue", "quickly"],
+        "correct_answer": "run",
+    }, topic="Parts of speech", position=1)
+    gap = personalization._learning_ai_question_payload({
+        "test_type": "fill_blank",
+        "question": "She ___ home.",
+        "correct_answer": "goes",
+        "accepted_answers": ["walks"],
+    }, topic="Present simple", position=2)
+    order = personalization._learning_ai_question_payload({
+        "test_type": "word_order",
+        "question": "Put the words in order.",
+        "correct_answer": "We study English.",
+    }, topic="Word order", position=3)
+
+    assert choice["kind"] == choice["test_type"] == "multiple_choice"
+    assert choice["correct_index"] == 0
+    assert gap["kind"] == gap["test_type"] == "gap_fill"
+    assert gap["accepted_answers"] == ["walks"]
+    assert order["kind"] == order["test_type"] == "scrambled_sentence"
+    assert order["tokens"] == ["We", "study", "English"]
+
+
 def test_learning_path_cloze_keeps_each_alternative_as_a_separate_value():
     result = personalization._learning_library_question({
         "kind": "passage_cloze",

@@ -49,6 +49,29 @@ def test_ai_import_preserves_the_first_choice_when_correct_index_is_zero():
     assert question["correct_index"] == 0
 
 
+def test_image_import_uses_audio_free_choice_types_for_printed_questions():
+    questions = library_ai._normalize_questions([
+        {
+            "kind": "multiple_choice",
+            "question": "Which word is a verb?",
+            "options": ["run", "blue", "quickly"],
+            "correct_answer": "run",
+        },
+        {
+            "kind": "true_false",
+            "question": "A sentence starts with a capital letter.",
+            "correct_answer": "True",
+        },
+    ])
+
+    assert [question["kind"] for question in questions] == ["multiple_choice", "true_false"]
+    assert all(not question.get("needs_audio_upload") for question in questions)
+    assert library_ai._question_for_student(questions[0])["input"] == "choice"
+    assert library_ai._check_auto(
+        questions[0], library_ai.AiTestAnswerRequest(question_index=0, choice_index=0)
+    )[0] == "correct"
+
+
 def test_homework_checker_uses_each_alternative_answer_as_a_complete_value():
     question = {
         "kind": "gap_fill",
