@@ -795,6 +795,108 @@ def _choice_index(raw: dict, options: list[str], default: int = 0) -> int:
     return max(0, min(len(options) - 1, default)) if options else 0
 
 
+def _normalized_question_conditions(item: dict, kind: str, prompt: str, passage: str) -> tuple[str, str, str]:
+    """Return a concise, student-facing instruction for every test question.
+
+    ``instruction`` is legacy source metadata and often repeats the actual
+    exercise text.  It must never become a second copy of the task on the
+    student screen, so it is only used as a condition when it is distinct from
+    both the prompt and the passage.  AI-supplied localized conditions always
+    take priority; deterministic fallbacks make old imports work too.
+    """
+    def clean(value: Any) -> str:
+        return str(value or "").strip()
+
+    prompt_key = _norm_text(prompt)
+    passage_key = _norm_text(passage)
+    legacy_instruction = clean(item.get("instruction"))
+    if _norm_text(legacy_instruction) in {"", prompt_key, passage_key}:
+        legacy_instruction = ""
+
+    defaults = {
+        "multiple_choice": (
+            "To'g'ri variantni tanlang.",
+            "Выберите правильный вариант.",
+            "Choose the correct option.",
+        ),
+        "true_false": (
+            "Gap to'g'ri yoki noto'g'riligini belgilang.",
+            "Отметьте, верно или неверно утверждение.",
+            "Mark whether the statement is true or false.",
+        ),
+        "gap_fill": (
+            "Bo'sh joyni mos so'z yoki shakl bilan to'ldiring.",
+            "Заполните пропуск подходящим словом или формой.",
+            "Fill the blank with the correct word or form.",
+        ),
+        "passage_cloze": (
+            "Matndagi barcha bo'sh joylarni to'ldiring.",
+            "Заполните все пропуски в тексте.",
+            "Fill in every blank in the text.",
+        ),
+        "scrambled_sentence": (
+            "So'zlarni to'g'ri tartibda joylashtiring.",
+            "Расположите слова в правильном порядке.",
+            "Put the words in the correct order.",
+        ),
+        "matching": (
+            "Mos juftliklarni tanlang.",
+            "Сопоставьте подходящие пары.",
+            "Match the correct pairs.",
+        ),
+        "spelling": (
+            "So'zni to'g'ri imlo bilan yozing.",
+            "Напишите слово без орфографических ошибок.",
+            "Write the word with the correct spelling.",
+        ),
+        "translation": (
+            "Berilgan matnni ko'rsatilgan yo'nalishda tarjima qiling.",
+            "Переведите текст в указанном направлении.",
+            "Translate the text in the indicated direction.",
+        ),
+        "read_aloud": (
+            "Matnni mikrofonga aniq o'qib bering.",
+            "Чётко прочитайте текст в микрофон.",
+            "Read the text clearly into the microphone.",
+        ),
+        "speak_sentence": (
+            "Mikrofonga to'liq va mazmunli gap ayting.",
+            "Произнесите в микрофон полное осмысленное предложение.",
+            "Say a complete, meaningful sentence into the microphone.",
+        ),
+        "write_sentence": (
+            "To'liq va mazmunli gap yozing.",
+            "Напишите полное осмысленное предложение.",
+            "Write a complete, meaningful sentence.",
+        ),
+        "guided_writing": (
+            "Mavzu bo'yicha mazmunli matn yozing.",
+            "Напишите содержательный текст по теме.",
+            "Write a meaningful text about the topic.",
+        ),
+        "reading_set": (
+            "Matnni o'qing va barcha savollarga javob bering.",
+            "Прочитайте текст и ответьте на все вопросы.",
+            "Read the text and answer every question.",
+        ),
+        "listening_set": (
+            "Audioni tinglang va barcha savollarga javob bering.",
+            "Прослушайте аудио и ответьте на все вопросы.",
+            "Listen to the audio and answer every question.",
+        ),
+    }
+    fallback_uz, fallback_ru, fallback_en = defaults.get(kind, (
+        "Topshiriqni diqqat bilan bajaring.",
+        "Внимательно выполните задание.",
+        "Complete the task carefully.",
+    ))
+    shared = clean(item.get("condition")) or legacy_instruction
+    condition_uz = clean(item.get("condition_uz")) or shared or fallback_uz
+    condition_ru = clean(item.get("condition_ru")) or shared or fallback_ru
+    condition_en = clean(item.get("condition_en")) or shared or fallback_en
+    return condition_uz, condition_ru, condition_en
+
+
 def _normalize_questions(raw: Any) -> list[dict]:
     """Yangi test turlari uchun savollarni normallashtiradi va validatsiya qiladi."""
     if isinstance(raw, str):
@@ -861,6 +963,15 @@ def _normalize_questions(raw: Any) -> list[dict]:
             # word_count: guided_writing uchun minimal so'zlar soni
             "word_count": None,
         }
+        condition_uz, condition_ru, condition_en = _normalized_question_conditions(
+            item, kind, question["prompt"], question["passage"]
+        )
+        question.update({
+            "condition": condition_uz,
+            "condition_uz": condition_uz,
+            "condition_ru": condition_ru,
+            "condition_en": condition_en,
+        })
         accepted_raw = item.get("accepted_answers")
         if accepted_raw is None:
             accepted_raw = item.get("acceptable_answers")
@@ -1515,6 +1626,10 @@ def _question_for_student(question: dict) -> dict:
         "retry_until_correct": bool(meta.get("retry_until_correct", True)),
         "prompt": question.get("prompt"),
         "instruction": question.get("instruction"),
+        "condition": question.get("condition"),
+        "condition_uz": question.get("condition_uz"),
+        "condition_ru": question.get("condition_ru"),
+        "condition_en": question.get("condition_en"),
         "word": question.get("word"),
         "passage": question.get("passage"),
         "image_url": question.get("image_url"),
@@ -1704,6 +1819,11 @@ def _import_system_prompt(
         "• Do NOT add synonyms, related words, or words from example sentences.\n"
         "• Each word_practice item must include translation_uz (Uzbek) and translation_ru (Russian) from the list.\n"
         "• If you can find or infer an example_sentence for a word from the text, add it.\n\n"
+        "=== STUDENT TASK CONDITION (required for every question) ===\n"
+        "• Every question object MUST include condition_uz, condition_ru and condition_en.\n"
+        "• Each condition is one short instruction explaining what the student must do.\n"
+        "• A condition must NOT repeat the prompt, passage, answer choices or the text that the student must complete.\n"
+        "• Keep the actual question, sentence, passage, blanks and answer area in their normal fields below the condition.\n\n"
         "=== READING TEXT RULES ===\n"
         "• Whenever the material contains a reading passage, story, dialogue or article:\n"
         "  1. Put the COMPLETE verbatim text in reading_text field.\n"

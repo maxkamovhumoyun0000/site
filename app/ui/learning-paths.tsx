@@ -1375,6 +1375,15 @@ export function getWordPracticeCondition(q: any, lang: "uz" | "ru" | "en"): stri
   if (q.condition_uz) return String(q.condition_uz);
   if (q.condition) return String(q.condition);
 
+  // Old questions stored the condition in `instruction`.  It is safe to show
+  // it only when it is not just another copy of the prompt or passage.
+  const legacyInstruction = String(q.instruction || "").trim();
+  const taskText = String(q.question || q.prompt || "").trim();
+  const passageText = String(q.passage || q.context || "").trim();
+  if (legacyInstruction && legacyInstruction !== taskText && legacyInstruction !== passageText) {
+    return legacyInstruction;
+  }
+
   const mode = q.practice_mode || q.test_type;
   if (mode === "spelling") {
     return lang === "ru"
@@ -2597,18 +2606,8 @@ function LessonPlayerModal({
                 </div>
               ) : null}
 
-              {/* Duolingo Question Prompt Title */}
-              <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
-                {question.instruction ||
-                  (question.question && question.question.trim() !== question.passage?.trim()
-                    ? question.question
-                    : null) ||
-                  question.prompt ||
-                  "Topshiriqni bajaring:"}
-              </h2>
-
-              {/* Question Condition Banner (especially for word_practice and tasks with clear conditions) */}
-              {question.test_type === "word_practice" || question.practice_mode || question.condition_uz || question.condition ? (
+              {/* Shart doim yuqorida; bajariladigan savol undan keyin bir marta turadi. */}
+              {question ? (
                 <div className="flex items-start gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50/90 p-4 text-amber-950 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
                   <span className="text-2xl shrink-0 mt-0.5">🎯</span>
                   <div className="space-y-1">
@@ -2622,8 +2621,20 @@ function LessonPlayerModal({
                 </div>
               ) : null}
 
+              {(() => {
+                const taskText = String(question.question || question.prompt || "").trim();
+                const sourceText = String(question.passage || question.context || "").trim();
+                return taskText && taskText !== sourceText ? (
+                  <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">{taskText}</h2>
+                ) : null;
+              })()}
+
               {/* Passage / Context if available (hidden for passage_cloze to avoid duplication) */}
-              {!isCurrentCloze && (question.passage || question.context) && (question.question?.trim() !== question.passage?.trim()) ? (
+              {!isCurrentCloze && (question.passage || question.context) && (() => {
+                const taskText = String(question.question || question.prompt || "").trim();
+                const sourceText = String(question.passage || question.context || "").trim();
+                return taskText !== sourceText;
+              })() ? (
                 <div className="rounded-2xl border-2 border-indigo-200 bg-indigo-50/70 p-4 text-sm leading-relaxed text-slate-800 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
                   <div className="flex items-center gap-1.5 text-xs font-black uppercase text-indigo-700 dark:text-indigo-300 mb-1.5">
                     <span>📖</span>
@@ -4117,17 +4128,7 @@ function FinalExamPlayerModal({
                 </div>
               ) : null}
 
-              <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">
-                {currentQuestion.instruction ||
-                  (currentQuestion.question && currentQuestion.question.trim() !== currentQuestion.passage?.trim()
-                    ? currentQuestion.question
-                    : null) ||
-                  currentQuestion.prompt ||
-                  "Savolga javob bering:"}
-              </h2>
-
-              {/* Question Condition Banner (especially for word_practice and tasks with clear conditions) */}
-              {currentQuestion.test_type === "word_practice" || currentQuestion.practice_mode || currentQuestion.condition_uz || currentQuestion.condition ? (
+              {currentQuestion ? (
                 <div className="flex items-start gap-3 rounded-2xl border-2 border-amber-300 bg-amber-50/90 p-4 text-amber-950 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
                   <span className="text-2xl shrink-0 mt-0.5">🎯</span>
                   <div className="space-y-1">
@@ -4141,8 +4142,20 @@ function FinalExamPlayerModal({
                 </div>
               ) : null}
 
+              {(() => {
+                const taskText = String(currentQuestion.question || currentQuestion.prompt || "").trim();
+                const sourceText = String(currentQuestion.passage || currentQuestion.context || "").trim();
+                return taskText && taskText !== sourceText ? (
+                  <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">{taskText}</h2>
+                ) : null;
+              })()}
+
               {/* Passage / Context if available (hidden for cloze) */}
-              {!isExamCloze && (currentQuestion.passage || currentQuestion.context) && (currentQuestion.question?.trim() !== currentQuestion.passage?.trim()) ? (
+              {!isExamCloze && (currentQuestion.passage || currentQuestion.context) && (() => {
+                const taskText = String(currentQuestion.question || currentQuestion.prompt || "").trim();
+                const sourceText = String(currentQuestion.passage || currentQuestion.context || "").trim();
+                return taskText !== sourceText;
+              })() ? (
                 <div className="rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 text-sm leading-relaxed text-slate-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 max-h-56 overflow-y-auto whitespace-pre-wrap font-medium">
                   <div className="flex items-center gap-1.5 text-xs font-black uppercase text-amber-700 dark:text-amber-300 mb-1.5">
                     <span>📖</span>

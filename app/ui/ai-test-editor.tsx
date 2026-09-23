@@ -40,6 +40,10 @@ export type AiTestQuestion = {
   kind: AiTestKind;
   prompt?: string | null;
   instruction?: string | null;
+  condition?: string | null;
+  condition_uz?: string | null;
+  condition_ru?: string | null;
+  condition_en?: string | null;
   word?: string | null;
   translation?: string | null;
   translation_uz?: string | null;

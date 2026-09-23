@@ -36,6 +36,10 @@ type Question = {
   question?: string;
   prompt?: string;
   instruction?: string;
+  condition?: string;
+  condition_uz?: string;
+  condition_ru?: string;
+  condition_en?: string;
   word?: string;
   passage?: string;
   image_url?: string;
@@ -86,6 +90,15 @@ type AnswerResult = {
 };
 
 const ASSET = (url?: string) => (url && url.startsWith("/") ? `/api${url}` : url || "");
+
+function taskCondition(question: Question): string {
+  const fromCondition = question.condition_uz || question.condition || question.instruction;
+  const text = String(fromCondition || "").trim();
+  const prompt = String(question.question || question.prompt || "").trim();
+  const passage = String(question.passage || "").trim();
+  if (text && text !== prompt && text !== passage) return text;
+  return "Topshiriqni diqqat bilan bajaring.";
+}
 
 export function AiTestRunner({
   sourceType,
@@ -297,6 +310,11 @@ function QuestionCard({
         {question.direction && <span className="ml-2 font-semibold normal-case text-ink-400">({question.direction})</span>}
       </p>
 
+      <div className="mb-4 rounded-2xl border-2 border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold leading-relaxed text-amber-950 dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-100">
+        <span className="mr-2 text-xs font-black uppercase tracking-wide text-amber-700 dark:text-amber-300">Topshiriq sharti</span>
+        {taskCondition(question)}
+      </div>
+
       {/* So'z — speak/write/spelling/word_practice */}
       {question.word && (
         <MarkableWords words={[question.word]} tone="strong" />
@@ -326,9 +344,6 @@ function QuestionCard({
       {/* Savol matni */}
       {question.prompt && question.kind !== "passage_cloze" && (
         <p className="mb-3 text-lg font-bold text-navy-900 dark:text-white">{question.prompt}</p>
-      )}
-      {question.instruction && (
-        <p className="mb-3 text-sm font-semibold text-ink-500 dark:text-navy-300">{question.instruction}</p>
       )}
 
       {question.example_sentence && (

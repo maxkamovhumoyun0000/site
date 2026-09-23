@@ -2788,6 +2788,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt\n"
+        "- 'condition_uz', 'condition_ru' and 'condition_en': one concise instruction for the student. It explains the task but must not repeat the question, passage, blanks, choices or answer text.\n"
         f"- 'test_type': one of ({types_str}); use only the requested types.\n"
         "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
         "- 'options': array of string choices strictly following these rules:\n"
