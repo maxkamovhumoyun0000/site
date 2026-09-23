@@ -34,6 +34,17 @@ def test_library_question_keeps_rich_fields_and_accepted_answers():
         assert result[key] == raw[key]
 
 
+def test_deterministic_translation_checker_accepts_all_selected_synonyms():
+    accepted = ["murabbiy", "тренер"]
+    assert personalization._learning_answer_matches("Murabbiy", accepted)
+    assert personalization._learning_answer_matches(
+        "Murabbiy, тренер", accepted, allow_joined_translation=True
+    )
+    assert not personalization._learning_answer_matches(
+        "Murabbiy, doctor", accepted, allow_joined_translation=True
+    )
+
+
 def test_false_answer_is_not_replaced_by_true():
     result = personalization._learning_library_question({"kind": "true_false", "answer": False})
     assert result["correct_answer"] == "Noto'g'ri"

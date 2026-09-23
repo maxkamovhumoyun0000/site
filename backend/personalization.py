@@ -3716,6 +3716,38 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
     finally: conn.close()
 
 
+def _normalize_learning_answer(value: Any) -> str:
+    """Normalize a short deterministic lesson answer without changing language."""
+    text = str(value or "").strip().lower()
+    text = re.sub(r"['‘’`]", "'", text)
+    text = re.sub(r"[^\w\s'-]", " ", text, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _learning_answer_matches(
+    answer: str, expected_answers: list[str], *, allow_joined_translation: bool = False
+) -> bool:
+    """Compare deterministic spelling/translation answers, including synonyms."""
+    normalized_answer = _normalize_learning_answer(answer)
+    expected = {
+        _normalize_learning_answer(candidate)
+        for candidate in expected_answers
+        if _normalize_learning_answer(candidate)
+    }
+    if not normalized_answer or not expected:
+        return False
+    if normalized_answer in expected:
+        return True
+    if not allow_joined_translation:
+        return False
+    parts = [
+        _normalize_learning_answer(part)
+        for part in re.split(r"[,;/|]+", str(answer or ""))
+    ]
+    parts = [part for part in parts if part]
+    return len(parts) > 1 and all(part in expected for part in parts)
+
+
 @router.post("/student/learning-lessons/{lesson_id}/check-ai")
 @router.post("/student/learning-lessons/check-ai")
 async def check_learning_lesson_ai(
@@ -3773,23 +3805,46 @@ async def check_learning_lesson_ai(
 
         raw_w = str(qp.get("word") or qp.get("question") or qp.get("prompt") or "").strip()
         clean_w = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_w).strip() or raw_w
-        acc_list = list(qp.get("acceptable_answers") or [])
-        for candidate in [clean_w, raw_w, qp.get("translation"), qp.get("translation_uz"), qp.get("translation_ru"), qp.get("meaning")]:
-            if candidate:
-                for p in re.split(r"[,;\n/|]+", str(candidate)):
-                    ps = p.strip()
-                    if ps and ps not in acc_list:
-                        acc_list.append(ps)
+        effective_kind = str(
+            qp.get("practice_mode") or qp.get("kind") or qp.get("test_type") or "open"
+        ).strip().lower()
+        acc_list: list[str] = []
+
+        def add_accepted(value: Any) -> None:
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                raw = str(item or "").strip()
+                if not raw:
+                    continue
+                if raw not in acc_list:
+                    acc_list.append(raw)
+                for part in re.split(r"[,;\n/|]+", raw):
+                    candidate = part.strip()
+                    if candidate and candidate not in acc_list:
+                        acc_list.append(candidate)
+
+        add_accepted(qp.get("acceptable_answers"))
+        add_accepted(qp.get("accepted_answers"))
+        for candidate in [
+            clean_w,
+            raw_w,
+            qp.get("answer"),
+            qp.get("correct_answer"),
+            qp.get("translation"),
+            qp.get("translation_uz"),
+            qp.get("translation_ru"),
+        ]:
+            add_accepted(candidate)
 
         q_for_ai = {
-            "kind": str(qp.get("kind") or qp.get("test_type") or "open"),
+            "kind": effective_kind,
             "prompt": str(qp.get("prompt") or qp.get("question") or qp.get("instruction") or ""),
             "instruction": str(qp.get("instruction") or ""),
             "word": clean_w or qp.get("word"),
             "clean_word": clean_w,
             "raw_word": raw_w,
             "passage": qp.get("passage") or qp.get("context"),
-            "reference_answer": qp.get("reference_answer") or qp.get("sample_answer") or qp.get("example_sentence") or clean_w or qp.get("correct_answer"),
+            "reference_answer": qp.get("reference_answer") or qp.get("sample_answer") or qp.get("example_sentence") or qp.get("correct_answer") or qp.get("answer") or clean_w,
             "target_level": qp.get("target_level") or qp.get("level"),
             "translation": qp.get("translation"),
             "translation_uz": qp.get("translation_uz"),
@@ -3797,6 +3852,25 @@ async def check_learning_lesson_ai(
             "meaning": qp.get("meaning"),
             "accepted_answers": acc_list,
         }
+
+        # Spelling and translation have explicit accepted answers.  They must
+        # stay local and deterministic; sending a materialized translation to
+        # the sentence-writing AI checker is what caused valid answers to be
+        # rejected as though the learner had not used the English word.
+        if effective_kind in {"spelling", "translation"}:
+            is_correct = _learning_answer_matches(
+                answer,
+                acc_list,
+                allow_joined_translation=effective_kind == "translation",
+            )
+            return {
+                "is_correct": is_correct,
+                "verdict": "correct" if is_correct else "wrong",
+                "feedback": "Ajoyib! Juda to'g'ri!" if is_correct else "Javobingizda xatolik mavjud.",
+                "corrected": q_for_ai.get("reference_answer"),
+                "grammar_errors": [],
+                "score": 100.0 if is_correct else 0.0,
+            }
 
         ai_req = AiTestAnswerRequest(
             question_index=0,
