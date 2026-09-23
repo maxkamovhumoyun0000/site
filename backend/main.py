@@ -1354,6 +1354,9 @@ class User(UserBase):
     telegram_id: int | None = None
     subjects: list[str] = Field(default_factory=lambda: ["English"])
     language: str = "uz"
+    # Translation language used by English vocabulary practice. Russian
+    # courses deliberately ignore this and always use Uzbek translations.
+    vocabulary_translation_language: str | None = None
     placement_required: bool = False
     placement_subject: str | None = None
     access_enabled: bool = True
@@ -2220,6 +2223,10 @@ class TeacherArenaGenerationRequest(BaseModel):
 
 class UserLanguageUpdateRequest(BaseModel):
     language: Literal["uz", "ru", "en"] = "uz"
+
+
+class VocabularyTranslationLanguageUpdateRequest(BaseModel):
+    language: Literal["uz", "ru"]
 
 
 class CallbackCreateRequest(BaseModel):
@@ -6391,6 +6398,7 @@ def _build_user_payload(u: dict) -> User:
         str(u.get("login_id") or ""),
         int(u.get("session_version") or 1),
         str(u.get("language") or ""),
+        str(u.get("vocabulary_translation_language") or ""),
         str(u.get("profile_image_url") or ""),
         str(u.get("face_enrollment_required") or ""),
         str(u.get("face_profile_status") or ""),
@@ -6435,6 +6443,11 @@ def _build_user_payload(u: dict) -> User:
         telegram_id=int(u.get("telegram_id") or 0) if str(u.get("telegram_id") or "").strip() else None,
         subjects=_user_subjects_from_row(u),
         language=language,
+        vocabulary_translation_language=(
+            str(u.get("vocabulary_translation_language") or "").strip().lower()
+            if str(u.get("vocabulary_translation_language") or "").strip().lower() in {"uz", "ru"}
+            else None
+        ),
         placement_required=bool(int(u.get("placement_required") or 0)),
         placement_subject=(_normalize_subject_label(str(u.get("placement_subject") or "").strip()) or None),
         access_enabled=bool(int(u.get("access_enabled") or 0)),
@@ -9775,6 +9788,7 @@ def _ensure_user_web_columns() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_device_id TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS vocabulary_translation_language TEXT",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS device_model TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS face_enrollment_required INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS face_id_required INTEGER DEFAULT 1",
@@ -35793,6 +35807,35 @@ async def update_user_language_pref(payload: UserLanguageUpdateRequest, authoriz
     update_user_language(int(user.get("id") or 0), lang)
     refreshed = _safe_call(lambda: get_user_by_id(int(user.get("id") or 0)), None) or user
     return {"language": lang, "user": _build_user_payload(refreshed)}
+
+
+@app.patch("/student/profile/vocabulary-translation-language")
+async def update_vocabulary_translation_language(
+    payload: VocabularyTranslationLanguageUpdateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Persist the translation language for English random vocabulary tasks."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    language = str(payload.language or "").strip().lower()
+    _ensure_user_web_columns()
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET vocabulary_translation_language=? WHERE id=?",
+            (language, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _clear_auth_caches_for_user(user_id)
+    refreshed = _safe_call(lambda: get_user_by_id(user_id), None) or user
+    return {
+        "vocabulary_translation_language": language,
+        "user": _build_user_payload(refreshed),
+    }
 
 
 @app.get("/student/placement/session")

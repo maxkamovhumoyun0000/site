@@ -1457,11 +1457,18 @@ def _group_consecutive_gap_fill(questions: list[dict]) -> list[dict]:
     return out
 
 
-def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "English", chosen_kind: str | None = None) -> dict:
+def _materialize_word_practice(
+    q: dict,
+    lang: str = "Uzbek",
+    study_lang: str = "English",
+    chosen_kind: str | None = None,
+    translation_language: str | None = None,
+) -> dict:
     """word_practice ni random konkret test turiga aylantiradi (har attemptda boshqacha).
 
     Ko'rsatma (prompt) o'rganilayotgan til (study_lang: English/Russian) da yoziladi.
-    Tarjima esa student guruh tiliga (lang: Uzbek/Russian) qarab so'raladi."""
+    Ingliz tili uchun tarjima student profilida tanlangan Uzbek/Russian tilida;
+    rus tili uchun esa doim Uzbek tilida so'raladi."""
     import random
 
     ru = lang == "Russian"
@@ -1474,13 +1481,19 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     clean_word = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_word).strip() or raw_word
     word = clean_word
 
-    # Guruh tiliga mos tarjima: ruscha guruh -> ruscha, aks holda o'zbekcha.
     tr_uz = str(q.get("translation_uz") or "").strip()
     tr_ru = str(q.get("translation_ru") or "").strip()
     legacy = str(q.get("translation") or "").strip()
-    translation = (tr_ru if ru else tr_uz) or legacy or tr_uz or tr_ru
-    # Ikkala tarjima ham qabul qilinadi (student boshqa tilda yozsa ham).
-    raw_accepted = [t for t in {translation, tr_uz, tr_ru, legacy} if t]
+    requested_language = str(translation_language or "").strip().lower()
+    # Russian-course vocabulary is always coupled with Uzbek. English-course
+    # vocabulary uses the learner's saved choice; Uzbek stays a safe fallback
+    # for accounts created before this preference existed.
+    translation_code = "uz" if study_ru else (requested_language if requested_language in {"uz", "ru"} else "uz")
+    translation = (tr_ru if translation_code == "ru" else tr_uz) or legacy or tr_uz or tr_ru
+    # Accept only the configured target language. Previously both Uzbek and
+    # Russian answers were accepted, which made a selected profile language
+    # meaningless for checking.
+    raw_accepted = [translation] if translation else []
     accepted_translations = []
     for item in raw_accepted:
         accepted_translations.append(item)
@@ -1517,6 +1530,7 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
         "meaning": meaning,
         "translation_uz": tr_uz,
         "translation_ru": tr_ru,
+        "translation_language": translation_code,
     }
 
     if kind == "speak_sentence":
@@ -1589,27 +1603,65 @@ def _materialize_word_practice(q: dict, lang: str = "Uzbek", study_lang: str = "
     else:  # translation — tarjima student tiliga (uz/ru)
         base["input"] = "text"
         base["check"] = "auto"
-        base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
-        base["condition"] = (
-            f"🌐 Перевод: Напишите точный перевод слова «{word}»." if ru
-            else f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+        reverse_translation = (
+            bool(q.get("translation_reverse"))
+            if q.get("translation_reverse") is not None
+            else bool(random.getrandbits(1))
         )
-        base["condition_uz"] = f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
-        base["condition_ru"] = f"🌐 Перевод: Напишите точный перевод слова «{word}»."
-        base["condition_en"] = f"🌐 Translation: Write the accurate translation of the word '{word}'."
-        base["direction"] = "RU→UZ" if ru else "EN→UZ"
-        base["answer"] = translation
-        base["correct_answer"] = translation
-        base["accepted_answers"] = accepted_translations
+        if reverse_translation and translation:
+            target_language = "Russian" if study_ru else "English"
+            target_label_uz = "ruscha" if study_ru else "inglizcha"
+            target_label_ru = "русский" if study_ru else "английский"
+            base["prompt"] = (
+                f"Tarjima qiling: {translation}" if study_ru
+                else f"Translate to English: {translation}"
+            )
+            # The prompt already contains the source translation.  Do not
+            # render the English target again in the vocabulary banner, or
+            # the answer would be visible before the learner responds.
+            base["word"] = None
+            base["meaning"] = None
+            base["translation_uz"] = None
+            base["translation_ru"] = None
+            base["answer"] = word
+            base["correct_answer"] = word
+            base["accepted_answers"] = [word, clean_word, raw_word]
+            base["direction"] = "UZ→RU" if study_ru else ("RU→EN" if translation_code == "ru" else "UZ→EN")
+            base["condition"] = (
+                f"🌐 Tarjima: Berilgan so'zning {target_label_uz} variantini yozing."
+                if not ru
+                else f"🌐 Перевод: Напишите {target_label_ru} вариант данного слова."
+            )
+            base["condition_uz"] = f"🌐 Tarjima: Berilgan so'zning {target_label_uz} variantini yozing."
+            base["condition_ru"] = f"🌐 Перевод: Напишите {target_label_ru} вариант данного слова."
+            base["condition_en"] = f"🌐 Translation: Write the {target_language} word for the given translation."
+        else:
+            base["prompt"] = (f"Переведите: {word}" if ru else f"Tarjima qiling: {word}")
+            base["answer"] = translation
+            base["correct_answer"] = translation
+            base["accepted_answers"] = accepted_translations
+            base["direction"] = "RU→UZ" if study_ru else ("EN→RU" if translation_code == "ru" else "EN→UZ")
+            base["condition"] = (
+                f"🌐 Перевод: Напишите точный перевод слова «{word}»." if ru
+                else f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+            )
+            base["condition_uz"] = f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+            base["condition_ru"] = f"🌐 Перевод: Напишите точный перевод слова «{word}»."
+            base["condition_en"] = f"🌐 Translation: Write the accurate translation of the word '{word}'."
     return base
 
 
-def _expand_polymorphic_questions(questions: list[dict], lang: str = "Uzbek", study_lang: str = "English") -> list[dict]:
+def _expand_polymorphic_questions(
+    questions: list[dict],
+    lang: str = "Uzbek",
+    study_lang: str = "English",
+    translation_language: str | None = None,
+) -> list[dict]:
     """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi."""
     out: list[dict] = []
     for q in questions or []:
         if str(q.get("kind") or "") in POLYMORPHIC_KINDS:
-            out.append(_materialize_word_practice(q, lang, study_lang))
+            out.append(_materialize_word_practice(q, lang, study_lang, translation_language=translation_language))
         else:
             out.append(q)
     return out
@@ -2877,7 +2929,12 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
     # tilidagi (yevro/rus -> ruscha) ko'rsatma bilan ochamiz.
     lang = _student_lang(user)
     study_lang = _study_language_name(_student_subject(user))
-    questions = _expand_polymorphic_questions(questions, lang, study_lang)
+    questions = _expand_polymorphic_questions(
+        questions,
+        lang,
+        study_lang,
+        translation_language=_vocabulary_translation_language(user, _student_subject(user)),
+    )
     # Audio yuklanmagan tinglash mashqlari butun testni bloklamasin — ularni
     # o'tkazib yuboramiz, qolgan mashqlar ishlayveradi.
     questions = [q for q in questions if not q.get("needs_audio_upload")]
@@ -3074,6 +3131,19 @@ def _student_lang(user: dict) -> str:
         if str((g or {}).get("lang") or "").strip().lower() == "ru":
             return "Russian"
     return _instruction_language_name(None, _student_subject(user))
+
+
+def _vocabulary_translation_language(user: dict, subject: str) -> str:
+    """Return the answer language used by random vocabulary translation.
+
+    Russian courses are intentionally always Uzbek.  For English, the saved
+    profile setting chooses Uzbek or Russian; legacy accounts fall back to
+    Uzbek until the app asks them to choose.
+    """
+    if _study_language_name(subject) == "Russian":
+        return "uz"
+    preferred = str((user or {}).get("vocabulary_translation_language") or "").strip().lower()
+    return preferred if preferred in {"uz", "ru"} else "uz"
 
 
 def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:

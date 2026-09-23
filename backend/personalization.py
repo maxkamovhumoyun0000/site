@@ -3698,7 +3698,7 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
             q_kind = str(qp.get("kind") or qp.get("test_type") or "")
             if q_kind in {"word_practice", "vocabulary", "vocab"} or qp.get("practice_mode") in {"word_practice", "random"}:
                 import random as _rnd
-                from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name
+                from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name, _vocabulary_translation_language
                 # Deterministic single task per student & lesson (homework-like behavior)
                 lesson_seed = int(item.get("id") or 0) * 10007 + uid
                 r = _rnd.Random(lesson_seed)
@@ -3709,9 +3709,21 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
                 chosen_v = str(qp.get("practice_mode") or "").strip()
                 if chosen_v not in cand_variants:
                     chosen_v = r.choice(cand_variants)
+                # A lesson can be reopened. Persist its random translation
+                # direction in the materialized question so its prompt and
+                # answer never flip between requests.
+                materialize_qp = dict(qp)
+                if chosen_v == "translation" and materialize_qp.get("translation_reverse") is None:
+                    materialize_qp["translation_reverse"] = bool(r.getrandbits(1))
                 s_lang = _student_lang(user)
                 st_lang = _study_language_name(str(item.get("track_subject") or "English"))
-                mat = _materialize_word_practice(qp, lang=s_lang, study_lang=st_lang, chosen_kind=chosen_v)
+                mat = _materialize_word_practice(
+                    materialize_qp,
+                    lang=s_lang,
+                    study_lang=st_lang,
+                    chosen_kind=chosen_v,
+                    translation_language=_vocabulary_translation_language(user, str(item.get("track_subject") or "English")),
+                )
                 qp.update(mat)
         return item
     finally: conn.close()
