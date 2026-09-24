@@ -23207,6 +23207,9 @@ function DashboardShell({
     return true;
   });
   const orderedSections = orderSections(visibleSections);
+  const topbarSections = activeRole === "admin"
+    ? ["home", "users", "groups", "payments", "family-groups"].filter((item) => orderedSections.includes(item))
+    : orderedSections.slice(0, 5);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
   const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
     ? "home"
@@ -23983,7 +23986,7 @@ function DashboardShell({
                   <DiamondWordmark />
                 </a>
                 <nav className="topbar-desktop-nav">
-                  {orderedSections.slice(0, 5).map((item) => {
+                  {topbarSections.map((item) => {
                     const active = currentSection === item;
                     return (
                       <button
