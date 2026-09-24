@@ -1,10 +1,11 @@
-export type Role = "student" | "teacher" | "admin" | "support";
+export type Role = "student" | "teacher" | "admin" | "support" | "media";
 
 export const ROLE_LABELS: Record<Role, string> = {
   student: "Talaba",
   teacher: "O'qituvchi",
   admin: "Admin",
   support: "Support Teacher",
+  media: "Media boshqaruvi",
 };
 
 export const SUBJECT_OPTIONS = ["English", "Russian", "Matematika", "Ona tili", "Tarix", "Arab tili"] as const;
@@ -63,7 +64,8 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "profile",
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "userbot", "homework", "leaderboard", "kpi", "competitions-history", "attendance", "analytics", "holidays", "generator", "videos", "books", "grammar", "courses", "results", "broadcasts", "surveys", "reviews", "gifts", "domain-email", "dpoint-settings", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   support: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
@@ -120,6 +122,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "student-insights": "Student insightlari",
   grammar: "Grammatika Darslari",
   vocabulary: "Lug'at",
+  "vocabulary-bank": "Vocabulary Bank Editor",
   videos: "Video Darslar",
   books: "Kutubxona",
   "daily-test": "Kunlik Test",

@@ -39,6 +39,7 @@ import { StudentFaceEnrollmentPanel, StudentTestProctoring, useStudentProctoring
 import { AdminVideos } from "./ui/admin-videos";
 import { AdminBooks } from "./ui/admin-books";
 import { AdminGrammar } from "./ui/admin-grammar";
+import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import { AdminSms } from "./ui/admin-sms";
@@ -955,6 +956,10 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
+  // Media-X-01 is deliberately backed by an ordinary admin account so its
+  // existing token continues to authorize the media tools. The frontend
+  // narrows the visible workspace to the media-only set below.
+  if (String(user.login_id || "").trim().toLowerCase() === "media-x-01") return "media";
   if (user.role === "admin" || user.login_type === 4) return "admin";
   if (user.role === "support" || user.login_type === 5) return "support";
   if (user.role === "teacher" || user.login_type === 3) return "teacher";
@@ -15864,6 +15869,8 @@ function AdminSupportTeachersPanel() {
 function AdminSection({
   section,
   data,
+  mediaMode = false,
+  onNavigate,
   onCreateUser,
   onCreateGroup,
   onSetPermission,
@@ -15873,6 +15880,8 @@ function AdminSection({
 }: {
   section: string;
   data: GenericRow;
+  mediaMode?: boolean;
+  onNavigate: (section: string) => void;
   onCreateUser: (payload: GenericRow) => Promise<GenericRow | null>;
   onCreateGroup: (payload: GenericRow) => Promise<GenericRow | null>;
   onSetPermission: (teacherId: number, payload: GenericRow) => Promise<GenericRow | null>;
@@ -17696,6 +17705,14 @@ function AdminSection({
     if (Number(selectedUserId || 0) === uid) {
       loadUserDetail(uid);
     }
+  }
+
+  if (mediaMode && section === "home") {
+    return <MediaWorkspaceHome onNavigate={onNavigate} />;
+  }
+
+  if (mediaMode && section === "vocabulary-bank") {
+    return <AdminVocabularyBank apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs })} />;
   }
 
   if (section === "competitions-history") {
@@ -21165,6 +21182,31 @@ function AdminSection({
   );
 }
 
+const MEDIA_WORKSPACE_SECTIONS = [
+  "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts",
+  "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot",
+] as const;
+
+function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
+  return (
+    <section className="page-stack">
+      <div className="rounded-3xl border border-cyan-300/50 bg-gradient-to-br from-cyan-50 via-white to-blue-50 p-6 shadow-sm dark:border-cyan-400/20 dark:from-cyan-400/10 dark:via-navy-950 dark:to-blue-500/10">
+        <span className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">Media workspace</span>
+        <h2 className="mt-2 text-2xl font-black text-navy-950 dark:text-white">Media boshqaruvi</h2>
+        <p className="mt-2 max-w-2xl text-sm font-semibold text-ink-600 dark:text-slate-300">Bu akkaunt faqat media kontenti va siz belgilagan ommaviy sahifalarni boshqaradi.</p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {MEDIA_WORKSPACE_SECTIONS.map((section) => (
+          <button key={section} type="button" onClick={() => onNavigate(section)} className="rounded-2xl border border-line bg-white p-5 text-left font-black text-navy-950 shadow-sm transition hover:-translate-y-0.5 hover:border-cyan-400 hover:shadow-md dark:border-white/10 dark:bg-navy-900/50 dark:text-white">
+            <span className="text-lg text-cyan-600 dark:text-cyan-300">{sectionIconGlyph(section)}</span>
+            <span className="mt-3 block">{SECTION_LABELS[section]}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function SupportSection({
   section,
   data,
@@ -23140,12 +23182,12 @@ function DashboardShell({
     (appState?.sections?.[activeRole] as string[] | undefined),
     getUserSubjects(activeRole, user, appState),
   );
-  const rawRoleData = appState?.[activeRole] || {};
+  const rawRoleData = activeRole === "media" ? (appState?.admin || {}) : (appState?.[activeRole] || {});
   const roleData = activeRole === "student" ? { ...rawRoleData, user } : rawRoleData;
   const effectiveSections = activeRole === "support" && Array.isArray(roleData.groups) && roleData.groups.length
     ? Array.from(new Set([...sections, "groups", "group-attendance", "arena", "performance", "dcoin"]))
     : sections;
-  const canGenerateAi = activeRole === "admin" || Boolean(roleData.permissions?.can_generate_ai);
+  const canGenerateAi = activeRole === "admin" || activeRole === "media" || Boolean(roleData.permissions?.can_generate_ai);
   const blockedNav = new Set(["settings", "notifications", "support-requests"]);
   const visibleSections = effectiveSections.filter((item) => {
     if (HIDDEN_SECTION_IDS.has(item)) return false;
@@ -23500,7 +23542,7 @@ function DashboardShell({
 
   useEffect(() => {
     const role = roleFromUser(user);
-    if (role !== "student" && role !== "teacher" && role !== "support" && role !== "admin") {
+    if (role !== "student" && role !== "teacher" && role !== "support" && role !== "admin" && role !== "media") {
       setNotificationToast(null);
       return;
     }
@@ -23793,6 +23835,8 @@ function DashboardShell({
           onBookingStatus={onBookingStatus}
           onBookingAttendance={onBookingAttendance}
           onAdminCall={onAdminCall}
+          mediaMode={activeRole === "media"}
+          onNavigate={handleNavigate}
         />
       );
     }
@@ -24929,7 +24973,10 @@ export default function DiamondEducationApp() {
           // Ignore storage pressure/private mode.
         }
         const effective = payload?.effective_role as Role | undefined;
-        if (effective && effective !== activeRole) {
+        // The media account uses the existing admin API authorization but has
+        // a separate, frontend-only workspace. Never replace it with the
+        // backend's broad `admin` role after refreshing app state.
+        if (roleFromUser(userRef.current) !== "media" && effective && effective !== activeRole) {
           setActiveRole(effective);
         }
       } catch (error) {

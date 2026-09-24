@@ -36,6 +36,7 @@ export function sectionIconGlyph(section: string) {
     books: "▤",
     grammar: "Aa",
     vocabulary: "⌁",
+    "vocabulary-bank": "⌁",
     courses: "▱",
     gifts: "✦",
     reviews: "★",
@@ -96,7 +97,13 @@ export function orderSections(sections: string[]) {
         "home", "grammar", "vocabulary", "daily-test", "gamified", "arena", "leaderboard", "dcoin",
         "videos", "books", "homework", "support", "chats", "notifications", "profile",
       ]
-    : sectionSet.has("users") && sectionSet.has("reviews")
+    : sectionSet.has("vocabulary-bank")
+      ? [
+          "home", "videos", "books", "grammar", "vocabulary-bank", "courses",
+          "gifts", "reviews", "generator", "results", "competitions-history",
+          "dpoint-settings", "userbot", "profile",
+        ]
+      : sectionSet.has("users") && sectionSet.has("reviews")
       ? [
           "home", "users", "groups", "family-groups", "payments", "purchases", "homework",
           "attendance", "holidays", "admin-callbacks",
@@ -164,6 +171,9 @@ function pickRoleBottomSections(orderedSections: string[]) {
   }
   if (has("users") && has("reviews")) {
     return complete(["users", "payments"], ["groups", "generator"]);
+  }
+  if (has("vocabulary-bank")) {
+    return complete(["videos", "books"], ["grammar", "vocabulary-bank"]);
   }
   if (has("bookings")) {
     return complete(["bookings", "attendance"], ["homework", "bonus"]);
