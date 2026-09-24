@@ -24367,9 +24367,18 @@ export default function DiamondEducationApp() {
       const params = new URLSearchParams(window.location.search);
       const urlRole = (params.get("role") as Role) || "student";
       const urlSection = params.get("section") || "home";
+      const accountRole = roleFromUser(userRef.current);
+      // A copied/back navigation URL can still contain role=admin because the
+      // media account is backed by an admin API token. Do not let that URL
+      // switch this account into the ordinary admin workspace.
+      const safeRole = accountRole === "media" ? "media" : urlRole;
+      if (safeRole !== urlRole) {
+        params.set("role", safeRole);
+        window.history.replaceState(null, "", `/?${params.toString()}`);
+      }
       
       setSection((prevSection) => prevSection !== urlSection ? urlSection : prevSection);
-      setActiveRole((prevRole) => prevRole !== urlRole ? urlRole : prevRole);
+      setActiveRole((prevRole) => prevRole !== safeRole ? safeRole : prevRole);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -24888,7 +24897,7 @@ export default function DiamondEducationApp() {
         ) {
           setAppState((prev) => prev || cached);
           const cachedRole = cached?.effective_role as Role | undefined;
-          if (cachedRole && cachedRole !== activeRole) {
+          if (roleNow !== "media" && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
           }
         }
