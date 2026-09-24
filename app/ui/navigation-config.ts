@@ -65,7 +65,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "sms", "admin-callbacks", "voice-rooms", "profile"],
-  media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
+  media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot"],
   support: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 

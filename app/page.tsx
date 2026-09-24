@@ -863,7 +863,16 @@ function getUserSubjects(role: Role, user: ApiUser | null, appState: GenericRow 
 }
 
 function resolveRoleSections(role: Role, backendSections?: string[], userSubjects?: string[]) {
-  let list = Array.from(new Set([...(DEFAULT_SECTIONS[role] || []), ...(backendSections || [])]));
+  // Media-only routes must never reappear through an older backend's generic
+  // admin section list. Media itself is deliberately an allow-list.
+  const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home"));
+  const baseSections = DEFAULT_SECTIONS[role] || [];
+  let list = role === "media"
+    ? [...baseSections]
+    : Array.from(new Set([...baseSections, ...(backendSections || [])]));
+  if (role === "admin") {
+    list = list.filter((section) => !mediaOnly.has(section));
+  }
   if (userSubjects && userSubjects.length > 0) {
     const hasLang = userSubjects.some((s) => {
       const lower = s.toLowerCase();
@@ -21188,23 +21197,23 @@ const MEDIA_WORKSPACE_SECTIONS = [
 ] as const;
 
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
-  return (
-    <section className="page-stack">
-      <div className="rounded-3xl border border-cyan-300/50 bg-gradient-to-br from-cyan-50 via-white to-blue-50 p-6 shadow-sm dark:border-cyan-400/20 dark:from-cyan-400/10 dark:via-navy-950 dark:to-blue-500/10">
-        <span className="text-xs font-black uppercase tracking-[0.18em] text-cyan-700 dark:text-cyan-300">Media workspace</span>
-        <h2 className="mt-2 text-2xl font-black text-navy-950 dark:text-white">Media boshqaruvi</h2>
-        <p className="mt-2 max-w-2xl text-sm font-semibold text-ink-600 dark:text-slate-300">Bu akkaunt faqat media kontenti va siz belgilagan ommaviy sahifalarni boshqaradi.</p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-        {MEDIA_WORKSPACE_SECTIONS.map((section) => (
-          <button key={section} type="button" onClick={() => onNavigate(section)} className="rounded-2xl border border-line bg-white p-5 text-left font-black text-navy-950 shadow-sm transition hover:-translate-y-0.5 hover:border-cyan-400 hover:shadow-md dark:border-white/10 dark:bg-navy-900/50 dark:text-white">
-            <span className="text-lg text-cyan-600 dark:text-cyan-300">{sectionIconGlyph(section)}</span>
-            <span className="mt-3 block">{SECTION_LABELS[section]}</span>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
+  const primarySections = MEDIA_WORKSPACE_SECTIONS.slice(0, 4);
+  const columns = [MEDIA_WORKSPACE_SECTIONS.slice(4, 7), MEDIA_WORKSPACE_SECTIONS.slice(7, 10), MEDIA_WORKSPACE_SECTIONS.slice(10)];
+  return <div className="flex flex-col gap-5 pb-10 animate-fade-in">
+    <div className="admin-hero-stats">
+      {primarySections.map((section, index) => <button key={section} type="button" onClick={() => onNavigate(section)} className={`admin-stat-card ${["asc-indigo", "asc-cyan", "asc-emerald", "asc-amber"][index]}`}>
+        <div className="asc-bg-blob" /><div className="asc-icon">{sectionIconGlyph(section)}</div><div className="asc-value">{index + 1}</div><div className="asc-label">{SECTION_LABELS[section]}</div>
+      </button>)}
+    </div>
+    <div className="admin-dash-panels">
+      {columns.map((column, index) => <div key={`media-column-${index}`} className="admin-dash-panel">
+        <div className="admin-dash-panel-head"><span className="admin-dash-panel-title">{["Kontent", "AI va ommaviy", "Sozlamalar"][index]}</span></div>
+        {column.map((section) => <button key={section} type="button" onClick={() => onNavigate(section)} className="admin-user-item w-full cursor-pointer text-left transition-opacity hover:opacity-75">
+          <div className="admin-user-avatar">{sectionIconGlyph(section)}</div><div className="min-w-0 flex-1"><div className="admin-user-name">{SECTION_LABELS[section]}</div><div className="admin-user-sub">Boshqaruv sahifasini ochish</div></div>
+        </button>)}
+      </div>)}
+    </div>
+  </div>;
 }
 
 function SupportSection({
