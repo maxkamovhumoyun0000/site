@@ -2229,6 +2229,28 @@ class VocabularyTranslationLanguageUpdateRequest(BaseModel):
     language: Literal["uz", "ru"]
 
 
+class AdminVocabularyBankUpdateRequest(BaseModel):
+    word: str | None = Field(default=None, max_length=240)
+    translation_uz: str | None = Field(default=None, max_length=500)
+    translation_ru: str | None = Field(default=None, max_length=500)
+    definition: str | None = Field(default=None, max_length=1500)
+    example: str | None = Field(default=None, max_length=1500)
+    level: str | None = Field(default=None, max_length=32)
+
+
+class AdminVocabularyBankAnalyzeRequest(BaseModel):
+    subject: Literal["English", "Russian"]
+    level: str | None = Field(default=None, max_length=32)
+    query: str | None = Field(default=None, max_length=250)
+    instruction: str = Field(min_length=3, max_length=2000)
+    limit: int = Field(default=80, ge=1, le=120)
+
+
+class AdminVocabularyBankApplyRequest(BaseModel):
+    delete_ids: list[int] = Field(default_factory=list, max_length=80)
+    updates: list[dict[str, Any]] = Field(default_factory=list, max_length=80)
+
+
 class CallbackCreateRequest(BaseModel):
     name: str
     phone: str
@@ -50961,6 +50983,329 @@ async def vocabulary(
         "has_more": has_more,
         "ai_generated": ai_generated,
     }
+
+
+_VOCABULARY_BANK_LEVELS = {
+    "BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE",
+    "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1",
+}
+_VOCABULARY_BANK_EDITABLE_FIELDS = {
+    "word", "translation_uz", "translation_ru", "definition", "example", "level",
+}
+
+
+def _vocabulary_bank_level(value: str | None) -> str | None:
+    normalized = str(value or "").strip().upper()
+    if not normalized or normalized == "ALL":
+        return None
+    if normalized not in _VOCABULARY_BANK_LEVELS:
+        raise HTTPException(status_code=422, detail="Vocabulary darajasi noto‘g‘ri")
+    return normalized
+
+
+def _vocabulary_bank_where(subject: str, level: str | None, query: str | None) -> tuple[str, list[Any]]:
+    clauses = ["LOWER(subject)=LOWER(?)", "LOWER(language)=LOWER(?)"]
+    params: list[Any] = [subject, vocab_language_for_subject(subject)]
+    if level:
+        clauses.append("level=?")
+        params.append(level)
+    normalized_query = str(query or "").strip().lower()
+    if normalized_query:
+        pattern = f"%{normalized_query}%"
+        clauses.append(
+            "(LOWER(word) LIKE ? OR LOWER(translation_uz) LIKE ? OR LOWER(translation_ru) LIKE ? "
+            "OR LOWER(definition) LIKE ? OR LOWER(example) LIKE ?)"
+        )
+        params.extend([pattern, pattern, pattern, pattern, pattern])
+    return " AND ".join(clauses), params
+
+
+def _vocabulary_bank_row(cur: Any, word_id: int) -> dict[str, Any] | None:
+    cur.execute(
+        """
+        SELECT id, word, subject, language, level, translation_uz, translation_ru, definition, example
+        FROM words WHERE id=? LIMIT 1
+        """,
+        (int(word_id),),
+    )
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def _vocabulary_bank_update_values(existing: dict[str, Any], payload: dict[str, Any]) -> tuple[Any, ...]:
+    values: dict[str, str] = {}
+    for field in _VOCABULARY_BANK_EDITABLE_FIELDS:
+        if field not in payload or payload[field] is None:
+            continue
+        value = str(payload[field]).strip()
+        if field == "word" and not value:
+            raise HTTPException(status_code=422, detail="So‘z bo‘sh bo‘lishi mumkin emas")
+        if field == "level":
+            level = _vocabulary_bank_level(value)
+            if not level:
+                raise HTTPException(status_code=422, detail="Vocabulary darajasi tanlanishi kerak")
+            value = level
+        values[field] = value
+    if not values:
+        raise HTTPException(status_code=422, detail="Tahrir uchun kamida bitta maydon yuboring")
+    return (
+        values.get("word", str(existing.get("word") or "")),
+        values.get("translation_uz", str(existing.get("translation_uz") or "")),
+        values.get("translation_ru", str(existing.get("translation_ru") or "")),
+        values.get("definition", str(existing.get("definition") or "")),
+        values.get("example", str(existing.get("example") or "")),
+        values.get("level", str(existing.get("level") or "PRE-INTERMEDIATE")),
+        int(existing["id"]),
+    )
+
+
+@app.get("/admin/vocabulary-bank")
+async def admin_vocabulary_bank(
+    authorization: str | None = Header(default=None),
+    subject: Literal["English", "Russian"] = Query(default="English"),
+    level: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=60, ge=1, le=100),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    selected_subject = _normalize_subject_label(subject) or "English"
+    selected_level = _vocabulary_bank_level(level)
+    where_sql, params = _vocabulary_bank_where(selected_subject, selected_level, query)
+    offset = (int(page) - 1) * int(limit)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) AS total FROM words WHERE {where_sql}", tuple(params))
+        total = int((cur.fetchone() or {}).get("total") or 0)
+        cur.execute(
+            f"""
+            SELECT id, word, subject, language, level, translation_uz, translation_ru, definition, example
+            FROM words WHERE {where_sql} ORDER BY id LIMIT ? OFFSET ?
+            """,
+            tuple(params + [int(limit), offset]),
+        )
+        items = [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+    return {
+        "items": items,
+        "subject": selected_subject,
+        "level": selected_level or "ALL",
+        "page": int(page),
+        "limit": int(limit),
+        "total": total,
+        "has_more": offset + len(items) < total,
+    }
+
+
+@app.patch("/admin/vocabulary-bank/{word_id}")
+async def admin_update_vocabulary_bank_word(
+    word_id: int,
+    payload: AdminVocabularyBankUpdateRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        existing = _vocabulary_bank_row(cur, word_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Vocabulary so‘zi topilmadi")
+        values = _vocabulary_bank_update_values(existing, payload.model_dump())
+        cur.execute(
+            """
+            UPDATE words
+            SET word=?, translation_uz=?, translation_ru=?, definition=?, example=?, level=?
+            WHERE id=?
+            """,
+            values,
+        )
+        conn.commit()
+        updated = _vocabulary_bank_row(cur, word_id)
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"item": updated}
+
+
+@app.delete("/admin/vocabulary-bank/{word_id}")
+async def admin_delete_vocabulary_bank_word(
+    word_id: int,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        existing = _vocabulary_bank_row(cur, word_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail="Vocabulary so‘zi topilmadi")
+        cur.execute("DELETE FROM words WHERE id=?", (int(word_id),))
+        conn.commit()
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"deleted_id": int(word_id)}
+
+
+@app.post("/admin/vocabulary-bank/analyze")
+async def admin_analyze_vocabulary_bank(
+    payload: AdminVocabularyBankAnalyzeRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Generate a review proposal only. The client must explicitly apply it."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    selected_subject = _normalize_subject_label(payload.subject) or "English"
+    selected_level = _vocabulary_bank_level(payload.level)
+    where_sql, params = _vocabulary_bank_where(selected_subject, selected_level, payload.query)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT id, word, level, translation_uz, translation_ru, definition, example
+            FROM words WHERE {where_sql} ORDER BY id LIMIT ?
+            """,
+            tuple(params + [int(payload.limit)]),
+        )
+        items = [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+    if not items:
+        return {"summary": "Analiz uchun so‘z topilmadi.", "delete_ids": [], "updates": [], "reviewed": 0}
+
+    compact_items = [
+        {
+            "id": row["id"], "word": str(row.get("word") or "")[:240],
+            "level": row.get("level"), "translation_uz": str(row.get("translation_uz") or "")[:400],
+            "translation_ru": str(row.get("translation_ru") or "")[:400],
+            "definition": str(row.get("definition") or "")[:500],
+            "example": str(row.get("example") or "")[:500],
+        }
+        for row in items
+    ]
+    prompt = (
+        "You review a private language-learning vocabulary bank. Return ONLY one valid JSON object. "
+        "Never invent ids. The operator instruction is authoritative, but only mark entries that clearly match it. "
+        "Do not delete ordinary educational, medical, historical, or grammar words merely because their topic is sensitive. "
+        "Use delete_ids only for clearly inappropriate 18+ content, junk, wrong-language entries, or redundant exact duplicates. "
+        "Use updates only when a safe spelling/translation/definition/example correction is clear. "
+        "Return this exact shape: {\"summary\":string,\"delete_ids\":[number],\"updates\":[{\"id\":number,\"word\":string?,\"translation_uz\":string?,\"translation_ru\":string?,\"definition\":string?,\"example\":string?,\"level\":string?,\"reason\":string}]}. "
+        f"Subject: {selected_subject}. Operator instruction: {payload.instruction.strip()}. Entries: {json.dumps(compact_items, ensure_ascii=False)}"
+    )
+    try:
+        from ai_generator import _balanced_json_object_slice, _xai_generate_text
+        async with aiohttp.ClientSession() as session:
+            raw = await asyncio.wait_for(
+                _xai_generate_text(
+                    prompt,
+                    session=session,
+                    temperature=0.1,
+                    system_content="You are a careful vocabulary quality reviewer. Return only valid JSON object, with no markdown.",
+                ),
+                timeout=55.0,
+            )
+        start = str(raw or "").find("{")
+        object_text = _balanced_json_object_slice(str(raw or ""), start) if start >= 0 else None
+        proposal = json.loads(object_text or "{}")
+        if not isinstance(proposal, dict):
+            raise ValueError("AI response is not an object")
+    except Exception as exc:
+        logger.exception("vocabulary bank AI review failed")
+        raise HTTPException(status_code=502, detail="AI analiz hozir yakunlanmadi, qayta urinib ko‘ring") from exc
+
+    allowed_ids = {int(row["id"]) for row in items}
+    delete_ids = []
+    for raw_id in proposal.get("delete_ids") or []:
+        try:
+            item_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if item_id in allowed_ids and item_id not in delete_ids:
+            delete_ids.append(item_id)
+    updates: list[dict[str, Any]] = []
+    for raw_update in proposal.get("updates") or []:
+        if not isinstance(raw_update, dict):
+            continue
+        try:
+            item_id = int(raw_update.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if item_id not in allowed_ids or item_id in delete_ids:
+            continue
+        clean: dict[str, Any] = {"id": item_id}
+        for field in _VOCABULARY_BANK_EDITABLE_FIELDS:
+            value = raw_update.get(field)
+            if isinstance(value, str) and value.strip():
+                clean[field] = value.strip()[:1500]
+        if len(clean) > 1:
+            clean["reason"] = str(raw_update.get("reason") or "AI tahrir taklifi")[:500]
+            updates.append(clean)
+    return {
+        "summary": str(proposal.get("summary") or "AI review tayyor.")[:1200],
+        "delete_ids": delete_ids[:80],
+        "updates": updates[:80],
+        "reviewed": len(items),
+    }
+
+
+@app.post("/admin/vocabulary-bank/apply")
+async def admin_apply_vocabulary_bank_proposal(
+    payload: AdminVocabularyBankApplyRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Atomically apply the editor's explicitly approved AI proposal."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    delete_ids = list(dict.fromkeys(int(item_id) for item_id in payload.delete_ids if int(item_id) > 0))[:80]
+    updates_by_id: dict[int, dict[str, Any]] = {}
+    for update in payload.updates[:80]:
+        if not isinstance(update, dict):
+            continue
+        try:
+            item_id = int(update.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if item_id > 0 and item_id not in delete_ids:
+            updates_by_id[item_id] = update
+    conn = get_conn()
+    updated_ids: list[int] = []
+    try:
+        cur = conn.cursor()
+        for item_id, update in updates_by_id.items():
+            existing = _vocabulary_bank_row(cur, item_id)
+            if not existing:
+                continue
+            values = _vocabulary_bank_update_values(existing, update)
+            cur.execute(
+                "UPDATE words SET word=?, translation_uz=?, translation_ru=?, definition=?, example=?, level=? WHERE id=?",
+                values,
+            )
+            updated_ids.append(item_id)
+        deleted_ids: list[int] = []
+        for item_id in delete_ids:
+            cur.execute("DELETE FROM words WHERE id=?", (item_id,))
+            if cur.rowcount:
+                deleted_ids.append(item_id)
+        conn.commit()
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"updated_ids": updated_ids, "deleted_ids": deleted_ids}
 
 
 # --- Vocabulary AI auto-add guardlari (qidiruvda topilmagan so'z uchun) ---
