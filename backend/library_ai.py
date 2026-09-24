@@ -1520,16 +1520,22 @@ def _materialize_word_practice(
         "kind": kind,
         "test_type": kind,
         "practice_mode": kind,
+        "is_random_word_practice": True,
         "word": word,
         "clean_word": clean_word,
-        "raw_word": raw_word,
-        "pos_tag": pos_tag,
+        # A random practice task must show only the exercise itself.  The
+        # source word may contain a part-of-speech marker such as ``(n)``;
+        # never send that marker or the translation/example aids to a student
+        # test runner because they either duplicate the prompt or reveal the
+        # answer before it is submitted.
+        "raw_word": clean_word,
+        "pos_tag": None,
         "level": level,
         "instruction": instruction,
-        "example_sentence": example_sentence,
-        "meaning": meaning,
-        "translation_uz": tr_uz,
-        "translation_ru": tr_ru,
+        "example_sentence": None,
+        "meaning": None,
+        "translation_uz": None,
+        "translation_ru": None,
         "translation_language": translation_code,
     }
 
@@ -1541,12 +1547,13 @@ def _materialize_word_practice(
             else f"Make and say a sentence using '{word}'"
         )
         base["condition"] = (
-            f"🗣️ Устное упражнение: Составьте предложение со словом «{word}» и четко произнесите его в микрофон." if ru
-            else f"🗣️ Ovozli gap tuzish: «{word}» so'zi ishtirokida gap tuzing va mikrofon orqali ayting."
+            "🗣️ Ovozli gap tuzish: Berilgan so'z bilan gap tuzing va mikrofon orqali ayting."
+            if not ru
+            else "🗣️ Устное упражнение: Составьте предложение с данным словом и четко произнесите его в микрофон."
         )
-        base["condition_uz"] = f"🗣️ Ovozli gap tuzish: «{word}» so'zi ishtirokida gap tuzing va mikrofon orqali ayting."
-        base["condition_ru"] = f"🗣️ Устное упражнение: Составьте предложение со словом «{word}» и четко произнесите его в микрофон."
-        base["condition_en"] = f"🗣️ Speaking exercise: Make a sentence using '{word}' and speak clearly into the microphone."
+        base["condition_uz"] = "🗣️ Ovozli gap tuzish: Berilgan so'z bilan gap tuzing va mikrofon orqali ayting."
+        base["condition_ru"] = "🗣️ Устное упражнение: Составьте предложение с данным словом и четко произнесите его в микрофон."
+        base["condition_en"] = "🗣️ Speaking exercise: Make a sentence using the displayed word and speak clearly into the microphone."
         base["reference_answer"] = example_sentence or word
         base["accepted_answers"] = [example_sentence] if example_sentence else []
     elif kind == "read_aloud":
@@ -1557,12 +1564,13 @@ def _materialize_word_practice(
             else f"Pronounce the word clearly: '{word}'"
         )
         base["condition"] = (
-            f"🎙️ Произношение: Произнесите слово «{word}» четко в микрофон." if ru
-            else f"🎙️ Ovozli talaffuz: «{word}» so'zini aniq talaffuz qiling va mikrofon orqali ayting."
+            "🎙️ Ovozli talaffuz: Berilgan so'zni aniq talaffuz qiling va mikrofon orqali ayting."
+            if not ru
+            else "🎙️ Произношение: Четко произнесите данное слово в микрофон."
         )
-        base["condition_uz"] = f"🎙️ Ovozli talaffuz: «{word}» so'zini aniq talaffuz qiling va mikrofon orqali ayting."
-        base["condition_ru"] = f"🎙️ Произношение: Произнесите слово «{word}» четко в микрофон."
-        base["condition_en"] = f"🎙️ Pronunciation: Pronounce the word '{word}' clearly into the microphone."
+        base["condition_uz"] = "🎙️ Ovozli talaffuz: Berilgan so'zni aniq talaffuz qiling va mikrofon orqali ayting."
+        base["condition_ru"] = "🎙️ Произношение: Четко произнесите данное слово в микрофон."
+        base["condition_en"] = "🎙️ Pronunciation: Pronounce the displayed word clearly into the microphone."
         base["reference_answer"] = word
         base["target_word"] = word
         base["accepted_answers"] = [word, clean_word, raw_word]
@@ -1574,12 +1582,13 @@ def _materialize_word_practice(
             else f"Write a sentence using '{word}'"
         )
         base["condition"] = (
-            f"✍️ Составление предложения: Напишите полное, осмысленное предложение со словом «{word}»." if ru
-            else f"✍️ Gap yozish: «{word}» so'zi ishtirokida to'liq va mazmunli gap tuzib yozing."
+            "✍️ Gap yozish: Berilgan so'z bilan to'liq va mazmunli gap tuzib yozing."
+            if not ru
+            else "✍️ Составление предложения: Напишите полное осмысленное предложение с данным словом."
         )
-        base["condition_uz"] = f"✍️ Gap yozish: «{word}» so'zi ishtirokida to'liq va mazmunli gap tuzib yozing."
-        base["condition_ru"] = f"✍️ Составление предложения: Напишите полное, осмысленное предложение со словом «{word}»."
-        base["condition_en"] = f"✍️ Sentence writing: Write a complete, meaningful sentence using the word '{word}'."
+        base["condition_uz"] = "✍️ Gap yozish: Berilgan so'z bilan to'liq va mazmunli gap tuzib yozing."
+        base["condition_ru"] = "✍️ Составление предложения: Напишите полное осмысленное предложение с данным словом."
+        base["condition_en"] = "✍️ Sentence writing: Write a complete, meaningful sentence using the displayed word."
         base["reference_answer"] = example_sentence
         base["accepted_answers"] = [example_sentence] if example_sentence else []
     elif kind == "spelling":
@@ -1587,16 +1596,15 @@ def _materialize_word_practice(
         base["check"] = "auto"
         base["prompt"] = q.get("prompt") or (
             f"Правильно напишите слово по значению" if ru or study_ru
-            else "Spell the word correctly"
+            else f"Spell this word correctly: {word}"
         )
         base["condition"] = (
-            f"🔤 Правописание (Spelling): Напишите английское слово «{word}» без орфографических ошибок." if ru
-            else f"🔤 To'g'ri yozish (Spelling): «{word}» so'zining to'g'ri imlosini kiriting."
+            "🔤 To'g'ri yozish: Ko'rsatilgan so'zni xatosiz yozing." if not ru
+            else "🔤 Правописание: Напишите показанное слово без ошибок."
         )
-        base["condition_uz"] = f"🔤 To'g'ri yozish (Spelling): «{word}» so'zining to'g'ri imlosini kiriting."
-        base["condition_ru"] = f"🔤 Правописание (Spelling): Напишите английское слово «{word}» без орфографических ошибок."
-        base["condition_en"] = f"🔤 Spelling: Type the correct English spelling of '{word}' without mistakes."
-        base["hint"] = meaning or translation or example_sentence
+        base["condition_uz"] = "🔤 To'g'ri yozish: Ko'rsatilgan so'zni xatosiz yozing."
+        base["condition_ru"] = "🔤 Правописание: Напишите показанное слово без ошибок."
+        base["condition_en"] = "🔤 Spelling: Type the displayed word without mistakes."
         base["answer"] = word
         base["correct_answer"] = word
         base["accepted_answers"] = [word, clean_word, raw_word]
@@ -1642,12 +1650,13 @@ def _materialize_word_practice(
             base["accepted_answers"] = accepted_translations
             base["direction"] = "RU→UZ" if study_ru else ("EN→RU" if translation_code == "ru" else "EN→UZ")
             base["condition"] = (
-                f"🌐 Перевод: Напишите точный перевод слова «{word}»." if ru
-                else f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
+                "🌐 Tarjima: Ko'rsatilgan so'zning aniq tarjimasini yozing."
+                if not ru
+                else "🌐 Перевод: Напишите точный перевод показанного слова."
             )
-            base["condition_uz"] = f"🌐 Tarjima: «{word}» so'zining to'g'ri tarjimasini yozing."
-            base["condition_ru"] = f"🌐 Перевод: Напишите точный перевод слова «{word}»."
-            base["condition_en"] = f"🌐 Translation: Write the accurate translation of the word '{word}'."
+            base["condition_uz"] = "🌐 Tarjima: Ko'rsatilgan so'zning aniq tarjimasini yozing."
+            base["condition_ru"] = "🌐 Перевод: Напишите точный перевод показанного слова."
+            base["condition_en"] = "🌐 Translation: Write the accurate translation of the displayed word."
     return base
 
 
@@ -1671,13 +1680,18 @@ def _question_for_student(question: dict) -> dict:
     """Javobni yashirib, studentga ko'rsatiladigan shaklga keltiradi."""
     kind = str(question.get("kind") or "")
     meta = AI_TEST_TYPES.get(kind, {})
+    is_random_word_practice = bool(question.get("is_random_word_practice"))
     out = {
         "kind": kind,
         "check": meta.get("check", "ai"),
         "input": meta.get("input", "text"),
         "retry_until_correct": bool(meta.get("retry_until_correct", True)),
         "prompt": question.get("prompt"),
-        "instruction": question.get("instruction"),
+        "instruction": (
+            question.get("condition")
+            if is_random_word_practice
+            else question.get("instruction")
+        ),
         "condition": question.get("condition"),
         "condition_uz": question.get("condition_uz"),
         "condition_ru": question.get("condition_ru"),
@@ -1687,6 +1701,7 @@ def _question_for_student(question: dict) -> dict:
         "image_url": question.get("image_url"),
         "audio_url": question.get("audio_url"),
         "level": question.get("level"),
+        "is_random_word_practice": is_random_word_practice,
     }
     if kind in {"multiple_choice", "listening", "true_false"}:
         out["options"] = question.get("options") or []
@@ -1720,9 +1735,14 @@ def _question_for_student(question: dict) -> dict:
             sub_questions.append(item)
         out["sub_questions"] = sub_questions
     elif kind == "matching":
-        pairs = question.get("pairs") or []
-        out["left_items"] = [p.get("left") for p in pairs]
-        out["right_items"] = sorted([p.get("right") for p in pairs])
+        pairs = [
+            p for p in (question.get("pairs") or [])
+            if isinstance(p, dict)
+            and str(p.get("left") or "").strip()
+            and str(p.get("right") or "").strip()
+        ]
+        out["left_items"] = [str(p["left"]).strip() for p in pairs]
+        out["right_items"] = sorted(str(p["right"]).strip() for p in pairs)
     elif kind == "scrambled_sentence":
         # To'g'ri so'zlar + AI chalg'ituvchi so'zlari aralashtiriladi.
         tokens = list(question.get("tokens") or []) + list(question.get("distractors") or [])

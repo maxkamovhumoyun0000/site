@@ -2583,7 +2583,7 @@ function LessonPlayerModal({
               </div>
 
               {/* Target Word Banner (Duolingo / Materials Library style) */}
-              {question.word ? (
+              {question.word && !question.is_random_word_practice ? (
                 <TargetWordBanner
                   word={question.word}
                   phonetic={question.phonetic || question.pronunciation}
@@ -3113,7 +3113,7 @@ function LessonPlayerModal({
                             🌐 {question.direction}
                           </span>
                         ) : null}
-                        {question.hint ? (
+                        {!question.is_random_word_practice && question.hint ? (
                           <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
                             💡 {question.hint}
                           </span>
@@ -3171,12 +3171,12 @@ function LessonPlayerModal({
                             🌐 {question.direction}
                           </span>
                         ) : null}
-                        {question.hint ? (
+                        {!question.is_random_word_practice && question.hint ? (
                           <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
                             💡 Yordam: {question.hint}
                           </span>
                         ) : null}
-                        {question.example_sentence ? (
+                        {!question.is_random_word_practice && question.example_sentence ? (
                           <span className="rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                             📝 Misol: {question.example_sentence}
                           </span>
@@ -4105,7 +4105,7 @@ function FinalExamPlayerModal({
               </div>
 
               {/* Target Word Banner (Duolingo / Materials Library style) */}
-              {currentQuestion.word ? (
+              {currentQuestion.word && !currentQuestion.is_random_word_practice ? (
                 <TargetWordBanner
                   word={currentQuestion.word}
                   phonetic={currentQuestion.phonetic || currentQuestion.pronunciation}
@@ -4539,7 +4539,7 @@ function FinalExamPlayerModal({
                             🌐 {currentQuestion.direction}
                           </span>
                         ) : null}
-                        {currentQuestion.hint ? (
+                        {!currentQuestion.is_random_word_practice && currentQuestion.hint ? (
                           <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
                             💡 Yordam: {currentQuestion.hint}
                           </span>
@@ -4596,12 +4596,12 @@ function FinalExamPlayerModal({
                             🌐 {currentQuestion.direction}
                           </span>
                         ) : null}
-                        {currentQuestion.hint ? (
+                        {!currentQuestion.is_random_word_practice && currentQuestion.hint ? (
                           <span className="rounded-xl border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-black text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
                             💡 Yordam: {currentQuestion.hint}
                           </span>
                         ) : null}
-                        {currentQuestion.example_sentence ? (
+                        {!currentQuestion.is_random_word_practice && currentQuestion.example_sentence ? (
                           <span className="rounded-xl border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-bold text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">
                             📝 Misol: {currentQuestion.example_sentence}
                           </span>
