@@ -3010,7 +3010,23 @@ def _structured_string_list(raw: Any) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
-        text = str(value or "").strip()
+        # OCR/AI imports sometimes store an option as a structured object.
+        # Resolve its display value here so Learning Path, Homework and the
+        # Materials Library never receive blank or Python-dict-looking cards.
+        if isinstance(value, dict):
+            text = ""
+            for key_name in (
+                "text", "label", "value", "option", "answer", "content",
+                "title", "option_text", "display_text", "display", "name",
+                "body", "word", "token", "term", "phrase", "part",
+                "sentence", "translation",
+            ):
+                candidate = str(value.get(key_name) or "").strip()
+                if candidate:
+                    text = candidate
+                    break
+        else:
+            text = str(value or "").strip()
         key = text.casefold()
         if text and key not in seen:
             seen.add(key)

@@ -761,7 +761,24 @@ def _normalize_string_list(raw: Any, *, limit: int | None = None) -> list[str]:
     clean: list[str] = []
     seen: set[str] = set()
     for value in values:
-        text = str(value or "").strip()
+        # Imports from OCR/AI occasionally encode options as objects such as
+        # {"word": "reading"} or {"label": "is reading"}.  Stringifying
+        # the object makes an unusable card; extract the visible field once at
+        # the normalization boundary so every downstream runner gets text.
+        if isinstance(value, dict):
+            text = ""
+            for key in (
+                "text", "label", "value", "option", "answer", "content",
+                "title", "option_text", "display_text", "display", "name",
+                "body", "word", "token", "term", "phrase", "part",
+                "sentence", "translation",
+            ):
+                candidate = str(value.get(key) or "").strip()
+                if candidate:
+                    text = candidate
+                    break
+        else:
+            text = str(value or "").strip()
         key = text.casefold()
         if not text or key in seen:
             continue
