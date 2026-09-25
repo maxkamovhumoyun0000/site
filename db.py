@@ -24068,6 +24068,17 @@ LIBRARY_KINDS = {"folder", "file", "test"}
 LIBRARY_SHARE_PERMISSIONS = {"view", "edit", "assign"}
 
 
+def _library_node_is_learning_path_locked(node: dict | None) -> bool:
+    """Learning Path copies are source-of-truth snapshots, never editable."""
+    if not node:
+        return False
+    try:
+        payload = json.loads(str(node.get("payload_json") or "{}"))
+    except Exception:
+        payload = {}
+    return bool(isinstance(payload, dict) and payload.get("system_learning_path"))
+
+
 def ensure_library_schema() -> None:
     if _schema_ready("library_nodes"):
         return
@@ -24343,6 +24354,7 @@ def create_library_node(
     file_url: str | None = None,
     payload: dict | None = None,
     is_public: bool = True,
+    system_learning_path: bool = False,
 ) -> dict:
     ensure_library_schema()
     kind = str(kind or "folder").strip().lower()
@@ -24357,6 +24369,8 @@ def create_library_node(
             parent = _row_to_dict(cur.fetchone())
             if not parent:
                 raise ValueError("Ota-papka topilmadi")
+            if _library_node_is_learning_path_locked(parent) and not system_learning_path:
+                raise ValueError("Learning Path papkasiga qo‘lda element qo‘shib bo‘lmaydi")
         cur.execute(
             """
             INSERT INTO library_nodes
@@ -24400,6 +24414,8 @@ def update_library_node(node_id: int, *, title: str | None = None, description: 
         existing = _row_to_dict(cur.fetchone())
         if not existing:
             return None
+        if _library_node_is_learning_path_locked(existing):
+            raise ValueError("Learning Path materiallari tahrir qilinmaydi")
         sets: list[str] = []
         params: list = []
         if title is not None:
@@ -24433,6 +24449,9 @@ def update_library_node(node_id: int, *, title: str | None = None, description: 
                     raise ValueError("Tugunni o'zining ichiga ko'chirib bo'lmaydi")
                 if int(node_id) in _library_subtree_ids(cur, new_parent):
                     raise ValueError("Tsikl hosil bo'ladi")
+                cur.execute("SELECT * FROM library_nodes WHERE id=? LIMIT 1", (new_parent,))
+                if _library_node_is_learning_path_locked(_row_to_dict(cur.fetchone())):
+                    raise ValueError("Learning Path papkasiga element ko‘chirib bo‘lmaydi")
             sets.append("parent_id=?")
             params.append(new_parent)
         if not sets:
@@ -24456,6 +24475,9 @@ def delete_library_node(node_id: int) -> bool:
         if not ids:
             return False
         placeholders = ",".join(["?"] * len(ids))
+        cur.execute(f"SELECT * FROM library_nodes WHERE id IN ({placeholders})", tuple(ids))
+        if any(_library_node_is_learning_path_locked(_row_to_dict(row)) for row in (cur.fetchall() or [])):
+            raise ValueError("Learning Path papka va materiallarini o‘chirib bo‘lmaydi")
         cur.execute(f"DELETE FROM library_shares WHERE node_id IN ({placeholders})", tuple(ids))
         cur.execute(f"DELETE FROM library_nodes WHERE id IN ({placeholders})", tuple(ids))
         conn.commit()

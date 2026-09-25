@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import json
+import hashlib
 import secrets
 import random
 import asyncio
@@ -312,8 +313,14 @@ def ensure_schema() -> None:
               topic_keys_json TEXT NOT NULL DEFAULT '[]', passing_score INTEGER, reward_coins INTEGER NOT NULL DEFAULT 0,
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )""",
+            """CREATE TABLE IF NOT EXISTS learning_module_topics (
+              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
+              description TEXT, position INTEGER NOT NULL DEFAULT 0,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""",
             """CREATE TABLE IF NOT EXISTS learning_module_lessons (
               id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
+              topic_id BIGINT,
               source_kind TEXT NOT NULL DEFAULT 'manual', source_id TEXT, source_version TEXT,
               question_payload_json TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0,
               position INTEGER NOT NULL DEFAULT 0, required INTEGER NOT NULL DEFAULT 1,
@@ -457,6 +464,18 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE learning_modules ADD COLUMN image_url TEXT")
             except Exception:
                 pass
+        try:
+            cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN IF NOT EXISTS topic_id BIGINT")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN topic_id INTEGER")
+            except Exception:
+                pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_topics_module ON learning_module_topics(module_id, position)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_lessons_topic ON learning_module_lessons(topic_id, position)")
+        except Exception:
+            pass
         try:
             cur.execute("ALTER TABLE student_badges ADD COLUMN IF NOT EXISTS notified INTEGER DEFAULT 0")
         except Exception:
@@ -1920,7 +1939,20 @@ class LearningModuleUpdate(BaseModel):
     reward_coins: int | None = Field(default=None, ge=0, le=10000)
 
 
+class LearningModuleTopicRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    position: int = Field(default=0, ge=0, le=10000)
+
+
+class LearningModuleTopicUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    position: int | None = Field(default=None, ge=0, le=10000)
+
+
 class LearningLessonRequest(BaseModel):
+    topic_id: int | None = Field(default=None, gt=0)
     title: str = Field(min_length=1, max_length=180)
     source_kind: str = Field(default="manual", pattern="^(manual|library|homework|ai)$")
     source_id: str | None = Field(default=None, max_length=120)
@@ -1934,6 +1966,7 @@ class LearningLessonRequest(BaseModel):
 
 
 class LearningAiLessonRequest(BaseModel):
+    topic_id: int | None = Field(default=None, gt=0)
     topic: str = Field(min_length=2, max_length=160)
     level: str | None = Field(default=None, max_length=80)
     instruction: str | None = Field(default=None, max_length=1000)
@@ -1945,6 +1978,7 @@ class LearningAiLessonRequest(BaseModel):
 
 
 class LearningLibraryTestAttachRequest(BaseModel):
+    topic_id: int | None = Field(default=None, gt=0)
     content_type: str = Field(pattern="^(video|book|homework|ai_generated|teacher_library|library_node|test)$")
     content_id: int = Field(gt=0)
     question_count: int | None = Field(default=None, ge=0, le=1000)
@@ -2011,6 +2045,60 @@ def _certificate_template_for_subject(subject: str, requested: str | None) -> st
     return "russian" if any(token in normalized for token in ("russian", "russ", "рус", "rus")) else "english"
 
 
+def _ensure_module_topics(cur: Any, module: dict[str, Any], *, persist: bool = False) -> list[dict[str, Any]]:
+    """Return module topics without mutating a read request.
+
+    Legacy modules only had ``topic_keys_json``.  A read should never create
+    rows (a read connection can roll back on close), so those labels are
+    represented in-memory until a staff mutation needs real topic IDs.
+    """
+    module_id = int(module["id"])
+    cur.execute(
+        "SELECT id,module_id,title,description,position FROM learning_module_topics WHERE module_id=? ORDER BY position,id",
+        (module_id,),
+    )
+    topics = _dicts(cur.fetchall())
+    if topics:
+        return topics
+    try:
+        labels = json.loads(str(module.get("topic_keys_json") or "[]"))
+    except Exception:
+        labels = []
+    labels = [str(label).strip() for label in labels if str(label).strip()]
+    if not labels:
+        labels = ["Asosiy mavzu"]
+    if not persist:
+        # A stable negative id is only used by the client to group legacy
+        # lessons.  It can never be submitted as a topic id.
+        return [
+            {"id": -((module_id * 100) + position + 1), "module_id": module_id,
+             "title": title, "description": None, "position": position}
+            for position, title in enumerate(labels)
+        ]
+    for position, title in enumerate(labels):
+        cur.execute(
+            "INSERT INTO learning_module_topics(module_id,title,position) VALUES(?,?,?)",
+            (module_id, title, position),
+        )
+    # Existing lessons belonged to the module before topics existed. Keep them
+    # usable by placing them in the first generated topic.
+    cur.execute(
+        "SELECT id FROM learning_module_topics WHERE module_id=? ORDER BY position,id LIMIT 1",
+        (module_id,),
+    )
+    first = cur.fetchone()
+    if first:
+        cur.execute(
+            "UPDATE learning_module_lessons SET topic_id=? WHERE module_id=? AND topic_id IS NULL",
+            (int(dict(first)["id"]), module_id),
+        )
+    cur.execute(
+        "SELECT id,module_id,title,description,position FROM learning_module_topics WHERE module_id=? ORDER BY position,id",
+        (module_id,),
+    )
+    return _dicts(cur.fetchall())
+
+
 def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | None = None) -> dict[str, Any]:
     result=dict(track)
     try: result["certificate_layers"] = json.loads(str(track.get("certificate_layers_json") or "[]"))
@@ -2018,10 +2106,10 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
     cur.execute("SELECT * FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(track["id"]),))
     modules=[]
     for module in _dicts(cur.fetchall()):
-        try: raw_t_keys = json.loads(str(module.get("topic_keys_json") or "[]"))
-        except Exception: raw_t_keys = []
-        module["topic_keys"] = (raw_t_keys if isinstance(raw_t_keys, list) else [])
-        cur.execute("SELECT id,title,source_kind,source_id,question_payload_json,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
+        topics = _ensure_module_topics(cur, module)
+        module["topics"] = topics
+        module["topic_keys"] = [str(topic["title"]) for topic in topics]
+        cur.execute("SELECT id,title,topic_id,source_kind,source_id,question_payload_json,duration_seconds,position,required FROM learning_module_lessons WHERE module_id=? ORDER BY position,id", (int(module["id"]),))
         lessons = []
         for l_row in _dicts(cur.fetchall()):
             try:
@@ -2032,6 +2120,12 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
             l_row["best_score"] = 0.0
             lessons.append(l_row)
         module["lessons"] = lessons
+        lessons_by_topic: dict[int, list[dict[str, Any]]] = {int(topic["id"]): [] for topic in topics}
+        for lesson in lessons:
+            topic_id = int(lesson.get("topic_id") or topics[0]["id"])
+            lessons_by_topic.setdefault(topic_id, []).append(lesson)
+        for topic in topics:
+            topic["lessons"] = lessons_by_topic.get(int(topic["id"]), [])
         # Ensure image_url, icon_url and cover_key are always populated for Web & Mobile
         cover_k = str(module.get("cover_key") or "star")
         if cover_k not in LEARNING_COVERS:
@@ -2064,22 +2158,23 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
         else:
             module["progress"] = {"status": "unlocked", "best_score": 0}
 
-        # Determine total_topics and completed_topics for segmented circular ring
-        # Topics are strictly defined by topic_keys (mavzular). Lessons are question/test tasks.
+        # A topic opens only after every required test in its preceding topic
+        # has passed.  This keeps the Student path genuinely topic-by-topic
+        # instead of estimating completion from the total lesson count.
         mod_status = str((module.get("progress") or {}).get("status") or "locked").lower()
-        topic_keys = [str(t).strip() for t in (module.get("topic_keys") or []) if str(t).strip()]
-        total_topics = max(1, len(topic_keys)) if topic_keys else max(1, len(lessons))
+        total_topics = max(1, len(topics))
 
         if mod_status == "passed":
             completed_topics = total_topics
-        elif total_topics > 1 and len(lessons) > 0:
-            passed_lessons = sum(1 for l in lessons if l.get("passed"))
-            if len(lessons) == total_topics:
-                completed_topics = min(total_topics, max(0, passed_lessons))
-            else:
-                completed_topics = min(total_topics - 1, int((passed_lessons / len(lessons)) * total_topics))
         else:
             completed_topics = 0
+            for topic in topics:
+                topic_lessons = topic.get("lessons") or []
+                # An empty topic is not considered complete: a teacher must
+                # add at least one test before the next topic is unlocked.
+                if not topic_lessons or not all(bool(lesson.get("passed")) for lesson in topic_lessons):
+                    break
+                completed_topics += 1
 
         module["total_topics"] = total_topics
         module["completed_topics"] = completed_topics
@@ -2173,8 +2268,14 @@ async def add_learning_module(track_id: int, payload: LearningModuleRequest, aut
             available = [c for c in sorted(LEARNING_COVERS) if c != cover]
             if available: cover = available[0]
         passing=normalize_track_passing_score(payload.passing_score)
-        clean_topics = (payload.topic_keys if isinstance(payload.topic_keys, list) else [])[:5]
-        cur.execute("INSERT INTO learning_modules(track_id,title,description,cover_key,position,topic_keys_json,passing_score,reward_coins) VALUES(?,?,?,?,?,?,?,?)",(track_id,payload.title,payload.description,cover,payload.position,json.dumps(clean_topics,ensure_ascii=False),passing,payload.reward_coins)); conn.commit(); return {"id":int(cur.lastrowid or 0)}
+        clean_topics = [str(topic).strip() for topic in (payload.topic_keys if isinstance(payload.topic_keys, list) else []) if str(topic).strip()][:12]
+        cur.execute("INSERT INTO learning_modules(track_id,title,description,cover_key,position,topic_keys_json,passing_score,reward_coins) VALUES(?,?,?,?,?,?,?,?)",(track_id,payload.title,payload.description,cover,payload.position,json.dumps(clean_topics,ensure_ascii=False),passing,payload.reward_coins))
+        module_id = int(cur.lastrowid or 0)
+        # Topics are managed in their own screen after a module is created.
+        # Legacy topic labels are imported separately when they exist.
+        for topic_position, topic_title in enumerate(clean_topics):
+            cur.execute("INSERT INTO learning_module_topics(module_id,title,position) VALUES(?,?,?)", (module_id, topic_title, topic_position))
+        conn.commit(); return {"id":module_id}
     finally: conn.close()
 
 
@@ -2230,10 +2331,147 @@ async def delete_learning_module(module_id: int, authorization: str | None = Hea
             placeholders=",".join("?" for _ in lesson_ids)
             cur.execute(f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({placeholders})", lesson_ids)
         cur.execute("DELETE FROM learning_module_progress WHERE module_id=?", (module_id,))
+        cur.execute("DELETE FROM learning_module_topics WHERE module_id=?", (module_id,))
         cur.execute("DELETE FROM learning_module_lessons WHERE module_id=?", (module_id,))
         cur.execute("DELETE FROM learning_modules WHERE id=?", (module_id,))
         conn.commit()
         return {"deleted": True, "module_id": module_id}
+    finally: conn.close()
+
+
+def _learning_topic_for_module(cur: Any, module_id: int, topic_id: int | None) -> int:
+    cur.execute("SELECT * FROM learning_modules WHERE id=?", (module_id,))
+    module_row = cur.fetchone()
+    if not module_row:
+        raise HTTPException(status_code=404, detail="Learning module not found")
+    topics = _ensure_module_topics(cur, dict(module_row), persist=True)
+    if topic_id is None:
+        if len(topics) == 1:
+            return int(topics[0]["id"])
+        raise HTTPException(status_code=422, detail="Test qo‘shish uchun avval modul mavzusini tanlang")
+    if not any(int(topic["id"]) == int(topic_id) for topic in topics):
+        raise HTTPException(status_code=422, detail="Tanlangan mavzu ushbu modulga tegishli emas")
+    return int(topic_id)
+
+
+def _archive_learning_path_test(
+    cur: Any, *, module_id: int, topic_id: int, title: str, question: dict[str, Any]
+) -> None:
+    """Mirror a Learning Path test into its protected Library hierarchy.
+
+    The copy makes the authored structure visible in Material Library while
+    preserving the learning path as its source of truth.  It intentionally
+    runs after the lesson DB write and never prevents a teacher from saving a
+    valid test if the library mirror is temporarily unavailable.
+    """
+    try:
+        import db as dbm
+        cur.execute(
+            """SELECT t.id AS track_id,t.title AS track_title,t.subject,t.position AS track_position,
+                      t.owner_id,m.title AS module_title,m.position AS module_position,
+                      tp.title AS topic_title,tp.position AS topic_position
+               FROM learning_modules m
+               JOIN learning_tracks t ON t.id=m.track_id
+               JOIN learning_module_topics tp ON tp.id=?
+               WHERE m.id=?""",
+            (topic_id, module_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return
+        data = dict(row)
+        owner_id = int(data.get("owner_id") or 0)
+        if owner_id <= 0:
+            return
+        all_nodes = dbm.list_library_nodes(owner_id).get("nodes", [])
+
+        def folder(parent_id: int | None, folder_title: str) -> int:
+            for node in all_nodes:
+                if (str(node.get("kind")) == "folder" and
+                        node.get("parent_id") == parent_id and
+                        str(node.get("title") or "") == folder_title):
+                    return int(node["id"])
+            node = dbm.create_library_node(
+                owner_id, folder_title, "folder", parent_id=parent_id,
+                subject=str(data.get("subject") or ""), is_public=False,
+                payload={"system_learning_path": True},
+                system_learning_path=True,
+            )
+            all_nodes.append(node)
+            return int(node["id"])
+
+        root = folder(None, f"Learning Track — {data.get('subject') or 'Fan'}")
+        track = folder(root, f"Track {int(data.get('track_position') or 0) + 1} — {data.get('track_title') or 'Track'}")
+        module = folder(track, f"Modul {int(data.get('module_position') or 0) + 1} — {data.get('module_title') or 'Modul'}")
+        topic = folder(module, f"Mavzu {int(data.get('topic_position') or 0) + 1} — {data.get('topic_title') or 'Mavzu'}")
+        test_title = str(title or question.get("title") or "Learning Path testi").strip()
+        digest = hashlib.sha256(json.dumps(question, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+        marker = f"learning:{module_id}:{topic_id}:{digest}"
+        for node in all_nodes:
+            if int(node.get("parent_id") or 0) != topic or str(node.get("kind")) != "test":
+                continue
+            try:
+                existing = json.loads(str(node.get("payload_json") or "{}"))
+            except Exception:
+                existing = {}
+            if existing.get("learning_path_marker") == marker:
+                return
+        dbm.create_library_node(
+            owner_id, test_title, "test", parent_id=topic,
+            subject=str(data.get("subject") or ""), is_public=False,
+            payload={"system_learning_path": True, "learning_path_marker": marker,
+                     "questions": [question]},
+            system_learning_path=True,
+        )
+    except Exception:
+        logger.exception("Learning Path library archive failed")
+
+
+@router.post("/staff/learning-modules/{module_id}/topics")
+async def add_learning_module_topic(module_id: int, payload: LearningModuleTopicRequest, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_topics WHERE module_id=?", (module_id,))
+        raw_last = dict(cur.fetchone() or {}).get("value")
+        last = int(raw_last) if raw_last is not None else -1
+        position = payload.position if payload.position else last + 1
+        cur.execute("INSERT INTO learning_module_topics(module_id,title,description,position) VALUES(?,?,?,?)", (module_id,payload.title.strip(),payload.description,position))
+        conn.commit(); return {"id":int(cur.lastrowid or 0),"module_id":module_id,"title":payload.title.strip(),"position":position}
+    finally: conn.close()
+
+
+@router.patch("/staff/learning-module-topics/{topic_id}")
+async def update_learning_module_topic(topic_id: int, payload: LearningModuleTopicUpdate, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Mavzu topilmadi")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        values=payload.model_dump(exclude_unset=True)
+        if values:
+            sets=[]; params=[]
+            for key,value in values.items():
+                sets.append(f"{key}=?"); params.append(value.strip() if key == "title" and value else value)
+            sets.append("updated_at=?"); params.append(_now().isoformat()); params.append(topic_id)
+            cur.execute(f"UPDATE learning_module_topics SET {','.join(sets)} WHERE id=?",params); conn.commit()
+        return {"updated":True,"topic_id":topic_id}
+    finally: conn.close()
+
+
+@router.delete("/staff/learning-module-topics/{topic_id}")
+async def delete_learning_module_topic(topic_id: int, authorization: str | None = Header(default=None)):
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    try:
+        cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Mavzu topilmadi")
+        _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        cur.execute("SELECT COUNT(*) AS n FROM learning_module_lessons WHERE topic_id=?", (topic_id,))
+        if int(dict(cur.fetchone() or {}).get("n") or 0):
+            raise HTTPException(status_code=409, detail="Mavzuda testlar bor. Avval testlarni boshqa mavzuga ko‘chiring yoki o‘chiring.")
+        cur.execute("DELETE FROM learning_module_topics WHERE id=?", (topic_id,)); conn.commit(); return {"deleted":True,"topic_id":topic_id}
     finally: conn.close()
 
 
@@ -2245,11 +2483,15 @@ async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, au
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]),user)
         if payload.source_kind in {"manual","ai"} and not payload.question_payload: raise HTTPException(status_code=422,detail="Manual or AI lesson needs a question payload")
-        cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(payload.question_payload,ensure_ascii=False) if payload.question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); conn.commit(); return {"id":int(cur.lastrowid or 0)}
+        topic_id = _learning_topic_for_module(cur, module_id, payload.topic_id)
+        cur.execute("INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",(module_id,topic_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(payload.question_payload,ensure_ascii=False) if payload.question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); lesson_id = int(cur.lastrowid or 0); conn.commit()
+        _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=payload.title, question=payload.question_payload or {})
+        return {"id":lesson_id,"topic_id":topic_id}
     finally: conn.close()
 
 
 class LearningLessonUpdate(BaseModel):
+    topic_id: int | None = Field(default=None, gt=0)
     title: str | None = Field(default=None, min_length=1, max_length=180)
     question_payload: dict[str, Any] | None = None
     position: int | None = Field(default=None, ge=0, le=10000)
@@ -2310,15 +2552,19 @@ async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatc
         for item, question in _separate_consecutive_learning_types(
             list(zip(payload.items, questions))
         ):
+            topic_id = _learning_topic_for_module(cur, module_id, item.topic_id)
             cur.execute(
-                "INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",
-                (module_id, item.title, item.source_kind, item.source_id,
+                "INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (module_id, topic_id, item.title, item.source_kind, item.source_id,
                  question["test_type"], json.dumps(question, ensure_ascii=False),
                  item.duration_seconds, position, 1 if item.required else 0),
             )
             created.append(int(cur.lastrowid or 0))
             position += 1
         conn.commit()
+        for item, question in _separate_consecutive_learning_types(list(zip(payload.items, questions))):
+            topic_id = _learning_topic_for_module(cur, module_id, item.topic_id)
+            _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=item.title, question=question)
         return {"created_lesson_ids": created, "question_count": len(created)}
     except Exception:
         conn.rollback()
@@ -2357,6 +2603,9 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
         if payload.required is not None:
             updates.append("required=?")
             params.append(1 if payload.required else 0)
+        if payload.topic_id is not None:
+            updates.append("topic_id=?")
+            params.append(_learning_topic_for_module(cur, int(dict(row)["module_id"]), payload.topic_id))
 
         if updates:
             params.append(lesson_id)
@@ -3334,6 +3583,7 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
         cur=conn.cursor(); cur.execute("SELECT track_id,position FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]),user)
+        topic_id = _learning_topic_for_module(cur, module_id, payload.topic_id)
 
         # Support real teacher library test nodes (from library_nodes table)
         if payload.content_type in {"teacher_library", "library_node", "test"}:
@@ -3383,8 +3633,11 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
             )
         ]
         for item in target_questions:
-            cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,str(test.get("title") or "Material testi"),"library",f"{payload.content_type}:{payload.content_id}",str(item.get("test_type") or "multiple_choice"),json.dumps(item,ensure_ascii=False),0,position,1)); created.append(int(cur.lastrowid or 0)); position+=1
-        conn.commit(); return {"created_lesson_ids":created,"question_count":len(created)}
+            cur.execute("INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",(module_id,topic_id,str(test.get("title") or "Material testi"),"library",f"{payload.content_type}:{payload.content_id}",str(item.get("test_type") or "multiple_choice"),json.dumps(item,ensure_ascii=False),0,position,1)); created.append(int(cur.lastrowid or 0)); position+=1
+        conn.commit()
+        for item in target_questions:
+            _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=str(test.get("title") or "Material testi"), question=item)
+        return {"created_lesson_ids":created,"question_count":len(created)}
     finally: conn.close()
 
 

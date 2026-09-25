@@ -442,6 +442,10 @@ def _node_or_404(node_id: int) -> dict:
     return node
 
 
+def _is_learning_path_snapshot(node: dict) -> bool:
+    return bool(_json_obj(node.get("payload_json")).get("system_learning_path"))
+
+
 def _require_node_permission(user: dict, node: dict, need: str) -> str:
     """need: 'view' | 'assign' | 'edit'. Admin hamma narsani ko'radi/tahrirlaydi."""
     from backend.main import _role_from_login_type
@@ -529,6 +533,8 @@ async def library_create(payload: LibraryNodeCreate, authorization: str | None =
 async def library_update(node_id: int, payload: LibraryNodeUpdate, authorization: str | None = Header(default=None)):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
+    if _is_learning_path_snapshot(node):
+        raise HTTPException(status_code=403, detail="Learning Path materiallari faqat ko‘rish va uyga vazifa berish uchun")
     _require_node_permission(user, node, "edit")
     new_payload = payload.payload
     if new_payload is not None and str(node.get("kind") or "") == "test":
@@ -540,6 +546,8 @@ async def library_update(node_id: int, payload: LibraryNodeUpdate, authorization
         target = _node_or_404(int(payload.parent_id))
         if str(target.get("kind") or "") != "folder":
             raise HTTPException(status_code=400, detail="Faqat papka ichiga ko'chiriladi")
+        if _is_learning_path_snapshot(target):
+            raise HTTPException(status_code=403, detail="Learning Path papkasiga element ko‘chirib bo‘lmaydi")
         _require_node_permission(user, target, "edit")
     try:
         updated = dbm.update_library_node(
@@ -567,12 +575,17 @@ async def library_update(node_id: int, payload: LibraryNodeUpdate, authorization
 async def library_delete(node_id: int, authorization: str | None = Header(default=None)):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
+    if _is_learning_path_snapshot(node):
+        raise HTTPException(status_code=403, detail="Learning Path papka va materiallarini o‘chirib bo‘lmaydi")
     from backend.main import _role_from_login_type
 
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if int(node.get("owner_id") or 0) != int(user.get("id") or 0) and role not in {"admin", "superadmin"}:
         raise HTTPException(status_code=403, detail="Faqat egasi o'chira oladi")
-    ok = _safe(lambda: dbm.delete_library_node(int(node_id)), False)
+    try:
+        ok = dbm.delete_library_node(int(node_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Element topilmadi")
     return {"message": "O'chirildi"}
