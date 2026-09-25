@@ -2170,9 +2170,13 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
             completed_topics = 0
             for topic in topics:
                 topic_lessons = topic.get("lessons") or []
+                required_lessons = [
+                    lesson for lesson in topic_lessons
+                    if bool(lesson.get("required"))
+                ] or topic_lessons
                 # An empty topic is not considered complete: a teacher must
                 # add at least one test before the next topic is unlocked.
-                if not topic_lessons or not all(bool(lesson.get("passed")) for lesson in topic_lessons):
+                if not required_lessons or not all(bool(lesson.get("passed")) for lesson in required_lessons):
                     break
                 completed_topics += 1
 

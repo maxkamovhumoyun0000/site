@@ -604,6 +604,8 @@ async def library_shares(node_id: int, authorization: str | None = Header(defaul
 async def library_share(node_id: int, payload: LibraryShareRequest, authorization: str | None = Header(default=None)):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
+    if _is_learning_path_snapshot(node):
+        raise HTTPException(status_code=403, detail="Learning Path materiali faqat ko‘rish va uyga vazifa berish uchun")
     from backend.main import _role_from_login_type
 
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
@@ -624,6 +626,8 @@ async def library_share(node_id: int, payload: LibraryShareRequest, authorizatio
 async def library_unshare(node_id: int, teacher_id: int, authorization: str | None = Header(default=None)):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
+    if _is_learning_path_snapshot(node):
+        raise HTTPException(status_code=403, detail="Learning Path materiali faqat ko‘rish va uyga vazifa berish uchun")
     from backend.main import _role_from_login_type
 
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
