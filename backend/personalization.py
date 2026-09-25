@@ -2260,6 +2260,30 @@ class LearningLessonBatchRequest(BaseModel):
     items: list[LearningLessonRequest] = Field(min_length=1, max_length=100)
 
 
+def _separate_consecutive_learning_types(items: list[tuple[Any, dict]]) -> list[tuple[Any, dict]]:
+    """Keep generated lesson variants mixed instead of grouping one type.
+
+    This is deterministic and only changes the order of a just-created batch;
+    it never drops a teacher's question.  If a batch contains one type only,
+    its natural order is retained.
+    """
+    remaining = list(items)
+    ordered: list[tuple[Any, dict]] = []
+    previous = ""
+    while remaining:
+        pick = next(
+            (
+                index for index, (_, question) in enumerate(remaining)
+                if str(question.get("test_type") or question.get("kind") or "").strip().lower() != previous
+            ),
+            0,
+        )
+        item, question = remaining.pop(pick)
+        ordered.append((item, question))
+        previous = str(question.get("test_type") or question.get("kind") or "").strip().lower()
+    return ordered
+
+
 @router.post("/staff/learning-modules/{module_id}/lessons/batch")
 async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatchRequest, authorization: str | None = Header(default=None)):
     """Append a complete editor/AI draft atomically, preserving library fields."""
@@ -2283,7 +2307,9 @@ async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatc
         last = dict(cur.fetchone() or {}).get("value")
         position = int(last) + 1 if last is not None else 0
         created = []
-        for item, question in zip(payload.items, questions):
+        for item, question in _separate_consecutive_learning_types(
+            list(zip(payload.items, questions))
+        ):
             cur.execute(
                 "INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",
                 (module_id, item.title, item.source_kind, item.source_id,
@@ -3334,6 +3360,12 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
         target_questions = questions
         if payload.question_count is not None and payload.question_count > 0:
             target_questions = questions[:payload.question_count]
+        target_questions = [
+            question
+            for _, question in _separate_consecutive_learning_types(
+                [(None, question) for question in target_questions]
+            )
+        ]
         for item in target_questions:
             cur.execute("INSERT INTO learning_module_lessons(module_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?)",(module_id,str(test.get("title") or "Material testi"),"library",f"{payload.content_type}:{payload.content_id}",str(item.get("test_type") or "multiple_choice"),json.dumps(item,ensure_ascii=False),0,position,1)); created.append(int(cur.lastrowid or 0)); position+=1
         conn.commit(); return {"created_lesson_ids":created,"question_count":len(created)}
@@ -4141,6 +4173,12 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
                 })
 
         random.shuffle(questions)
+        questions = [
+            question
+            for _, question in _separate_consecutive_learning_types(
+                [(None, question) for question in questions]
+            )
+        ]
 
         cur.execute("SELECT * FROM learning_track_final_progress WHERE track_id=? AND student_id=?", (track_id, uid))
         fp = cur.fetchone()
