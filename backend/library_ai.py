@@ -252,7 +252,7 @@ AUDIO_ASSET_KINDS = {k for k, v in AI_TEST_TYPES.items() if v["needs_audio_asset
 POLYMORPHIC_KINDS = {k for k, v in AI_TEST_TYPES.items() if v.get("polymorphic")}
 
 #: word_practice studentga tushganda shu turlardan biriga random aylanadi.
-WORD_PRACTICE_VARIANTS = ["speak_sentence", "read_aloud", "write_sentence", "spelling", "translation"]
+WORD_PRACTICE_VARIANTS = ["speak_sentence", "read_aloud", "write_sentence", "spelling", "translation", "matching"]
 
 #: AI turli nom bilan qaytarishi mumkin — ularni bizning kanonik turlarga moslaymiz.
 _KIND_SYNONYMS: dict[str, str] = {
@@ -1468,11 +1468,12 @@ def _materialize_word_practice(
 
     Ko'rsatma (prompt) o'rganilayotgan til (study_lang: English/Russian) da yoziladi.
     Ingliz tili uchun tarjima student profilida tanlangan Uzbek/Russian tilida;
-    rus tili uchun esa doim Uzbek tilida so'raladi."""
+    rus tili uchun doim Uzbekcha, o'zbek tili uchun esa ruscha so'raladi."""
     import random
 
     ru = lang == "Russian"
     study_ru = study_lang == "Russian"
+    study_uz = study_lang == "Uzbek"
     raw_word = str(q.get("word") or q.get("prompt") or "").strip()
     
     # Strip part-of-speech tags in parentheses e.g. "beat (v)" -> "beat", pos_tag: "(v)"
@@ -1485,10 +1486,14 @@ def _materialize_word_practice(
     tr_ru = str(q.get("translation_ru") or "").strip()
     legacy = str(q.get("translation") or "").strip()
     requested_language = str(translation_language or "").strip().lower()
-    # Russian-course vocabulary is always coupled with Uzbek. English-course
-    # vocabulary uses the learner's saved choice; Uzbek stays a safe fallback
-    # for accounts created before this preference existed.
-    translation_code = "uz" if study_ru else (requested_language if requested_language in {"uz", "ru"} else "uz")
+    # Russian-course vocabulary is always coupled with Uzbek; Uzbek-course
+    # vocabulary is paired with Russian. English uses the learner's saved
+    # Uzbek/Russian setting, with Uzbek as a migration-safe fallback.
+    translation_code = (
+        "uz" if study_ru else
+        "ru" if study_uz else
+        (requested_language if requested_language in {"uz", "ru"} else "uz")
+    )
     translation = (tr_ru if translation_code == "ru" else tr_uz) or legacy or tr_uz or tr_ru
     # Accept only the configured target language. Previously both Uzbek and
     # Russian answers were accepted, which made a selected profile language
@@ -1608,6 +1613,20 @@ def _materialize_word_practice(
         base["answer"] = word
         base["correct_answer"] = word
         base["accepted_answers"] = [word, clean_word, raw_word]
+    elif kind == "matching":
+        # A single item is expanded by _expand_polymorphic_questions together
+        # with adjacent vocabulary entries. Keep a valid one-pair fallback for
+        # old content that contains only one word.
+        base.update({
+            "input": "matching",
+            "check": "auto",
+            "pairs": [{"left": word, "right": translation}] if translation else [],
+            "prompt": "So'zlarni tarjimalari bilan juftlang.",
+            "condition": "🔗 Moslashtirish: So'zlarni ularning mos tarjimalari bilan juftlang.",
+            "condition_uz": "🔗 Moslashtirish: So'zlarni ularning mos tarjimalari bilan juftlang.",
+            "condition_ru": "🔗 Сопоставление: Соедините слова с их правильными переводами.",
+            "condition_en": "🔗 Matching: Match each word with its correct translation.",
+        })
     else:  # translation — tarjima student tiliga (uz/ru)
         base["input"] = "text"
         base["check"] = "auto"
@@ -1617,9 +1636,9 @@ def _materialize_word_practice(
             else bool(random.getrandbits(1))
         )
         if reverse_translation and translation:
-            target_language = "Russian" if study_ru else "English"
-            target_label_uz = "ruscha" if study_ru else "inglizcha"
-            target_label_ru = "русский" if study_ru else "английский"
+            target_language = "Russian" if study_ru else ("Uzbek" if study_uz else "English")
+            target_label_uz = "ruscha" if study_ru else ("o'zbekcha" if study_uz else "inglizcha")
+            target_label_ru = "русский" if study_ru else ("узбекский" if study_uz else "английский")
             base["prompt"] = (
                 f"Tarjima qiling: {translation}" if study_ru
                 else f"Translate to English: {translation}"
@@ -1666,13 +1685,62 @@ def _expand_polymorphic_questions(
     study_lang: str = "English",
     translation_language: str | None = None,
 ) -> list[dict]:
-    """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi."""
+    """Attempt boshlanishidan oldin polimorf savollarni konkret turga ochadi.
+
+    Adjacent vocabulary entries occasionally become one Duolingo-style match
+    board. This keeps a random vocabulary test useful: learners match several
+    words in one exercise instead of selecting a translation from a menu.
+    """
+    import random
+
     out: list[dict] = []
-    for q in questions or []:
+    source = questions or []
+    index = 0
+    while index < len(source):
+        q = source[index]
         if str(q.get("kind") or "") in POLYMORPHIC_KINDS:
+            run: list[dict] = []
+            for candidate in source[index:index + 4]:
+                if str(candidate.get("kind") or "") not in POLYMORPHIC_KINDS:
+                    break
+                run.append(candidate)
+
+            # Matching is intentionally a multi-word task. It appears only
+            # when at least two adjacent vocabulary items have a usable target
+            # translation; otherwise the normal single-word variants remain.
+            matchable = [
+                _materialize_word_practice(
+                    item,
+                    lang,
+                    study_lang,
+                    chosen_kind="matching",
+                    translation_language=translation_language,
+                )
+                for item in run
+            ]
+            matchable = [item for item in matchable if item.get("pairs")]
+            if len(matchable) >= 2 and random.randrange(5) == 0:
+                pairs = [item["pairs"][0] for item in matchable]
+                out.append({
+                    "kind": "matching",
+                    "test_type": "matching",
+                    "input": "matching",
+                    "check": "auto",
+                    "is_random_word_practice": True,
+                    "pairs": pairs,
+                    "prompt": "So'zlarni tarjimalari bilan juftlang.",
+                    "condition": "🔗 Moslashtirish: So'zlarni ularning mos tarjimalari bilan juftlang.",
+                    "condition_uz": "🔗 Moslashtirish: So'zlarni ularning mos tarjimalari bilan juftlang.",
+                    "condition_ru": "🔗 Сопоставление: Соедините слова с их правильными переводами.",
+                    "condition_en": "🔗 Matching: Match each word with its correct translation.",
+                    "translation_language": matchable[0].get("translation_language"),
+                })
+                index += len(run)
+                continue
             out.append(_materialize_word_practice(q, lang, study_lang, translation_language=translation_language))
         else:
             out.append(q)
+        index += 1
     return out
 
 
