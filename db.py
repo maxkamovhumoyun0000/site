@@ -12707,9 +12707,23 @@ def delete_group(group_id: int) -> list[int]:
             "group_arenas",
         ):
             try:
+                # PostgreSQL'da bir DELETE xatosi transaction'ni aborted
+                # holatga olib o'tadi. Bu qadam best-effort bo'lgani uchun
+                # savepoint ishlatamiz: mavjud bo'lmagan yoki FK cheklovi bor
+                # operatsion jadval guruhning o'zini o'chirishga to'sqinlik
+                # qilmasin.
+                cur.execute("SAVEPOINT delete_group_cleanup")
                 cur.execute(f"DELETE FROM {table} WHERE group_id=?", (gid,))
+                cur.execute("RELEASE SAVEPOINT delete_group_cleanup")
             except Exception:
-                pass
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT delete_group_cleanup")
+                    cur.execute("RELEASE SAVEPOINT delete_group_cleanup")
+                except Exception:
+                    # SQLite va PostgreSQL ikkalasi ham savepointni qo'llaydi;
+                    # kutilmagan ulanish xatosida esa yakuniy DELETE asl xatoni
+                    # qaytaradi.
+                    pass
 
         # Finally delete the group row.
         cur.execute("DELETE FROM groups WHERE id=?", (gid,))
