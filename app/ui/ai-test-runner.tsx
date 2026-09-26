@@ -141,8 +141,18 @@ export function AiTestRunner({
     start();
   }, [start]);
 
-  // Chiqib ketilsa attempt SAQLANADI — 5 soat ichida qaytganda o'sha joyidan
-  // davom etadi (abandon qilinmaydi).
+  const exitTest = useCallback(async () => {
+    // Faqat homework testlari keyin davom ettiriladi. Kutubxona va learning
+    // path testlari student chiqishi bilan boshidan boshlanishi kerak.
+    if (attempt && sourceType !== "homework" && !attempt.is_finished) {
+      try {
+        await apiFetch(`/student/ai-tests/${attempt.attempt_id}/abandon`, { method: "POST" });
+      } catch {
+        // Serverdagi start/active qoidasi ham bunday urinishni qayta ochmaydi.
+      }
+    }
+    onExit();
+  }, [attempt, onExit, sourceType]);
 
   const submit = useCallback(
     async (payload: Record<string, unknown>) => {
@@ -175,7 +185,7 @@ export function AiTestRunner({
     return (
       <Centered>
         <p className="mb-4 font-bold text-red-500">{error}</p>
-        <button onClick={onExit} className="rounded-xl bg-cyan-600 px-5 py-2.5 font-black text-white">{tt("aitest.back", "Ortga")}</button>
+        <button onClick={exitTest} className="rounded-xl bg-cyan-600 px-5 py-2.5 font-black text-white">{tt("aitest.back", "Ortga")}</button>
       </Centered>
     );
   }
@@ -193,7 +203,7 @@ export function AiTestRunner({
     <div className="mx-auto max-w-2xl px-4 py-6">
       <header className="mb-5">
         <div className="mb-2 flex items-center justify-between">
-          <button onClick={onExit} className="text-sm font-black text-ink-500 dark:text-navy-300">← {tt("aitest.exit", "Chiqish")}</button>
+          <button onClick={exitTest} className="text-sm font-black text-ink-500 dark:text-navy-300">← {tt("aitest.exit", "Chiqish")}</button>
           <span className="text-sm font-black text-navy-900 dark:text-white">
             {attempt.solved_count} / {attempt.total_questions}
           </span>

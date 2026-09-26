@@ -2989,21 +2989,23 @@ def _questions_from_source(user: dict, source_type: str, source_id: int | None, 
 
 @router.get("/student/ai-tests/active")
 async def ai_test_active(authorization: str | None = Header(default=None)):
-    """Ilova qayta ochilganda: active attempt bor-yo'qligini tekshiradi."""
+    """Ilova qayta ochilganda faqat homework urinishini davom ettiradi."""
     user = _auth(authorization, STUDENT_ROLES)
-    attempt = _safe(lambda: dbm.get_active_ai_test_attempt(int(user.get("id") or 0)))
+    user_id = int(user.get("id") or 0)
+    attempt = _safe(lambda: dbm.get_active_ai_test_attempt(user_id))
     if not attempt:
+        return {"active": False, "attempt": None}
+    # Kutubxona, learning path va haftalik testlar sessiya yakunlanganda
+    # qayta ochilmasligi kerak. Faqat berilgan homework davom ettiriladi.
+    if str(attempt.get("source_type") or "") != "homework":
+        dbm.abandon_active_ai_test_attempts(user_id)
         return {"active": False, "attempt": None}
     return {"active": True, "attempt": _attempt_state(attempt)}
 
 
 @router.post("/student/ai-tests/start")
 async def ai_test_start(payload: AiTestStartRequest, authorization: str | None = Header(default=None)):
-    """Testni boshlaydi yoki davom ettiradi.
-
-    Agar shu manba (homework/test) uchun 5 soat ichida boshlangan tugallanmagan
-    urinish bo'lsa — o'sha joyidan davom ettiriladi (student chiqib ketib qaytsa
-    ma'lumotlari saqlanadi). 5 soatdan oshgan yoki boshqa manba bo'lsa — yangidan."""
+    """Testni boshlaydi; faqat homework 5 soat ichida davom ettiriladi."""
     user = _auth(authorization, STUDENT_ROLES)
     from backend.main import _require_student_learning_access
 
@@ -3034,17 +3036,22 @@ async def ai_test_start(payload: AiTestStartRequest, authorization: str | None =
                 "resumed": True,
             }
 
-    # 5 soatlik davom ettirish: shu manba uchun active attempt bo'lsa qaytaramiz.
+    # Homework tashlab chiqilganda 5 soat ichida aynan o'sha joyidan davom etadi.
+    # Materiallar kutubxonasi, learning path va haftalik review esa har safar
+    # yangi urinishdan boshlanadi.
     existing = _safe(lambda: dbm.get_active_ai_test_attempt(user_id))
     if existing and not existing.get("is_finished"):
         same_source = (
             str(existing.get("source_type") or "") == source_type
             and int(existing.get("source_id") or 0) == int(source_id or 0)
         )
-        if same_source and _attempt_within_hours(existing.get("started_at"), 5):
+        if source_type == "homework" and same_source and _attempt_within_hours(existing.get("started_at"), 5):
             state = _attempt_state(existing)
             if not state["is_finished"]:
                 return {"message": "Davom ettirildi", "attempt": state, "resumed": True}
+        # Boshqa barcha manbalardagi urinishlar, yoki boshqa homeworkdan
+        # qolgan urinish, yangi testni boshlashdan oldin yopiladi.
+        dbm.abandon_active_ai_test_attempts(user_id)
 
     questions, title = _questions_from_source(user, source_type, payload.source_id, payload.homework_id)
     # Polimorf savollarni (word_practice) shu student uchun random turga, guruh
