@@ -533,8 +533,6 @@ async def library_create(payload: LibraryNodeCreate, authorization: str | None =
 async def library_update(node_id: int, payload: LibraryNodeUpdate, authorization: str | None = Header(default=None)):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
-    if _is_learning_path_snapshot(node):
-        raise HTTPException(status_code=403, detail="Learning Path materiallari faqat ko‘rish va uyga vazifa berish uchun")
     _require_node_permission(user, node, "edit")
     new_payload = payload.payload
     if new_payload is not None and str(node.get("kind") or "") == "test":

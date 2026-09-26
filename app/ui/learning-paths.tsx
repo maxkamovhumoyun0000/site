@@ -4841,6 +4841,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const [showAddModuleInline, setShowAddModuleInline] = useState(false);
   const [showCertModal, setShowCertModal] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
+  const [manageTopicsModuleId, setManageTopicsModuleId] = useState<number | null>(null);
   const [openAddTestOnModuleOpen, setOpenAddTestOnModuleOpen] = useState(false);
   const [editModuleId, setEditModuleId] = useState<number | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -4852,6 +4853,11 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     if (!selected || !selectedModuleId) return null;
     return (selected.modules || []).find((m: Row) => m.id === selectedModuleId) || null;
   }, [selected, selectedModuleId]);
+
+  const manageTopicsModule = useMemo(() => {
+    if (!selected || !manageTopicsModuleId) return null;
+    return (selected.modules || []).find((m: Row) => m.id === manageTopicsModuleId) || null;
+  }, [selected, manageTopicsModuleId]);
 
   // Determine previous module's cover key to forbid consecutive duplicates
   const lastModuleCover = useMemo(() => {
@@ -5493,6 +5499,14 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                           </button>
                           <button
                             type="button"
+                            onClick={() => setManageTopicsModuleId(module.id)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-600 hover:border-indigo-600 text-indigo-700 dark:text-indigo-300 hover:text-white dark:hover:text-white font-black text-xs px-3 py-2 shadow-xs transition"
+                            title="Modul mavzularini boshqarish"
+                          >
+                            <span>📚 {t("learning_paths.teacher.manage_topics_btn", "Mavzular")}</span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => {
                               setSelectedModuleId(module.id);
                               setOpenAddTestOnModuleOpen(false);
@@ -5565,6 +5579,17 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
             setOpenAddTestOnModuleOpen(false);
           }}
           initialOpenAddTest={openAddTestOnModuleOpen}
+        />,
+        document.body
+      )}
+
+      {/* 📚 Modul Mavzularini Boshqarish Modali (Portal) */}
+      {manageTopicsModule && selected && typeof document !== "undefined" && createPortal(
+        <ModuleTopicsModal
+          module={manageTopicsModule}
+          apiFetch={apiFetch}
+          onSaved={load}
+          onClose={() => setManageTopicsModuleId(null)}
         />,
         document.body
       )}
@@ -6148,6 +6173,17 @@ function LessonEditor({
   const [direction, setDirection] = useState("");
   const [wordCount, setWordCount] = useState(0);
 
+  const moduleTopics: Row[] = Array.isArray(module.topics) ? module.topics : [];
+  const [selectedTopicId, setSelectedTopicId] = useState<number | null>(
+    moduleTopics.length > 0 ? Number(moduleTopics[0].id) : null
+  );
+
+  useEffect(() => {
+    if (moduleTopics.length > 0 && (selectedTopicId === null || !moduleTopics.some((t) => t.id === selectedTopicId))) {
+      setSelectedTopicId(Number(moduleTopics[0].id));
+    }
+  }, [moduleTopics, selectedTopicId]);
+
   useEffect(() => {
     if (initialOpenAddTest) {
       setShowAddTestModal(true);
@@ -6426,6 +6462,7 @@ function LessonEditor({
           title: title.trim(),
           source_kind: "manual",
           position: lessons.length,
+          ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
           question_payload: {
             question: prompt.trim(),
             options: choices,
@@ -6494,6 +6531,7 @@ function LessonEditor({
           title: item.title || `${topic.trim()} · ${i + 1}`,
           source_kind: "ai",
           question_payload: item.question_payload,
+          ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
         })) },
       });
       setTopic("");
@@ -6515,6 +6553,7 @@ function LessonEditor({
         body: {
           content_type: cType,
           content_id: contentId,
+          ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
           ...(typeof qCount === "number" && qCount > 0 ? { question_count: qCount } : {}),
         },
       });
@@ -7024,6 +7063,26 @@ function LessonEditor({
                 ✕
               </button>
             </div>
+
+            {/* Topic Selector for Attached Test */}
+            {moduleTopics.length > 0 ? (
+              <div className="flex items-center justify-between gap-3 border-b border-line bg-indigo-50/50 px-4 py-2.5 dark:border-slate-800 dark:bg-indigo-950/20">
+                <span className="text-xs font-bold text-indigo-900 dark:text-indigo-300 shrink-0 flex items-center gap-1.5">
+                  <span>📚 Mavzu:</span>
+                </span>
+                <select
+                  value={selectedTopicId ?? ""}
+                  onChange={(e) => setSelectedTopicId(e.target.value ? Number(e.target.value) : null)}
+                  className="flex-1 max-w-sm rounded-xl border border-line bg-white px-3 py-1.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {moduleTopics.map((top, idx) => (
+                    <option key={top.id} value={top.id}>
+                      {idx + 1}-mavzu: {top.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
 
             {/* 3-Tab Segmented Controls */}
             <div className="flex border-b border-line bg-surface-soft/40 p-2 dark:border-slate-800 dark:bg-[#090d16]/50 gap-1.5">
@@ -8126,6 +8185,253 @@ function CoverPicker({
           ℹ️ Qoidaga ko'ra ketma-ket ikkita modulda bir xil rasm bo'lishi mumkin emas.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+function ModuleTopicsModal({
+  module,
+  apiFetch,
+  onSaved,
+  onClose,
+}: {
+  module: Row;
+  apiFetch: ApiFetch;
+  onSaved: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [topics, setTopics] = useState<Row[]>(Array.isArray(module.topics) ? module.topics : []);
+  const [newTitle, setNewTitle] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [editingTopicId, setEditingTopicId] = useState<number | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (Array.isArray(module.topics)) {
+      setTopics(module.topics);
+    }
+  }, [module]);
+
+  const addTopic = async () => {
+    if (!newTitle.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/staff/learning-modules/${module.id}/topics`, {
+        method: "POST",
+        body: {
+          title: newTitle.trim(),
+          description: newDesc.trim() || undefined,
+        },
+      });
+      setNewTitle("");
+      setNewDesc("");
+      await onSaved();
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateTopic = async (topicId: number) => {
+    if (!editTitle.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/staff/learning-module-topics/${topicId}`, {
+        method: "PATCH",
+        body: { title: editTitle.trim() },
+      });
+      setEditingTopicId(null);
+      await onSaved();
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteTopic = async (topicId: number) => {
+    if (!confirm("Haqiqatan ham bu mavzuni o'chirmoqchimisiz?")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/staff/learning-module-topics/${topicId}`, {
+        method: "DELETE",
+      });
+      await onSaved();
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[260] flex items-center justify-center bg-black/75 p-3 sm:p-6 backdrop-blur-md overflow-hidden animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-3xl bg-white shadow-2xl dark:bg-[#0f172a] border border-line dark:border-slate-800 overflow-hidden animate-scale-up"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-line px-6 py-4 dark:border-slate-800 bg-surface-soft/60 dark:bg-[#090d16]/80">
+          <div className="flex items-center gap-3 min-w-0">
+            <span className="grid h-10 w-10 place-items-center rounded-2xl bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 font-black text-xl">
+              📚
+            </span>
+            <div className="min-w-0">
+              <h2 className="font-black text-navy-900 dark:text-white text-base truncate">
+                Modul Mavzulari: {module.title}
+              </h2>
+              <p className="text-xs text-ink-500 dark:text-slate-400 mt-0.5">
+                Har bir mavzu alohida dars bosqichini ifodalaydi ({topics.length} ta mavzu)
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="grid h-9 w-9 place-items-center rounded-full text-ink-500 hover:bg-rose-500/10 hover:text-rose-600 dark:text-slate-400 transition text-base font-bold"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 custom-scrollbar">
+          {error && (
+            <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs font-bold text-rose-600 dark:text-rose-400">
+              ⚠️ {error}
+            </div>
+          )}
+
+          {/* Topics List */}
+          <div className="space-y-2.5">
+            {topics.length === 0 ? (
+              <div className="rounded-2xl border-2 border-dashed border-line dark:border-slate-800 p-8 text-center text-xs text-slate-500 dark:text-slate-400">
+                Hozircha birorta ham mavzu yo‘q. Quyidagi shakl orqali birinchi mavzuni qo‘shing.
+              </div>
+            ) : (
+              topics.map((top, idx) => {
+                const lessonCount = Array.isArray(top.lessons) ? top.lessons.length : 0;
+                const isEditing = editingTopicId === top.id;
+                return (
+                  <div
+                    key={top.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl border border-line dark:border-slate-800 p-3.5 bg-surface-soft/40 dark:bg-slate-800/40"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className="grid h-7 w-7 place-items-center rounded-lg bg-indigo-600 text-white text-xs font-black shrink-0">
+                        {idx + 1}
+                      </span>
+                      {isEditing ? (
+                        <div className="flex items-center gap-2 flex-1">
+                          <input
+                            type="text"
+                            value={editTitle}
+                            onChange={(e) => setEditTitle(e.target.value)}
+                            className="flex-1 rounded-xl border border-line bg-white p-2 text-xs font-bold dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void updateTopic(Number(top.id))}
+                            disabled={busy || !editTitle.trim()}
+                            className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-40"
+                          >
+                            Saqlash
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setEditingTopicId(null)}
+                            className="rounded-xl border border-line px-2 py-1.5 text-xs font-bold text-slate-500"
+                          >
+                            Bekor
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="min-w-0">
+                          <p className="font-black text-navy-900 dark:text-white text-xs sm:text-sm truncate">
+                            {top.title}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                            🎯 {lessonCount} ta test biriktirilgan
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    {!isEditing && (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTopicId(Number(top.id));
+                            setEditTitle(String(top.title || ""));
+                          }}
+                          className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+                          title="Tahrirlash"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteTopic(Number(top.id))}
+                          className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-500/10 transition"
+                          title="O'chirish"
+                        >
+                          🗑
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Add New Topic Form */}
+          <div className="rounded-2xl border border-line dark:border-slate-800 p-4 bg-surface-soft/60 dark:bg-[#090d16]/80 space-y-3">
+            <h4 className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
+              <span>➕ Yangi mavzu qo‘shish</span>
+            </h4>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                placeholder="Mavzu nomi (masalan: Present Continuous)..."
+                className="flex-1 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void addTopic();
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => void addTopic()}
+                disabled={busy || !newTitle.trim()}
+                className="rounded-xl bg-[#002DFF] hover:bg-blue-700 text-white font-black text-xs px-4 py-2.5 shadow-sm transition disabled:opacity-40 shrink-0"
+              >
+                {busy ? "..." : "Qo‘shish"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end border-t border-line px-6 py-3.5 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/80">
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-primary text-xs py-2 px-5 font-bold"
+          >
+            Yopish
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
