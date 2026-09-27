@@ -854,9 +854,23 @@ def _normalized_question_conditions(item: dict, kind: str, prompt: str, passage:
 
     prompt_key = _norm_text(prompt)
     passage_key = _norm_text(passage)
+
+    def clean_condition(value: Any) -> str:
+        text = str(value or "").strip()
+        key = _norm_text(text)
+        if not key or "?" in text or "？" in text:
+            return ""
+        # Reject model output that places the exercise itself in the
+        # instruction field. Keep short overlaps safe (e.g. a one-word prompt).
+        for task_key in (prompt_key, passage_key):
+            if task_key and (
+                key == task_key or (len(task_key) >= 12 and task_key in key)
+            ):
+                return ""
+        return text
+
     legacy_instruction = clean(item.get("instruction"))
-    if _norm_text(legacy_instruction) in {"", prompt_key, passage_key}:
-        legacy_instruction = ""
+    legacy_instruction = clean_condition(legacy_instruction)
 
     defaults = {
         "multiple_choice": (
@@ -935,10 +949,10 @@ def _normalized_question_conditions(item: dict, kind: str, prompt: str, passage:
         "Внимательно выполните задание.",
         "Complete the task carefully.",
     ))
-    shared = clean(item.get("condition")) or legacy_instruction
-    condition_uz = clean(item.get("condition_uz")) or shared or fallback_uz
-    condition_ru = clean(item.get("condition_ru")) or shared or fallback_ru
-    condition_en = clean(item.get("condition_en")) or shared or fallback_en
+    shared = clean_condition(item.get("condition")) or legacy_instruction
+    condition_uz = clean_condition(item.get("condition_uz")) or shared or fallback_uz
+    condition_ru = clean_condition(item.get("condition_ru")) or shared or fallback_ru
+    condition_en = clean_condition(item.get("condition_en")) or shared or fallback_en
     return condition_uz, condition_ru, condition_en
 
 
@@ -2027,9 +2041,10 @@ def _import_system_prompt(
         "• If you can find or infer an example_sentence for a word from the text, add it.\n\n"
         "=== STUDENT TASK CONDITION (required for every question) ===\n"
         "• Every question object MUST include condition_uz, condition_ru and condition_en.\n"
-        "• Each condition is one short instruction explaining what the student must do.\n"
-        "• A condition must NOT repeat the prompt, passage, answer choices or the text that the student must complete.\n"
-        "• Keep the actual question, sentence, passage, blanks and answer area in their normal fields below the condition.\n\n"
+        "• Each condition is ONLY a short, natural imperative that tells the student what action to take; it is not the exercise question.\n"
+        "• Never put the actual question/prompt, any sentence to answer or complete, passage, blank text, choices, hint, or answer in a condition. Do not copy, translate, paraphrase, or append the question to the condition. Conditions must not contain a question mark.\n"
+        "• Example: for question='She ___ a book right now.' use condition_uz='Bo'sh joyni mos fe'l shakli bilan to'ldiring.', condition_ru='Заполните пропуск подходящей формой глагола.', condition_en='Fill in the blank with the correct verb form.' Do NOT put 'She ___ a book right now' in any condition.\n"
+        "• Keep the actual question, sentence, passage, blanks and answer area only in their normal question/content fields. If the source has no printed directions, write a concise direction that matches the exercise type without using its question text.\n\n"
         "=== READING TEXT RULES ===\n"
         "• Whenever the material contains a reading passage, story, dialogue or article:\n"
         "  1. Put the COMPLETE verbatim text in reading_text field.\n"

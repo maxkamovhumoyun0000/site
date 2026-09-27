@@ -35,6 +35,28 @@ def test_ai_import_canonicalizes_all_repeatable_fields_as_arrays():
     assert questions[1]["distractors"] == ["went", "school"]
 
 
+def test_ai_condition_keeps_task_direction_separate_from_the_question_text():
+    repeated = library_ai._normalize_questions([{
+        "kind": "gap_fill",
+        "prompt": "She ___ a book right now.",
+        "condition_uz": "She ___ a book right now.",
+        "condition_ru": "Заполните пропуск: She ___ a book right now.",
+        "condition_en": "She ___ a book right now.",
+        "answer": "is reading",
+    }])[0]
+    assert repeated["condition_uz"] == "Bo'sh joyni mos so'z yoki shakl bilan to'ldiring."
+    assert repeated["condition_ru"] == "Заполните пропуск подходящим словом или формой."
+    assert repeated["condition_en"] == "Fill the blank with the correct word or form."
+
+    valid = library_ai._normalize_questions([{
+        "kind": "gap_fill",
+        "prompt": "She ___ a book right now.",
+        "condition_uz": "Bo'sh joyni mos fe'l shakli bilan to'ldiring.",
+        "answer": "is reading",
+    }])[0]
+    assert valid["condition_uz"] == "Bo'sh joyni mos fe'l shakli bilan to'ldiring."
+
+
 def test_ai_import_preserves_the_first_choice_when_correct_index_is_zero():
     question = library_ai._normalize_questions([
         {
