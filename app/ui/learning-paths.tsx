@@ -6170,6 +6170,8 @@ function LessonEditor({
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
   const [managedTopicId, setManagedTopicId] = useState<number | "unassigned" | null>(null);
+  const [managedTopicTitle, setManagedTopicTitle] = useState("");
+  const [savingTopicTitle, setSavingTopicTitle] = useState(false);
   const [hint, setHint] = useState("");
   const [direction, setDirection] = useState("");
   const [wordCount, setWordCount] = useState(0);
@@ -6636,14 +6638,14 @@ function LessonEditor({
         ✍️ Kutubxona muharriri · Barcha mashq turlari
       </button>
       {/* ─── Moduldagi mavjud testlar ro'yxati (Tahrirlash va O'chirish) ─── */}
-      <div className={`rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a] ${moduleTopics.length > 0 && editingLessonId === null ? "hidden" : ""}`}>
+      <div className="rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a]">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
-              <span>📋 {t("learning_paths.teacher.lessons_in_module", { count: lessons.length })}</span>
+              <span>📚 {moduleTopics.length > 0 ? `Mavzular (${moduleTopics.length})` : t("learning_paths.teacher.lessons_in_module", { count: lessons.length })}</span>
             </p>
             <span className="text-[10px] font-bold text-ink-500 dark:text-slate-400">
-              {t("learning_paths.teacher.lessons_hint")}
+              {moduleTopics.length > 0 ? "Mavzuni tanlang: uning sozlamalari va shu mavzuga biriktirilgan savollar ochiladi." : t("learning_paths.teacher.lessons_hint")}
             </span>
           </div>
           <button
@@ -6661,7 +6663,10 @@ function LessonEditor({
               <button
                 key={String(group.id)}
                 type="button"
-                onClick={() => setManagedTopicId(group.id)}
+                onClick={() => {
+                  setManagedTopicTitle(group.title);
+                  setManagedTopicId(group.id);
+                }}
                 className="group rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 text-left transition hover:border-indigo-400 hover:bg-indigo-100/70 dark:border-indigo-900/70 dark:bg-indigo-950/25 dark:hover:bg-indigo-950/45"
               >
                 <span className="flex items-center justify-between gap-2">
@@ -6680,7 +6685,7 @@ function LessonEditor({
           </div>
         ) : null}
 
-        <div className="mt-3 space-y-2.5">
+        <div className={`mt-3 space-y-2.5 ${moduleTopics.length > 0 && editingLessonId === null ? "hidden" : ""}`}>
           {lessons.length ? (
             lessons.map((lesson: Row, idx: number) => {
               const p = (lesson.question_payload as Row) || {};
@@ -7678,8 +7683,38 @@ function LessonEditor({
           >
             <header className="flex items-start justify-between gap-4 border-b border-line p-5 dark:border-slate-800">
               <div className="min-w-0">
-                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300">Mavzu savollari</p>
-                <h3 className="mt-1 truncate text-base font-black text-navy-900 dark:text-white">📚 {managedTopic.title}</h3>
+                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300">Mavzu sozlamalari va savollari</p>
+                {typeof managedTopic.id === "number" && managedTopic.id > 0 ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input
+                      value={managedTopicTitle}
+                      onChange={(event) => setManagedTopicTitle(event.target.value)}
+                      aria-label="Mavzu nomi"
+                      className="min-w-[220px] flex-1 rounded-xl border border-line bg-white px-3 py-2 text-sm font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-900 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      disabled={savingTopicTitle || !managedTopicTitle.trim() || managedTopicTitle.trim() === managedTopic.title}
+                      onClick={async () => {
+                        setSavingTopicTitle(true);
+                        try {
+                          await apiFetch(`/staff/learning-module-topics/${managedTopic.id}`, { method: "PATCH", body: { title: managedTopicTitle.trim() } });
+                          await onSaved();
+                          setManagedTopicId(null);
+                        } catch (error: any) {
+                          alert(error?.message || "Mavzu saqlanmadi.");
+                        } finally {
+                          setSavingTopicTitle(false);
+                        }
+                      }}
+                      className="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white disabled:opacity-40"
+                    >
+                      {savingTopicTitle ? "Saqlanmoqda…" : "Mavzuni saqlash"}
+                    </button>
+                  </div>
+                ) : (
+                  <h3 className="mt-1 truncate text-base font-black text-navy-900 dark:text-white">📚 {managedTopic.title}</h3>
+                )}
                 <p className="mt-1 text-xs font-medium text-ink-500 dark:text-slate-400">{managedTopic.lessons.length} ta savol faqat shu mavzu uchun bir joyda boshqariladi.</p>
               </div>
               <button type="button" onClick={() => setManagedTopicId(null)} className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-500 hover:bg-slate-100 hover:text-rose-600 dark:text-slate-400 dark:hover:bg-slate-800">✕</button>
@@ -8758,7 +8793,9 @@ function ModuleDetailModal({
         {/* Modal Footer */}
         <div className="flex items-center justify-between border-t border-line px-6 py-3.5 dark:border-slate-800 bg-surface-soft/40 dark:bg-[#090d16]/80">
           <span className="text-xs font-bold text-ink-500 dark:text-slate-400">
-            {t("learning_paths.teacher.lessons_in_module", { count: (module.lessons || []).length })}
+            {Array.isArray(module.topics) && module.topics.length > 0
+              ? `Mavzular: ${module.topics.length}`
+              : t("learning_paths.teacher.lessons_in_module", { count: (module.lessons || []).length })}
           </span>
           <button
             type="button"
