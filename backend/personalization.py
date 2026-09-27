@@ -4866,7 +4866,9 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
     )
     mistake_sources = _dicts(cur.fetchall())
     cur.execute(
-        "SELECT topic_key, question_text, explanation FROM mistake_notebook_items "
+        # The canonical mistake-notebook column is ``prompt``.  Keep the
+        # public analysis payload name stable for the AI prompt below.
+        "SELECT topic_key, prompt AS question_text, explanation FROM mistake_notebook_items "
         "WHERE user_id=? AND DATE(created_at)>=? AND DATE(created_at)<=? "
         "ORDER BY id DESC LIMIT 3",
         (user_id, week_start, week_end),
