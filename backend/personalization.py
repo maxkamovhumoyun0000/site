@@ -4788,7 +4788,8 @@ def _student_enrolled_subjects(cur: Any, user_id: int, user_row: dict[str, Any])
     subs: list[str] = []
     try:
         cur.execute(
-            "SELECT DISTINCT g.subject FROM group_students gs JOIN groups g ON g.id=gs.group_id WHERE gs.student_id=?",
+            "SELECT DISTINCT g.subject FROM user_groups ug JOIN groups g ON g.id=ug.group_id "
+            "WHERE ug.user_id=? AND (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='')",
             (user_id,),
         )
         for r in cur.fetchall():
@@ -4796,7 +4797,16 @@ def _student_enrolled_subjects(cur: Any, user_id: int, user_row: dict[str, Any])
             if s and s not in subs:
                 subs.append(s)
     except Exception:
-        pass
+        # PostgreSQL marks a transaction as failed after a statement error.
+        # This helper is optional, so restore the transaction before gathering
+        # the student's plan from the remaining data sources.
+        try:
+            cur.connection.rollback()
+        except Exception:
+            try:
+                cur._cur.connection.rollback()
+            except Exception:
+                pass
     if not subs:
         raw_s = str(user_row.get("subject") or "")
         for part in raw_s.split(","):
