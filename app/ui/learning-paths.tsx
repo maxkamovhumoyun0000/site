@@ -6169,6 +6169,7 @@ function LessonEditor({
   const [types, setTypes] = useState("multiple_choice,true_false,gap_fill,scrambled_sentence,matching");
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
+  const [managedTopicId, setManagedTopicId] = useState<number | "unassigned" | null>(null);
   const [hint, setHint] = useState("");
   const [direction, setDirection] = useState("");
   const [wordCount, setWordCount] = useState(0);
@@ -6190,6 +6191,21 @@ function LessonEditor({
     }
   }, [initialOpenAddTest]);
   const [showLibraryModal, setShowLibraryModal] = useState(false);
+
+  const topicQuestionGroups = useMemo(() => {
+    const topicIds = new Set(moduleTopics.map((item) => Number(item.id)));
+    const groups: { id: number | "unassigned"; title: string; lessons: Row[] }[] = moduleTopics.map((item) => ({
+      id: Number(item.id),
+      title: String(item.title || "Mavzu"),
+      lessons: lessons.filter((lesson: Row) => Number(lesson.topic_id) === Number(item.id)),
+    }));
+    const unassigned = lessons.filter((lesson: Row) => !topicIds.has(Number(lesson.topic_id)));
+    if (unassigned.length) {
+      groups.push({ id: "unassigned", title: "Mavzusiz savollar", lessons: unassigned });
+    }
+    return groups;
+  }, [lessons, moduleTopics]);
+  const managedTopic = topicQuestionGroups.find((item) => item.id === managedTopicId) || null;
 
   const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false, needsPassage: false };
   const editKindMeta = ALL_TEST_KINDS.find((k) => k.key === editType) || { needsAudio: false, needsPassage: false };
@@ -6601,6 +6617,7 @@ function LessonEditor({
               method: "POST", body: { items: questions.map((question, i) => ({
                 title: questions.length === 1 ? draftTitle : `${draftTitle} · ${i + 1}`,
                 source_kind: "manual", question_payload: question,
+                ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
               })) },
             });
           }
@@ -6611,7 +6628,7 @@ function LessonEditor({
         ✍️ Kutubxona muharriri · Barcha mashq turlari
       </button>
       {/* ─── Moduldagi mavjud testlar ro'yxati (Tahrirlash va O'chirish) ─── */}
-      <div className="rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a]">
+      <div className={`rounded-2xl border border-line p-4 dark:border-slate-800 bg-white/70 dark:bg-[#0f172a] ${moduleTopics.length > 0 && editingLessonId === null ? "hidden" : ""}`}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
@@ -6629,6 +6646,31 @@ function LessonEditor({
             <span>{t("learning_paths.teacher.add_test_btn")}</span>
           </button>
         </div>
+
+        {moduleTopics.length > 0 ? (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {topicQuestionGroups.map((group, index) => (
+              <button
+                key={String(group.id)}
+                type="button"
+                onClick={() => setManagedTopicId(group.id)}
+                className="group rounded-2xl border border-indigo-200 bg-indigo-50/60 p-3 text-left transition hover:border-indigo-400 hover:bg-indigo-100/70 dark:border-indigo-900/70 dark:bg-indigo-950/25 dark:hover:bg-indigo-950/45"
+              >
+                <span className="flex items-center justify-between gap-2">
+                  <span className="truncate text-xs font-black text-indigo-950 dark:text-indigo-100">
+                    📚 {group.id === "unassigned" ? group.title : `${index + 1}-mavzu · ${group.title}`}
+                  </span>
+                  <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-indigo-700 shadow-sm dark:bg-slate-900 dark:text-indigo-300">
+                    {group.lessons.length} ta
+                  </span>
+                </span>
+                <span className="mt-2 block text-[11px] font-bold text-indigo-700 dark:text-indigo-300">
+                  Savollarni alohida boshqarish →
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="mt-3 space-y-2.5">
           {lessons.length ? (
@@ -7608,6 +7650,75 @@ function LessonEditor({
           onClose={() => setShowLibraryModal(false)}
         />
       ) : null}
+
+      {managedTopic && typeof document !== "undefined" && createPortal(
+        <div
+          className="fixed inset-0 z-[320] flex items-center justify-center bg-slate-950/70 p-3 backdrop-blur-sm"
+          onClick={() => setManagedTopicId(null)}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${managedTopic.title} savollarini boshqarish`}
+            className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-line bg-white shadow-2xl dark:border-slate-700 dark:bg-[#0f172a]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-line p-5 dark:border-slate-800">
+              <div className="min-w-0">
+                <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300">Mavzu savollari</p>
+                <h3 className="mt-1 truncate text-base font-black text-navy-900 dark:text-white">📚 {managedTopic.title}</h3>
+                <p className="mt-1 text-xs font-medium text-ink-500 dark:text-slate-400">{managedTopic.lessons.length} ta savol faqat shu mavzu uchun bir joyda boshqariladi.</p>
+              </div>
+              <button type="button" onClick={() => setManagedTopicId(null)} className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-500 hover:bg-slate-100 hover:text-rose-600 dark:text-slate-400 dark:hover:bg-slate-800">✕</button>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2.5">
+              {managedTopic.lessons.length ? managedTopic.lessons.map((lesson: Row, index: number) => {
+                const payload = (lesson.question_payload as Row) || {};
+                const type = String(payload.test_type || lesson.source_version || "multiple_choice");
+                const meta = ALL_TEST_KINDS.find((item) => item.key === type);
+                return (
+                  <article key={lesson.id} className="rounded-2xl border border-line bg-surface-soft/50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
+                    <div className="flex gap-3">
+                      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-indigo-600 text-xs font-black text-white">{index + 1}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="truncate text-sm font-black text-navy-900 dark:text-white">{String(lesson.title || "Savol")}</p>
+                          <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-200">{meta?.label || type}</span>
+                        </div>
+                        <p className="mt-1 line-clamp-2 text-xs text-ink-600 dark:text-slate-300">{String(payload.question || payload.prompt || "Savol matni mavjud emas")}</p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button type="button" onClick={() => { startEdit(lesson); setManagedTopicId(null); }} className="rounded-lg border border-cyan-400/50 px-2.5 py-1 text-xs font-bold text-cyan-700 hover:bg-cyan-500/10 dark:text-cyan-300">✏️ Tahrirlash</button>
+                          <button type="button" onClick={() => void deleteLesson(Number(lesson.id))} className="rounded-lg border border-rose-400/50 px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300">🗑 O‘chirish</button>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              }) : (
+                <div className="rounded-2xl border border-dashed border-indigo-300 bg-indigo-50/50 p-8 text-center dark:border-indigo-900 dark:bg-indigo-950/20">
+                  <p className="text-sm font-bold text-indigo-950 dark:text-indigo-100">Bu mavzuda hali savol yo‘q.</p>
+                  <p className="mt-1 text-xs text-indigo-700 dark:text-indigo-300">Yangi test shu mavzuga avtomatik biriktiriladi.</p>
+                </div>
+              )}
+            </div>
+            <footer className="flex flex-wrap justify-end gap-2 border-t border-line p-4 dark:border-slate-800">
+              <button type="button" onClick={() => setManagedTopicId(null)} className="rounded-xl px-4 py-2 text-xs font-bold text-ink-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">Yopish</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedTopicId(typeof managedTopic.id === "number" ? managedTopic.id : null);
+                  setManagedTopicId(null);
+                  setShowAddTestModal(true);
+                }}
+                className="rounded-xl bg-[#1cb0f6] px-4 py-2 text-xs font-black text-white shadow-sm hover:bg-[#1899d6]"
+              >
+                + Shu mavzuga test qo‘shish
+              </button>
+            </footer>
+          </section>
+        </div>,
+        document.body,
+      )}
     </div>
   );
 }
