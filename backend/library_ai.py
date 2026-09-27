@@ -421,6 +421,10 @@ class LibraryNodeUpdate(BaseModel):
     sort_order: int | None = None
 
 
+class LibraryDeleteRequest(BaseModel):
+    confirmation_code: str | None = Field(default=None, max_length=32)
+
+
 class LibraryShareRequest(BaseModel):
     teacher_id: int
     permission: str = "view"
@@ -570,18 +574,25 @@ async def library_update(node_id: int, payload: LibraryNodeUpdate, authorization
 
 
 @router.delete("/teacher/library/{node_id}")
-async def library_delete(node_id: int, authorization: str | None = Header(default=None)):
+async def library_delete(
+    node_id: int,
+    payload: LibraryDeleteRequest | None = None,
+    authorization: str | None = Header(default=None),
+):
     user = _auth(authorization, TEACHER_ROLES)
     node = _node_or_404(node_id)
-    if _is_learning_path_snapshot(node):
-        raise HTTPException(status_code=403, detail="Learning Path papka va materiallarini o‘chirib bo‘lmaydi")
     from backend.main import _role_from_login_type
 
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if int(node.get("owner_id") or 0) != int(user.get("id") or 0) and role not in {"admin", "superadmin"}:
         raise HTTPException(status_code=403, detail="Faqat egasi o'chira oladi")
+    is_learning_path = _is_learning_path_snapshot(node)
+    if is_learning_path and str((payload.confirmation_code if payload else "") or "").strip() != "0107":
+        raise HTTPException(status_code=403, detail="Learning Path faylini o‘chirish uchun tasdiqlash kodi noto‘g‘ri")
     try:
-        ok = dbm.delete_library_node(int(node_id))
+        ok = dbm.delete_library_node(
+            int(node_id), allow_system_learning_path=is_learning_path
+        )
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     if not ok:

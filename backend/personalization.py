@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 import json
-import hashlib
 import secrets
 import random
 import asyncio
@@ -1924,7 +1923,7 @@ class LearningModuleRequest(BaseModel):
     cover_key: str = Field(default="star", max_length=100)
     image_url: str | None = Field(default=None, max_length=2000)
     position: int = Field(default=0, ge=0, le=10000)
-    topic_keys: list[str] = Field(default_factory=list, max_length=12)
+    topic_keys: list[str] = Field(default_factory=list, max_length=10)
     passing_score: int | None = Field(default=None, ge=1, le=100)
     reward_coins: int = Field(default=0, ge=0, le=10000)
 
@@ -1934,7 +1933,7 @@ class LearningModuleUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     cover_key: str | None = Field(default=None, max_length=100)
     image_url: str | None = Field(default=None, max_length=2000)
-    topic_keys: list[str] | None = Field(default=None, max_length=12)
+    topic_keys: list[str] | None = Field(default=None, max_length=10)
     passing_score: int | None = Field(default=None, ge=1, le=100)
     reward_coins: int | None = Field(default=None, ge=0, le=10000)
 
@@ -2238,7 +2237,7 @@ async def delete_learning_track(track_id: int, authorization: str | None = Heade
     Student test-history and mistake-notebook records are intentionally
     preserved so that academic history is never lost.
     """
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id, user); conn=get_conn()
+    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); track=_learning_track_for_manager(track_id, user); conn=get_conn()
     try:
         cur=conn.cursor()
         cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position, id", (track_id,))
@@ -2256,6 +2255,10 @@ async def delete_learning_track(track_id: int, authorization: str | None = Heade
         cur.execute("DELETE FROM learning_modules WHERE track_id=?", (track_id,))
         cur.execute("DELETE FROM learning_tracks WHERE id=?", (track_id,))
         conn.commit()
+        _delete_learning_path_library_branch(
+            owner_id=int(track.get("owner_id") or 0), subject=str(track.get("subject") or ""),
+            track_title=str(track.get("title") or ""), track_position=int(track.get("position") or 0),
+        )
         return {"deleted": True, "track_id": track_id}
     finally: conn.close()
 
@@ -2272,7 +2275,7 @@ async def add_learning_module(track_id: int, payload: LearningModuleRequest, aut
             available = [c for c in sorted(LEARNING_COVERS) if c != cover]
             if available: cover = available[0]
         passing=normalize_track_passing_score(payload.passing_score)
-        clean_topics = [str(topic).strip() for topic in (payload.topic_keys if isinstance(payload.topic_keys, list) else []) if str(topic).strip()][:12]
+        clean_topics = [str(topic).strip() for topic in (payload.topic_keys if isinstance(payload.topic_keys, list) else []) if str(topic).strip()][:10]
         cur.execute("INSERT INTO learning_modules(track_id,title,description,cover_key,position,topic_keys_json,passing_score,reward_coins) VALUES(?,?,?,?,?,?,?,?)",(track_id,payload.title,payload.description,cover,payload.position,json.dumps(clean_topics,ensure_ascii=False),passing,payload.reward_coins))
         module_id = int(cur.lastrowid or 0)
         # Topics are managed in their own screen after a module is created.
@@ -2287,7 +2290,11 @@ async def add_learning_module(track_id: int, payload: LearningModuleRequest, aut
 async def update_learning_module(module_id: int, payload: LearningModuleUpdate, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        cur=conn.cursor(); cur.execute(
+            "SELECT m.track_id,m.title,m.position,t.owner_id,t.subject,t.title AS track_title,t.position AS track_position "
+            "FROM learning_modules m JOIN learning_tracks t ON t.id=m.track_id WHERE m.id=?",
+            (module_id,),
+        ); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         track_id = int(dict(row)["track_id"])
         _learning_track_for_manager(track_id, user)
@@ -2307,7 +2314,7 @@ async def update_learning_module(module_id: int, payload: LearningModuleUpdate, 
         sets=[]; params=[]
         for key,value in values.items():
             if key == "topic_keys":
-                clean_topics = (value if isinstance(value, list) else [])[:5]
+                clean_topics = (value if isinstance(value, list) else [])[:10]
                 key,value="topic_keys_json",json.dumps(clean_topics,ensure_ascii=False)
             if key == "passing_score": value=normalize_track_passing_score(value)
             sets.append(f"{key}=?"); params.append(value)
@@ -2326,7 +2333,11 @@ async def delete_learning_module(module_id: int, authorization: str | None = Hea
     """
     user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
+        cur=conn.cursor(); cur.execute(
+            "SELECT m.track_id,m.title,m.position,t.owner_id,t.subject,t.title AS track_title,t.position AS track_position "
+            "FROM learning_modules m JOIN learning_tracks t ON t.id=m.track_id WHERE m.id=?",
+            (module_id,),
+        ); row=cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]), user)
@@ -2339,6 +2350,12 @@ async def delete_learning_module(module_id: int, authorization: str | None = Hea
         cur.execute("DELETE FROM learning_module_lessons WHERE module_id=?", (module_id,))
         cur.execute("DELETE FROM learning_modules WHERE id=?", (module_id,))
         conn.commit()
+        module_data = dict(row)
+        _delete_learning_path_library_branch(
+            owner_id=int(module_data.get("owner_id") or 0), subject=str(module_data.get("subject") or ""),
+            track_title=str(module_data.get("track_title") or ""), track_position=int(module_data.get("track_position") or 0),
+            module_title=str(module_data.get("title") or ""), module_position=int(module_data.get("position") or 0),
+        )
         return {"deleted": True, "module_id": module_id}
     finally: conn.close()
 
@@ -2361,13 +2378,7 @@ def _learning_topic_for_module(cur: Any, module_id: int, topic_id: int | None) -
 def _archive_learning_path_test(
     cur: Any, *, module_id: int, topic_id: int, title: str, question: dict[str, Any]
 ) -> None:
-    """Mirror a Learning Path test into its protected Library hierarchy.
-
-    The copy makes the authored structure visible in Material Library while
-    preserving the learning path as its source of truth.  It intentionally
-    runs after the lesson DB write and never prevents a teacher from saving a
-    valid test if the library mirror is temporarily unavailable.
-    """
+    """Sync one topic as one immutable Library test, never one node per question."""
     try:
         import db as dbm
         cur.execute(
@@ -2408,9 +2419,20 @@ def _archive_learning_path_test(
         track = folder(root, f"Track {int(data.get('track_position') or 0) + 1} — {data.get('track_title') or 'Track'}")
         module = folder(track, f"Modul {int(data.get('module_position') or 0) + 1} — {data.get('module_title') or 'Modul'}")
         topic = folder(module, f"Mavzu {int(data.get('topic_position') or 0) + 1} — {data.get('topic_title') or 'Mavzu'}")
-        test_title = str(title or question.get("title") or "Learning Path testi").strip()
-        digest = hashlib.sha256(json.dumps(question, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
-        marker = f"learning:{module_id}:{topic_id}:{digest}"
+        cur.execute(
+            "SELECT question_payload_json FROM learning_module_lessons WHERE module_id=? AND topic_id=? ORDER BY position,id",
+            (module_id, topic_id),
+        )
+        questions = []
+        for lesson in cur.fetchall() or []:
+            try:
+                normalized = _learning_library_question(json.loads(str(dict(lesson).get("question_payload_json") or "{}")))
+            except Exception:
+                normalized = None
+            if normalized:
+                questions.append(normalized)
+        marker = f"learning:{module_id}:{topic_id}:bundle"
+        # Remove old per-question snapshots and replace them with the one topic bundle.
         for node in all_nodes:
             if int(node.get("parent_id") or 0) != topic or str(node.get("kind")) != "test":
                 continue
@@ -2418,17 +2440,105 @@ def _archive_learning_path_test(
                 existing = json.loads(str(node.get("payload_json") or "{}"))
             except Exception:
                 existing = {}
-            if existing.get("learning_path_marker") == marker:
-                return
+            if existing.get("system_learning_path"):
+                dbm.delete_library_node(int(node["id"]), allow_system_learning_path=True)
+        if not questions:
+            return
         dbm.create_library_node(
-            owner_id, test_title, "test", parent_id=topic,
+            owner_id, f"{data.get('topic_title') or 'Mavzu'} — umumiy test", "test", parent_id=topic,
             subject=str(data.get("subject") or ""), is_public=False,
             payload={"system_learning_path": True, "learning_path_marker": marker,
-                     "questions": [question]},
+                     "questions": questions},
             system_learning_path=True,
         )
     except Exception:
         logger.exception("Learning Path library archive failed")
+
+
+def _delete_learning_path_library_branch(
+    *, owner_id: int, subject: str, track_title: str, track_position: int,
+    module_title: str | None = None, module_position: int | None = None,
+) -> None:
+    """Remove the protected mirror after its source track/module is removed."""
+    if owner_id <= 0:
+        return
+    try:
+        import db as dbm
+        nodes = dbm.list_library_nodes(owner_id).get("nodes", [])
+
+        def find(parent_id: int | None, title: str) -> int | None:
+            for node in nodes:
+                if (str(node.get("kind") or "") == "folder" and
+                        node.get("parent_id") == parent_id and
+                        str(node.get("title") or "") == title):
+                    return int(node["id"])
+            return None
+
+        root = find(None, f"Learning Track — {subject or 'Fan'}")
+        if root is None:
+            return
+        track = find(root, f"Track {track_position + 1} — {track_title or 'Track'}")
+        if track is None:
+            return
+        target = track
+        if module_title is not None and module_position is not None:
+            module = find(track, f"Modul {module_position + 1} — {module_title or 'Modul'}")
+            if module is None:
+                return
+            target = module
+        dbm.delete_library_node(target, allow_system_learning_path=True)
+    except Exception:
+        logger.exception("Learning Path library cleanup failed")
+
+
+def rebuild_learning_path_library_mirrors() -> dict[str, int]:
+    """Rebuild protected Library mirrors from the Learning Path source tables.
+
+    This one-shot-safe reconciliation fixes older installations that saved
+    every question as a separate Library file or left topics under duplicate
+    module folders. The database Learning Path remains the source of truth.
+    """
+    ensure_schema()
+    try:
+        import db as dbm
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT owner_id FROM learning_tracks WHERE owner_id IS NOT NULL")
+            owners = [int(dict(row).get("owner_id") or 0) for row in cur.fetchall() or []]
+            deleted_roots = 0
+            for owner_id in {owner for owner in owners if owner > 0}:
+                for node in dbm.list_library_nodes(owner_id).get("nodes", []):
+                    if int(node.get("parent_id") or 0) != 0 or str(node.get("kind") or "") != "folder":
+                        continue
+                    try:
+                        payload = json.loads(str(node.get("payload_json") or "{}"))
+                    except Exception:
+                        payload = {}
+                    if payload.get("system_learning_path") and str(node.get("title") or "").startswith("Learning Track — "):
+                        dbm.delete_library_node(int(node["id"]), allow_system_learning_path=True)
+                        deleted_roots += 1
+            cur.execute(
+                "SELECT DISTINCT l.module_id,l.topic_id FROM learning_module_lessons l "
+                "JOIN learning_modules m ON m.id=l.module_id "
+                "JOIN learning_tracks t ON t.id=m.track_id "
+                "WHERE t.owner_id IS NOT NULL ORDER BY l.module_id,l.topic_id"
+            )
+            groups = [dict(row) for row in cur.fetchall() or []]
+            for group in groups:
+                _archive_learning_path_test(
+                    cur,
+                    module_id=int(group["module_id"]),
+                    topic_id=int(group["topic_id"]),
+                    title="",
+                    question={},
+                )
+            return {"deleted_roots": deleted_roots, "rebuilt_topic_tests": len(groups)}
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("Learning Path library reconciliation failed")
+        raise
 
 
 @router.post("/staff/learning-modules/{module_id}/topics")
@@ -2438,6 +2548,9 @@ async def add_learning_module_topic(module_id: int, payload: LearningModuleTopic
         cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]), user)
+        cur.execute("SELECT COUNT(*) AS n FROM learning_module_topics WHERE module_id=?", (module_id,))
+        if int(dict(cur.fetchone() or {}).get("n") or 0) >= 10:
+            raise HTTPException(status_code=422, detail="Har bir modulda ko‘pi bilan 10 ta mavzu bo‘lishi mumkin")
         cur.execute("SELECT COALESCE(MAX(position),-1) AS value FROM learning_module_topics WHERE module_id=?", (module_id,))
         raw_last = dict(cur.fetchone() or {}).get("value")
         last = int(raw_last) if raw_last is not None else -1
@@ -2566,9 +2679,12 @@ async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatc
             created.append(int(cur.lastrowid or 0))
             position += 1
         conn.commit()
-        for item, question in _separate_consecutive_learning_types(list(zip(payload.items, questions))):
-            topic_id = _learning_topic_for_module(cur, module_id, item.topic_id)
-            _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=item.title, question=question)
+        topic_ids = {
+            _learning_topic_for_module(cur, module_id, item.topic_id)
+            for item in payload.items
+        }
+        for topic_id in topic_ids:
+            _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title="", question={})
         return {"created_lesson_ids": created, "question_count": len(created)}
     except Exception:
         conn.rollback()
@@ -2586,7 +2702,7 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT l.id, l.module_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
+        cur.execute("SELECT l.id, l.module_id, l.topic_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Dars topilmadi")
@@ -2615,6 +2731,12 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
             params.append(lesson_id)
             cur.execute(f"UPDATE learning_module_lessons SET {', '.join(updates)} WHERE id=?", params)
             conn.commit()
+            final_topic_id = payload.topic_id if payload.topic_id is not None else int(dict(row).get("topic_id") or 0)
+            previous_topic_id = int(dict(row).get("topic_id") or 0)
+            if previous_topic_id > 0 and previous_topic_id != final_topic_id:
+                _archive_learning_path_test(cur, module_id=int(dict(row)["module_id"]), topic_id=previous_topic_id, title="", question={})
+            if final_topic_id > 0:
+                _archive_learning_path_test(cur, module_id=int(dict(row)["module_id"]), topic_id=final_topic_id, title="", question={})
 
         return {"updated": True, "lesson_id": lesson_id}
     finally:
@@ -2630,7 +2752,7 @@ async def delete_learning_lesson(lesson_id: int, authorization: str | None = Hea
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT l.id, l.module_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
+        cur.execute("SELECT l.id, l.module_id, l.topic_id, m.track_id FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id WHERE l.id=?", (lesson_id,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Dars topilmadi")
@@ -2639,6 +2761,10 @@ async def delete_learning_lesson(lesson_id: int, authorization: str | None = Hea
 
         cur.execute("DELETE FROM learning_module_lessons WHERE id=?", (lesson_id,))
         conn.commit()
+        _archive_learning_path_test(
+            cur, module_id=int(dict(row)["module_id"]),
+            topic_id=int(dict(row).get("topic_id") or 0), title="", question={},
+        )
         return {"deleted": True, "lesson_id": lesson_id}
     finally:
         conn.close()

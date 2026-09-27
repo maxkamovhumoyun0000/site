@@ -8516,7 +8516,7 @@ function ModuleTopicsModal({
           {/* Add New Topic Form */}
           <div className="rounded-2xl border border-line dark:border-slate-800 p-4 bg-surface-soft/60 dark:bg-[#090d16]/80 space-y-3">
             <h4 className="text-xs font-black uppercase text-navy-900 dark:text-white flex items-center gap-2">
-              <span>➕ Yangi mavzu qo‘shish</span>
+              <span>{topics.length >= 10 ? "✓ Mavzu limiti to‘ldi (10/10)" : "➕ Yangi mavzu qo‘shish"}</span>
             </h4>
             <div className="flex gap-2">
               <input
@@ -8524,6 +8524,7 @@ function ModuleTopicsModal({
                 value={newTitle}
                 onChange={(e) => setNewTitle(e.target.value)}
                 placeholder="Mavzu nomi (masalan: Present Continuous)..."
+                disabled={topics.length >= 10}
                 className="flex-1 rounded-xl border border-line bg-white p-2.5 text-xs font-bold text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void addTopic();
@@ -8532,7 +8533,7 @@ function ModuleTopicsModal({
               <button
                 type="button"
                 onClick={() => void addTopic()}
-                disabled={busy || !newTitle.trim()}
+                disabled={busy || !newTitle.trim() || topics.length >= 10}
                 className="rounded-xl bg-[#002DFF] hover:bg-blue-700 text-white font-black text-xs px-4 py-2.5 shadow-sm transition disabled:opacity-40 shrink-0"
               >
                 {busy ? "..." : "Qo‘shish"}

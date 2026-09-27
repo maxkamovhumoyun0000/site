@@ -30,7 +30,7 @@ type LibNode = {
   is_public?: boolean;
   visibility?: "owner" | "public" | "shared";
   permission?: "owner" | "edit" | "assign" | "view";
-  payload?: { questions?: AiTestQuestion[]; reading_text?: string; notes?: string } | null;
+  payload?: { questions?: AiTestQuestion[]; reading_text?: string; notes?: string; system_learning_path?: boolean } | null;
   sort_order?: number;
 };
 
@@ -123,7 +123,19 @@ export function TeacherLibraryPanel({
 
   const doDelete = async (node: LibNode) => {
     if (!confirm(`"${node.title}" va ichidagi hamma narsa o'chiriladi. Davom etamizmi?`)) return;
-    const ok = await onApiCall(`/teacher/library/${node.id}`, undefined, "DELETE");
+    let confirmationCode: string | undefined;
+    if (node.payload?.system_learning_path) {
+      confirmationCode = prompt('Learning Path faylini o‘chirish uchun tasdiqlash kodini kiriting:')?.trim();
+      if (confirmationCode !== '0107') {
+        alert('Kod noto‘g‘ri. Fayl o‘chirilmadi.');
+        return;
+      }
+    }
+    const ok = await onApiCall(
+      `/teacher/library/${node.id}`,
+      confirmationCode ? { confirmation_code: confirmationCode } : undefined,
+      "DELETE",
+    );
     if (ok) {
       setBanner("O'chirildi");
       load(true);

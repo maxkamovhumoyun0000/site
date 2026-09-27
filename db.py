@@ -24479,8 +24479,13 @@ def update_library_node(node_id: int, *, title: str | None = None, description: 
         conn.close()
 
 
-def delete_library_node(node_id: int) -> bool:
-    """Butun subtree bilan o'chiradi (sharelar ham tozalanadi)."""
+def delete_library_node(node_id: int, *, allow_system_learning_path: bool = False) -> bool:
+    """Butun subtree bilan o'chiradi (sharelar ham tozalanadi).
+
+    ``allow_system_learning_path`` faqat Learning Path hayot sikli va uning
+    tasdiqlangan kutubxona-amallari uchun ishlatiladi. Oddiy kutubxona delete
+    chaqiruvlari protected Learning Path daraxtini o'chira olmaydi.
+    """
     ensure_library_schema()
     conn = get_conn()
     cur = conn.cursor()
@@ -24490,7 +24495,8 @@ def delete_library_node(node_id: int) -> bool:
             return False
         placeholders = ",".join(["?"] * len(ids))
         cur.execute(f"SELECT * FROM library_nodes WHERE id IN ({placeholders})", tuple(ids))
-        if any(_library_node_is_learning_path_locked(_row_to_dict(row)) for row in (cur.fetchall() or [])):
+        if (not allow_system_learning_path and
+                any(_library_node_is_learning_path_locked(_row_to_dict(row)) for row in (cur.fetchall() or []))):
             raise ValueError("Learning Path papka va materiallarini o‘chirib bo‘lmaydi")
         cur.execute(f"DELETE FROM library_shares WHERE node_id IN ({placeholders})", tuple(ids))
         cur.execute(f"DELETE FROM library_nodes WHERE id IN ({placeholders})", tuple(ids))
