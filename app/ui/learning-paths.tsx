@@ -5446,7 +5446,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 {/* Modules List Cards (Opens each module in dedicated popup) */}
                 <div className="mt-5 space-y-3">
                   {(selected.modules || []).map((module: Row, index: number) => {
-                    const lessonsCount = (module.lessons || []).length;
+                    const topicsCount = (Array.isArray(module.topics) ? module.topics.length : 0) || (module.topic_keys || []).length;
                     return (
                       <div
                         key={module.id}
@@ -5467,11 +5467,11 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                                 {module.title}
                               </p>
                             </div>
-                            <div className="flex items-center gap-2 flex-wrap mt-1 text-xs text-ink-500 dark:text-slate-400">
+                            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-ink-500 dark:text-slate-400">
                               <span>{(module.topic_keys || []).join(" · ") || "Mavzu kiritilmagan"}</span>
                               <span>•</span>
                               <span className="font-bold text-cyan-700 dark:text-cyan-300">
-                                🎯 {lessonsCount} ta savol
+                                📚 {topicsCount} ta mavzu
                               </span>
                               {module.reward_coins > 0 ? (
                                 <>
@@ -5486,25 +5486,6 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedModuleId(module.id);
-                              setOpenAddTestOnModuleOpen(true);
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-500/40 bg-cyan-500/10 hover:bg-[#1cb0f6] hover:border-[#1cb0f6] text-cyan-700 dark:text-cyan-300 hover:text-white dark:hover:text-white font-black text-xs px-3 py-2 shadow-xs transition"
-                            title="Ushbu modulga yangi savol qo'shish oynasini ochish"
-                          >
-                            <span>➕ {t("learning_paths.teacher.add_test_btn", "Savol qo'shish")}</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setManageTopicsModuleId(module.id)}
-                            className="inline-flex items-center gap-1.5 rounded-xl border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-600 hover:border-indigo-600 text-indigo-700 dark:text-indigo-300 hover:text-white dark:hover:text-white font-black text-xs px-3 py-2 shadow-xs transition"
-                            title="Modul mavzularini boshqarish"
-                          >
-                            <span>📚 {t("learning_paths.teacher.manage_topics_btn", "Mavzular")}</span>
-                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -6113,6 +6094,16 @@ const ALL_TEST_KINDS = [
   { key: "word_practice", label: "💡 So'z mashqi (Random tur)", needsAudio: false },
 ];
 
+function combineQuestionText(instruction: unknown, question: unknown): string {
+  const condition = String(instruction || "").trim().replace(/[:\s-]+$/, "");
+  const prompt = String(question || "").trim();
+  if (!condition) return prompt;
+  const normalizedCondition = condition.toLocaleLowerCase().replace(/\s+/g, " ");
+  const normalizedPrompt = prompt.toLocaleLowerCase().replace(/\s+/g, " ");
+  if (normalizedPrompt.includes(normalizedCondition)) return prompt;
+  return prompt ? `${condition}: ${prompt}` : condition;
+}
+
 function LessonEditor({
   module,
   apiFetch,
@@ -6154,7 +6145,6 @@ function LessonEditor({
   const [editAudioUrl, setEditAudioUrl] = useState("");
   const [editAudioUploading, setEditAudioUploading] = useState(false);
   const [editHint, setEditHint] = useState("");
-  const [editDirection, setEditDirection] = useState("");
   const [editWordCount, setEditWordCount] = useState(0);
   const [editMatchingPairs, setEditMatchingPairs] = useState<{ left: string; right: string }[]>([
     { left: "", right: "" },
@@ -6173,7 +6163,6 @@ function LessonEditor({
   const [managedTopicTitle, setManagedTopicTitle] = useState("");
   const [savingTopicTitle, setSavingTopicTitle] = useState(false);
   const [hint, setHint] = useState("");
-  const [direction, setDirection] = useState("");
   const [wordCount, setWordCount] = useState(0);
 
   const moduleTopics: Row[] = Array.isArray(module.topics) ? module.topics : [];
@@ -6229,7 +6218,7 @@ function LessonEditor({
     setEditingLessonId(Number(lesson.id));
     setEditTitle(String(lesson.title || ""));
     const p = (lesson.question_payload as Row) || {};
-    setEditPrompt(String(p.question || p.prompt || ""));
+    setEditPrompt(combineQuestionText(p.direction, p.question || p.prompt || ""));
     setEditPassage(String(p.passage || p.context || ""));
     const tType = String(p.test_type || lesson.source_version || "multiple_choice");
     setEditType(tType);
@@ -6239,7 +6228,6 @@ function LessonEditor({
     setEditExplanation(String(p.explanation || ""));
     setEditAudioUrl(String(p.audio_url || ""));
     setEditHint(String(p.hint || p.definition || ""));
-    setEditDirection(String(p.direction || ""));
     setEditWordCount(Number(p.word_count || 0));
 
     // Structured matching pairs extraction
@@ -6381,7 +6369,6 @@ function LessonEditor({
               ? { tokens: choices.length ? choices : (answer ? answer.split(/\s+/).filter(Boolean) : []) }
               : {}),
             ...(editHint.trim() ? { hint: editHint.trim() } : {}),
-            ...(editDirection.trim() ? { direction: editDirection.trim() } : {}),
             ...(editWordCount > 0 ? { word_count: editWordCount } : {}),
           },
         },
@@ -6508,7 +6495,6 @@ function LessonEditor({
               ? { tokens: choices.length ? choices : (answer ? answer.split(/\s+/).filter(Boolean) : []) }
               : {}),
             ...(hint.trim() ? { hint: hint.trim() } : {}),
-            ...(direction.trim() ? { direction: direction.trim() } : {}),
             ...(wordCount > 0 ? { word_count: wordCount } : {}),
           },
         },
@@ -6521,7 +6507,6 @@ function LessonEditor({
       setExplanation("");
       setAudioUrl("");
       setHint("");
-      setDirection("");
       setWordCount(0);
       setMatchingPairs([{ left: "", right: "" }, { left: "", right: "" }]);
       setMcqOptions(["", "", "", ""]);
@@ -6936,15 +6921,6 @@ function LessonEditor({
                           onChange={(e) => setEditHint(e.target.value)}
                           className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
                           placeholder="Yordamchi ko'rsatma / Ta'rif / Hint..."
-                        />
-                      ) : null}
-
-                      {editType === "translation" ? (
-                        <input
-                          value={editDirection}
-                          onChange={(e) => setEditDirection(e.target.value)}
-                          className="w-full rounded-xl border border-line bg-white dark:bg-slate-800/80 p-2 text-xs dark:border-slate-700 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500"
-                          placeholder="Tarjima yo'nalishi (masalan: UZ → EN yoki EN → UZ)"
                         />
                       ) : null}
 
@@ -7397,7 +7373,8 @@ function LessonEditor({
                       </div>
                     ) : null}
 
-                    {/* Question prompt */}
+                    {/* Question and task instruction share one student-facing field. */}
+                    <label className="block text-[11px] font-black text-ink-500 dark:text-slate-400">Savol va bajarish ko‘rsatmasi *</label>
                     <textarea
                       value={prompt}
                       onChange={(e) => setPrompt(e.target.value)}
@@ -7602,14 +7579,8 @@ function LessonEditor({
                       </div>
                     ) : null}
 
-                    {/* Rich contextual inputs: Hint, Direction, Word Count */}
-                    <div className="grid gap-2 sm:grid-cols-3">
-                      <input
-                        value={direction}
-                        onChange={(e) => setDirection(e.target.value)}
-                        placeholder="Ko'rsatma / Direction (ixtiyoriy)"
-                        className="rounded-2xl border-2 border-slate-200 bg-white p-2.5 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-purple-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
-                      />
+                    {/* Context fields do not repeat the task statement. */}
+                    <div className="grid gap-2 sm:grid-cols-2">
                       <input
                         value={hint}
                         onChange={(e) => setHint(e.target.value)}
