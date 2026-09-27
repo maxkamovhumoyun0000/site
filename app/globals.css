@@ -24230,3 +24230,34 @@ aside[data-testid="mobile-drawer"] {
   border-top-color: rgba(255, 255, 255, 0.08);
   background: rgba(9, 13, 22, 0.96);
 }
+
+/* Learning Path subject selector: keep all surfaces dark even when this
+   component is rendered under the website theme attribute rather than a
+   Tailwind `.dark` ancestor. */
+:is([data-theme="dark"], .dark) .learning-subject-selector {
+  border-color: #253452 !important;
+  background: rgba(9, 18, 36, 0.96) !important;
+  color: #e2e8f0;
+}
+
+:is([data-theme="dark"], .dark) .learning-subject-option:not(.bg-\[\#002DFF\]) {
+  border-color: #253452 !important;
+  background: #111f38 !important;
+  color: #cbd5e1 !important;
+}
+
+:is([data-theme="dark"], .dark) .learning-subject-option:not(.bg-\[\#002DFF\]):hover {
+  border-color: #3a5075 !important;
+  background: #172a49 !important;
+  color: #f8fafc !important;
+}
+
+:is([data-theme="dark"], .dark) .learning-subject-count {
+  background: #111f38 !important;
+  color: #a9b8cf !important;
+}
+
+:is([data-theme="dark"], .dark) .learning-tracks-card {
+  border-color: #253452 !important;
+  background: #090f20 !important;
+}

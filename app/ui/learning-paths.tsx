@@ -214,7 +214,7 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   return (
     <section className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-6">
       {/* ─── Fan Tanlash / Subject Selector Bar (Barchasi olib tashlangan) ─── */}
-      <div className="sticky top-2 z-30 mb-6 flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-b-4 border-slate-200 bg-white/95 p-2.5 shadow-sm backdrop-blur-md dark:border-navy-700 dark:bg-navy-900/95">
+      <div className="learning-subject-selector sticky top-2 z-30 mb-6 flex flex-wrap items-center justify-between gap-2 rounded-2xl border-2 border-b-4 border-slate-200 bg-white/95 p-2.5 shadow-sm backdrop-blur-md dark:border-navy-700 dark:bg-navy-900/95">
         <div className="flex flex-wrap items-center gap-2">
           {subjects.map((sub) => {
             const lower = sub.toLowerCase();
@@ -231,7 +231,7 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
                 key={sub}
                 type="button"
                 onClick={() => setSelectedSubject(sub)}
-                className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black uppercase tracking-wider transition ${
+                className={`learning-subject-option flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-black uppercase tracking-wider transition ${
                   active
                     ? "border-2 border-b-4 border-[#001A88] bg-[#002DFF] text-white shadow-md shadow-blue-500/25 active:translate-y-0.5 active:border-b-2"
                     : "border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-navy-700 dark:bg-navy-800 dark:text-navy-200"
@@ -244,7 +244,7 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           })}
         </div>
 
-        <span className="shrink-0 rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500 dark:bg-navy-800 dark:text-navy-300">
+        <span className="learning-subject-count shrink-0 rounded-xl bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-500 dark:bg-navy-800 dark:text-navy-300">
           {filteredTracks.length} ta track
         </span>
       </div>
@@ -256,7 +256,7 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
       ) : null}
 
       {/* Unified Tracks List Card */}
-      <div className="overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-xl dark:border-navy-800 dark:bg-navy-950">
+      <div className="learning-tracks-card overflow-hidden rounded-3xl border-2 border-slate-200 bg-white shadow-xl dark:border-navy-800 dark:bg-navy-950">
         {filteredTracks.map((track, i) => {
           const nextTrack = filteredTracks[i + 1];
           const nextTrackUnlocked = nextTrack ? !nextTrack.locked : false;
