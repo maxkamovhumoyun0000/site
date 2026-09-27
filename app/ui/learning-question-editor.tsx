@@ -44,7 +44,7 @@ export function LearningQuestionEditor({ initialTitle, initialQuestions, editing
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   };
-  return <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/60 p-3" role="dialog" aria-modal="true" aria-label="Test muharriri">
+  return <div className="fixed inset-0 z-[360] flex items-center justify-center bg-black/60 p-3" role="dialog" aria-modal="true" aria-label="Test muharriri">
     <div className="max-h-[92vh] w-full max-w-4xl overflow-y-auto rounded-2xl bg-white p-5 dark:bg-slate-950">
       <h3 className="text-lg font-bold">Test muharriri</h3>
       <p className="my-2 text-sm text-slate-500">Kutubxona va uy vazifalari bilan bir xil mashq turlari.</p>

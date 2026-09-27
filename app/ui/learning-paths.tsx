@@ -6604,7 +6604,7 @@ function LessonEditor({
 
   return (
     <div className="mt-4 border-t border-line/60 pt-4 dark:border-slate-800 space-y-4">
-      {libraryEditor && <LearningQuestionEditor
+      {libraryEditor && typeof document !== "undefined" && createPortal(<LearningQuestionEditor
         initialTitle={libraryEditor.title}
         initialQuestions={libraryEditor.questions}
         editing={!!libraryEditor.id}
@@ -6631,7 +6631,7 @@ function LessonEditor({
           }
           await onSaved();
         }}
-      />}
+      />, document.body)}
       <button type="button" className="rounded-xl bg-cyan-600 px-4 py-3 font-bold text-white" onClick={() => setLibraryEditor({ title: "", questions: [] })}>
         ✍️ Kutubxona muharriri · Barcha mashq turlari
       </button>
@@ -6685,7 +6685,10 @@ function LessonEditor({
             lessons.map((lesson: Row, idx: number) => {
               const p = (lesson.question_payload as Row) || {};
               const qType = String(p.test_type || lesson.source_version || "multiple_choice");
-              const isEditing = editingLessonId === lesson.id;
+              // Lesson ids can arrive as numeric strings from older API
+              // responses. startEdit stores a number, so compare the
+              // normalized ids or the inline edit form never renders.
+              const isEditing = editingLessonId !== null && Number(editingLessonId) === Number(lesson.id);
               const meta = ALL_TEST_KINDS.find((k) => k.key === qType) || { label: qType, needsAudio: false };
 
               return (
@@ -7268,6 +7271,8 @@ function LessonEditor({
                         <option value="gap_fill">Faqat Bo'sh joyni to'ldirish (Fill in blank)</option>
                         <option value="scrambled_sentence">Faqat So'z tartibi (Word Order)</option>
                         <option value="matching">Faqat Moslashtirish (Matching Pairs)</option>
+                        <option value="word_practice">📚 Vocabulary — random mashq turi (tarjima, imlo, yozish yoki gapirish)</option>
+                        <option value="word_practice,spelling,translation,speak_sentence,write_sentence">🎲 Vocabulary aralash (random so'z mashqi + alohida tarjima/imlo/yozish/gapirish)</option>
                         <option value="translation">Faqat Tarjima mashqlari</option>
                         <option value="spelling">Faqat Imlo (Spelling)</option>
                       </select>

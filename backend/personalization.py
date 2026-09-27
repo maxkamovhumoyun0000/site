@@ -3254,6 +3254,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "- 'condition_uz', 'condition_ru' and 'condition_en': one concise instruction for the student. It explains the task but must not repeat the question, passage, blanks, choices or answer text.\n"
         f"- 'test_type': one of ({types_str}); use only the requested types.\n"
         "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
+        "- For 'word_practice', make each item one vocabulary word and provide 'word', 'translation_uz', and 'translation_ru'. The student app will turn that word into one random vocabulary exercise, so do not expose the word or translation in the instruction.\n"
         "- 'options': array of string choices strictly following these rules:\n"
         "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"
         "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
