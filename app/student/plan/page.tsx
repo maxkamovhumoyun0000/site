@@ -391,7 +391,6 @@ export default function PersonalPlanPage() {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<"overview" | "topics" | "practice" | "history">("overview");
   const [practiceStarted, setPracticeStarted] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null);
   const autoTriggered = useRef(false);
@@ -469,13 +468,6 @@ export default function PersonalPlanPage() {
   const stats = analysis?.test_stats || {};
   const hwStats = analysis?.homework_stats || {};
 
-  const tabs = [
-    { id: "overview" as const, label: isRussianSubject ? "📊 Обзор" : isEnglishSubject ? "📊 Overview" : "📊 Umumiy" },
-    { id: "topics" as const, label: isRussianSubject ? "📚 Темы" : isEnglishSubject ? "📚 Topics" : "📚 Mavzular" },
-    { id: "practice" as const, label: isRussianSubject ? "✍️ Практика" : isEnglishSubject ? "✍️ Practice" : "✍️ Mashq" },
-    { id: "history" as const, label: isRussianSubject ? "📅 История" : isEnglishSubject ? "📅 History" : "📅 Tarix" },
-  ];
-
   // Diamondvoy prompts adapted strictly to the subject language
   const getLearnPrompt = (topicName: string) => {
     if (isRussianSubject) {
@@ -542,58 +534,13 @@ export default function PersonalPlanPage() {
           )}
         </div>
 
-        {/* Hero Header Card */}
-        <div className="relative overflow-hidden rounded-3xl border-2 border-b-4 border-[#001A88] bg-gradient-to-br from-[#001A88] via-[#002DFF] to-cyan-600 p-6 sm:p-8 text-white shadow-xl shadow-blue-500/10 mb-6">
-          <div className="absolute -right-16 -top-16 h-52 w-52 rounded-full bg-white/10 blur-2xl pointer-events-none" />
-          <div className="relative flex flex-wrap items-start justify-between gap-4">
-            <div className="max-w-xl">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3 py-1 text-xs font-black uppercase tracking-wider backdrop-blur-md">
-                💎 Diamondvoy · {selectedSubject}
-              </span>
-              <h1 className="text-2xl sm:text-3xl font-black mt-2 leading-tight">
-                {t.title}
-              </h1>
-              <p className="text-xs sm:text-sm text-white/85 mt-2 leading-relaxed">
-                {t.subtitle}
-              </p>
-              {analysis?.week_start && (
-                <p className="text-xs font-bold text-cyan-200 mt-2">
-                  🗓 {t.weekOf}: {analysis.week_start} — {analysis.week_end}
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2 self-start sm:self-auto rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-white backdrop-blur-sm shadow-sm">
-              <span>{analysis?.status === "processing" ? "⏳" : "🗓"}</span>
-              <span>{analysis?.status === "processing" ? t.thinking : `${t.weekOf}: ${analysis?.week_start || ""}`}</span>
-            </div>
-          </div>
-        </div>
-
         {(generating || analysis?.status === "processing" || (loading && !hasAnalysis)) && (
           <ThinkingAnimation text={t.thinking} detail={t.thinkingDetail} />
         )}
 
         {!loading && !generating && analysis?.status !== "processing" && (<>
-          {/* Tab Bar in Learning Path 3D style */}
-          <div className="flex gap-2 mb-6 rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-1.5 dark:border-navy-700 dark:bg-navy-900 shadow-sm overflow-x-auto">
-            {tabs.map(tab => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={`flex-1 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider transition-all whitespace-nowrap border-2 ${
-                  activeTab === tab.id
-                    ? "border-[#001A88] border-b-4 bg-[#002DFF] text-white shadow-sm active:translate-y-0.5 active:border-b-2"
-                    : "border-transparent text-ink-500 hover:text-navy-900 hover:bg-slate-100 dark:text-navy-300 dark:hover:text-white dark:hover:bg-navy-800"
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
           {/* ═══ Overview Tab ═══ */}
-          {activeTab === "overview" && (
-            <div className="space-y-6 animate-fade-in">
+          <div className="space-y-6 animate-fade-in">
               {/* Stat Cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="rounded-2xl border-2 border-b-4 border-slate-200 bg-white p-4 shadow-sm dark:border-navy-700 dark:bg-navy-900">
@@ -688,12 +635,10 @@ export default function PersonalPlanPage() {
                   <p className="text-xs sm:text-sm text-ink-500 dark:text-navy-300 mt-2 max-w-md mx-auto leading-relaxed">{t.noDataHint}</p>
                 </div>
               )}
-            </div>
-          )}
+          </div>
 
           {/* ═══ Topics Tab ═══ */}
-          {activeTab === "topics" && (
-            <div className="space-y-4 animate-fade-in">
+          <div className="mt-6 space-y-4 animate-fade-in">
               {hasAnalysis && Array.isArray(analysis?.weak_topics) && analysis.weak_topics.length > 0 ? (
                 analysis.weak_topics.map((topic, i) => (
                   <details
@@ -776,12 +721,10 @@ export default function PersonalPlanPage() {
                   <p className="text-navy-900 dark:text-white font-bold">{hasAnalysis ? "No weak topics identified — excellent work!" : t.noData}</p>
                 </div>
               )}
-            </div>
-          )}
+          </div>
 
           {/* ═══ Practice Tab ═══ */}
-          {activeTab === "practice" && (
-            <div className="animate-fade-in">
+          <div className="mt-6 animate-fade-in">
               {hasAnalysis && Array.isArray(analysis?.practice_questions) && analysis.practice_questions.length > 0 ? (
                 !practiceStarted ? (
                   <div className="text-center py-12 rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm">
@@ -807,12 +750,10 @@ export default function PersonalPlanPage() {
                   <p className="text-ink-500 dark:text-navy-300 font-bold">{hasAnalysis ? (isRussianSubject ? "Нет практических вопросов" : isEnglishSubject ? "No practice questions available" : "Amaliy savollar mavjud emas") : t.noData}</p>
                 </div>
               )}
-            </div>
-          )}
+          </div>
 
           {/* ═══ History Tab ═══ */}
-          {activeTab === "history" && (
-            <div className="space-y-4 animate-fade-in">
+          <div className="mt-6 space-y-4 animate-fade-in">
               {selectedHistory ? (
                 <div className="rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm">
                   <button
@@ -866,8 +807,7 @@ export default function PersonalPlanPage() {
                   <p className="text-ink-500 dark:text-navy-300 font-bold">{t.noHistory}</p>
                 </div>
               )}
-            </div>
-          )}
+          </div>
         </>)}
       </div>
     </main>

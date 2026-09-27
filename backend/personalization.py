@@ -256,7 +256,7 @@ def ensure_schema() -> None:
               status TEXT DEFAULT 'pending',
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(user_id, week_start)
+              UNIQUE(user_id, week_start, subject)
             )""",
             """CREATE TABLE IF NOT EXISTS ai_generated_questions_bank (
               id BIGSERIAL PRIMARY KEY,
@@ -388,6 +388,24 @@ def ensure_schema() -> None:
                 except Exception:
                     pass
 
+        # Earlier deployments allowed only one weekly analysis per student.
+        # A student enrolled in English and Russian needs one immutable result
+        # per subject, so the current-week cache must be keyed by all three
+        # values.  PostgreSQL accepts this migration without touching results.
+        try:
+            cur.execute("UPDATE weekly_ai_analyses SET subject='English' WHERE subject IS NULL OR TRIM(subject)='' ")
+            cur.execute("ALTER TABLE weekly_ai_analyses DROP CONSTRAINT IF EXISTS weekly_ai_analyses_user_id_week_start_key")
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_weekly_analysis_user_week_subject_unique "
+                "ON weekly_ai_analyses(user_id, week_start, subject)"
+            )
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
         for sql in (
             "CREATE INDEX IF NOT EXISTS idx_mistakes_user_review ON mistake_notebook_items(user_id, review_at)",
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON learning_bookmarks(user_id, created_at DESC)",
@@ -487,6 +505,13 @@ def ensure_schema() -> None:
         except Exception:
             try:
                 cur.execute("ALTER TABLE weekly_ai_analyses ADD COLUMN subject TEXT DEFAULT 'English'")
+            except Exception:
+                pass
+        try:
+            cur.execute("ALTER TABLE test_history ADD COLUMN IF NOT EXISTS subject TEXT")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE test_history ADD COLUMN subject TEXT")
             except Exception:
                 pass
         official_badges = (
@@ -4820,12 +4845,15 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
     """Gather test + homework + mistake stats for the given week, optionally filtered by subject."""
     clean_sub = _normalize_subject_label(subject)
     # Test stats
-    cur.execute(
+    test_sql = (
         "SELECT test_type, topic_id, correct_count, wrong_count, skipped_count, created_at "
         "FROM test_history WHERE user_id=? AND DATE(created_at) >= ? AND DATE(created_at) <= ? "
-        "ORDER BY created_at DESC",
-        (user_id, week_start, week_end),
     )
+    test_params: list[Any] = [user_id, week_start, week_end]
+    if clean_sub:
+        test_sql += "AND LOWER(COALESCE(subject, ''))=LOWER(?) "
+        test_params.append(clean_sub)
+    cur.execute(test_sql + "ORDER BY created_at DESC", tuple(test_params))
     tests = _dicts(cur.fetchall())
     total_correct = sum(int(t.get("correct_count") or 0) for t in tests)
     total_wrong = sum(int(t.get("wrong_count") or 0) for t in tests)
@@ -4846,7 +4874,7 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
     if clean_sub:
         cur.execute(
             "SELECT subject, topic_key, COUNT(*) AS cnt "
-            "FROM mistake_notebook_items WHERE user_id=? AND (LOWER(subject)=LOWER(?) OR subject IS NULL) AND resolved_at IS NULL "
+            "FROM mistake_notebook_items WHERE user_id=? AND LOWER(COALESCE(subject, ''))=LOWER(?) AND resolved_at IS NULL "
             "GROUP BY subject, topic_key ORDER BY cnt DESC LIMIT 5",
             (user_id, clean_sub),
         )
@@ -4858,21 +4886,27 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
             (user_id,),
         )
     weak_by_mistakes = _dicts(cur.fetchall())
-    cur.execute(
+    mistake_source_sql = (
         "SELECT source_type,COUNT(*) AS count FROM mistake_notebook_items "
         "WHERE user_id=? AND DATE(created_at)>=? AND DATE(created_at)<=? "
-        "GROUP BY source_type ORDER BY count DESC",
-        (user_id, week_start, week_end),
     )
+    mistake_source_params: list[Any] = [user_id, week_start, week_end]
+    if clean_sub:
+        mistake_source_sql += "AND LOWER(COALESCE(subject, ''))=LOWER(?) "
+        mistake_source_params.append(clean_sub)
+    cur.execute(mistake_source_sql + "GROUP BY source_type ORDER BY count DESC", tuple(mistake_source_params))
     mistake_sources = _dicts(cur.fetchall())
-    cur.execute(
+    sample_mistakes_sql = (
         # The canonical mistake-notebook column is ``prompt``.  Keep the
         # public analysis payload name stable for the AI prompt below.
         "SELECT topic_key, prompt AS question_text, explanation FROM mistake_notebook_items "
         "WHERE user_id=? AND DATE(created_at)>=? AND DATE(created_at)<=? "
-        "ORDER BY id DESC LIMIT 3",
-        (user_id, week_start, week_end),
     )
+    sample_mistakes_params: list[Any] = [user_id, week_start, week_end]
+    if clean_sub:
+        sample_mistakes_sql += "AND LOWER(COALESCE(subject, ''))=LOWER(?) "
+        sample_mistakes_params.append(clean_sub)
+    cur.execute(sample_mistakes_sql + "ORDER BY id DESC LIMIT 3", tuple(sample_mistakes_params))
     sample_mistakes = _dicts(cur.fetchall())
 
     # Homework stats
@@ -4881,8 +4915,9 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
         "SUM(CASE WHEN COALESCE(s.status,'') IN ('done','accepted','reviewed','completed') THEN 1 ELSE 0 END) AS completed "
         "FROM web_homeworks h "
         "LEFT JOIN web_homework_submissions s ON s.homework_id=h.id AND s.student_id=? "
-        "WHERE h.student_id=? AND DATE(COALESCE(h.created_at, h.due_at)) >= ? AND DATE(COALESCE(h.created_at, h.due_at)) <= ?",
-        (user_id, user_id, week_start, week_end),
+        "WHERE h.student_id=? AND DATE(COALESCE(h.created_at, h.due_at)) >= ? AND DATE(COALESCE(h.created_at, h.due_at)) <= ?"
+        + (" AND LOWER(COALESCE(h.subject, ''))=LOWER(?)" if clean_sub else ""),
+        tuple([user_id, user_id, week_start, week_end] + ([clean_sub] if clean_sub else [])),
     )
     hw_row = dict(cur.fetchone() or {})
     hw_total = int(hw_row.get("total") or 0)
@@ -4898,7 +4933,7 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
             "JOIN learning_modules m ON m.id=l.module_id "
             "JOIN learning_tracks t ON t.id=m.track_id "
             "WHERE a.student_id=? AND DATE(a.completed_at)>=? AND DATE(a.completed_at)<=? "
-            "AND (LOWER(t.subject)=LOWER(?) OR t.subject IS NULL) "
+            "AND LOWER(COALESCE(t.subject, ''))=LOWER(?) "
             "ORDER BY a.completed_at DESC",
             (user_id, week_start, week_end, clean_sub),
         )
@@ -5463,13 +5498,13 @@ async def _finish_weekly_analysis(
             cur = conn.cursor()
             cur.execute(
                 "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
-                "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
+                "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND subject=?",
                 (
                     str(result.get("analysis", "")),
                     json.dumps(result.get("weak_topics", []), ensure_ascii=False),
                     json.dumps(result.get("recommendations", []), ensure_ascii=False),
                     json.dumps(result.get("practice_questions", []), ensure_ascii=False),
-                    _now().isoformat(), user_id, week_start, clean_sub, clean_sub,
+                    _now().isoformat(), user_id, week_start, clean_sub,
                 ),
             )
             conn.commit()
@@ -5483,13 +5518,13 @@ async def _finish_weekly_analysis(
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE weekly_ai_analyses SET analysis_text=?, weak_topics_json=?, recommendations_json=?, "
-                    "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
+                    "practice_questions_json=?, status='done', updated_at=? WHERE user_id=? AND week_start=? AND subject=?",
                     (
                         str(fallback.get("analysis", "")),
                         json.dumps(fallback.get("weak_topics", []), ensure_ascii=False),
                         json.dumps(fallback.get("recommendations", []), ensure_ascii=False),
                         json.dumps(fallback.get("practice_questions", []), ensure_ascii=False),
-                        _now().isoformat(), user_id, week_start, clean_sub, clean_sub,
+                        _now().isoformat(), user_id, week_start, clean_sub,
                     ),
                 )
                 conn.commit()
@@ -5521,75 +5556,73 @@ async def generate_weekly_analysis_for_all_students() -> dict[str, Any]:
     for s in students:
         uid = int(s["id"])
         user_name = _student_name(s)
+        conn = get_conn()
         try:
-            conn = get_conn()
-            try:
-                cur = conn.cursor()
-                enrolled_subs = _student_enrolled_subjects(cur, uid, s)
-                target_sub = enrolled_subs[0] if enrolled_subs else "English"
-                cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))", (uid, week_start, target_sub, target_sub))
-                row = cur.fetchone()
-                if row and dict(row).get("status") == "done":
-                    skipped += 1
-                    continue
-                stats = _collect_week_stats(cur, uid, week_start, week_end, subject=target_sub)
-                has_activity = (
-                    int(stats.get("test_count") or 0) > 0
-                    or int(stats.get("homework_total") or 0) > 0
-                    or len(stats.get("weak_topics_by_tests") or []) > 0
-                    or len(stats.get("weak_topics_by_mistakes") or []) > 0
-                    or int(stats.get("learning_path_count") or 0) > 0
-                )
-            finally:
-                conn.close()
+            enrolled_subs = _student_enrolled_subjects(conn.cursor(), uid, s)
+        finally:
+            conn.close()
 
-            if has_activity:
-                result = await _generate_ai_analysis(stats, user_name, subject=target_sub)
-            else:
-                result = _build_smart_fallback_analysis(stats, user_name, subject=target_sub)
-            conn = get_conn()
+        # Each enrolled subject gets an independent, cached weekly analysis.
+        # English statistics can therefore never enter the Russian plan, or
+        # the other way around.
+        for target_sub in enrolled_subs or ["English"]:
             try:
-                cur = conn.cursor()
-                cur.execute(
-                    """
-                    INSERT INTO weekly_ai_analyses(
-                        user_id, week_start, week_end, subject, analysis_text, weak_topics_json,
-                        recommendations_json, test_stats_json, homework_stats_json,
-                        practice_questions_json, status, updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,'done',?)
-                    ON CONFLICT(user_id, week_start) DO UPDATE SET
-                        subject=excluded.subject,
-                        analysis_text=excluded.analysis_text,
-                        weak_topics_json=excluded.weak_topics_json,
-                        recommendations_json=excluded.recommendations_json,
-                        test_stats_json=excluded.test_stats_json,
-                        homework_stats_json=excluded.homework_stats_json,
-                        practice_questions_json=excluded.practice_questions_json,
-                        status='done',
-                        updated_at=excluded.updated_at
-                    """,
-                    (
-                        uid, week_start, week_end, target_sub,
-                        str(result.get("analysis", "")),
-                        json.dumps(result.get("weak_topics", []), ensure_ascii=False),
-                        json.dumps(result.get("recommendations", []), ensure_ascii=False),
-                        json.dumps(stats, ensure_ascii=False),
-                        json.dumps({
-                            "total": stats.get("homework_total", 0),
-                            "completed": stats.get("homework_completed", 0),
-                            "completion_pct": stats.get("homework_completion_pct", 0),
-                        }, ensure_ascii=False),
-                        json.dumps(result.get("practice_questions", []), ensure_ascii=False),
-                        _now().isoformat(),
-                    ),
-                )
-                conn.commit()
-                processed += 1
-            finally:
-                conn.close()
-        except Exception:
-            logger.exception("Error generating weekly analysis for student %s", uid)
-            errors += 1
+                conn = get_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?",
+                        (uid, week_start, target_sub),
+                    )
+                    row = cur.fetchone()
+                    if row and dict(row).get("status") == "done":
+                        skipped += 1
+                        continue
+                    stats = _collect_week_stats(cur, uid, week_start, week_end, subject=target_sub)
+                    has_activity = (
+                        int(stats.get("test_count") or 0) > 0
+                        or int(stats.get("homework_total") or 0) > 0
+                        or len(stats.get("weak_topics_by_tests") or []) > 0
+                        or len(stats.get("weak_topics_by_mistakes") or []) > 0
+                        or int(stats.get("learning_path_count") or 0) > 0
+                    )
+                finally:
+                    conn.close()
+
+                result = await _generate_ai_analysis(stats, user_name, subject=target_sub) if has_activity else _build_smart_fallback_analysis(stats, user_name, subject=target_sub)
+                conn = get_conn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        INSERT INTO weekly_ai_analyses(
+                            user_id, week_start, week_end, subject, analysis_text, weak_topics_json,
+                            recommendations_json, test_stats_json, homework_stats_json,
+                            practice_questions_json, status, updated_at
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,'done',?)
+                        ON CONFLICT(user_id, week_start, subject) DO UPDATE SET
+                            analysis_text=excluded.analysis_text,
+                            weak_topics_json=excluded.weak_topics_json,
+                            recommendations_json=excluded.recommendations_json,
+                            test_stats_json=excluded.test_stats_json,
+                            homework_stats_json=excluded.homework_stats_json,
+                            practice_questions_json=excluded.practice_questions_json,
+                            status='done', updated_at=excluded.updated_at
+                        """,
+                        (uid, week_start, week_end, target_sub, str(result.get("analysis", "")),
+                         json.dumps(result.get("weak_topics", []), ensure_ascii=False),
+                         json.dumps(result.get("recommendations", []), ensure_ascii=False),
+                         json.dumps(stats, ensure_ascii=False),
+                         json.dumps({"total": stats.get("homework_total", 0), "completed": stats.get("homework_completed", 0), "completion_pct": stats.get("homework_completion_pct", 0)}, ensure_ascii=False),
+                         json.dumps(result.get("practice_questions", []), ensure_ascii=False), _now().isoformat()),
+                    )
+                    conn.commit()
+                    processed += 1
+                finally:
+                    conn.close()
+            except Exception:
+                logger.exception("Error generating weekly analysis for student %s subject %s", uid, target_sub)
+                errors += 1
 
     return {"total": total, "processed": processed, "skipped": skipped, "errors": errors}
 
@@ -5631,8 +5664,8 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
         active_sub = clean_sub if clean_sub and clean_sub in enrolled_subs else enrolled_subs[0]
 
         cur.execute(
-            "SELECT * FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))",
-            (uid, week_start, active_sub, active_sub),
+            "SELECT * FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?",
+            (uid, week_start, active_sub),
         )
         row = cur.fetchone()
         if row:
@@ -5661,7 +5694,7 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
         try:
             cur.execute(
                 "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing', updated_at=?",
+                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start, subject) DO UPDATE SET status='processing', test_stats_json=excluded.test_stats_json, homework_stats_json=excluded.homework_stats_json, updated_at=?",
                 (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
@@ -5717,23 +5750,23 @@ async def generate_weekly_analysis(subject: str | None = Query(default=None), au
         active_sub = clean_sub if clean_sub and clean_sub in enrolled_subs else enrolled_subs[0]
 
         stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
-        cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND (subject=? OR (subject IS NULL AND ?='English'))", (uid, week_start, active_sub, active_sub))
+        cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?", (uid, week_start, active_sub))
         current = cur.fetchone()
-        if current and str(dict(current).get("status") or "") == "processing":
-            return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end, "subject": active_sub}
+        if current and str(dict(current).get("status") or "") in {"processing", "done"}:
+            return {"accepted": True, "success": True, "status": str(dict(current).get("status")), "week_start": week_start, "week_end": week_end, "subject": active_sub}
 
         # Mark as processing
         try:
             cur.execute(
                 "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start) DO UPDATE SET subject=excluded.subject, status='processing', updated_at=?",
+                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start, subject) DO UPDATE SET status='processing', test_stats_json=excluded.test_stats_json, homework_stats_json=excluded.homework_stats_json, updated_at=?",
                 (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
                     "total": stats["homework_total"], "completed": stats["homework_completed"],
                     "completion_pct": stats["homework_completion_pct"],
                 }), _now().isoformat()),
             )
         except Exception:
-            cur.execute("DELETE FROM weekly_ai_analyses WHERE user_id=? AND week_start=?", (uid, week_start))
+            cur.execute("DELETE FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?", (uid, week_start, active_sub))
             cur.execute(
                 "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) VALUES(?,?,?,?,'processing',?,?)",
                 (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
@@ -5762,9 +5795,9 @@ async def get_analysis_history(subject: str | None = Query(default=None), author
                 "SELECT id, week_start, week_end, subject, analysis_text, weak_topics_json, "
                 "recommendations_json, test_stats_json, homework_stats_json, "
                 "practice_questions_json, status, created_at "
-                "FROM weekly_ai_analyses WHERE user_id=? AND (subject=? OR (subject IS NULL AND ?='English')) AND status='done' "
+                "FROM weekly_ai_analyses WHERE user_id=? AND subject=? AND status='done' "
                 "ORDER BY week_start DESC LIMIT 12",
-                (uid, clean_sub, clean_sub),
+                (uid, clean_sub),
             )
         else:
             cur.execute(

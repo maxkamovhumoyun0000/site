@@ -193,24 +193,6 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
         </div>
       )}
 
-      {/* Hero Header Card */}
-      <section className="relative overflow-hidden rounded-3xl border-2 border-b-4 border-[#001A88] bg-gradient-to-br from-[#001A88] via-[#002DFF] to-cyan-600 p-6 sm:p-8 text-white shadow-xl shadow-blue-500/10">
-        <div className="absolute -right-16 -top-16 h-56 w-56 rounded-full bg-white/10 blur-3xl pointer-events-none" />
-        <div className="relative max-w-3xl">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-white/20 px-3.5 py-1 text-xs font-black uppercase tracking-wider backdrop-blur-md">
-            💎 Diamondvoy · {isRussian ? "Русский язык" : "English"}
-          </span>
-          <h2 className="mt-2 text-2xl sm:text-3xl font-black">
-            {isRussian ? "Мой учебный план" : tt("plan.weekly.title", "Shaxsiy o‘quv rejam")}
-          </h2>
-          <p className="mt-2 text-xs sm:text-sm leading-6 text-white/90">
-            {isRussian
-              ? "Diamondvoy еженедельно анализирует ваши результаты тестов, ошибки и домашние задания, формируя персональные рекомендации и лёгкие практические упражнения."
-              : tt("plan.weekly.subtitle", "Diamondvoy har haftadagi test, xato va uyga vazifa natijalaringizdan sizga mos tushuntirish hamda yengil mashq tayyorlaydi.")}
-          </p>
-        </div>
-      </section>
-
       {/* Thinking State */}
       {thinking ? (
         <section className="rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm flex items-center gap-4">

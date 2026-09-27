@@ -4688,7 +4688,7 @@ def _daily_finalize_if_all_answered(user: dict, attempt: dict, items: list[dict]
             selected_answer=row.get("selected_option"),
             correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
         )
-    add_test_history(int(user.get("id") or 0), "daily", str(attempt.get("subject") or ""), correct, wrong, unanswered)
+    add_test_history(int(user.get("id") or 0), "daily", str(attempt.get("subject") or ""), correct, wrong, unanswered, subject=str(attempt.get("subject") or ""))
     refreshed_attempt = _daily_attempt_row(int(attempt.get("id") or 0)) or attempt
     refreshed_items = get_daily_test_attempt_items(int(attempt.get("id") or 0))
     return refreshed_attempt, refreshed_items, breakdown
@@ -25190,6 +25190,7 @@ async def student_grammar_quiz_answer(
             correct,
             wrong,
             skipped,
+            subject=str(session.get("subject") or ""),
         )
         try:
             attempts_used = get_grammar_attempts(user_id, str(session.get("topic_id") or ""))
@@ -25530,7 +25531,15 @@ async def student_daily_tests_answer(
             selected_answer=row.get("selected_option"),
             correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
         )
-    add_test_history(user_id, "daily", str(attempt.get("subject") or ""), correct, wrong, unanswered)
+    add_test_history(
+        user_id,
+        "daily",
+        str(attempt.get("subject") or ""),
+        correct,
+        wrong,
+        unanswered,
+        subject=str(attempt.get("subject") or ""),
+    )
     _invalidate_student_overview_cache(user_id)
     attempt = _daily_attempt_row(int(payload.attempt_id)) or attempt
     final_out = _daily_session_payload(user, attempt, get_daily_test_attempt_items(int(payload.attempt_id)))
@@ -25730,6 +25739,7 @@ async def student_gamified_tests_submit(
     add_test_history(
         user_id, "gamified", str(session.get("level") or ""),
         int(summary.get("correct") or 0), int(summary.get("wrong") or 0), int(summary.get("skipped") or 0),
+        subject=subject,
     )
     _invalidate_student_overview_cache(user_id)
     GAMIFIED_SESSIONS.pop(payload.session_id, None)
@@ -51753,6 +51763,7 @@ async def vocabulary_quiz_answer(payload: VocabularyQuizAnswerRequest, authoriza
             correct,
             wrong,
             skipped,
+            subject=str(session.get("subject") or ""),
         )
         _invalidate_student_overview_cache(user_id)
         response = {
@@ -53755,6 +53766,7 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
             int(result.get("correct_count") or result.get("correct") or 0),
             int(result.get("wrong_count") or result.get("wrong") or 0),
             int(result.get("skipped_count") or result.get("skipped") or 0),
+            subject=source_subject,
         )
     if normalized == "book":
         try:

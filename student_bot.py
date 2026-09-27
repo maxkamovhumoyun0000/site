@@ -1326,7 +1326,10 @@ async def _run_vocab_quiz(chat_id: int, user: dict, qtype: str, cnt: int):
             change_type="vocab_test_reward" if net_dcoin > 0 else "vocab_test_penalty",
         )
     
-    add_test_history(user['id'], 'vocabulary', None, correct_count, wrong_count, skipped_count)
+    add_test_history(
+        user['id'], 'vocabulary', None, correct_count, wrong_count, skipped_count,
+        subject=quiz_subject,
+    )
     
     result_lines = [
         t(lang, 'vocab_quiz_results_title'),
@@ -1651,7 +1654,10 @@ async def _run_grammar_quiz(chat_id: int, user: dict, level: str, topic_id: str)
             change_type="grammar_test_reward" if net_dcoin > 0 else "grammar_test_penalty",
         )
     
-    add_test_history(user['id'], 'grammar', topic.topic_id, correct_count, wrong_count, skipped_count)
+    add_test_history(
+        user['id'], 'grammar', topic.topic_id, correct_count, wrong_count, skipped_count,
+        subject=gram_subject,
+    )
     
     # Detailed results
     result_lines = [

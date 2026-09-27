@@ -718,6 +718,7 @@ def _init_postgres_db():
                 user_id BIGINT NOT NULL,
                 test_type TEXT NOT NULL,
                 topic_id TEXT,
+                subject TEXT,
                 correct_count INTEGER DEFAULT 0,
                 wrong_count INTEGER DEFAULT 0,
                 skipped_count INTEGER DEFAULT 0,
@@ -7221,6 +7222,7 @@ def ensure_video_teachers_schema() -> None:
                 user_id BIGINT NOT NULL,
                 test_type TEXT NOT NULL,
                 topic_id TEXT,
+                subject TEXT,
                 correct_count INTEGER DEFAULT 0,
                 wrong_count INTEGER DEFAULT 0,
                 skipped_count INTEGER DEFAULT 0,
@@ -7238,6 +7240,7 @@ def ensure_video_teachers_schema() -> None:
     # test_history schema alignment for old DBs
     for col, ddl in (
         ("topic_id", "ALTER TABLE test_history ADD COLUMN topic_id TEXT"),
+        ("subject", "ALTER TABLE test_history ADD COLUMN subject TEXT"),
         ("correct_count", "ALTER TABLE test_history ADD COLUMN correct_count INTEGER DEFAULT 0"),
         ("wrong_count", "ALTER TABLE test_history ADD COLUMN wrong_count INTEGER DEFAULT 0"),
         ("skipped_count", "ALTER TABLE test_history ADD COLUMN skipped_count INTEGER DEFAULT 0"),
@@ -14462,7 +14465,7 @@ def get_student_monthly_stats(user_id):
     }
 
 
-def add_test_history(user_id, test_type, topic_id, correct_count, wrong_count, skipped_count):
+def add_test_history(user_id, test_type, topic_id, correct_count, wrong_count, skipped_count, subject=None):
     """Add test record to history"""
     conn = get_conn()
     cur = conn.cursor()
@@ -14497,6 +14500,10 @@ def add_test_history(user_id, test_type, topic_id, correct_count, wrong_count, s
     if "topic_id" in existing_cols:
         insert_cols.append("topic_id")
         values.append(topic_id)
+
+    if "subject" in existing_cols:
+        insert_cols.append("subject")
+        values.append(subject)
 
     if "correct_count" in existing_cols:
         insert_cols.append("correct_count")
