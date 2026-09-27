@@ -81,12 +81,12 @@ export function HeroSection() {
               <a href="tel:+998977443634" className="text-[11px] font-bold text-gray-500 hover:text-gray-700 dark:text-gray-400 transition-colors">+998 (97) 744-36-34</a>
             </div>
             <LanguageIconButton />
-            <Link 
+            <a
               href="/login"
               className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-xl shadow-lg shadow-blue-600/30 hover:bg-blue-700 hover:shadow-blue-600/40 hover:-translate-y-0.5 transition-all"
             >
               {tt("common.login", "Kirish")}
-            </Link>
+            </a>
           </div>
 
           {/* Mobile hamburger */}
@@ -129,12 +129,12 @@ export function HeroSection() {
               <LanguageIconButton />
               <span className="text-sm font-semibold text-gray-500 dark:text-gray-400">Tilni o&apos;zgartirish</span>
             </div>
-            <Link
+            <a
               href="/login"
               className="w-full py-4 bg-blue-600 text-white text-center text-lg font-bold rounded-xl active:bg-blue-700 transition-colors"
             >
               {tt("common.login", "Kirish")}
-            </Link>
+            </a>
           </div>
         </div>
       </div>
@@ -170,13 +170,13 @@ export function HeroSection() {
             </p>
 
             <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
-              <Link
+              <a
                 href="/login"
                 className="w-full sm:w-auto px-8 py-4 bg-blue-600 text-white text-base md:text-lg font-bold rounded-xl shadow-xl shadow-blue-600/30 hover:bg-blue-700 hover:shadow-blue-600/40 hover:-translate-y-1 transition-all flex items-center justify-center gap-2"
               >
                 {tt("common.login", "Kirish")}
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17 8l4 4m0 0l-4 4m4-4H3" /></svg>
-              </Link>
+              </a>
               <Link 
                 href="/results"
                 className="w-full sm:w-auto px-8 py-4 bg-white dark:bg-gray-800 text-gray-900 dark:text-white border-2 border-gray-200 dark:border-gray-700 text-base md:text-lg font-bold rounded-xl hover:border-blue-600 dark:hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 hover:-translate-y-1 transition-all flex items-center justify-center"
