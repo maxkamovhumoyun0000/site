@@ -514,6 +514,16 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE test_history ADD COLUMN subject TEXT")
             except Exception:
                 pass
+        # The homework table predates subject-aware study plans.  Add the
+        # column here as well, because this endpoint can run before a teacher
+        # creates a new homework in a freshly restarted process.
+        try:
+            cur.execute("ALTER TABLE web_homeworks ADD COLUMN IF NOT EXISTS subject TEXT")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE web_homeworks ADD COLUMN subject TEXT")
+            except Exception:
+                pass
         official_badges = (
             ("flawless_test", "Xatosiz bilimdon", "Test ishlab, unda umuman xato qilmagan o‘quvchiga (100% natija)", "/badges/flawless_test.png", "flawless_test"),
             ("tests_500", "500+ Test giganti", "500 tadan ko‘p test ishlaganga", "/badges/tests_500.png", "tests_500"),

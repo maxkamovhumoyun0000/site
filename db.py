@@ -21436,6 +21436,7 @@ def ensure_homework_schema() -> None:
                 ("image_url", "TEXT"),
                 ("dcoin_effect", "DOUBLE PRECISION DEFAULT 0"),
                 ("status", "TEXT DEFAULT 'active'"),
+                ("subject", "TEXT"),
                 ("requires_voice_message", "BOOLEAN DEFAULT FALSE"),
                 ("requires_file", "BOOLEAN DEFAULT FALSE"),
                 ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
@@ -22596,6 +22597,7 @@ def create_homework(
     is_voiceroom: bool = False,
     voiceroom_groups: list[dict] | None = None,
     idempotency_key: str | None = None,
+    subject: str | None = None,
 ) -> dict | None:
     ensure_homework_schema()
     normalized_kind = str(homework_kind or "both").strip().lower()
@@ -22606,6 +22608,24 @@ def create_homework(
     cur = conn.cursor()
     homework_id = 0
     try:
+        # Every homework must retain its course subject so weekly plans can
+        # analyse English and Russian work independently.  Older callers do
+        # not send it, therefore resolve it from the selected group here.
+        homework_subject = str(subject or "").strip()
+        if not homework_subject and group_id:
+            cur.execute("SELECT subject FROM groups WHERE id=?", (int(group_id),))
+            group_row = _row_to_dict(cur.fetchone())
+            homework_subject = str((group_row or {}).get("subject") or "").strip()
+        if not homework_subject and student_id:
+            cur.execute(
+                "SELECT DISTINCT g.subject FROM user_groups ug JOIN groups g ON g.id=ug.group_id "
+                "WHERE ug.user_id=? AND (ug.left_date IS NULL OR ug.left_date='') "
+                "AND TRIM(COALESCE(g.subject,''))<>'' LIMIT 2",
+                (int(student_id),),
+            )
+            student_subjects = [str((_row_to_dict(row) or {}).get("subject") or "").strip() for row in cur.fetchall()]
+            if len(student_subjects) == 1:
+                homework_subject = student_subjects[0]
         # Fast path for a mobile retry after a timeout.  The unique index is
         # still the source of truth for concurrent requests.
         if request_key:
@@ -22622,9 +22642,9 @@ def create_homework(
         cur.execute(
             """
             INSERT INTO web_homeworks(
-                teacher_id, student_id, group_id, target_type, homework_kind, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, idempotency_key, status
+                teacher_id, student_id, group_id, target_type, homework_kind, subject, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, idempotency_key, status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
             """,
             (
                 int(teacher_id),
@@ -22632,6 +22652,7 @@ def create_homework(
                 int(group_id) if group_id else None,
                 "group" if group_id else "student",
                 normalized_kind,
+                homework_subject or None,
                 str(title or "").strip(),
                 description,
                 due_at,
