@@ -865,7 +865,9 @@ function getUserSubjects(role: Role, user: ApiUser | null, appState: GenericRow 
 function resolveRoleSections(role: Role, backendSections?: string[], userSubjects?: string[]) {
   // Media-only routes must never reappear through an older backend's generic
   // admin section list. Media itself is deliberately an allow-list.
-  const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home"));
+  // These sections belong only to the media workspace. `profile` is shared
+  // by every role and must remain reachable for ordinary admins as well.
+  const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home" && section !== "profile"));
   const baseSections = DEFAULT_SECTIONS[role] || [];
   let list = role === "media"
     ? [...baseSections]
@@ -10389,11 +10391,13 @@ function RoleProfilePanel({
   locale,
   onSaveLanguage,
   onLogout,
+  workspaceVariant = "staff",
 }: {
   user: ApiUser;
   locale: Locale;
   onSaveLanguage: (language: "uz" | "ru" | "en") => void;
   onLogout: () => void;
+  workspaceVariant?: "admin" | "media" | "teacher" | "support" | "staff";
 }) {
   const [language, setLanguage] = useState<"uz" | "ru" | "en">((String(user.language || "uz").toLowerCase() as "uz" | "ru" | "en") || "uz");
   const [avatarUrl, setAvatarUrl] = useState<string>(userAvatarUrl(user));
@@ -10409,6 +10413,15 @@ function RoleProfilePanel({
   const [avatarPreviewOpen, setAvatarPreviewOpen] = useState(false);
   const role = roleFromUser(user);
   const canChangePassword = role === "teacher" || role === "support";
+  const workspaceTitle = workspaceVariant === "media"
+    ? "MEDIA AKKAUNTI"
+    : workspaceVariant === "admin"
+      ? "ADMIN AKKAUNTI"
+      : workspaceVariant === "teacher"
+        ? "O‘QITUVCHI AKKAUNTI"
+        : workspaceVariant === "support"
+          ? "SUPPORT AKKAUNTI"
+          : String(role || "user").toUpperCase();
 
   async function uploadAvatar(file: File | null) {
     if (!file) return;
@@ -10484,7 +10497,7 @@ function RoleProfilePanel({
   return (
     <div className="max-w-2xl mx-auto space-y-6 px-4 sm:px-0 pb-10">
       {/* Premium Header Card */}
-      <div className="panel-card text-center relative overflow-hidden bg-gradient-to-br from-navy-900/5 via-cyan-500/5 to-transparent dark:from-navy-950/20 dark:via-cyan-300/5 dark:to-transparent border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm">
+      <div className={`panel-card text-center relative overflow-hidden bg-gradient-to-br ${workspaceVariant === "media" ? "from-violet-500/10 via-fuchsia-500/5 to-transparent dark:from-violet-950/30 dark:via-fuchsia-300/5" : "from-navy-900/5 via-cyan-500/5 to-transparent dark:from-navy-950/20 dark:via-cyan-300/5"} border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm`}>
         <div className="relative inline-block mb-4 group">
           <button
             type="button"
@@ -10521,10 +10534,20 @@ function RoleProfilePanel({
         {user.phone ? <div className="text-sm text-ink-600 dark:text-navy-300 mt-2 font-bold">{user.phone}</div> : null}
         <div className="mt-3">
           <span className="px-3 py-1 rounded-full text-xs font-black bg-cyan-500/10 text-cyan-700 dark:text-cyan-300 border border-cyan-500/20">
-            ✨ {String(role || "user").toUpperCase()}
+            ✨ {workspaceTitle}
           </span>
         </div>
       </div>
+
+      {workspaceVariant === "media" ? (
+        <div className="panel-card rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-4 text-sm font-semibold text-ink-600 dark:text-slate-300 dark:bg-violet-500/[0.06]">
+          Bu profil Media workspace’iga tegishli. Bu yerdan akkaunt sozlamalarini o‘zgartirib, Media akkauntidan chiqishingiz mumkin.
+        </div>
+      ) : workspaceVariant === "admin" ? (
+        <div className="panel-card rounded-2xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4 text-sm font-semibold text-ink-600 dark:text-slate-300 dark:bg-cyan-500/[0.06]">
+          Bu profil umumiy admin akkauntiga tegishli. Admin boshqaruv paneli va akkaunt sozlamalari shu profil orqali boshqariladi.
+        </div>
+      ) : null}
 
       {/* Language & Appearance */}
       <div className="panel-card border border-line dark:border-white/10 rounded-3xl p-6 shadow-sm space-y-4">
@@ -23813,7 +23836,7 @@ function DashboardShell({
     } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="teacher" view={currentSection} />;
     } else if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
+      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="teacher" />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="teacher" />;
     } else {
@@ -23825,7 +23848,7 @@ function DashboardShell({
     } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="support" view={currentSection} />;
     } else if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
+      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="support" />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="support" />;
     } else {
@@ -23833,7 +23856,13 @@ function DashboardShell({
     }
   } else {
     if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} />;
+      content = <RoleProfilePanel
+        user={user}
+        locale={locale}
+        onSaveLanguage={onSaveLanguage}
+        onLogout={onLogout}
+        workspaceVariant={activeRole === "media" ? "media" : "admin"}
+      />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
     } else {
