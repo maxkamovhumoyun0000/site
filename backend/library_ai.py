@@ -775,25 +775,27 @@ def _normalize_string_list(raw: Any, *, limit: int | None = None) -> list[str]:
 
     clean: list[str] = []
     seen: set[str] = set()
+
+    def visible_text(value: Any) -> str:
+        if not isinstance(value, dict):
+            return str(value or "").strip()
+        for key in (
+            "text", "label", "value", "option", "answer", "content",
+            "title", "option_text", "display_text", "display", "name",
+            "body", "word", "token", "term", "phrase", "part",
+            "sentence", "translation",
+        ):
+            candidate = visible_text(value.get(key))
+            if candidate:
+                return candidate
+        return ""
+
     for value in values:
         # Imports from OCR/AI occasionally encode options as objects such as
         # {"word": "reading"} or {"label": "is reading"}.  Stringifying
         # the object makes an unusable card; extract the visible field once at
         # the normalization boundary so every downstream runner gets text.
-        if isinstance(value, dict):
-            text = ""
-            for key in (
-                "text", "label", "value", "option", "answer", "content",
-                "title", "option_text", "display_text", "display", "name",
-                "body", "word", "token", "term", "phrase", "part",
-                "sentence", "translation",
-            ):
-                candidate = str(value.get(key) or "").strip()
-                if candidate:
-                    text = candidate
-                    break
-        else:
-            text = str(value or "").strip()
+        text = visible_text(value)
         key = text.casefold()
         if not text or key in seen:
             continue
@@ -1045,12 +1047,18 @@ def _normalize_questions(raw: Any) -> list[dict]:
             elif kind == "matching":
                 pairs = item.get("pairs")
                 clean_pairs = []
+                seen_left: set[str] = set()
+                seen_right: set[str] = set()
                 if isinstance(pairs, list):
                     for pair in pairs:
                         if isinstance(pair, dict):
                             left = str(pair.get("left") or "").strip()
                             right = str(pair.get("right") or "").strip()
-                            if left and right:
+                            left_key = _norm_text(left)
+                            right_key = _norm_text(right)
+                            if left and right and left_key not in seen_left and right_key not in seen_right:
+                                seen_left.add(left_key)
+                                seen_right.add(right_key)
                                 clean_pairs.append({"left": left, "right": right})
                 if len(clean_pairs) < 2:
                     continue
@@ -1060,7 +1068,9 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                tokens = _normalize_string_list(item.get("tokens"))
+                # Some imports place the word bank in `options`.  Preserve it
+                # as tokens so the student runner never receives empty chips.
+                tokens = _normalize_string_list(item.get("tokens")) or _normalize_string_list(item.get("options"))
                 question["tokens"] = tokens or answer.replace(".", "").split()
                 # AI qo'shimcha (chalg'ituvchi) so'zlarni ham beradi — ular pulga aralashtiriladi.
                 distractors = item.get("distractors") or item.get("extra_words")
@@ -1070,11 +1080,18 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if len(options) < 2:
                     continue
                 question["options"] = options[:4]
-                question["correct_index"] = _choice_index(item, question["options"])
+                correct_index = _choice_index(item, question["options"])
+                question["correct_index"] = correct_index
+                # A choice exercise has exactly one accepted answer.  Older
+                # AI output sometimes put every option in acceptable_answers,
+                # which made several answers pass as correct.
+                question["accepted_answers"] = [question["options"][correct_index]]
             elif kind == "true_false":
                 options = _normalize_string_list(item.get("options"), limit=2)
                 question["options"] = options if len(options) >= 2 else ["True", "False"]
-                question["correct_index"] = _choice_index(item, question["options"])
+                correct_index = _choice_index(item, question["options"])
+                question["correct_index"] = correct_index
+                question["accepted_answers"] = [question["options"][correct_index]]
             elif kind == "listening_tf":
                 # True/False/NG — always 3 fixed options
                 question["options"] = ["True", "False", "Not Given"]
@@ -1085,6 +1102,9 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 else:
                     mapping = {"true": 0, "false": 1, "not given": 2, "ng": 2, "not_given": 2}
                     question["correct_index"] = mapping.get(str(raw_correct).strip().lower(), 0)
+                question["accepted_answers"] = [
+                    question["options"][question["correct_index"]]
+                ]
             elif kind in ("listening_dictation", "listening_gap"):
                 answer = str(item.get("answer") or item.get("correct_answer") or "").strip()
                 if not answer:
@@ -1123,7 +1143,10 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                question["accepted_answers"] = _normalize_string_list(item.get("accepted_answers"))
+                # The automatic checker already normalizes case, whitespace
+                # and punctuation.  Retaining divergent AI alternatives here
+                # would make an ambiguous fill-in answer incorrectly pass.
+                question["accepted_answers"] = [answer]
         else:
             question["reference_answer"] = str(
                 item.get("reference_answer") or item.get("answer") or item.get("correct_answer") or ""

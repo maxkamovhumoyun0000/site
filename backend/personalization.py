@@ -2967,6 +2967,16 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
     if prepared.get("answer") in (None, "") and raw.get("correct_answer") not in (None, ""):
         prepared["answer"] = raw.get("correct_answer")
 
+    # Reject ambiguous generated choices before they enter the shared
+    # normalizer.  In particular, a semicolon/newline in correct_answer used
+    # to be interpreted as several acceptable choices by older flows.
+    if kind in {"multiple_choice", "true_false", "listening"}:
+        raw_answer = str(
+            prepared.get("answer") or prepared.get("correct_answer") or ""
+        ).strip()
+        if ";" in raw_answer or "\n" in raw_answer or "|" in raw_answer:
+            return None
+
     normalized = _normalize_questions([prepared])
     if not normalized:
         return None
@@ -2978,11 +2988,19 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
     options = list(question.get("options") or [])
     if question["test_type"] in {"multiple_choice", "true_false", "listening", "listening_tf"}:
         correct_index = int(question.get("correct_index") or 0)
-        question["correct_answer"] = (
+        correct_answer = (
             options[correct_index] if 0 <= correct_index < len(options) else ""
         )
+        if not correct_answer or len({str(option).strip().casefold() for option in options}) != len(options):
+            return None
+        question["correct_answer"] = correct_answer
+        question["answer"] = correct_answer
+        question["accepted_answers"] = [correct_answer]
+        question["acceptable_answers"] = [correct_answer]
     elif question["test_type"] == "matching":
         pairs = question.get("pairs") or []
+        if len(pairs) < 2:
+            return None
         question["correct_answer"] = "; ".join(
             f"{pair.get('left')} = {pair.get('right')}"
             for pair in pairs if isinstance(pair, dict)
@@ -2991,6 +3009,11 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
         question["correct_answer"] = str(
             question.get("answer") or question.get("reference_answer") or ""
         )
+        if question["test_type"] in {"gap_fill", "fill_blank", "scrambled_sentence"}:
+            if not question["correct_answer"]:
+                return None
+            question["accepted_answers"] = [question["correct_answer"]]
+            question["acceptable_answers"] = [question["correct_answer"]]
     return question
 
 
@@ -3066,7 +3089,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         f"Additional Instruction: {payload.instruction or 'none'}.\n\n"
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
-        "- 'question': clear question text or prompt\n"
+        "- 'question': clear question text or prompt. Write it once only; do not prefix it with labels such as 'Complete:' or 'Rearrange:' and do not copy it into passage/passage_template.\n"
         "- 'condition_uz', 'condition_ru' and 'condition_en': one concise instruction for the student. It explains the task but must not repeat the question, passage, blanks, choices or answer text.\n"
         f"- 'test_type': one of ({types_str}); use only the requested types.\n"
         "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
@@ -3131,6 +3154,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             q_type = _canonical_learning_ai_kind(
                 result.get("test_type") or types_list[index % len(types_list)]
             )
+            if q_type not in types_list:
+                continue
             raw_opts = result.get("options")
             options = [str(x).strip() for x in raw_opts] if isinstance(raw_opts, list) else []
             correct = str(result.get("correct_answer") or "").strip()
@@ -3165,21 +3190,17 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                         correct = "; ".join(f"{p.get('left')} = {p.get('right')}" for p in pairs if isinstance(p, dict))
             elif q_type == "multiple_choice":
                 if ";" in correct or "\n" in correct:
-                    delim = ";" if ";" in correct else "\n"
-                    parts = [p.strip() for p in correct.split(delim) if p.strip()]
-                    if options and all(any(o.lower() in p.lower() or p.lower() in o.lower() for p in parts) for o in options):
-                        correct = options[0]
-                    elif parts:
-                        for p in parts:
-                            if any(p.lower() == o.lower() for o in options):
-                                correct = p
-                                break
-                        else:
-                            correct = parts[0]
-                if len(options) < 2:
-                    options = [correct or "A", "B", "C", "D"]
-                if correct and not any(o.lower() == correct.lower() for o in options):
-                    options.append(correct)
+                    # Do not guess which answer an ambiguous model response
+                    # intended.  Skipping it is safer than showing students a
+                    # question with several correct choices.
+                    continue
+                options = list(dict.fromkeys(o for o in options if o))
+                if len(options) != 4:
+                    continue
+                exact_correct = [o for o in options if o.casefold() == correct.casefold()]
+                if len(exact_correct) != 1:
+                    continue
+                correct = exact_correct[0]
             elif not correct and options:
                 correct = options[0]
 
@@ -3262,24 +3283,26 @@ def _structured_string_list(raw: Any) -> list[str]:
         return []
     result: list[str] = []
     seen: set[str] = set()
+
+    def visible_text(value: Any) -> str:
+        if not isinstance(value, dict):
+            return str(value or "").strip()
+        for key_name in (
+            "text", "label", "value", "option", "answer", "content",
+            "title", "option_text", "display_text", "display", "name",
+            "body", "word", "token", "term", "phrase", "part",
+            "sentence", "translation",
+        ):
+            candidate = visible_text(value.get(key_name))
+            if candidate:
+                return candidate
+        return ""
+
     for value in values:
         # OCR/AI imports sometimes store an option as a structured object.
         # Resolve its display value here so Learning Path, Homework and the
         # Materials Library never receive blank or Python-dict-looking cards.
-        if isinstance(value, dict):
-            text = ""
-            for key_name in (
-                "text", "label", "value", "option", "answer", "content",
-                "title", "option_text", "display_text", "display", "name",
-                "body", "word", "token", "term", "phrase", "part",
-                "sentence", "translation",
-            ):
-                candidate = str(value.get(key_name) or "").strip()
-                if candidate:
-                    text = candidate
-                    break
-        else:
-            text = str(value or "").strip()
+        text = visible_text(value)
         key = text.casefold()
         if text and key not in seen:
             seen.add(key)
@@ -3497,18 +3520,29 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             res["options"] = []
         elif norm_correct not in norm_opts and len(res["options"]) >= 2:
             res["options"].append(res["correct_answer"])
-    elif kind in {"multiple_choice", "matching"}:
+    elif kind in {"multiple_choice", "mcq", "choice", "multiple-choice"}:
         if ";" in res["correct_answer"] or "\n" in res["correct_answer"]:
             delim = ";" if ";" in res["correct_answer"] else "\n"
             parts = [p.strip() for p in res["correct_answer"].split(delim) if p.strip()]
-            if res["options"] and all(any(o.strip().lower() in p.lower() or p.lower() in o.strip().lower() for p in parts) for o in res["options"]):
-                res["acceptable_answers"] = res["options"]
-                res["correct_answer"] = res["options"][0]
-            elif parts:
-                for p in parts:
-                    if any(p.strip().lower() == o.strip().lower() for o in res["options"]):
-                        res["correct_answer"] = p.strip()
-                        break
+            matches = [
+                option for option in res["options"]
+                if any(p.casefold() == option.casefold() for p in parts)
+            ]
+            # Never treat every option as correct.  A malformed historical
+            # answer falls back to one deterministic option until an editor
+            # corrects the content.
+            res["correct_answer"] = matches[0] if len(matches) == 1 else (
+                res["options"][0] if res["options"] else res["correct_answer"]
+            )
+        if res["options"]:
+            exact = next(
+                (option for option in res["options"]
+                 if option.casefold() == str(res["correct_answer"] or "").strip().casefold()),
+                None,
+            )
+            res["correct_answer"] = exact or res["options"][0]
+            res["accepted_answers"] = [res["correct_answer"]]
+            res["acceptable_answers"] = [res["correct_answer"]]
     # Sanitize word_bank in tense / verb form exercises or when sentences contain bracketed clues
     wb = res.get("word_bank")
     if isinstance(wb, list) and wb:
