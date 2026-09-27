@@ -6194,12 +6194,20 @@ function LessonEditor({
 
   const topicQuestionGroups = useMemo(() => {
     const topicIds = new Set(moduleTopics.map((item) => Number(item.id)));
-    const groups: { id: number | "unassigned"; title: string; lessons: Row[] }[] = moduleTopics.map((item) => ({
-      id: Number(item.id),
-      title: String(item.title || "Mavzu"),
-      lessons: lessons.filter((lesson: Row) => Number(lesson.topic_id) === Number(item.id)),
-    }));
-    const unassigned = lessons.filter((lesson: Row) => !topicIds.has(Number(lesson.topic_id)));
+    const groups: { id: number | "unassigned"; title: string; lessons: Row[] }[] = moduleTopics.map((item) => {
+      const directLessons = lessons.filter((lesson: Row) => Number(lesson.topic_id) === Number(item.id));
+      const embeddedLessons = Array.isArray(item.lessons) ? item.lessons as Row[] : [];
+      return {
+        id: Number(item.id),
+        title: String(item.title || "Mavzu"),
+        // Some older API responses only include lessons inside each topic.
+        lessons: directLessons.length ? directLessons : embeddedLessons,
+      };
+    });
+    const groupedLessonIds = new Set(groups.flatMap((group) => group.lessons.map((lesson) => Number(lesson.id))));
+    const unassigned = lessons.filter((lesson: Row) =>
+      !topicIds.has(Number(lesson.topic_id)) && !groupedLessonIds.has(Number(lesson.id))
+    );
     if (unassigned.length) {
       groups.push({ id: "unassigned", title: "Mavzusiz savollar", lessons: unassigned });
     }
