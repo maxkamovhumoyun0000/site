@@ -1427,6 +1427,32 @@ export function getWordPracticeCondition(q: any, lang: "uz" | "ru" | "en"): stri
     : "So'z bilan bog'liq topshiriqni bajaring:";
 }
 
+function getTaskInstructionWithQuestion(
+  q: any,
+  lang: "uz" | "ru" | "en",
+): string {
+  const explicitInstruction = String(
+    (lang === "ru" && q?.condition_ru) ||
+      (lang === "en" && q?.condition_en) ||
+      q?.condition_uz ||
+      q?.condition ||
+      q?.instruction ||
+      "",
+  ).trim();
+  const mode = q?.practice_mode || q?.test_type || q?.kind;
+  const isWordPractice = mode === "word_practice" ||
+    ["spelling", "translation", "write_sentence", "speak_sentence", "read_aloud"].includes(String(mode));
+  const instruction = (explicitInstruction || (isWordPractice ? getWordPracticeCondition(q, lang) : "")).trim();
+  const taskText = String(q?.question || q?.prompt || "").trim();
+  if (!taskText) return instruction;
+
+  const normalize = (value: string) => value.toLocaleLowerCase().replace(/\s+/g, " ");
+  const spellingAnswer = String(q?.clean_word || q?.word || q?.correct_answer || q?.answer || "").trim();
+  if (mode === "spelling" && normalize(taskText) === normalize(spellingAnswer)) return instruction;
+  if (normalize(instruction).includes(normalize(taskText))) return instruction;
+  return instruction ? `${instruction}\n${taskText}` : taskText;
+}
+
 export function extractCorrectCandidates(q: any): string[] {
   if (!q) return [];
   const rawList: string[] = [];
@@ -2614,20 +2640,12 @@ function LessonPlayerModal({
                     <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
                       {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
                     </span>
-                    <p className="text-sm sm:text-base font-bold leading-snug">
-                      {getWordPracticeCondition(question, getCurrentLang())}
+                    <p className="whitespace-pre-line text-sm sm:text-base font-bold leading-snug">
+                      {getTaskInstructionWithQuestion(question, getCurrentLang())}
                     </p>
                   </div>
                 </div>
               ) : null}
-
-              {(() => {
-                const taskText = String(question.question || question.prompt || "").trim();
-                const sourceText = String(question.passage || question.context || "").trim();
-                return taskText && taskText !== sourceText ? (
-                  <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">{taskText}</h2>
-                ) : null;
-              })()}
 
               {/* Passage / Context if available (hidden for passage_cloze to avoid duplication) */}
               {!isCurrentCloze && (question.passage || question.context) && (() => {
@@ -4135,20 +4153,12 @@ function FinalExamPlayerModal({
                     <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
                       {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
                     </span>
-                    <p className="text-sm sm:text-base font-bold leading-snug">
-                      {getWordPracticeCondition(currentQuestion, getCurrentLang())}
+                    <p className="whitespace-pre-line text-sm sm:text-base font-bold leading-snug">
+                      {getTaskInstructionWithQuestion(currentQuestion, getCurrentLang())}
                     </p>
                   </div>
                 </div>
               ) : null}
-
-              {(() => {
-                const taskText = String(currentQuestion.question || currentQuestion.prompt || "").trim();
-                const sourceText = String(currentQuestion.passage || currentQuestion.context || "").trim();
-                return taskText && taskText !== sourceText ? (
-                  <h2 className="text-xl sm:text-2xl font-black leading-snug text-slate-800 dark:text-white">{taskText}</h2>
-                ) : null;
-              })()}
 
               {/* Passage / Context if available (hidden for cloze) */}
               {!isExamCloze && (currentQuestion.passage || currentQuestion.context) && (() => {
