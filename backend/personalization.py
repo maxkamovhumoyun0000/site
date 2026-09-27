@@ -2006,7 +2006,7 @@ class LearningAiLessonRequest(BaseModel):
     instruction: str | None = Field(default=None, max_length=1000)
     question_count: int = Field(default=1, ge=1, le=30)
     test_types: list[str] = Field(
-        default_factory=lambda: ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching"],
+        default_factory=lambda: ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching", "word_practice"],
         max_length=12,
     )
 
@@ -3197,7 +3197,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     finally:
         conn.close()
 
-    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching"]
+    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching", "word_practice"]
     raw_types = [str(t).strip() for t in (payload.test_types or []) if str(t).strip()]
     if not raw_types or any(k in raw_types for k in ("mixed", "all", "aralash", "barchasi")):
         types_list = DEFAULT_MIXED_TEST_TYPES
