@@ -1,4 +1,5 @@
 "use client";
+import { expandEnglishContractions } from "@/lib/answer-normalization";
 import { FormEvent, MouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useWebT } from "./web-i18n";
@@ -1343,7 +1344,7 @@ export function cleanAnswer(s: string): string {
   if (!s) return "";
   let res = String(s).trim().toLowerCase();
   // Strip option prefixes like "1. ", "a) ", "b. ", "1) ", "A: "
-  res = res.replace(/^[a-d0-9][\.\)\-\:\s]+\s*/i, "");
+  res = res.replace(/^[a-d0-9][\.\)\:]\s+/i, "");
   // Strip POS tag parentheticals like " (v)", " (n)", " (adj)", " (n phr)", etc.
   res = res.replace(/\s*\([a-zA-Z\s\.,-]+\)\s*/g, " ");
   // Normalize smart quotes and apostrophes
@@ -1353,7 +1354,7 @@ export function cleanAnswer(s: string): string {
   res = res.replace(/^["'\s]+|["'\s\.\,\!\?]+$/g, "");
   // Collapse whitespace
   res = res.replace(/\s+/g, " ");
-  return res.trim();
+  return expandEnglishContractions(res.trim());
 }
 
 export function getCurrentLang(): "uz" | "ru" | "en" {

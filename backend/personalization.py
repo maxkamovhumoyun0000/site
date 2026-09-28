@@ -3423,8 +3423,14 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
         if question["test_type"] in {"gap_fill", "fill_blank", "scrambled_sentence"}:
             if not question["correct_answer"]:
                 return None
-            question["accepted_answers"] = [question["correct_answer"]]
-            question["acceptable_answers"] = [question["correct_answer"]]
+            alternatives = _structured_string_list(
+                raw.get("accepted_answers") if raw.get("accepted_answers") is not None
+                else raw.get("acceptable_answers")
+            )
+            question["accepted_answers"] = list(dict.fromkeys([
+                question["correct_answer"], *alternatives,
+            ]))
+            question["acceptable_answers"] = question["accepted_answers"]
     # The word bank is the actual content for these interactive exercises.
     # Never expose it again as a duplicate heading above the work area.
     if question["test_type"] in {"scrambled_sentence", "word_order", "listening_order"}:
@@ -3564,7 +3570,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "   * 'gap_fill': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
         "   * 'scrambled_sentence': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
         "   * 'matching': MUST provide 'pairs': [{'left': 'word1', 'right': 'meaning1'}, {'left': 'word2', 'right': 'meaning2'}, ...]. 'correct_answer': 'word1 = meaning1; word2 = meaning2'. 'options': []. NEVER output choices like '1-A, 2-B'!\n"
-        "- 'correct_answer': the exact single correct answer string (must match one of the choices in 'options' for multiple_choice/true_false, or pairs for matching)\n"
+        "- 'correct_answer': the canonical correct answer (must match exactly one option for multiple_choice/true_false, or pairs for matching). For free-text gaps, cloze, dictation and short answers, also supply 'accepted_answers' containing every grammatically and contextually valid alternative, including contracted and expanded forms such as what's/what is and I'm/I am. Do not put incorrect distractors in accepted_answers.\n"
         "- 'explanation': a short, clear explanation of why this is correct in the language of the topic/question\n"
     )
 
@@ -4557,10 +4563,11 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
 
 def _normalize_learning_answer(value: Any) -> str:
     """Normalize a short deterministic lesson answer without changing language."""
+    from backend.answer_normalization import expand_english_contractions
     text = str(value or "").strip().lower()
     text = re.sub(r"['‘’`]", "'", text)
     text = re.sub(r"[^\w\s'-]", " ", text, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", text).strip()
+    return expand_english_contractions(re.sub(r"\s+", " ", text).strip())
 
 
 def _learning_answer_matches(

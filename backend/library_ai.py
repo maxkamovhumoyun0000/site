@@ -1204,10 +1204,11 @@ def _normalize_questions(raw: Any) -> list[dict]:
                 if not answer:
                     continue
                 question["answer"] = answer
-                # The automatic checker already normalizes case, whitespace
-                # and punctuation.  Retaining divergent AI alternatives here
-                # would make an ambiguous fill-in answer incorrectly pass.
-                question["accepted_answers"] = [answer]
+                # Free-text exercises can legitimately have more than one
+                # answer; the single-choice restriction does not apply here.
+                question["accepted_answers"] = list(dict.fromkeys([
+                    answer, *_normalize_string_list(accepted_raw),
+                ]))
         else:
             question["reference_answer"] = str(
                 item.get("reference_answer") or item.get("answer") or item.get("correct_answer") or ""
@@ -1663,7 +1664,7 @@ def _materialize_word_practice(
     if kind == "speak_sentence":
         base["input"] = "audio"
         base["check"] = "ai"
-        base["prompt"] = q.get("prompt") or (
+        base["prompt"] = (
             f"Составьте и произнесите предложение со словом «{word}»" if ru or study_ru
             else f"Make and say a sentence using '{word}'"
         )
@@ -1680,7 +1681,7 @@ def _materialize_word_practice(
     elif kind == "read_aloud":
         base["input"] = "audio"
         base["check"] = "ai"
-        base["prompt"] = q.get("prompt") or (
+        base["prompt"] = (
             f"Произнесите слово четко: «{word}»" if ru or study_ru
             else f"Pronounce the word clearly: '{word}'"
         )
@@ -1698,7 +1699,7 @@ def _materialize_word_practice(
     elif kind == "write_sentence":
         base["input"] = "text"
         base["check"] = "ai"
-        base["prompt"] = q.get("prompt") or (
+        base["prompt"] = (
             f"Напишите предложение со словом «{word}»" if ru or study_ru
             else f"Write a sentence using '{word}'"
         )
@@ -1715,17 +1716,15 @@ def _materialize_word_practice(
     elif kind == "spelling":
         base["input"] = "text"
         base["check"] = "auto"
-        base["prompt"] = q.get("prompt") or (
-            f"Правильно напишите слово по значению" if ru or study_ru
-            else f"Spell this word correctly: {word}"
-        )
+        base["prompt"] = "Прослушайте и напишите слово." if ru else "So'zni tinglang va xatosiz yozing."
         base["condition"] = (
             "🔤 To'g'ri yozish: Ko'rsatilgan so'zni xatosiz yozing." if not ru
             else "🔤 Правописание: Напишите показанное слово без ошибок."
         )
-        base["condition_uz"] = "🔤 To'g'ri yozish: Ko'rsatilgan so'zni xatosiz yozing."
-        base["condition_ru"] = "🔤 Правописание: Напишите показанное слово без ошибок."
-        base["condition_en"] = "🔤 Spelling: Type the displayed word without mistakes."
+        base["condition_uz"] = "🔤 To'g'ri yozish: So'zni tinglang va xatosiz yozing."
+        base["condition_ru"] = "🔤 Правописание: Прослушайте и напишите слово без ошибок."
+        base["condition_en"] = "🔤 Spelling: Listen and spell the word correctly."
+        base["condition"] = base["condition_ru"] if ru else base["condition_uz"]
         base["answer"] = word
         base["correct_answer"] = word
         base["accepted_answers"] = [word, clean_word, raw_word]
@@ -1792,6 +1791,10 @@ def _materialize_word_practice(
             base["condition_uz"] = "🌐 Tarjima: Ko'rsatilgan so'zning aniq tarjimasini yozing."
             base["condition_ru"] = "🌐 Перевод: Напишите точный перевод показанного слова."
             base["condition_en"] = "🌐 Translation: Write the accurate translation of the displayed word."
+    # Runners prefer question over prompt. Always replace the generic source
+    # heading when merging a materialized task into an existing lesson.
+    base["question"] = base["prompt"]
+    base["instruction"] = base["condition"]
     return base
 
 
@@ -2132,7 +2135,7 @@ def _import_system_prompt(
         "    correct_index as a zero-based integer. Use any 'listening*' kind ONLY when the\n"
         "    source visibly includes an audio/listening instruction; never invent an audio task.\n"
         "3. Keep target-language content exactly as written. Don't translate unless the exercise is a translation task.\n"
-        "4. For every auto-checked type provide the exact expected answer.\n"
+        "4. For every auto-checked type provide the exact expected answer. For free-text answers also supply accepted_answers for valid synonyms and contracted/full forms (what's/what is, I'm/I am); retain only contextually and grammatically correct alternatives. Choice tasks must still have exactly one correct option.\n"
         "4b. For 'scrambled_sentence' add 'distractors': 2–4 extra plausible words not in the correct sentence.\n"
         "4c. For 'spelling' always add 'hint': a short definition/clue for the word. Set 'answer' = the word itself.\n"
         "4d. For 'gap_fill' add 'hint' if the printed exercise has a word in brackets, e.g. (go) → hint='go'.\n"
@@ -3405,6 +3408,7 @@ def _finish_attempt(attempt: dict, user: dict, subject: str) -> None:
 # ── Avtomatik tekshirish ────────────────────────────────────────────────────
 
 def _norm_text(value: Any) -> str:
+    from backend.answer_normalization import expand_english_contractions
     text = str(value or "").strip().lower()
     # Normalize quotes/apostrophes
     text = re.sub(r"['‘’`]", "'", text)
@@ -3413,7 +3417,7 @@ def _norm_text(value: Any) -> str:
     text = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", " ", text)
     # Strip non-alphanumeric except word characters, apostrophe, hyphen
     text = re.sub(r"[^\w\s'’-]", " ", text, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", text).strip()
+    return expand_english_contractions(re.sub(r"\s+", " ", text).strip())
 
 
 def _check_listening_set_sub_answer(sub: dict, given_item: dict) -> tuple[bool, dict]:

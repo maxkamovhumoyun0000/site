@@ -146,7 +146,7 @@ def test_diamondvoy_learning_generator_uses_the_materials_library_contract():
     assert choice["kind"] == choice["test_type"] == "multiple_choice"
     assert choice["correct_index"] == 0
     assert gap["kind"] == gap["test_type"] == "gap_fill"
-    assert gap["accepted_answers"] == ["walks"]
+    assert gap["accepted_answers"] == ["goes", "walks"]
     assert order["kind"] == order["test_type"] == "scrambled_sentence"
     assert order["tokens"] == ["We", "study", "English"]
 
@@ -242,7 +242,7 @@ def test_batch_append_is_atomic_and_preserves_position_zero(monkeypatch):
         CREATE TABLE learning_modules(id INTEGER PRIMARY KEY, track_id INTEGER);
         INSERT INTO learning_modules VALUES(1, 7);
         CREATE TABLE learning_module_lessons(
-            id INTEGER PRIMARY KEY, module_id INTEGER, title TEXT, source_kind TEXT,
+            id INTEGER PRIMARY KEY, module_id INTEGER, topic_id INTEGER, title TEXT, source_kind TEXT,
             source_id TEXT, source_version TEXT, question_payload_json TEXT,
             duration_seconds INTEGER, position INTEGER, required INTEGER);
         INSERT INTO learning_module_lessons(module_id,title,position) VALUES(1,'Existing',0);
@@ -257,6 +257,8 @@ def test_batch_append_is_atomic_and_preserves_position_zero(monkeypatch):
     monkeypatch.setattr(personalization, "_user", lambda _: {"id": 1, "role": "teacher"})
     monkeypatch.setattr(personalization, "_require", lambda *args: None)
     monkeypatch.setattr(personalization, "_learning_track_for_manager", lambda *args: {})
+    monkeypatch.setattr(personalization, "_learning_topic_for_module", lambda *args: 1)
+    monkeypatch.setattr(personalization, "_archive_learning_path_test", lambda *args, **kwargs: None)
     item = {"title": "New", "question_payload": {"kind": "spelling", "word": "hello"}}
     result = asyncio.run(personalization.add_learning_lessons_batch(1,
         personalization.LearningLessonBatchRequest(items=[item, item]), None))
