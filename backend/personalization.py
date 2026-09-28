@@ -3308,6 +3308,55 @@ def _canonical_learning_ai_kind(value: Any) -> str:
     return _LEARNING_AI_KIND_ALIASES.get(raw, raw)
 
 
+def _learning_token_key(value: Any) -> str:
+    """Compare word-order tokens without punctuation or invisible characters."""
+    return re.sub(
+        r"[^\w']+", "", str(value or "").replace("\u200b", "").replace("\ufeff", "")
+    ).casefold()
+
+
+def _learning_ai_payload_is_usable(question: dict[str, Any]) -> bool:
+    """Reject malformed AI output before it can become a student exercise."""
+    kind = str(question.get("test_type") or question.get("kind") or "").strip()
+    prompt = str(question.get("question") or question.get("prompt") or "").strip().casefold()
+    leaked_authoring_text = (
+        "savollarni vocabulalryni" in prompt
+        or "savollarni vocabulary" in prompt
+        or bool(re.search(r"\bsavoli\s+\d+\b", prompt))
+    )
+    if leaked_authoring_text and kind not in {"matching", "word_practice", "scrambled_sentence"}:
+        return False
+    if kind in {"multiple_choice", "true_false", "listening", "listening_tf"}:
+        options = [str(value).strip() for value in question.get("options") or []]
+        answer = str(question.get("correct_answer") or "").strip().casefold()
+        return (
+            len(options) >= 2
+            and len({option.casefold() for option in options}) == len(options)
+            and sum(option.casefold() == answer for option in options) == 1
+        )
+    if kind in {"scrambled_sentence", "word_order", "listening_order"}:
+        answer_tokens = [
+            _learning_token_key(value)
+            for value in str(question.get("correct_answer") or "").split()
+        ]
+        tokens = [_learning_token_key(value) for value in question.get("tokens") or []]
+        return (
+            len(answer_tokens) >= 2
+            and all(answer_tokens)
+            and sorted(answer_tokens) == sorted(token for token in tokens if token)
+        )
+    if kind == "matching":
+        pairs = question.get("pairs") or []
+        left = [str(pair.get("left") or "").strip().casefold() for pair in pairs if isinstance(pair, dict)]
+        right = [str(pair.get("right") or "").strip().casefold() for pair in pairs if isinstance(pair, dict)]
+        return len(left) >= 2 and all(left) and all(right) and len(set(left)) == len(left) and len(set(right)) == len(right)
+    if kind in {"gap_fill", "fill_blank"}:
+        return bool(str(question.get("correct_answer") or "").strip())
+    if kind == "word_practice":
+        return bool(str(question.get("word") or question.get("correct_answer") or "").strip())
+    return bool(str(question.get("correct_answer") or question.get("reference_answer") or "").strip())
+
+
 def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: int) -> dict[str, Any] | None:
     """Use the Materials Library contract for every Diamondvoy lesson test.
 
@@ -3376,6 +3425,19 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
                 return None
             question["accepted_answers"] = [question["correct_answer"]]
             question["acceptable_answers"] = [question["correct_answer"]]
+    # The word bank is the actual content for these interactive exercises.
+    # Never expose it again as a duplicate heading above the work area.
+    if question["test_type"] in {"scrambled_sentence", "word_order", "listening_order"}:
+        question["question"] = "So'zlardan to'g'ri gap tuzing."
+        question["prompt"] = question["question"]
+    elif question["test_type"] == "matching":
+        question["question"] = "Mos juftlarni toping."
+        question["prompt"] = question["question"]
+    elif question["test_type"] == "word_practice":
+        question["question"] = "So'zni o'rganing."
+        question["prompt"] = question["question"]
+    if not _learning_ai_payload_is_usable(question):
+        return None
     return question
 
 
@@ -3983,6 +4045,18 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         res["test_type"] = "word_practice"
         res["kind"] = "word_practice"
         res["correct_answer"] = clean_w
+
+    # These widgets already show the content in the interactive area. A raw
+    # imported prompt must never become a second, confusing heading above it.
+    if kind in {"word_order", "scrambled_sentence", "listening_order"}:
+        res["question"] = "So'zlardan to'g'ri gap tuzing."
+        res["prompt"] = res["question"]
+    elif kind == "matching":
+        res["question"] = "Mos juftlarni toping."
+        res["prompt"] = res["question"]
+    elif kind == "word_practice":
+        res["question"] = "So'zni o'rganing."
+        res["prompt"] = res["question"]
 
     return res
 

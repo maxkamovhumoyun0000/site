@@ -151,6 +151,29 @@ def test_diamondvoy_learning_generator_uses_the_materials_library_contract():
     assert order["tokens"] == ["We", "study", "English"]
 
 
+def test_learning_path_interactive_prompts_hide_the_answer_bank_and_validate_tokens():
+    order = personalization._learning_ai_question_payload({
+        "test_type": "scrambled_sentence",
+        "question": "study English We",
+        "correct_answer": "We study English.",
+        "tokens": ["study", "English", "We"],
+    }, topic="Present simple", position=1)
+    assert order is not None
+    assert order["question"] == "So'zlardan to'g'ri gap tuzing."
+    assert personalization._learning_ai_question_payload({
+        "test_type": "scrambled_sentence",
+        "correct_answer": "We study English.",
+        "tokens": ["We", "study", "Math"],
+    }, topic="Present simple", position=2) is None
+
+    matched = personalization._learning_library_question({
+        "kind": "matching",
+        "question": "Internal authoring title savoli 5",
+        "pairs": [{"left": "hello", "right": "salom"}, {"left": "bye", "right": "xayr"}],
+    })
+    assert matched["question"] == "Mos juftlarni toping."
+
+
 def test_learning_path_cloze_keeps_each_alternative_as_a_separate_value():
     result = personalization._learning_library_question({
         "kind": "passage_cloze",

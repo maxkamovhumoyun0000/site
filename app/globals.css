@@ -77,6 +77,25 @@
     var(--paper);
 }
 
+/* The Learning Path player is rendered in a portal.  These explicit theme
+   rules keep its word-order workspace dark even when a host (for example a
+   Telegram webview) isolates portal utility classes from the root theme. */
+[data-theme="dark"] .learning-word-order-slots {
+  background: #0f172a !important;
+  border-color: #475569 !important;
+  color: #e2e8f0 !important;
+}
+
+[data-theme="dark"] .learning-word-order-chip {
+  background: #1e293b !important;
+  border-color: #475569 !important;
+  color: #f8fafc !important;
+}
+
+[data-theme="dark"] .learning-word-order-chip:hover {
+  background: #26364d !important;
+}
+
 [data-theme="dark"] h1,
 [data-theme="dark"] h2,
 [data-theme="dark"] h3 {

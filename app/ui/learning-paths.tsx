@@ -2977,7 +2977,7 @@ function LessonPlayerModal({
                     /* ─── Exercise Type 1: Word Order / Scrambled sentence (Duolingo Signature) ─── */
                     <div className="space-y-6 pt-2">
                       {/* Sentence Slots Line */}
-                      <div className="min-h-24 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/50">
+                      <div className="learning-word-order-slots min-h-24 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/50">
                         {sentenceWords.length ? (
                           sentenceWords.map((w, idx) => (
                             <button
@@ -2985,7 +2985,7 @@ function LessonPlayerModal({
                               type="button"
                               disabled={Boolean(result)}
                               onClick={() => handleSentenceWordRemove(idx)}
-                              className="rounded-xl border-2 border-b-4 border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-navy-900 shadow-sm transition hover:bg-rose-50 active:translate-y-1 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
+                              className="learning-word-order-chip rounded-xl border-2 border-b-4 border-slate-200 bg-white px-4 py-2.5 text-sm font-black text-navy-900 shadow-sm transition hover:bg-rose-50 active:translate-y-1 active:border-b-2 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
                             >
                               {w}
                             </button>
@@ -3005,7 +3005,7 @@ function LessonPlayerModal({
                             type="button"
                             disabled={tile.used || Boolean(result)}
                             onClick={() => handleTileClick(tile.id, tile.text)}
-                            className={`rounded-2xl border-2 px-4 py-2.5 text-sm font-black transition-all select-none ${
+                            className={`learning-word-order-chip rounded-2xl border-2 px-4 py-2.5 text-sm font-black transition-all select-none ${
                               tile.used
                                 ? "border-slate-200 bg-slate-200/50 text-transparent opacity-30 dark:border-navy-800 dark:bg-navy-900"
                                 : "border-slate-200 border-b-4 bg-white text-navy-900 shadow-sm active:translate-y-1 active:border-b-2 hover:bg-slate-50 dark:border-navy-700 dark:bg-navy-800 dark:text-white"
@@ -4401,14 +4401,14 @@ function FinalExamPlayerModal({
                 if (currentQuestion.test_type === "word_order" || currentQuestion.test_type === "listening_order" || currentQuestion.test_type === "scrambled_sentence" || isWordsOfAnswer) {
                   return (
                     <div className="space-y-6">
-                      <div className="min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
+                      <div className="learning-word-order-slots min-h-20 rounded-2xl border-2 border-dashed border-slate-300 bg-slate-50/70 p-3 flex flex-wrap gap-2 items-center dark:border-navy-700 dark:bg-navy-900/60">
                         {sentenceWords.map((word, idx) => (
                           <button
                             key={idx}
                             type="button"
                             onClick={() => handleSentenceWordRemove(idx)}
                             disabled={Boolean(result)}
-                            className="rounded-xl border-2 border-b-4 border-slate-300 bg-white px-3.5 py-2 text-sm font-black text-navy-900 shadow-sm transition active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
+                            className="learning-word-order-chip rounded-xl border-2 border-b-4 border-slate-300 bg-white px-3.5 py-2 text-sm font-black text-navy-900 shadow-sm transition active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
                           >
                             {word}
                           </button>
@@ -4424,7 +4424,7 @@ function FinalExamPlayerModal({
                             type="button"
                             onClick={() => handleTileClick(tile.id, tile.text)}
                             disabled={tile.used || Boolean(result)}
-                            className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-sm font-black transition ${
+                            className={`learning-word-order-chip rounded-xl border-2 border-b-4 px-3.5 py-2 text-sm font-black transition ${
                               tile.used
                                 ? "border-transparent bg-slate-100 text-transparent pointer-events-none dark:bg-navy-900/40"
                                 : "border-slate-300 bg-white text-navy-900 shadow-md active:translate-y-0.5 active:border-b-2 hover:border-[#002DFF] dark:border-navy-600 dark:bg-navy-800 dark:text-white"
