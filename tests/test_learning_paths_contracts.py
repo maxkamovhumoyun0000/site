@@ -1,4 +1,5 @@
 import backend.personalization as personalization
+import backend.library_ai as library_ai
 
 
 def test_diamondvoy_default_learning_path_mix_covers_all_media_free_renderers():
@@ -25,6 +26,26 @@ def test_learning_ai_request_accepts_the_complete_diamondvoy_mix():
         test_types=list(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES),
     )
     assert len(request.test_types) == len(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES)
+
+
+def test_topic_reorder_and_bulk_delete_request_contracts():
+    reorder = personalization.LearningModuleTopicReorderRequest(topic_ids=[9, 4, 7])
+    bulk = personalization.LearningLessonBulkDeleteRequest(lesson_ids=[11, 14])
+    assert reorder.topic_ids == [9, 4, 7]
+    assert bulk.lesson_ids == [11, 14]
+    assert personalization.LearningLessonBulkDeleteRequest().lesson_ids == []
+
+
+def test_library_subtree_finds_only_learning_path_bundle_markers(monkeypatch):
+    nodes = [
+        {"id": 1, "parent_id": None, "payload_json": '{"system_learning_path": true}'},
+        {"id": 2, "parent_id": 1, "payload_json": '{"learning_path_marker": "learning:4:8:bundle"}'},
+        {"id": 3, "parent_id": 1, "payload_json": '{"learning_path_marker": "ordinary:test"}'},
+        {"id": 4, "parent_id": 99, "payload_json": '{"learning_path_marker": "learning:9:9:bundle"}'},
+    ]
+    monkeypatch.setattr(library_ai.dbm, "list_library_nodes", lambda owner_id: {"nodes": nodes})
+    markers = library_ai._learning_path_markers_in_library_subtree({"id": 1, "owner_id": 5})
+    assert markers == ["learning:4:8:bundle"]
 
 
 def test_track_passing_score_defaults_to_seventy_and_is_clamped():

@@ -6184,6 +6184,7 @@ function LessonEditor({
   const [managedTopicId, setManagedTopicId] = useState<number | "unassigned" | null>(null);
   const [managedTopicTitle, setManagedTopicTitle] = useState("");
   const [savingTopicTitle, setSavingTopicTitle] = useState(false);
+  const [selectedManagedLessonIds, setSelectedManagedLessonIds] = useState<number[]>([]);
   const [hint, setHint] = useState("");
   const [wordCount, setWordCount] = useState(0);
 
@@ -6237,6 +6238,10 @@ function LessonEditor({
     return groups;
   }, [lessons, moduleTopics]);
   const managedTopic = topicQuestionGroups.find((item) => item.id === managedTopicId) || null;
+
+  useEffect(() => {
+    setSelectedManagedLessonIds([]);
+  }, [managedTopicId]);
 
   const curKindMeta = ALL_TEST_KINDS.find((k) => k.key === manualType) || { needsAudio: false, needsPassage: false };
   const editKindMeta = ALL_TEST_KINDS.find((k) => k.key === editType) || { needsAudio: false, needsPassage: false };
@@ -6422,6 +6427,30 @@ function LessonEditor({
       await onSaved();
     } catch (err) {
       alert("O'chirishda xatolik: " + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const deleteManagedTopicLessons = async (lessonIds: number[]) => {
+    if (!managedTopic || typeof managedTopic.id !== "number") return;
+    const all = lessonIds.length === 0;
+    const count = all ? managedTopic.lessons.length : lessonIds.length;
+    if (!count) return;
+    const message = all
+      ? `Bu mavzudagi ${count} ta savolning barchasi o'chiriladi. Davom etasizmi?`
+      : `Tanlangan ${count} ta savol o'chiriladi. Davom etasizmi?`;
+    if (!window.confirm(message)) return;
+    setBusy(true);
+    try {
+      await apiFetch(`/staff/learning-modules/${module.id}/topics/${managedTopic.id}/lessons`, {
+        method: "DELETE",
+        body: all ? {} : { lesson_ids: lessonIds },
+      });
+      setSelectedManagedLessonIds([]);
+      await onSaved();
+    } catch (err) {
+      alert("Savollarni o'chirishda xatolik: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
@@ -7739,13 +7768,58 @@ function LessonEditor({
               <button type="button" onClick={() => setManagedTopicId(null)} className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-500 hover:bg-slate-100 hover:text-rose-600 dark:text-slate-400 dark:hover:bg-slate-800">✕</button>
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2.5">
+              {managedTopic.lessons.length > 0 && typeof managedTopic.id === "number" ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-indigo-200 bg-indigo-50/70 p-3 dark:border-indigo-900 dark:bg-indigo-950/30">
+                  <label className="inline-flex cursor-pointer items-center gap-2 text-xs font-bold text-indigo-950 dark:text-indigo-100">
+                    <input
+                      type="checkbox"
+                      checked={selectedManagedLessonIds.length === managedTopic.lessons.length}
+                      onChange={(event) => setSelectedManagedLessonIds(
+                        event.target.checked ? managedTopic.lessons.map((lesson: Row) => Number(lesson.id)) : []
+                      )}
+                    />
+                    Barchasini tanlash ({managedTopic.lessons.length})
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedManagedLessonIds.length > 0 ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void deleteManagedTopicLessons(selectedManagedLessonIds)}
+                        className="rounded-lg border border-rose-400/60 px-2.5 py-1.5 text-xs font-black text-rose-700 hover:bg-rose-500/10 disabled:opacity-40 dark:text-rose-300"
+                      >
+                        🗑 Tanlanganlarni o‘chirish ({selectedManagedLessonIds.length})
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void deleteManagedTopicLessons([])}
+                      className="rounded-lg bg-rose-600 px-2.5 py-1.5 text-xs font-black text-white hover:bg-rose-700 disabled:opacity-40"
+                    >
+                      🗑 Hammasini o‘chirish
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {managedTopic.lessons.length ? managedTopic.lessons.map((lesson: Row, index: number) => {
                 const payload = (lesson.question_payload as Row) || {};
                 const type = String(payload.test_type || lesson.source_version || "multiple_choice");
                 const meta = ALL_TEST_KINDS.find((item) => item.key === type);
+                const lessonId = Number(lesson.id);
+                const selected = selectedManagedLessonIds.includes(lessonId);
                 return (
                   <article key={lesson.id} className="rounded-2xl border border-line bg-surface-soft/50 p-3 dark:border-slate-800 dark:bg-slate-900/40">
                     <div className="flex gap-3">
+                      <input
+                        type="checkbox"
+                        aria-label={`${String(lesson.title || "Savol")}ni tanlash`}
+                        checked={selected}
+                        onChange={(event) => setSelectedManagedLessonIds((current) => event.target.checked
+                          ? [...current, lessonId]
+                          : current.filter((id) => id !== lessonId))}
+                        className="mt-1 h-4 w-4 shrink-0"
+                      />
                       <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-indigo-600 text-xs font-black text-white">{index + 1}</span>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
@@ -7755,7 +7829,7 @@ function LessonEditor({
                         <p className="mt-1 line-clamp-2 text-xs text-ink-600 dark:text-slate-300">{String(payload.question || payload.prompt || "Savol matni mavjud emas")}</p>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <button type="button" onClick={() => { startEdit(lesson); setManagedTopicId(null); }} className="rounded-lg border border-cyan-400/50 px-2.5 py-1 text-xs font-bold text-cyan-700 hover:bg-cyan-500/10 dark:text-cyan-300">✏️ Tahrirlash</button>
-                          <button type="button" onClick={() => void deleteLesson(Number(lesson.id))} className="rounded-lg border border-rose-400/50 px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300">🗑 O‘chirish</button>
+                          <button type="button" onClick={() => void deleteLesson(lessonId)} className="rounded-lg border border-rose-400/50 px-2.5 py-1 text-xs font-bold text-rose-600 hover:bg-rose-500/10 dark:text-rose-300">🗑 O‘chirish</button>
                         </div>
                       </div>
                     </div>
@@ -8385,6 +8459,7 @@ function ModuleTopicsModal({
   const [editTitle, setEditTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [draggedTopicId, setDraggedTopicId] = useState<number | null>(null);
 
   useEffect(() => {
     if (Array.isArray(module.topics)) {
@@ -8433,7 +8508,7 @@ function ModuleTopicsModal({
   };
 
   const deleteTopic = async (topicId: number) => {
-    if (!confirm("Haqiqatan ham bu mavzuni o'chirmoqchimisiz?")) return;
+    if (!confirm("Bu mavzu va uning ichidagi barcha savollar o'chiriladi. Davom etasizmi?")) return;
     setBusy(true);
     setError(null);
     try {
@@ -8445,6 +8520,32 @@ function ModuleTopicsModal({
       setError(e?.message || String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const moveTopic = async (sourceId: number, targetId: number) => {
+    if (sourceId === targetId || busy) return;
+    const from = topics.findIndex((topic) => Number(topic.id) === sourceId);
+    const to = topics.findIndex((topic) => Number(topic.id) === targetId);
+    if (from < 0 || to < 0) return;
+    const next = [...topics];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setTopics(next);
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/staff/learning-modules/${module.id}/topics/reorder`, {
+        method: "POST",
+        body: { topic_ids: next.map((topic) => Number(topic.id)) },
+      });
+      await onSaved();
+    } catch (e: any) {
+      setTopics(topics);
+      setError(e?.message || String(e));
+    } finally {
+      setBusy(false);
+      setDraggedTopicId(null);
     }
   };
 
@@ -8500,9 +8601,17 @@ function ModuleTopicsModal({
                 return (
                   <div
                     key={top.id}
-                    className="flex items-center justify-between gap-3 rounded-2xl border border-line dark:border-slate-800 p-3.5 bg-surface-soft/40 dark:bg-slate-800/40"
+                    draggable={!isEditing && !busy}
+                    onDragStart={() => setDraggedTopicId(Number(top.id))}
+                    onDragEnd={() => setDraggedTopicId(null)}
+                    onDragOver={(event) => event.preventDefault()}
+                    onDrop={() => {
+                      if (draggedTopicId !== null) void moveTopic(draggedTopicId, Number(top.id));
+                    }}
+                    className={`flex items-center justify-between gap-3 rounded-2xl border border-line p-3.5 dark:border-slate-800 ${draggedTopicId === Number(top.id) ? "opacity-50" : ""} bg-surface-soft/40 dark:bg-slate-800/40`}
                   >
                     <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className="cursor-grab select-none text-slate-400 active:cursor-grabbing" title="Sudrab tartibini almashtiring">⠿</span>
                       <span className="grid h-7 w-7 place-items-center rounded-lg bg-indigo-600 text-white text-xs font-black shrink-0">
                         {idx + 1}
                       </span>

@@ -450,6 +450,32 @@ def _is_learning_path_snapshot(node: dict) -> bool:
     return bool(_json_obj(node.get("payload_json")).get("system_learning_path"))
 
 
+def _learning_path_markers_in_library_subtree(node: dict) -> list[str]:
+    """Return protected Learning Path bundle markers below a Library node."""
+    owner_id = int(node.get("owner_id") or 0)
+    if owner_id <= 0:
+        return []
+    nodes = _safe(lambda: dbm.list_library_nodes(owner_id).get("nodes", []), []) or []
+    child_ids: dict[int | None, list[int]] = {}
+    payloads: dict[int, dict[str, Any]] = {}
+    for item in nodes:
+        item_id = int(item.get("id") or 0)
+        if item_id <= 0:
+            continue
+        parent_id = int(item["parent_id"]) if item.get("parent_id") is not None else None
+        child_ids.setdefault(parent_id, []).append(item_id)
+        payloads[item_id] = _json_obj(item.get("payload_json"))
+    stack = [int(node["id"])]
+    markers: list[str] = []
+    while stack:
+        current_id = stack.pop()
+        marker = str(payloads.get(current_id, {}).get("learning_path_marker") or "").strip()
+        if re.fullmatch(r"learning:\d+:\d+:bundle", marker):
+            markers.append(marker)
+        stack.extend(child_ids.get(current_id, []))
+    return list(dict.fromkeys(markers))
+
+
 def _require_node_permission(user: dict, node: dict, need: str) -> str:
     """need: 'view' | 'assign' | 'edit'. Admin hamma narsani ko'radi/tahrirlaydi."""
     from backend.main import _role_from_login_type
@@ -589,6 +615,16 @@ async def library_delete(
     is_learning_path = _is_learning_path_snapshot(node)
     if is_learning_path and str((payload.confirmation_code if payload else "") or "").strip() != "0107":
         raise HTTPException(status_code=403, detail="Learning Path faylini o‘chirish uchun tasdiqlash kodi noto‘g‘ri")
+    deleted_lessons = 0
+    if is_learning_path:
+        # The immutable Library bundle is a second view of the same tests, not
+        # a copy. Delete its source lessons before removing this node/subtree.
+        from backend.personalization import delete_learning_path_topic_lessons_from_library_marker
+        for marker in _learning_path_markers_in_library_subtree(node):
+            deleted_lessons += delete_learning_path_topic_lessons_from_library_marker(
+                marker,
+                owner_id=int(node.get("owner_id") or 0),
+            )
     try:
         ok = dbm.delete_library_node(
             int(node_id), allow_system_learning_path=is_learning_path
@@ -597,7 +633,7 @@ async def library_delete(
         raise HTTPException(status_code=403, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="Element topilmadi")
-    return {"message": "O'chirildi"}
+    return {"message": "O'chirildi", "deleted_learning_lessons": deleted_lessons}
 
 
 @router.get("/teacher/library/{node_id}/shares")

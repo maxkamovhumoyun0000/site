@@ -1985,6 +1985,15 @@ class LearningModuleTopicUpdate(BaseModel):
     position: int | None = Field(default=None, ge=0, le=10000)
 
 
+class LearningModuleTopicReorderRequest(BaseModel):
+    topic_ids: list[int] = Field(min_length=1, max_length=10)
+
+
+class LearningLessonBulkDeleteRequest(BaseModel):
+    """An empty list means delete every question in the selected topic."""
+    lesson_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
 class LearningLessonRequest(BaseModel):
     topic_id: int | None = Field(default=None, gt=0)
     title: str = Field(min_length=1, max_length=180)
@@ -2532,6 +2541,71 @@ def _delete_learning_path_library_branch(
         logger.exception("Learning Path library cleanup failed")
 
 
+def _delete_learning_path_library_bundle(*, owner_id: int, module_id: int, topic_id: int) -> None:
+    """Remove the immutable Library mirror for one Learning Path topic."""
+    if owner_id <= 0:
+        return
+    marker = f"learning:{module_id}:{topic_id}:bundle"
+    try:
+        import db as dbm
+        for node in dbm.list_library_nodes(owner_id).get("nodes", []):
+            try:
+                payload = json.loads(str(node.get("payload_json") or "{}"))
+            except Exception:
+                payload = {}
+            if payload.get("learning_path_marker") == marker:
+                dbm.delete_library_node(int(node["id"]), allow_system_learning_path=True)
+    except Exception:
+        logger.exception("Learning Path topic Library cleanup failed")
+
+
+def delete_learning_path_topic_lessons_from_library_marker(
+    marker: str, *, owner_id: int
+) -> int:
+    """Make a protected Library test and its Learning Path source one object.
+
+    This is called only after Library authorization and confirmation-code checks.
+    It deliberately does not rebuild the Library mirror because the caller is
+    deleting that mirror in the same request.
+    """
+    match = re.fullmatch(r"learning:(\d+):(\d+):bundle", str(marker or "").strip())
+    if not match or owner_id <= 0:
+        return 0
+    module_id, topic_id = (int(match.group(1)), int(match.group(2)))
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT m.id,t.owner_id
+               FROM learning_modules m JOIN learning_tracks t ON t.id=m.track_id
+               WHERE m.id=?""",
+            (module_id,),
+        )
+        module = cur.fetchone()
+        if not module or int(dict(module).get("owner_id") or 0) != owner_id:
+            return 0
+        cur.execute(
+            "SELECT id FROM learning_module_lessons WHERE module_id=? AND topic_id=?",
+            (module_id, topic_id),
+        )
+        lesson_ids = [int(dict(row)["id"]) for row in cur.fetchall() or []]
+        if lesson_ids:
+            placeholders = ",".join("?" for _ in lesson_ids)
+            cur.execute(
+                f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({placeholders})",
+                lesson_ids,
+            )
+            cur.execute(
+                f"DELETE FROM learning_module_lessons WHERE id IN ({placeholders})",
+                lesson_ids,
+            )
+            conn.commit()
+        return len(lesson_ids)
+    finally:
+        conn.close()
+
+
 def rebuild_learning_path_library_mirrors() -> dict[str, int]:
     """Rebuild protected Library mirrors from the Learning Path source tables.
 
@@ -2619,17 +2693,66 @@ async def update_learning_module_topic(topic_id: int, payload: LearningModuleTop
     finally: conn.close()
 
 
+@router.post("/staff/learning-modules/{module_id}/topics/reorder")
+async def reorder_learning_module_topics(
+    module_id: int,
+    payload: LearningModuleTopicReorderRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Atomically persist the drag-and-drop topic order for one module."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,))
+        module = cur.fetchone()
+        if not module:
+            raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(module)["track_id"]), user)
+        cur.execute(
+            "SELECT id FROM learning_module_topics WHERE module_id=? ORDER BY position,id",
+            (module_id,),
+        )
+        existing_ids = [int(dict(row)["id"]) for row in cur.fetchall() or []]
+        requested_ids = [int(topic_id) for topic_id in payload.topic_ids]
+        if len(set(requested_ids)) != len(requested_ids) or set(requested_ids) != set(existing_ids):
+            raise HTTPException(status_code=422, detail="Mavzular ro‘yxati moduldagi mavjud mavzularga aynan mos bo‘lishi kerak")
+        for position, current_topic_id in enumerate(requested_ids):
+            cur.execute(
+                "UPDATE learning_module_topics SET position=?,updated_at=? WHERE id=? AND module_id=?",
+                (position, _now().isoformat(), current_topic_id, module_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    # The Library uses numbered folders, therefore rebuild its protected mirror
+    # after a reorder so both views always have the same sequence.
+    rebuild_learning_path_library_mirrors()
+    return {"updated": True, "module_id": module_id, "topic_ids": requested_ids}
+
+
 @router.delete("/staff/learning-module-topics/{topic_id}")
 async def delete_learning_module_topic(topic_id: int, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
+        cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id,tr.owner_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id JOIN learning_tracks tr ON tr.id=m.track_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Mavzu topilmadi")
         _learning_track_for_manager(int(dict(row)["track_id"]), user)
-        cur.execute("SELECT COUNT(*) AS n FROM learning_module_lessons WHERE topic_id=?", (topic_id,))
-        if int(dict(cur.fetchone() or {}).get("n") or 0):
-            raise HTTPException(status_code=409, detail="Mavzuda testlar bor. Avval testlarni boshqa mavzuga ko‘chiring yoki o‘chiring.")
-        cur.execute("DELETE FROM learning_module_topics WHERE id=?", (topic_id,)); conn.commit(); return {"deleted":True,"topic_id":topic_id}
+        module_id = int(dict(row)["module_id"])
+        owner_id = int(dict(row).get("owner_id") or 0)
+        cur.execute("SELECT id FROM learning_module_lessons WHERE topic_id=?", (topic_id,))
+        lesson_ids = [int(dict(item)["id"]) for item in cur.fetchall() or []]
+        if lesson_ids:
+            placeholders = ",".join("?" for _ in lesson_ids)
+            cur.execute(f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({placeholders})", lesson_ids)
+            cur.execute(f"DELETE FROM learning_module_lessons WHERE id IN ({placeholders})", lesson_ids)
+        cur.execute("DELETE FROM learning_module_topics WHERE id=?", (topic_id,))
+        conn.commit()
+        _delete_learning_path_library_bundle(owner_id=owner_id, module_id=module_id, topic_id=topic_id)
+        rebuild_learning_path_library_mirrors()
+        return {"deleted":True,"topic_id":topic_id,"deleted_lessons":len(lesson_ids)}
     finally: conn.close()
 
 
@@ -2807,6 +2930,62 @@ async def delete_learning_lesson(lesson_id: int, authorization: str | None = Hea
             topic_id=int(dict(row).get("topic_id") or 0), title="", question={},
         )
         return {"deleted": True, "lesson_id": lesson_id}
+    finally:
+        conn.close()
+
+
+@router.delete("/staff/learning-modules/{module_id}/topics/{topic_id}/lessons")
+async def delete_learning_topic_lessons(
+    module_id: int,
+    topic_id: int,
+    payload: LearningLessonBulkDeleteRequest | None = None,
+    authorization: str | None = Header(default=None),
+):
+    """Delete selected questions, or all questions when lesson_ids is empty."""
+    user = _user(authorization)
+    _require(user, LEARNING_MANAGER_ROLES)
+    ensure_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT m.track_id FROM learning_modules m WHERE m.id=?",
+            (module_id,),
+        )
+        module = cur.fetchone()
+        if not module:
+            raise HTTPException(status_code=404, detail="Learning module not found")
+        _learning_track_for_manager(int(dict(module)["track_id"]), user)
+        resolved_topic_id = _learning_topic_for_module(cur, module_id, topic_id)
+        requested_ids = list(dict.fromkeys(int(value) for value in (payload.lesson_ids if payload else [])))
+        cur.execute(
+            "SELECT id FROM learning_module_lessons WHERE module_id=? AND topic_id=? ORDER BY id",
+            (module_id, resolved_topic_id),
+        )
+        available_ids = [int(dict(row)["id"]) for row in cur.fetchall() or []]
+        if requested_ids and not set(requested_ids).issubset(set(available_ids)):
+            raise HTTPException(status_code=422, detail="Tanlangan savollardan biri ushbu mavzuga tegishli emas")
+        deleting_ids = requested_ids or available_ids
+        if not deleting_ids:
+            return {"deleted": True, "deleted_lessons": 0, "topic_id": resolved_topic_id}
+        placeholders = ",".join("?" for _ in deleting_ids)
+        cur.execute(
+            f"DELETE FROM learning_lesson_attempts WHERE lesson_id IN ({placeholders})",
+            deleting_ids,
+        )
+        cur.execute(
+            f"DELETE FROM learning_module_lessons WHERE id IN ({placeholders})",
+            deleting_ids,
+        )
+        conn.commit()
+        _archive_learning_path_test(
+            cur, module_id=module_id, topic_id=resolved_topic_id, title="", question={}
+        )
+        return {
+            "deleted": True,
+            "deleted_lessons": len(deleting_ids),
+            "topic_id": resolved_topic_id,
+        }
     finally:
         conn.close()
 
