@@ -3101,6 +3101,17 @@ _LEARNING_AI_KIND_ALIASES = {
     "order_words": "scrambled_sentence",
 }
 
+# Every Learning Path exercise Diamondvoy can make without a separate media
+# upload. Listening requires a real recording and picture description requires
+# a real image, so those remain Library/manual authoring types.
+LEARNING_PATH_DIAMONDVOY_MIXED_TYPES = (
+    "multiple_choice", "true_false", "gap_fill", "scrambled_sentence",
+    "matching", "spelling", "translation", "speak_sentence",
+    "write_sentence", "guided_writing", "reading_open", "read_aloud",
+    "paraphrase", "dialogue_completion", "passage_cloze", "reading_set",
+    "word_practice",
+)
+
 
 def _canonical_learning_ai_kind(value: Any) -> str:
     raw = str(value or "multiple_choice").strip().lower()
@@ -3197,7 +3208,12 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     finally:
         conn.close()
 
-    DEFAULT_MIXED_TEST_TYPES = ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching", "word_practice"]
+    # Learning Path's standard Diamondvoy mix must exercise every student
+    # renderer that can work without a teacher-provided media file. Audio
+    # kinds stay opt-in because a generated question without its recording is
+    # not a usable listening exercise; picture_description likewise needs an
+    # uploaded image and is created from the Library editor.
+    DEFAULT_MIXED_TEST_TYPES = list(LEARNING_PATH_DIAMONDVOY_MIXED_TYPES)
     raw_types = [str(t).strip() for t in (payload.test_types or []) if str(t).strip()]
     if not raw_types or any(k in raw_types for k in ("mixed", "all", "aralash", "barchasi")):
         types_list = DEFAULT_MIXED_TEST_TYPES
@@ -3256,6 +3272,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "- Use directions suited to the exercise type: multiple_choice='To'g'ri variantni tanlang.'; true_false='Gapning to'g'ri yoki noto'g'riligini belgilang.'; gap_fill='Bo'sh joyni mos so'z bilan to'ldiring.'; scrambled_sentence='So'zlarni to'g'ri tartibda joylashtiring.'; matching='Mos so'z va tarjimalarni juftlang.'; spelling='So'zni xatosiz yozing.'; translation='So'zni ko'rsatilgan tilga tarjima qiling.'; speaking='Javobni mikrofonga ayting.'; writing='Topshiriqqa mos gap yozing.' The three localized conditions must express the same action in Uzbek, Russian and English.\n"
         f"- 'test_type': one of ({types_str}); use only the requested types.\n"
         "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
+        "- For non-choice exercise types, provide usable content: read_aloud and reading_open require a complete 'passage'; dialogue_completion requires a 'passage' containing ___ for the student's line; passage_cloze requires 'passage' with ___ blanks, an 'answers' array, and a 'word_bank'; reading_set requires a complete 'passage' and a 'questions' array; guided_writing requires 'word_count' and a reference_answer. For paraphrase, write_sentence and speak_sentence include a concrete task plus reference_answer.\n"
+        "- Never use listening, dictation, listening_set, or picture_description here: those require a real teacher-uploaded audio file or image and must be created through the Library editor.\n"
         "- For 'word_practice', make each item one vocabulary word and provide 'word', 'translation_uz', and 'translation_ru'. The student app will turn that word into one random vocabulary exercise, so do not expose the word or translation in the instruction.\n"
         "- 'options': array of string choices strictly following these rules:\n"
         "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"

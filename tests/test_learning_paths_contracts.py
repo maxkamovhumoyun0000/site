@@ -1,6 +1,17 @@
 import backend.personalization as personalization
 
 
+def test_diamondvoy_default_learning_path_mix_covers_all_media_free_renderers():
+    expected = {
+        "multiple_choice", "true_false", "gap_fill", "scrambled_sentence",
+        "matching", "spelling", "translation", "speak_sentence",
+        "write_sentence", "guided_writing", "reading_open", "read_aloud",
+        "paraphrase", "dialogue_completion", "passage_cloze", "reading_set",
+        "word_practice",
+    }
+    assert expected.issubset(set(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES))
+
+
 def test_track_passing_score_defaults_to_seventy_and_is_clamped():
     assert personalization.normalize_track_passing_score(None) == 70
     assert personalization.normalize_track_passing_score(70) == 70

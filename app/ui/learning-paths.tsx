@@ -6104,6 +6104,18 @@ const ALL_TEST_KINDS = [
   { key: "word_practice", label: "💡 So'z mashqi (Random tur)", needsAudio: false },
 ];
 
+// These are all Learning Path types that Diamondvoy can create completely on
+// its own. Listening tasks need a teacher-provided recording, and picture
+// description needs a teacher-provided image, so they remain Library/manual
+// tasks instead of producing incomplete student exercises.
+const DIAMONDVOY_LEARNING_PATH_TYPES = [
+  "multiple_choice", "true_false", "gap_fill", "scrambled_sentence",
+  "matching", "spelling", "translation", "speak_sentence",
+  "write_sentence", "guided_writing", "reading_open", "read_aloud",
+  "paraphrase", "dialogue_completion", "passage_cloze", "reading_set",
+  "word_practice",
+].join(",");
+
 function combineQuestionText(instruction: unknown, question: unknown): string {
   const condition = String(instruction || "").trim().replace(/[:\s-]+$/, "");
   const prompt = String(question || "").trim();
@@ -6166,7 +6178,7 @@ function LessonEditor({
   const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(10);
-  const [types, setTypes] = useState("multiple_choice,true_false,gap_fill,scrambled_sentence,matching,word_practice");
+  const [types, setTypes] = useState(DIAMONDVOY_LEARNING_PATH_TYPES);
   const [busy, setBusy] = useState(false);
   const [showAddTestModal, setShowAddTestModal] = useState(initialOpenAddTest);
   const [managedTopicId, setManagedTopicId] = useState<number | "unassigned" | null>(null);
@@ -7255,7 +7267,7 @@ function LessonEditor({
                         onChange={(e) => setTypes(e.target.value)}
                         className="sm:col-span-2 rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-black text-navy-900 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                       >
-                        <option value="multiple_choice,true_false,gap_fill,scrambled_sentence,matching,word_practice">🎲 Barchasi aralash (MCQ + True/False + Bo'sh joy + So'z tartibi + Moslashtirish + Vocabulary random) — Standart</option>
+                        <option value={DIAMONDVOY_LEARNING_PATH_TYPES}>🎲 Barcha mos test turlari aralash — Standart</option>
                         <option value="multiple_choice,true_false,gap_fill,word_practice">Aralash (Ko'p tanlovli + True/False + Bo'sh joy + Vocabulary random)</option>
                         <option value="multiple_choice">Faqat Ko'p tanlovli (MCQ)</option>
                         <option value="true_false">Faqat To'g'ri / Noto'g'ri (True / False)</option>
@@ -7266,6 +7278,15 @@ function LessonEditor({
                         <option value="word_practice,spelling,translation,speak_sentence,write_sentence">🎲 Vocabulary aralash (random so'z mashqi + alohida tarjima/imlo/yozish/gapirish)</option>
                         <option value="translation">Faqat Tarjima mashqlari</option>
                         <option value="spelling">Faqat Imlo (Spelling)</option>
+                        <option value="speak_sentence">Faqat Ovozli gap tuzish</option>
+                        <option value="read_aloud">Faqat Ovoz chiqarib o'qish</option>
+                        <option value="write_sentence">Faqat Gap yozish</option>
+                        <option value="guided_writing">Faqat Mavzu bo'yicha yozma mashq</option>
+                        <option value="paraphrase">Faqat Qayta ifodalash</option>
+                        <option value="dialogue_completion">Faqat Dialogni to'ldirish</option>
+                        <option value="reading_open">Faqat Matn bo'yicha ochiq savol</option>
+                        <option value="passage_cloze">Faqat Matnni to'ldirish (so'zlar banki)</option>
+                        <option value="reading_set">Faqat Matn va savollar (Reading Set)</option>
                       </select>
 
                       <button
