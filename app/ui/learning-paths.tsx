@@ -6191,12 +6191,22 @@ function LessonEditor({
   const [selectedTopicId, setSelectedTopicId] = useState<number | null>(
     moduleTopics.length > 0 ? Number(moduleTopics[0].id) : null
   );
+  const selectedTopicTitle = String(
+    moduleTopics.find((item) => Number(item.id) === selectedTopicId)?.title || ""
+  ).trim();
 
   useEffect(() => {
     if (moduleTopics.length > 0 && (selectedTopicId === null || !moduleTopics.some((t) => t.id === selectedTopicId))) {
       setSelectedTopicId(Number(moduleTopics[0].id));
     }
   }, [moduleTopics, selectedTopicId]);
+
+  // A stale text field was able to send the previously selected topic to
+  // Diamondvoy. Keep the generator visibly and functionally bound to the
+  // topic selected in this module.
+  useEffect(() => {
+    if (selectedTopicTitle) setTopic(selectedTopicTitle);
+  }, [selectedTopicTitle]);
 
   useEffect(() => {
     if (initialOpenAddTest) {
@@ -6542,15 +6552,17 @@ function LessonEditor({
   };
 
   const generate = async () => {
-    if (!topic.trim()) return;
+    const scopedTopic = selectedTopicTitle || topic.trim();
+    if (!scopedTopic) return;
     setBusy(true);
     try {
       const result = await apiFetch(`/staff/learning-modules/${module.id}/ai-question`, {
         method: "POST",
         body: {
-          topic: topic.trim(),
+          topic: scopedTopic,
           question_count: count,
           test_types: (types || "multiple_choice,true_false,gap_fill,scrambled_sentence,matching,word_practice").split(",").map((value) => value.trim()).filter(Boolean),
+          ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
         },
       });
       const items = Array.isArray(result?.items) ? result.items : (result ? [result] : []);
@@ -6561,10 +6573,10 @@ function LessonEditor({
       await apiFetch(`/staff/learning-modules/${module.id}/lessons/batch`, {
         method: "POST",
         body: { items: items.map((item: Row, i: number) => ({
-          title: item.title || `${topic.trim()} · ${i + 1}`,
+          title: item.title || `${scopedTopic} · ${i + 1}`,
           source_kind: "ai",
           question_payload: item.question_payload,
-          ...(selectedTopicId ? { topic_id: selectedTopicId } : {}),
+          ...(selectedTopicId ? { topic_id: selectedTopicId } : (item.topic_id ? { topic_id: item.topic_id } : {})),
         })) },
       });
       setTopic("");
@@ -7219,33 +7231,38 @@ function LessonEditor({
                       </span>
                     </div>
 
-                    {/* Quick Topic Suggestion Pills */}
-                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{t("learning_paths.teacher.ai_topic_label")}</span>
-                      {[
-                        "Present Perfect vs Past Simple",
-                        "Irregular Verbs",
-                        "Travel & Hotel Vocabulary",
-                        "Job Interview Expressions",
-                        "Conditional Sentences (0, 1, 2)",
-                      ].map((sug) => (
-                        <button
-                          key={sug}
-                          type="button"
-                          onClick={() => setTopic(sug)}
-                          className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-800 dark:text-emerald-300"
-                        >
-                          + {sug}
-                        </button>
-                      ))}
-                    </div>
+                    {/* Suggestions are only for legacy modules without topics.
+                        A module with topics must generate for its selected one. */}
+                    {moduleTopics.length === 0 ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{t("learning_paths.teacher.ai_topic_label")}</span>
+                        {[
+                          "Present Perfect vs Past Simple",
+                          "Irregular Verbs",
+                          "Travel & Hotel Vocabulary",
+                          "Job Interview Expressions",
+                          "Conditional Sentences (0, 1, 2)",
+                        ].map((sug) => (
+                          <button
+                            key={sug}
+                            type="button"
+                            onClick={() => setTopic(sug)}
+                            className="rounded-lg border border-emerald-400/40 bg-white px-2 py-0.5 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 dark:border-slate-700 dark:bg-slate-800 dark:text-emerald-300"
+                          >
+                            + {sug}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
 
                     <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_130px]">
                       <input
                         value={topic}
                         onChange={(e) => setTopic(e.target.value)}
+                        readOnly={selectedTopicId !== null}
+                        aria-label={selectedTopicId !== null ? "Tanlangan mavzu" : undefined}
                         placeholder={t("learning_paths.teacher.ai_topic_placeholder")}
-                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                        className="rounded-2xl border-2 border-slate-200 bg-white p-3 text-xs font-bold text-navy-900 placeholder:text-slate-400 focus:border-emerald-400 focus:outline-none read-only:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500 dark:read-only:bg-slate-900"
                       />
 
                       <div className="flex items-center gap-2">

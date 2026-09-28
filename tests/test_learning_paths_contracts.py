@@ -12,6 +12,21 @@ def test_diamondvoy_default_learning_path_mix_covers_all_media_free_renderers():
     assert expected.issubset(set(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES))
 
 
+def test_diamondvoy_learning_path_vocabulary_quota_is_at_least_one_quarter():
+    assert personalization.learning_path_vocabulary_quota(1) == 1
+    assert personalization.learning_path_vocabulary_quota(4) == 1
+    assert personalization.learning_path_vocabulary_quota(5) == 2
+    assert personalization.learning_path_vocabulary_quota(10) == 3
+
+
+def test_learning_ai_request_accepts_the_complete_diamondvoy_mix():
+    request = personalization.LearningAiLessonRequest(
+        topic="Present simple",
+        test_types=list(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES),
+    )
+    assert len(request.test_types) == len(personalization.LEARNING_PATH_DIAMONDVOY_MIXED_TYPES)
+
+
 def test_track_passing_score_defaults_to_seventy_and_is_clamped():
     assert personalization.normalize_track_passing_score(None) == 70
     assert personalization.normalize_track_passing_score(70) == 70

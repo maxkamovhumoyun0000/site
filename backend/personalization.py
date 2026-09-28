@@ -2006,8 +2006,14 @@ class LearningAiLessonRequest(BaseModel):
     instruction: str | None = Field(default=None, max_length=1000)
     question_count: int = Field(default=1, ge=1, le=30)
     test_types: list[str] = Field(
-        default_factory=lambda: ["multiple_choice", "true_false", "gap_fill", "scrambled_sentence", "matching", "word_practice"],
-        max_length=12,
+        default_factory=lambda: [
+            "multiple_choice", "true_false", "gap_fill", "scrambled_sentence",
+            "matching", "spelling", "translation", "speak_sentence",
+            "write_sentence", "guided_writing", "reading_open", "read_aloud",
+            "paraphrase", "dialogue_completion", "passage_cloze", "reading_set",
+            "word_practice",
+        ],
+        max_length=32,
     )
 
 
@@ -2947,12 +2953,12 @@ def get_questions_from_bank(
             """
             SELECT id, subject, topic, difficulty, question_text, options_json, correct_answer, explanation, test_type, use_count
             FROM ai_generated_questions_bank
-            WHERE (LOWER(subject) = LOWER(?) OR subject = '')
-              AND (LOWER(topic) LIKE ? OR ? LIKE '%' || LOWER(topic) || '%')
+            WHERE (LOWER(TRIM(subject)) = LOWER(TRIM(?)) OR subject = '')
+              AND LOWER(TRIM(topic)) = LOWER(TRIM(?))
             ORDER BY use_count ASC, RANDOM()
             LIMIT ?
             """,
-            (clean_sub, f"%{clean_top}%", clean_top, max(1, min(100, count))),
+            (clean_sub, clean_top, max(1, min(100, count))),
         )
         rows = _dicts(cur.fetchall())
         if not rows:
@@ -3113,6 +3119,11 @@ LEARNING_PATH_DIAMONDVOY_MIXED_TYPES = (
 )
 
 
+def learning_path_vocabulary_quota(question_count: int) -> int:
+    """At least one vocabulary exercise and never less than 25 percent."""
+    return max(1, (max(1, int(question_count)) + 3) // 4)
+
+
 def _canonical_learning_ai_kind(value: Any) -> str:
     raw = str(value or "multiple_choice").strip().lower()
     return _LEARNING_AI_KIND_ALIASES.get(raw, raw)
@@ -3205,6 +3216,22 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             raise HTTPException(status_code=404, detail="Learning module not found")
         track_row = _learning_track_for_manager(int(dict(row)["track_id"]), user)
         track_subject = str((track_row or {}).get("subject") or "English")
+        # The client may retain text from the topic selected before this one.
+        # Bind every request to the current topic record, never to its free-text
+        # field, so a previous module/topic can never leak into this test set.
+        target_topic_id = _learning_topic_for_module(cur, module_id, payload.topic_id)
+        cur.execute(
+            "SELECT id,title,description FROM learning_module_topics WHERE id=? AND module_id=?",
+            (target_topic_id, module_id),
+        )
+        topic_row = cur.fetchone()
+        if not topic_row:
+            raise HTTPException(status_code=422, detail="Selected learning topic does not belong to this module")
+        topic_data = dict(topic_row)
+        scoped_topic = str(topic_data.get("title") or "").strip()
+        if not scoped_topic:
+            raise HTTPException(status_code=422, detail="Selected learning topic needs a title")
+        scoped_topic_description = str(topic_data.get("description") or "").strip()
     finally:
         conn.close()
 
@@ -3219,14 +3246,19 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         types_list = DEFAULT_MIXED_TEST_TYPES
     else:
         types_list = list(dict.fromkeys(_canonical_learning_ai_kind(kind) for kind in raw_types))
+    # Vocabulary is an explicit part of every Learning Path test set.  Keep it
+    # in the allowed list even when a stale client sends an older type picker.
+    if "word_practice" not in types_list:
+        types_list.append("word_practice")
     types_str = ", ".join(types_list)
 
     needed_count = payload.question_count or 10
+    required_vocabulary_count = learning_path_vocabulary_quota(needed_count)
 
     # 1. Efficiency check: Retrieve from question bank if enough questions exist or bank has >= 2000 total questions
     bank_questions = get_questions_from_bank(
         subject=track_subject,
-        topic=payload.topic,
+        topic=scoped_topic,
         count=needed_count,
         difficulty=payload.level or "medium",
     )
@@ -3239,36 +3271,46 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             continue
         normalized = _learning_ai_question_payload(
             {**bank_question, "test_type": canonical_kind},
-            topic=payload.topic,
+            topic=scoped_topic,
             position=index + 1,
         )
         if normalized:
             normalized_bank.append(normalized)
-    if len(normalized_bank) >= needed_count and set(types_list).issubset(
-        {str(question.get("test_type") or "") for question in normalized_bank}
-    ):
-        chosen_bank = normalized_bank[:needed_count]
+    bank_vocabulary = [
+        question for question in normalized_bank
+        if str(question.get("test_type") or "") == "word_practice"
+    ]
+    bank_other = [question for question in normalized_bank if question not in bank_vocabulary]
+    if len(normalized_bank) >= needed_count and len(bank_vocabulary) >= required_vocabulary_count:
+        chosen_bank = (
+            bank_vocabulary[:required_vocabulary_count]
+            + bank_other[:needed_count - required_vocabulary_count]
+        )
         items = []
         for index, bq in enumerate(chosen_bank):
             items.append({
-                "title": f"{payload.topic} · {index + 1}",
+                "title": f"{scoped_topic} · {index + 1}",
                 "source_kind": "ai",
+                "topic_id": target_topic_id,
                 "question_payload": bq,
             })
         return items[0] if needed_count == 1 else {"items": items, "question_count": len(items)}
 
     prompt = (
-        f"Create exactly {needed_count} safe, high-quality test questions for students on the topic: '{payload.topic}'.\n"
+        f"Create exactly {needed_count} safe, high-quality test questions for students on the topic: '{scoped_topic}'.\n"
         f"Subject: {track_subject}.\n"
         f"Difficulty Level: {payload.level or 'intermediate'}.\n"
+        f"Locked topic scope: '{scoped_topic}'. Topic description: '{scoped_topic_description or 'none'}'.\n"
         f"Required Exercise Types: {types_str}.\n"
         f"Distribute the questions evenly across these exercise types ({types_str}) to provide a varied and engaging mix.\n"
+        f"Vocabulary quota: at least {required_vocabulary_count} of the {needed_count} questions MUST use test_type='word_practice'.\n"
         f"Additional Instruction: {payload.instruction or 'none'}.\n\n"
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt. Write it once only; do not prefix it with labels such as 'Complete:' or 'Rearrange:' and do not copy it into passage/passage_template.\n"
         "- 'condition_uz', 'condition_ru' and 'condition_en': each must be a short, natural imperative telling the student WHAT TO DO (exercise directions only). The condition is not the question and must never contain, quote, translate, summarize, or repeat the question/prompt, sentence, passage, blank text, choices, hint, or answer. Do not add a question mark or copy labels like 'Complete:' into this field.\n"
         "- Keep the roles strictly separate: condition_* = action; question/prompt/passage = the actual question or content the student works on. Never put the actual question into condition_* even when the question field is also populated.\n"
+        "- Scope is strict: use ONLY the locked topic above. Do not reuse, mention, or create questions from any previous track, module, topic, request, example, or conversation.\n"
         "- Use directions suited to the exercise type: multiple_choice='To'g'ri variantni tanlang.'; true_false='Gapning to'g'ri yoki noto'g'riligini belgilang.'; gap_fill='Bo'sh joyni mos so'z bilan to'ldiring.'; scrambled_sentence='So'zlarni to'g'ri tartibda joylashtiring.'; matching='Mos so'z va tarjimalarni juftlang.'; spelling='So'zni xatosiz yozing.'; translation='So'zni ko'rsatilgan tilga tarjima qiling.'; speaking='Javobni mikrofonga ayting.'; writing='Topshiriqqa mos gap yozing.' The three localized conditions must express the same action in Uzbek, Russian and English.\n"
         f"- 'test_type': one of ({types_str}); use only the requested types.\n"
         "- Keep type-specific fields: word and translations for word_practice/spelling; passage for reading/read_aloud; reference_answer for writing/speaking. Never invent audio or image URLs.\n"
@@ -3332,7 +3374,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         for index, result in enumerate(parsed[:needed_count]):
             if not isinstance(result, dict):
                 continue
-            q_text = str(result.get("question") or f"{payload.topic} savoli {index + 1}").strip()
+            q_text = str(result.get("question") or f"{scoped_topic} savoli {index + 1}").strip()
             q_type = _canonical_learning_ai_kind(
                 result.get("test_type") or types_list[index % len(types_list)]
             )
@@ -3401,25 +3443,35 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                 question_payload["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
                 question_payload["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
             question_payload = _learning_ai_question_payload(
-                question_payload, topic=payload.topic, position=index + 1
+                question_payload, topic=scoped_topic, position=index + 1
             )
             if not question_payload:
                 continue
             items.append({
-                "title": f"{payload.topic} · {index + 1}",
+                "title": f"{scoped_topic} · {index + 1}",
                 "source_kind": "ai",
+                "topic_id": target_topic_id,
                 "question_payload": question_payload,
             })
             library_questions.append(question_payload)
 
-        if not items:
-            raise ValueError("No valid questions generated")
+        if len(items) != needed_count:
+            raise ValueError(f"Diamondvoy returned {len(items)} valid questions; {needed_count} are required")
+        generated_vocabulary_count = sum(
+            1 for item in items
+            if str((item.get("question_payload") or {}).get("test_type") or "") == "word_practice"
+        )
+        if generated_vocabulary_count < required_vocabulary_count:
+            raise ValueError(
+                f"Diamondvoy returned {generated_vocabulary_count} vocabulary questions; "
+                f"at least {required_vocabulary_count} are required"
+            )
 
         # Save to question bank for efficient future reuse
         try:
             save_to_question_bank(
                 subject=track_subject,
-                topic=payload.topic,
+                topic=scoped_topic,
                 questions=library_questions,
                 difficulty=payload.level or "medium",
             )
@@ -3435,7 +3487,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                     module_id,
                     json.dumps(library_questions, ensure_ascii=False),
                     int(user.get("id") or 0),
-                    title=f"💎 AI: {payload.topic} (modul #{module_id})",
+                    title=f"💎 AI: {scoped_topic} (modul #{module_id})",
                     created_by_role=str(user.get("role") or "teacher"),
                     is_active=True,
                     raw_questions=True,
