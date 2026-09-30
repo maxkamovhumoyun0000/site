@@ -22,12 +22,13 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from db import get_conn, add_dcoins
+from db import get_conn, add_dcoins, get_dcoins, try_consume_dcoins
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _runtime: dict[str, Callable[..., Any]] = {}
 _schema_ready = False
+WEEKLY_AI_PLAN_COST = 1000
 
 STUDY_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "chat_uploads"
 STUDY_ALT_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
@@ -257,6 +258,16 @@ def ensure_schema() -> None:
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(user_id, week_start, subject)
+            )""",
+            """CREATE TABLE IF NOT EXISTS weekly_ai_plan_purchases (
+              user_id BIGINT NOT NULL,
+              week_start TEXT NOT NULL,
+              subject TEXT NOT NULL,
+              cost INTEGER NOT NULL,
+              status TEXT NOT NULL DEFAULT 'processing',
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              PRIMARY KEY(user_id, week_start)
             )""",
             """CREATE TABLE IF NOT EXISTS ai_generated_questions_bank (
               id BIGSERIAL PRIMARY KEY,
@@ -3030,6 +3041,34 @@ def _detect_subject_language(subject: str | None) -> str:
     return "uz"
 
 
+def _learning_task_instruction(payload: dict[str, Any], subject: str | None) -> str:
+    """Return a student-facing exercise instruction in the subject language."""
+    kind = str(payload.get("test_type") or payload.get("kind") or "").strip().lower()
+    lang = _detect_subject_language(subject)
+    key = "word_order" if kind in {"word_order", "scrambled_sentence", "listening_order", "rearrange", "sentence_builder"} else kind
+    messages = {
+        "en": {
+            "word_order": "Arrange the words in the correct order.", "matching": "Match the correct pairs.",
+            "gap_fill": "Fill in the blank with the correct answer.", "fill_blank": "Fill in the blank with the correct answer.",
+            "multiple_choice": "Choose the correct answer.", "true_false": "Decide whether the statement is true or false.",
+            "spelling": "Type the word with the correct spelling.", "translation": "Translate the given word.",
+        },
+        "ru": {
+            "word_order": "Расположите слова в правильном порядке.", "matching": "Сопоставьте правильные пары.",
+            "gap_fill": "Заполните пропуск правильным ответом.", "fill_blank": "Заполните пропуск правильным ответом.",
+            "multiple_choice": "Выберите правильный ответ.", "true_false": "Определите, верно утверждение или нет.",
+            "spelling": "Введите слово без ошибок.", "translation": "Переведите данное слово.",
+        },
+        "uz": {
+            "word_order": "So'zlarni to'g'ri tartibda joylashtiring.", "matching": "Mos juftlarni tanlang.",
+            "gap_fill": "Bo'sh joyni to'g'ri javob bilan to'ldiring.", "fill_blank": "Bo'sh joyni to'g'ri javob bilan to'ldiring.",
+            "multiple_choice": "To'g'ri javobni tanlang.", "true_false": "Gap to'g'ri yoki noto'g'ri ekanini belgilang.",
+            "spelling": "So'zni xatosiz yozing.", "translation": "Berilgan so'zni tarjima qiling.",
+        },
+    }
+    return messages[lang].get(key) or str(payload.get("instruction") or "").strip()
+
+
 def _extract_node_questions(payload_obj: Any) -> list[dict]:
     if isinstance(payload_obj, list):
         return [q for q in payload_obj if isinstance(q, dict)]
@@ -4495,7 +4534,7 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
 async def student_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,t.passing_score AS track_passing_score,t.status AS track_status FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
+        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,t.passing_score AS track_passing_score,t.status AS track_status,t.subject AS track_subject FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Lesson not found")
         item=dict(row)
         cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(item["track_id"]),))
@@ -4512,6 +4551,11 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
             item["question_payload"] = {}
         if isinstance(item.get("question_payload"), dict):
             qp = item["question_payload"]
+            qp["subject_language"] = _detect_subject_language(item.get("track_subject"))
+            localized_instruction = _learning_task_instruction(qp, item.get("track_subject"))
+            if localized_instruction:
+                qp["instruction"] = localized_instruction
+                qp["task_instruction"] = localized_instruction
             q_txt = str(qp.get("question") or "").strip()
             p_txt = str(qp.get("passage") or qp.get("passage_template") or "").strip()
             inst = str(qp.get("instruction") or "").strip()
@@ -4964,6 +5008,11 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
             if not payload:
                 continue
             for question in _learning_exam_questions(payload):
+                question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
+                localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
+                if localized_instruction:
+                    question["instruction"] = localized_instruction
+                    question["task_instruction"] = localized_instruction
                 questions.append({
                     **question,
                     "id": len(questions) + 1,
@@ -5319,6 +5368,29 @@ def _collect_week_stats(cur: Any, user_id: int, week_start: str, week_end: str, 
         "learning_path_count": learning_path_total,
         "learning_path_passed": learning_path_passed,
         "learning_path_accuracy_pct": round(learning_path_passed / learning_path_total * 100, 1) if learning_path_total else 0,
+    }
+
+
+def _empty_week_stats() -> dict[str, Any]:
+    """The locked plan must not reveal or pre-populate a generated analysis."""
+    return {
+        "tests": [],
+        "test_count": 0,
+        "total_correct": 0,
+        "total_wrong": 0,
+        "total_skipped": 0,
+        "accuracy_pct": 0,
+        "weak_topics_by_tests": [],
+        "weak_topics_by_mistakes": [],
+        "mistake_sources": [],
+        "sample_mistakes": [],
+        "homework_total": 0,
+        "homework_completed": 0,
+        "homework_completion_pct": 0,
+        "learning_path_attempts": [],
+        "learning_path_count": 0,
+        "learning_path_passed": 0,
+        "learning_path_accuracy_pct": 0,
     }
 
 
@@ -6013,57 +6085,22 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
         row = cur.fetchone()
         if row:
             row_dict = dict(row)
-            # Agar processing holatida uzoq qolib ketgan bo'lsa (masalan server restart bo'lganida), qayta ishga tushiramiz
-            if str(row_dict.get("status") or "") == "processing":
-                upd = row_dict.get("updated_at") or row_dict.get("created_at")
-                is_stale = False
-                if upd:
-                    try:
-                        upd_str = str(upd).replace("Z", "+00:00")
-                        upd_dt = datetime.fromisoformat(upd_str)
-                        if (_now() - upd_dt).total_seconds() > 60:
-                            is_stale = True
-                    except Exception:
-                        is_stale = True
-                if is_stale:
-                    stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
-                    user_name = _student_name(user)
-                    asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
-            return _weekly_payload(row_dict, available_subjects=enrolled_subs, selected_subject=active_sub)
+            payload = _weekly_payload(row_dict, available_subjects=enrolled_subs, selected_subject=active_sub)
+            payload.update({"generation_cost": WEEKLY_AI_PLAN_COST, "generation_locked": True})
+            return payload
 
-        # Collect live stats and auto-trigger generation if not yet generated
-        stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
-        user_name = _student_name(user)
-        try:
-            cur.execute(
-                "INSERT INTO weekly_ai_analyses(user_id, week_start, week_end, subject, status, test_stats_json, homework_stats_json) "
-                "VALUES(?,?,?,?,'processing',?,?) ON CONFLICT(user_id, week_start, subject) DO UPDATE SET status='processing', test_stats_json=excluded.test_stats_json, homework_stats_json=excluded.homework_stats_json, updated_at=?",
-                (uid, week_start, week_end, active_sub, json.dumps(stats), json.dumps({
-                    "total": stats["homework_total"], "completed": stats["homework_completed"],
-                    "completion_pct": stats["homework_completion_pct"],
-                }), _now().isoformat()),
-            )
-            conn.commit()
-            asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
-        except Exception:
-            pass
-
-        lang = _detect_subject_language(active_sub)
-        if lang == "ru":
-            thinking_msg = "Diamondvoy готовит ваш еженедельный анализ..."
-        elif lang == "en":
-            thinking_msg = "Diamondvoy is preparing your weekly analysis..."
-        else:
-            thinking_msg = "Diamondvoy sizning haftalik tahlilingizni tayyorlamoqda..."
+        # A plan is deliberately not generated by simply opening this screen.
+        # It is a paid, student-initiated weekly action.
+        stats = _empty_week_stats()
         return {
-            "exists": True,
+            "exists": False,
             "week_start": week_start,
             "week_end": week_end,
             "subject": active_sub,
             "available_subjects": enrolled_subs,
             "selected_subject": active_sub,
-            "status": "processing",
-            "analysis": thinking_msg,
+            "status": "not_generated",
+            "analysis": "",
             "weak_topics": [],
             "recommendations": [],
             "test_stats": stats,
@@ -6074,6 +6111,9 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
             },
             "practice_questions": [],
             "created_at": None,
+            "generation_cost": WEEKLY_AI_PLAN_COST,
+            "generation_locked": False,
+            "dcoin_balance": get_dcoins(uid),
         }
     finally:
         conn.close()
@@ -6092,11 +6132,35 @@ async def generate_weekly_analysis(subject: str | None = Query(default=None), au
         clean_sub = _normalize_subject_label(subject)
         active_sub = clean_sub if clean_sub and clean_sub in enrolled_subs else enrolled_subs[0]
 
-        stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
         cur.execute("SELECT status FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?", (uid, week_start, active_sub))
         current = cur.fetchone()
         if current and str(dict(current).get("status") or "") in {"processing", "done"}:
-            return {"accepted": True, "success": True, "status": str(dict(current).get("status")), "week_start": week_start, "week_end": week_end, "subject": active_sub}
+            return {"accepted": True, "success": True, "status": str(dict(current).get("status")), "week_start": week_start, "week_end": week_end, "subject": active_sub, "generation_cost": 0}
+
+        # This row is the server-side, once-per-week lock.  It is created
+        # before charging so double taps and parallel client requests cannot
+        # result in duplicate AI jobs or duplicate charges.
+        try:
+            cur.execute(
+                "INSERT INTO weekly_ai_plan_purchases(user_id,week_start,subject,cost,status,updated_at) VALUES(?,?,?,?,?,?)",
+                (uid, week_start, active_sub, WEEKLY_AI_PLAN_COST, "payment_pending", _now().isoformat()),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            cur.execute("SELECT subject,status FROM weekly_ai_plan_purchases WHERE user_id=? AND week_start=?", (uid, week_start))
+            purchase = cur.fetchone()
+            if purchase:
+                saved = dict(purchase)
+                return {"accepted": True, "success": True, "status": str(saved.get("status") or "processing"), "week_start": week_start, "week_end": week_end, "subject": str(saved.get("subject") or active_sub), "generation_cost": 0, "generation_locked": True}
+            raise
+
+        if not try_consume_dcoins(uid, WEEKLY_AI_PLAN_COST, active_sub, change_type=f"weekly_ai_plan:{week_start}"):
+            cur.execute("DELETE FROM weekly_ai_plan_purchases WHERE user_id=? AND week_start=?", (uid, week_start))
+            conn.commit()
+            raise HTTPException(status_code=402, detail=f"Bu reja uchun {WEEKLY_AI_PLAN_COST} D'coin kerak")
+
+        stats = _collect_week_stats(cur, uid, week_start, week_end, subject=active_sub)
 
         # Mark as processing
         try:
@@ -6108,6 +6172,7 @@ async def generate_weekly_analysis(subject: str | None = Query(default=None), au
                     "completion_pct": stats["homework_completion_pct"],
                 }), _now().isoformat()),
             )
+            cur.execute("UPDATE weekly_ai_plan_purchases SET status='processing', updated_at=? WHERE user_id=? AND week_start=?", (_now().isoformat(), uid, week_start))
         except Exception:
             cur.execute("DELETE FROM weekly_ai_analyses WHERE user_id=? AND week_start=? AND subject=?", (uid, week_start, active_sub))
             cur.execute(
@@ -6121,7 +6186,7 @@ async def generate_weekly_analysis(subject: str | None = Query(default=None), au
     finally:
         conn.close()
     asyncio.create_task(_finish_weekly_analysis(user_id=uid, user_name=user_name, week_start=week_start, stats=stats, subject=active_sub))
-    return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end, "subject": active_sub}
+    return {"accepted": True, "success": True, "status": "processing", "week_start": week_start, "week_end": week_end, "subject": active_sub, "generation_cost": WEEKLY_AI_PLAN_COST, "dcoin_balance": get_dcoins(uid)}
 
 
 @router.get("/student/personal-plan/analysis-history")

@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useRef, useState, useCallback } from "react";
+import { FormEvent, useEffect, useState, useCallback } from "react";
 import { useWebT } from "./web-i18n";
 import { TestCompletionActions } from "./test-completion-actions";
 
@@ -25,7 +25,6 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
   const [askText, setAskText] = useState("");
   const [askReply, setAskReply] = useState("");
   const [asking, setAsking] = useState(false);
-  const autoStarted = useRef(false);
 
   const isRussian = selectedSubject.toLowerCase().includes("rus");
 
@@ -57,6 +56,8 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
 
   const generate = async () => {
     if (generating) return;
+    const cost = Number(analysis?.generation_cost || 1000);
+    if (!window.confirm(`Diamondvoy sizning xatolaringiz asosida haftalik reja tuzadi. Narxi: ${cost} D'coin. Davom etasizmi?`)) return;
     setGenerating(true);
     try {
       const next = await apiFetch(`/student/personal-plan/weekly-analysis/generate?subject=${encodeURIComponent(selectedSubject)}`, { method: "POST" });
@@ -68,11 +69,6 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
 
   useEffect(() => {
     if (!analysis || analysis.status === "done") return;
-    if (analysis.status === "not_generated" && !autoStarted.current) {
-      autoStarted.current = true;
-      generate().catch(() => null);
-      return;
-    }
     if (analysis.status !== "processing") return;
     const timer = window.setInterval(() => load(selectedSubject).catch(() => null), 3500);
     return () => window.clearInterval(timer);
@@ -134,7 +130,7 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
   const shown = selectedHistory || analysis;
   const stats = shown?.test_stats || {};
   const homework = shown?.homework_stats || {};
-  const thinking = loading || generating || analysis?.status === "processing" || analysis?.status === "not_generated";
+  const thinking = loading || generating || analysis?.status === "processing";
 
   // Prompts adapted strictly to subject language
   const subLower = (selectedSubject || "").toLowerCase();
@@ -208,6 +204,22 @@ export function WeeklyStudyPlan({ apiFetch }: { apiFetch: (path: string, options
                 ? "Анализируются результаты вашей недели. Вы можете закрыть страницу — результат сохранится."
                 : tt("plan.weekly.thinkingHint", "Haftalik natijalaringiz tahlil qilinmoqda. Sahifani yopishingiz mumkin — natija tayyor holatda saqlanadi.")}
             </p>
+          </div>
+        </section>
+      ) : null}
+
+      {/* Locked state: creating a plan is always a deliberate student action. */}
+      {shown?.status === "not_generated" ? (
+        <section className="rounded-3xl border-2 border-b-4 border-amber-300 bg-amber-50 p-6 dark:border-amber-900 dark:bg-amber-950/30 shadow-sm">
+          <div className="flex items-start gap-4">
+            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-amber-400/20 text-3xl">🔒</span>
+            <div className="flex-1">
+              <h3 className="font-black text-navy-900 dark:text-white">{isRussian ? "Ваш недельный AI-план заблокирован" : "Haftalik AI reja qulflangan"}</h3>
+              <p className="mt-1 text-sm text-ink-600 dark:text-navy-200">{isRussian ? "Создаётся только по вашему нажатию, один раз в неделю." : "Reja faqat siz tugmani bossangiz yaratiladi va haftasiga bir marta ishlatiladi."}</p>
+              <button onClick={generate} disabled={generating} className="mt-4 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] px-5 py-3 text-xs font-black uppercase tracking-wider text-white disabled:opacity-40">
+                💎 {isRussian ? "Создать за" : "1000 D'coin evaziga yaratish"}{isRussian ? ` ${Number(shown.generation_cost || 1000)} D'coin` : ""}
+              </button>
+            </div>
           </div>
         </section>
       ) : null}

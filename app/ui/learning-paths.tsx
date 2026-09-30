@@ -2639,10 +2639,10 @@ function LessonPlayerModal({
                   <span className="text-2xl shrink-0 mt-0.5">🎯</span>
                   <div className="space-y-1">
                     <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
-                      {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
+                      {question.subject_language === "ru" ? "Условие задания" : question.subject_language === "en" ? "Task Instruction" : "Topshiriq sharti"}
                     </span>
                     <p className="whitespace-pre-line text-sm sm:text-base font-bold leading-snug">
-                      {getTaskInstructionWithQuestion(question, getCurrentLang())}
+                      {question.task_instruction || question.instruction || getTaskInstructionWithQuestion(question, getCurrentLang())}
                     </p>
                   </div>
                 </div>
@@ -3328,7 +3328,7 @@ function LessonPlayerModal({
                       ) : null}
                       {result.correct_answer ? (
                         <p className="text-xs font-bold text-slate-900 dark:text-white">
-                          <span className="text-slate-500 dark:text-slate-400">To'g'ri / Namunaviy variant: </span>
+                          <span className="text-slate-500 dark:text-slate-400">{["word_order", "listening_order", "scrambled_sentence"].includes(String(question?.test_type || "")) ? "Ishlatilishi kerak bo'lgan so'zlar: " : "To'g'ri / Namunaviy variant: "}</span>
                           {String(result.correct_answer)}
                         </p>
                       ) : null}
@@ -4152,10 +4152,10 @@ function FinalExamPlayerModal({
                   <span className="text-2xl shrink-0 mt-0.5">🎯</span>
                   <div className="space-y-1">
                     <span className="inline-block rounded-md bg-amber-200/80 px-2 py-0.5 text-[11px] font-black uppercase tracking-wider text-amber-900 dark:bg-amber-900/60 dark:text-amber-200">
-                      {getCurrentLang() === "ru" ? "Условие задания" : getCurrentLang() === "en" ? "Task Instruction" : "Topshiriq sharti"}
+                      {currentQuestion.subject_language === "ru" ? "Условие задания" : currentQuestion.subject_language === "en" ? "Task Instruction" : "Topshiriq sharti"}
                     </span>
                     <p className="whitespace-pre-line text-sm sm:text-base font-bold leading-snug">
-                      {getTaskInstructionWithQuestion(currentQuestion, getCurrentLang())}
+                      {currentQuestion.task_instruction || currentQuestion.instruction || getTaskInstructionWithQuestion(currentQuestion, getCurrentLang())}
                     </p>
                   </div>
                 </div>
@@ -4742,7 +4742,7 @@ function FinalExamPlayerModal({
                       ) : null}
                       {result.correct_answer ? (
                         <p className="text-xs font-bold text-slate-900 dark:text-white">
-                          <span className="text-slate-500 dark:text-slate-400">To'g'ri / Namunaviy variant: </span>
+                          <span className="text-slate-500 dark:text-slate-400">{["word_order", "listening_order", "scrambled_sentence"].includes(String(currentQuestion?.test_type || "")) ? "Ishlatilishi kerak bo'lgan so'zlar: " : "To'g'ri / Namunaviy variant: "}</span>
                           {String(result.correct_answer)}
                         </p>
                       ) : null}

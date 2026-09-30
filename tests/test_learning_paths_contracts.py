@@ -174,6 +174,21 @@ def test_learning_path_interactive_prompts_hide_the_answer_bank_and_validate_tok
     assert matched["question"] == "Mos juftlarni toping."
 
 
+def test_learning_path_task_instruction_uses_the_subject_language():
+    question = {"test_type": "scrambled_sentence"}
+    assert personalization._learning_task_instruction(question, "English") == "Arrange the words in the correct order."
+    assert personalization._learning_task_instruction(question, "Russian") == "Расположите слова в правильном порядке."
+    assert personalization._learning_task_instruction(question, "Matematika") == "So'zlarni to'g'ri tartibda joylashtiring."
+
+
+def test_locked_weekly_plan_starts_with_empty_indicators():
+    stats = personalization._empty_week_stats()
+    assert stats["test_count"] == 0
+    assert stats["accuracy_pct"] == 0
+    assert stats["homework_total"] == 0
+    assert stats["weak_topics_by_tests"] == []
+
+
 def test_learning_path_cloze_keeps_each_alternative_as_a_separate_value():
     result = personalization._learning_library_question({
         "kind": "passage_cloze",

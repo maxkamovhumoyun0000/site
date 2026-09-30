@@ -16939,30 +16939,13 @@ def _auto_mark_overdue_homeworks() -> None:
 
 
 async def _weekly_personal_plan_analyzer_worker() -> None:
-    """Har yakshanba soat 12:00 PM dan 1:00 PM gacha (Toshkent vaqti) barcha o'quvchilar
-    uchun haftalik Shaxsiy O'quv Rejasi va Diamondvoy AI tahlilini avtomatik to'liq
-    generatsiya qilib, weekly_ai_analyses jadvaliga saqlaydi.
+    """Retained as a harmless task for old startup wiring.
+
+    Weekly plans are paid and may only be created by the student from their
+    own screen, so this worker must never generate plans in the background.
     """
-    await asyncio.sleep(max(5, int(os.getenv("PERSONAL_PLAN_START_DELAY_SEC", "15") or "15")))
-    dispatch_dow = 6  # Yakshanba (Sunday)
-    dispatch_hour = 12  # 12:00 PM Toshkent time
-    last_run_day = ""
     while True:
-        try:
-            now_local = datetime.now(TASHKENT_TZ)
-            today_str = now_local.strftime("%Y-%m-%d")
-            if now_local.weekday() == dispatch_dow and 12 <= now_local.hour < 13 and last_run_day != today_str:
-                logger.info("weekly_personal_plan_analyzer_worker: starting Sunday 12:00 PM - 1:00 PM batch...")
-                try:
-                    from backend.personalization import generate_weekly_analysis_for_all_students
-                except ImportError:
-                    from personalization import generate_weekly_analysis_for_all_students
-                res = await generate_weekly_analysis_for_all_students()
-                last_run_day = today_str
-                logger.info("weekly_personal_plan_analyzer_worker completed successfully: %s", res)
-        except Exception:
-            logger.exception("weekly_personal_plan_analyzer_worker iteration failed")
-        await asyncio.sleep(60)
+        await asyncio.sleep(24 * 60 * 60)
 
 
 async def _weekly_review_worker() -> None:
@@ -34483,15 +34466,10 @@ async def teacher_support_requests(authorization: str | None = Header(default=No
 
 @app.post("/admin/personal-plan/trigger-weekly-analysis")
 async def admin_trigger_weekly_analysis(authorization: str | None = Header(default=None)):
-    """Admin endpoint to manually run the Sunday weekly analysis batch for all students."""
+    """Weekly plans may only be purchased and requested by their student."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin", "superadmin"})
-    try:
-        from backend.personalization import generate_weekly_analysis_for_all_students
-    except ImportError:
-        from personalization import generate_weekly_analysis_for_all_students
-    res = await generate_weekly_analysis_for_all_students()
-    return {"success": True, "result": res}
+    raise HTTPException(status_code=403, detail="Haftalik AI reja faqat o'quvchining o'zi tomonidan yaratiladi")
 
 
 @app.post("/teacher/support-requests/{booking_id}/status")
