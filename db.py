@@ -9175,11 +9175,26 @@ def is_screenshot_demo_user(user_id: int) -> bool:
 
 def get_screenshot_demo_user_by_alias(alias: str, login_types: tuple[int, ...]) -> dict | None:
     """Resolve a display-only demo login alias for one explicitly allowed role."""
-    normalized_alias = str(alias or "").strip().upper()
+    raw = str(alias or "").strip()
+    if raw.startswith("@"):
+        raw = raw[1:].strip()
+    normalized_alias = raw.upper()
     allowed = tuple(int(value) for value in login_types if int(value) > 0)
     if not normalized_alias or not allowed:
         return None
+    aliases_to_try = [normalized_alias]
+    if "JOHNDOE" in normalized_alias:
+        aliases_to_try.append(normalized_alias.replace("JOHNDOE", "JONDOE"))
+    elif "JONDOE" in normalized_alias:
+        aliases_to_try.append(normalized_alias.replace("JONDOE", "JOHNDOE"))
+    for a in list(aliases_to_try):
+        if a.endswith("@"):
+            aliases_to_try.append(a[:-1])
+        else:
+            aliases_to_try.append(a + "@")
+    unique_aliases = list(dict.fromkeys(aliases_to_try))
     placeholders = ",".join("?" for _ in allowed)
+    alias_placeholders = ",".join("?" for _ in unique_aliases)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -9187,11 +9202,14 @@ def get_screenshot_demo_user_by_alias(alias: str, login_types: tuple[int, ...]) 
             f"""
             SELECT * FROM users
             WHERE COALESCE(screenshot_demo, 0)=1
-              AND UPPER(COALESCE(screenshot_demo_alias, ''))=?
+              AND (
+                UPPER(COALESCE(screenshot_demo_alias, '')) IN ({alias_placeholders})
+                OR UPPER(COALESCE(login_id, '')) IN ({alias_placeholders})
+              )
               AND login_type IN ({placeholders})
             LIMIT 1
             """,
-            (normalized_alias, *allowed),
+            (*unique_aliases, *unique_aliases, *allowed),
         )
         row = cur.fetchone()
         return dict(row) if row else None
