@@ -86,6 +86,17 @@ ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root
   'cd /root/diamond-site && python3 -m py_compile admin_bot.py student_bot.py teacher_bot.py support_lesson.py attendance_manager.py payment.py db.py backend/main.py bot_runtime.py'
 ```
 
+## Eski Frontend Build Cache'ini Tozalash
+
+Frontend buildidan **oldin** faqat Next.js'ning `/root/diamond-site/.next/`
+ichidagi eski build artefaktlari va cache'i tozalanadi. Bu buyruq `.env`,
+database, `data/`, upload/media va `node_modules/`ga tegmaydi:
+
+```bash
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+  'cd /root/diamond-site && if [ -d .next ]; then find .next -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi && echo next-cache:cleared'
+```
+
 Frontend build:
 
 ```bash

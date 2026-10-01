@@ -783,6 +783,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def production_https_guard(request: Request, call_next):
+    """Reject plaintext external traffic while preserving loopback proxy calls.
+
+    Nginx/Next may terminate TLS before forwarding to this process, in which
+    case it must supply ``X-Forwarded-Proto: https``. Localhost is explicitly
+    allowed for the trusted reverse-proxy/service path and health probes.
+    """
+    production = os.getenv("DIAMOND_ENV", "").strip().lower() == "production"
+    enforce = os.getenv("ENFORCE_HTTPS", "true" if production else "false").strip().lower() in {"1", "true", "yes", "on"}
+    client_host = str((request.client.host if request.client else "") or "")
+    loopback = client_host in {"127.0.0.1", "::1", "localhost"}
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    is_secure = request.url.scheme == "https" or forwarded_proto == "https"
+    if enforce and not loopback and not is_secure:
+        return JSONResponse(status_code=400, content={"detail": "HTTPS is required"})
+    response = await call_next(request)
+    if is_secure or loopback:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
 GRAMMAR_TOPIC_ATTEMPT_LIMIT = 1
 ARTICLE_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "article_uploads"
 ARTICLE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -39353,6 +39376,42 @@ def _ensure_payment_automation_schema() -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS payment_receipts (
+            id BIGSERIAL PRIMARY KEY,
+            receipt_id TEXT NOT NULL UNIQUE,
+            payment_transaction_id BIGINT NOT NULL UNIQUE,
+            user_id BIGINT NOT NULL,
+            group_id BIGINT NOT NULL,
+            branch_admin_id BIGINT,
+            amount DOUBLE PRECISION NOT NULL,
+            payment_method TEXT NOT NULL,
+            payment_type TEXT NOT NULL,
+            confirmed_by_admin_id BIGINT,
+            snapshot_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            confirmed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS payment_audit_log (
+            id BIGSERIAL PRIMARY KEY,
+            event_type TEXT NOT NULL,
+            actor_admin_id BIGINT,
+            payment_transaction_id BIGINT,
+            receipt_id TEXT,
+            user_id BIGINT,
+            group_id BIGINT,
+            branch_admin_id BIGINT,
+            result TEXT NOT NULL DEFAULT 'success',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_payment_receipts_transaction ON payment_receipts(payment_transaction_id)",
+        "CREATE INDEX IF NOT EXISTS idx_payment_receipts_group_created ON payment_receipts(group_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_payment_audit_receipt ON payment_audit_log(receipt_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_payment_audit_transaction ON payment_audit_log(payment_transaction_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_payment_reminder_dispatch_day ON payment_reminder_dispatch_log(dispatch_day, channel, status)",
         "CREATE INDEX IF NOT EXISTS idx_payment_reminder_dispatch_user ON payment_reminder_dispatch_log(user_id, created_at DESC)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_reminder_dispatch_dedupe ON payment_reminder_dispatch_log(user_id, dispatch_day, channel, trigger_source, reminder_type)",
@@ -39450,6 +39509,103 @@ def _ensure_payment_automation_schema() -> None:
             except Exception:
                 pass
     conn.close()
+
+
+def _receipt_branch_snapshot(group_row: dict[str, Any]) -> tuple[int | None, str]:
+    """Resolve branch from the existing group ownership relation, never UI text."""
+    owner_admin_id = int(group_row.get("owner_admin_id") or 0)
+    if owner_admin_id > 0:
+        for index, limited_id in enumerate(LIMITED_ADMIN_CHAT_IDS, start=1):
+            if int(limited_id) == owner_admin_id:
+                return owner_admin_id, f"{index}-filial"
+    return (owner_admin_id or None), "Diamond Education"
+
+
+def _payment_audit_event(cur: Any, *, event_type: str, actor_admin_id: int | None,
+                         payment_transaction_id: int | None = None, receipt_id: str | None = None,
+                         user_id: int | None = None, group_id: int | None = None,
+                         branch_admin_id: int | None = None, result: str = "success") -> None:
+    """Append-only audit record. No client endpoint can update or delete it."""
+    cur.execute(
+        """INSERT INTO payment_audit_log(event_type, actor_admin_id, payment_transaction_id, receipt_id,
+           user_id, group_id, branch_admin_id, result, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+        (str(event_type), int(actor_admin_id) if actor_admin_id else None,
+         int(payment_transaction_id) if payment_transaction_id else None, str(receipt_id) if receipt_id else None,
+         int(user_id) if user_id else None, int(group_id) if group_id else None,
+         int(branch_admin_id) if branch_admin_id else None, str(result)),
+    )
+
+
+def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
+    cur.execute(
+        """SELECT tx.*, TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
+           g.name AS group_name, g.subject AS subject_name, g.course_title, g.owner_admin_id AS branch_admin_id,
+           TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
+           FROM payment_transactions tx JOIN users u ON u.id=tx.user_id
+           LEFT JOIN groups g ON g.id=tx.group_id LEFT JOIN users t ON t.id=g.teacher_id
+           WHERE tx.id=? LIMIT 1""",
+        (int(transaction_id),),
+    )
+    tx = dict(cur.fetchone() or {})
+    if not tx:
+        return None, None
+    branch_admin_id, branch_name = _receipt_branch_snapshot(tx)
+    snapshot = {
+        "brand": "DIAMOND EDUCATION",
+        "student_name": str(tx.get("student_name") or "-").strip() or "-",
+        "group_name": str(tx.get("group_name") or f"Group #{int(tx.get('group_id') or 0)}").strip(),
+        "subject_name": str(tx.get("subject_name") or tx.get("course_title") or "-").strip() or "-",
+        "teachers": [str(tx.get("teacher_name") or "-").strip() or "-"],
+        "amount": round(float(tx.get("amount") or 0.0), 2),
+        "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
+        "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
+        "branch_name": branch_name,
+        "confirmed_by_name": str(tx.get("confirmed_by_admin_name") or "Diamond Admin").strip() or "Diamond Admin",
+        "confirmed_at": str(tx.get("created_at") or ""),
+        "payment_id": f"PAY-{int(tx.get('id') or 0)}",
+        "group_id": int(tx.get("group_id") or 0), "user_id": int(tx.get("user_id") or 0),
+        "branch_admin_id": branch_admin_id,
+    }
+    return tx, snapshot
+
+
+def _get_or_create_payment_receipt(cur: Any, transaction_id: int, *, actor_admin_id: int | None = None) -> dict[str, Any] | None:
+    """Create exactly one immutable receipt per confirmed transaction."""
+    cur.execute("SELECT * FROM payment_receipts WHERE payment_transaction_id=? LIMIT 1", (int(transaction_id),))
+    existing = dict(cur.fetchone() or {})
+    if existing:
+        existing["snapshot"] = _safe_json_object(existing.get("snapshot_json"))
+        return existing
+    tx, snapshot = _receipt_snapshot_from_transaction(cur, int(transaction_id))
+    if not tx or not snapshot:
+        return None
+    receipt_id = f"PAY-{int(transaction_id)}-01"
+    cur.execute(
+        """INSERT INTO payment_receipts(receipt_id, payment_transaction_id, user_id, group_id, branch_admin_id,
+           amount, payment_method, payment_type, confirmed_by_admin_id, snapshot_json, status, confirmed_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(payment_transaction_id) DO NOTHING""",
+        (receipt_id, int(transaction_id), int(tx.get("user_id") or 0), int(tx.get("group_id") or 0),
+         snapshot.get("branch_admin_id"), float(snapshot["amount"]), snapshot["payment_method"], snapshot["payment_type"],
+         int(tx.get("confirmed_by_admin_id") or 0) or None,
+         json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), str(tx.get("created_at") or "") or None),
+    )
+    if int(getattr(cur, "rowcount", 0) or 0) > 0:
+        _payment_audit_event(cur, event_type="RECEIPT_CREATED", actor_admin_id=actor_admin_id or int(tx.get("confirmed_by_admin_id") or 0),
+            payment_transaction_id=int(transaction_id), receipt_id=receipt_id, user_id=int(tx.get("user_id") or 0),
+            group_id=int(tx.get("group_id") or 0), branch_admin_id=snapshot.get("branch_admin_id"))
+    cur.execute("SELECT * FROM payment_receipts WHERE payment_transaction_id=? LIMIT 1", (int(transaction_id),))
+    row = dict(cur.fetchone() or {})
+    row["snapshot"] = _safe_json_object(row.get("snapshot_json"))
+    return row
+
+
+def _receipt_public_payload(receipt: dict[str, Any]) -> dict[str, Any]:
+    return {"receipt_id": str(receipt.get("receipt_id") or ""),
+            "payment_transaction_id": int(receipt.get("payment_transaction_id") or 0),
+            "status": str(receipt.get("status") or "confirmed"), "created_at": str(receipt.get("created_at") or ""),
+            "snapshot": dict(receipt.get("snapshot") or _safe_json_object(receipt.get("snapshot_json")))}
 
 
 def _payment_ym_now() -> str:
@@ -43388,6 +43544,160 @@ async def admin_payments_transactions(
     }
 
 
+def _receipt_authorized_for_admin(receipt: dict[str, Any], admin_ref: int) -> bool:
+    group = _safe_call(lambda: get_group(int(receipt.get("group_id") or 0)), None)
+    if group:
+        return _can_manage_group(int(admin_ref), group)
+    # Historical receipts remain readable by a general admin. A limited admin
+    # can only reach a deleted group's receipt if its stored owner relation is
+    # still in their existing visibility scope.
+    return _is_general_admin_scope(int(admin_ref)) or _limited_admin_owner_visible(
+        int(admin_ref), receipt.get("branch_admin_id")
+    )
+
+
+def _load_receipt_for_admin(receipt_id: str, user: dict[str, Any]) -> tuple[Any, Any, dict[str, Any], int]:
+    _ensure_payment_automation_schema()
+    normalized = str(receipt_id or "").strip().upper()
+    if not re.fullmatch(r"PAY-\d+-\d{2}", normalized):
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    admin_ref = _admin_ref_id(user)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM payment_receipts WHERE receipt_id=? LIMIT 1", (normalized,))
+    receipt = dict(cur.fetchone() or {})
+    if not receipt:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Receipt not found")
+    if not _receipt_authorized_for_admin(receipt, admin_ref):
+        conn.close()
+        raise HTTPException(status_code=403, detail="Permission denied")
+    receipt["snapshot"] = _safe_json_object(receipt.get("snapshot_json"))
+    return conn, cur, receipt, admin_ref
+
+
+@app.get("/admin/payments/transactions/{transaction_id}/receipt")
+async def admin_payment_transaction_receipt(
+    transaction_id: int,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    _ensure_payment_automation_schema()
+    admin_ref = _admin_ref_id(user)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT group_id FROM payment_transactions WHERE id=? LIMIT 1", (int(transaction_id),))
+        tx = dict(cur.fetchone() or {})
+        group = _safe_call(lambda: get_group(int(tx.get("group_id") or 0)), None)
+        if not tx:
+            raise HTTPException(status_code=404, detail="Payment transaction not found")
+        if not _can_manage_group(admin_ref, group):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        receipt = _get_or_create_payment_receipt(cur, int(transaction_id), actor_admin_id=int(user.get("id") or 0))
+        if not receipt:
+            raise HTTPException(status_code=404, detail="Receipt not found")
+        _payment_audit_event(cur, event_type="RECEIPT_VIEWED", actor_admin_id=int(user.get("id") or 0),
+            payment_transaction_id=int(transaction_id), receipt_id=str(receipt.get("receipt_id") or ""),
+            user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
+            branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
+        conn.commit()
+        return _receipt_public_payload(receipt)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.get("/admin/receipts/{receipt_id}")
+async def admin_receipt_detail(receipt_id: str, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_receipt_for_admin(receipt_id, user)
+    try:
+        _payment_audit_event(cur, event_type="RECEIPT_VIEWED", actor_admin_id=int(user.get("id") or 0),
+            payment_transaction_id=int(receipt.get("payment_transaction_id") or 0), receipt_id=str(receipt.get("receipt_id") or ""),
+            user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
+            branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
+        conn.commit()
+        return _receipt_public_payload(receipt)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
+    """Render server-side from the immutable snapshot, never client fields."""
+    try:
+        import fitz  # PyMuPDF is already a production dependency.
+    except Exception as exc:  # pragma: no cover - deployment dependency guard
+        raise HTTPException(status_code=503, detail="Receipt PDF service is unavailable") from exc
+    snapshot = dict(receipt.get("snapshot") or {})
+    method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
+    payment_type = "Oldindan to'lov" if snapshot.get("payment_type") == "advance" else "Oylik to'lov"
+    teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
+    lines = [
+        str(snapshot.get("brand") or "DIAMOND EDUCATION"), str(snapshot.get("branch_name") or ""), "",
+        "TO'LOV CHEKI", "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
+        f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
+        f"O'qituvchi: {teachers}", "", f"TO'LOV: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
+        f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
+        f"Payment ID: {snapshot.get('payment_id') or '-'}", f"Receipt ID: {receipt.get('receipt_id') or '-'}", "",
+        "TO'LOV TASDIQLANDI",
+    ]
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=560)
+    page.insert_textbox(fitz.Rect(24, 24, 276, 536), "\n".join(lines), fontsize=10, fontname="helv", align=1)
+    data = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    return data
+
+
+@app.get("/admin/receipts/{receipt_id}/pdf")
+async def admin_receipt_pdf(receipt_id: str, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_receipt_for_admin(receipt_id, user)
+    try:
+        pdf = _receipt_pdf_bytes(receipt)
+        _payment_audit_event(cur, event_type="RECEIPT_PDF_GENERATED", actor_admin_id=int(user.get("id") or 0),
+            payment_transaction_id=int(receipt.get("payment_transaction_id") or 0), receipt_id=str(receipt.get("receipt_id") or ""),
+            user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
+            branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
+        conn.commit()
+        filename = f"receipt-{str(receipt.get('receipt_id') or 'payment')}.pdf"
+        return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.post("/admin/receipts/{receipt_id}/print")
+async def admin_receipt_printed(receipt_id: str, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_receipt_for_admin(receipt_id, user)
+    try:
+        _payment_audit_event(cur, event_type="RECEIPT_PRINT_REQUESTED", actor_admin_id=int(user.get("id") or 0),
+            payment_transaction_id=int(receipt.get("payment_transaction_id") or 0), receipt_id=str(receipt.get("receipt_id") or ""),
+            user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
+            branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
+        conn.commit()
+        return {"ok": True}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _payment_export_scope_filters(
     *,
     payload: PaymentExportRequest | None,
@@ -45193,6 +45503,19 @@ async def admin_payments_student_confirm(
             """,
             (status, float(remaining), float(overpayment), tx_id),
         )
+        branch_admin_id, _ = _receipt_branch_snapshot(group)
+        _payment_audit_event(
+            cur,
+            event_type="PAYMENT_CONFIRMED",
+            actor_admin_id=int(user.get("id") or 0),
+            payment_transaction_id=int(tx_id),
+            user_id=int(user_id),
+            group_id=int(payload.group_id),
+            branch_admin_id=branch_admin_id,
+        )
+        # Receipt creation is part of the same DB transaction as payment
+        # confirmation. The unique transaction constraint makes retries safe.
+        receipt = _get_or_create_payment_receipt(cur, int(tx_id), actor_admin_id=int(user.get("id") or 0))
         is_accountless = int(target.get("login_type") or 0) == 6
         # Overdue penalty (once per month/group, only when confirming a payment for overdue obligation).
         if not is_accountless and status in {PAYMENT_STATUS_PARTIAL, PAYMENT_STATUS_PAID, PAYMENT_STATUS_OVERPAY} and int(updated_obligation.get("overdue") or 0) == 1:
@@ -45359,6 +45682,7 @@ async def admin_payments_student_confirm(
     return {
         "message": "Payment confirmed",
         "transaction_id": int(tx_id),
+        "receipt": _receipt_public_payload(receipt) if receipt else None,
         "status": str(status),
         "final_amount": float(final_amount),
         "paid_amount": float(paid_total_amount),

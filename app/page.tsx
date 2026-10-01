@@ -126,6 +126,29 @@ type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "telegram-u
 type GenericRow = Record<string, any>;
 const FACEID_GATE_ENABLED = false;
 
+function escapeReceiptHtml(value: unknown): string {
+  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
+  }[char] || char));
+}
+
+function receiptPrintHtml(receipt: GenericRow): string {
+  const snapshot = (receipt.snapshot || {}) as GenericRow;
+  const amount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0));
+  const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
+  const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
+  const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+  const rows: Array<[string, unknown]> = [
+    ["O'quvchi", snapshot.student_name], ["Guruh", snapshot.group_name], ["Fan / Kurs", snapshot.subject_name],
+    ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
+    ["Tasdiqladi", snapshot.confirmed_by_name], ["Sana", snapshot.confirmed_at],
+    ["Payment ID", snapshot.payment_id], ["Receipt ID", receipt.receipt_id],
+  ];
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
+    @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(snapshot.brand || "DIAMOND EDUCATION")}</div><div class="center">${escapeReceiptHtml(snapshot.branch_name || "")}</div><hr class="rule"><div class="center"><b>TO'LOV CHEKI</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>TO'LOV:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">TO'LOV TASDIQLANDI</div></main></body></html>`;
+}
+
 type ApiUser = {
   id: string | number;
   full_name?: string;
@@ -16037,6 +16060,8 @@ function AdminSection({
   const [paymentsGroupsFallback, setPaymentsGroupsFallback] = useState<GenericRow[] | null>(null);
   const [isUsersMobileLayout, setIsUsersMobileLayout] = useState(false);
   const [paymentsTxRows, setPaymentsTxRows] = useState<GenericRow[]>([]);
+  const [receiptPreview, setReceiptPreview] = useState<GenericRow | null>(null);
+  const [receiptBusy, setReceiptBusy] = useState(false);
   const [paymentsMonthFilter, setPaymentsMonthFilter] = useState(new Date().toISOString().slice(0, 7));
   const [paymentsDateFrom, setPaymentsDateFrom] = useState("");
   const [paymentsDateTo, setPaymentsDateTo] = useState("");
@@ -16728,6 +16753,68 @@ function AdminSection({
       if (controller.signal.aborted || requestId !== paymentsTransactionsReqRef.current) return;
       const normalized = normalizeNetworkError(error);
       setPaymentsGeneralError(String(normalized.message || "Payments transaction list could not be loaded"));
+    }
+  }
+
+  async function openPaymentReceipt(transactionId: number) {
+    const token = localStorage.getItem("diamond_token");
+    if (!token || transactionId <= 0) return;
+    setReceiptBusy(true);
+    try {
+      const receipt = await requestJson<GenericRow>(`/admin/payments/transactions/${transactionId}/receipt`, { token, timeoutMs: 30000 });
+      setReceiptPreview(receipt);
+    } catch (error) {
+      const normalized = normalizeNetworkError(error);
+      setPaymentsGeneralError(String(normalized.message || "Chekni ochib bo'lmadi"));
+    } finally {
+      setReceiptBusy(false);
+    }
+  }
+
+  async function downloadReceiptPdf(receipt: GenericRow) {
+    const token = localStorage.getItem("diamond_token");
+    const receiptId = String(receipt.receipt_id || "").trim();
+    if (!token || !receiptId) return;
+    setReceiptBusy(true);
+    try {
+      const response = await fetch(`${API_BASE}/admin/receipts/${encodeURIComponent(receiptId)}/pdf`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) throw new Error("PDF yuklab bo'lmadi");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `receipt-${receiptId}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      const normalized = normalizeNetworkError(error);
+      setPaymentsGeneralError(String(normalized.message || "PDF yuklab bo'lmadi"));
+    } finally {
+      setReceiptBusy(false);
+    }
+  }
+
+  async function printReceipt(receipt: GenericRow) {
+    const token = localStorage.getItem("diamond_token");
+    const receiptId = String(receipt.receipt_id || "").trim();
+    if (!token || !receiptId) return;
+    try {
+      await requestJson(`/admin/receipts/${encodeURIComponent(receiptId)}/print`, { method: "POST", token, timeoutMs: 15000 });
+      const popup = window.open("", "_blank");
+      if (!popup) throw new Error("Print oynasi bloklangan");
+      popup.opener = null;
+      popup.document.open();
+      popup.document.write(receiptPrintHtml(receipt));
+      popup.document.close();
+      popup.focus();
+      window.setTimeout(() => popup.print(), 150);
+    } catch (error) {
+      const normalized = normalizeNetworkError(error);
+      setPaymentsGeneralError(String(normalized.message || "Chekni chop etib bo'lmadi"));
     }
   }
 
@@ -20001,6 +20088,48 @@ function AdminSection({
               </div>
             </PaymentModalPortal>
           ) : null}
+        <PaymentModalPortal
+          open={Boolean(receiptPreview)}
+          onClose={() => setReceiptPreview(null)}
+          ariaLabel="To'lov cheki"
+        >
+          <div className="overlay-modal-backdrop" onClick={() => !receiptBusy && setReceiptPreview(null)}>
+            <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
+              <div className="row-between gap-3">
+                <div>
+                  <h3>DIAMOND EDUCATION</h3>
+                  <p className="text-sm text-ink-500 dark:text-navy-300">TO&apos;LOV CHEKI</p>
+                </div>
+                <button className="admin-modal-close" type="button" aria-label="Yopish" onClick={() => setReceiptPreview(null)}>×</button>
+              </div>
+              {receiptPreview ? (() => {
+                const snapshot = (receiptPreview.snapshot || {}) as GenericRow;
+                const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
+                const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+                const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
+                return <div className="mt-4 rounded-xl border border-line dark:border-white/10 p-4 text-sm space-y-2">
+                  <div className="text-center font-black text-base">{snapshot.branch_name || "Diamond Education"}</div>
+                  <hr />
+                  <p><b>O&apos;quvchi:</b> {snapshot.student_name || "-"}</p>
+                  <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
+                  <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
+                  <p><b>O&apos;qituvchi:</b> {teachers}</p>
+                  <p className="text-base font-black"><b>To&apos;lov:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p><b>To&apos;lov turi:</b> {paymentType}</p>
+                  <p><b>Usul:</b> {method}</p>
+                  <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>
+                  <p><b>Sana:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
+                  <p className="text-xs text-ink-500 dark:text-navy-300">{snapshot.payment_id || "-"} · {receiptPreview.receipt_id || "-"}</p>
+                  <div className="text-center font-black pt-2">TO&apos;LOV TASDIQLANDI</div>
+                </div>;
+              })() : null}
+              <div className="button-grid mt-4">
+                <button className="btn btn-soft" disabled={receiptBusy || !receiptPreview} onClick={() => receiptPreview && printReceipt(receiptPreview)}>Print</button>
+                <button className="btn btn-primary" disabled={receiptBusy || !receiptPreview} onClick={() => receiptPreview && downloadReceiptPdf(receiptPreview)}>PDF yuklash</button>
+              </div>
+            </article>
+          </div>
+        </PaymentModalPortal>
         <section className="panel-card border-slate-300/30 bg-slate-500/5">
           <div className="row-between">
             <h3>{pt("currentTransactions", "Joriy oy tranzaksiyalari")}</h3>
@@ -20050,17 +20179,24 @@ function AdminSection({
                     <td>{Number(row.overpayment_amount || row.overpayment_after || 0).toFixed(2)}</td>
                     <td>{row.paid_by_admin_name || "-"}</td>
                     <td>
-                      <button
-                        className="btn btn-soft small"
-                        onClick={() => {
-                          const txUserId = Number(row.user_id || 0);
-                          if (!txUserId) return;
-                          setPaymentsSelectedStudentId(txUserId);
-                          openPaymentCalculation(txUserId).catch(() => null);
-                        }}
-                      >
-                        {pt("openDetail", "Batafsil")}
-                      </button>
+                      <div className="button-grid inline">
+                        <button
+                          className="btn btn-soft small"
+                          onClick={() => {
+                            const txUserId = Number(row.user_id || 0);
+                            if (!txUserId) return;
+                            setPaymentsSelectedStudentId(txUserId);
+                            openPaymentCalculation(txUserId).catch(() => null);
+                          }}
+                        >
+                          {pt("openDetail", "Batafsil")}
+                        </button>
+                        {Number(row.id || 0) > 0 ? (
+                          <button className="btn btn-soft small" disabled={receiptBusy} onClick={() => openPaymentReceipt(Number(row.id || 0)).catch(() => null)}>
+                            {receiptBusy ? "..." : "Chek"}
+                          </button>
+                        ) : null}
+                      </div>
                     </td>
                   </tr>
                 ))}
