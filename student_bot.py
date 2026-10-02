@@ -2572,7 +2572,7 @@ async def handle_vocab_quiz_subject_callbacks(callback: CallbackQuery):
 )
 async def handle_vocab_message(message: types.Message):
     state = get_vocab_state(message.chat.id)
-    logger.info(f"💬 STUDENT VOCAB MESSAGE: {message.text} | User: {message.from_user.id}")
+    logger.info("student_vocab_input received user_id=%s chars=%s", message.from_user.id, len(message.text or ""))
     user = get_user_by_telegram(str(message.from_user.id))
     lang = detect_lang_from_user(user or message.from_user)
     from vocabulary import search_words, save_student_preference, get_available_vocabulary_levels
@@ -5967,7 +5967,7 @@ async def show_leaderboard(user_id, chat_id, page, filter_type='global'):
 
 @dp.callback_query(lambda c: c.data.startswith('leaderboard_'))
 async def handle_leaderboard_callback(callback: CallbackQuery):
-    logger.info(f"🔘 CALLBACK: {callback.data} | User: {callback.from_user.id}")
+    logger.info("leaderboard_callback received user_id=%s", callback.from_user.id)
     """Reyting paginatsiya va filter callbacklari"""
     data = callback.data
     user_id = callback.from_user.id

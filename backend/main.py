@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 
 import push_notifications
 from backend.community_safety import SafetyStore, validate_public_text
+from backend.system_metrics import build_system_advice, collect_system_metrics, find_latest_pressure_event
 import userbot_manager
 from userbot_manager import (
     send_userbot_otp_code,
@@ -869,6 +870,7 @@ weekly_review_task: asyncio.Task[Any] | None = None
 weekly_personal_plan_task: asyncio.Task[Any] | None = None
 competition_stale_lobbies_task: asyncio.Task[Any] | None = None
 study_room_presence_task: asyncio.Task[Any] | None = None
+system_metrics_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
 
 background_scheduler_lock_file: Any | None = None
@@ -18609,7 +18611,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task, system_metrics_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -18728,6 +18730,11 @@ async def startup_event() -> None:
                 _study_room_presence_worker(),
                 name="study_room_presence_worker",
             )
+        if system_metrics_task is None or system_metrics_task.done():
+            system_metrics_task = asyncio.create_task(
+                _system_metrics_worker(),
+                name="system_metrics_worker",
+            )
     else:
 
         logger.info("startup background schedulers skipped in worker pid=%s (lock held)", os.getpid())
@@ -18817,7 +18824,7 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, system_metrics_task
     task = diamondvoy_chat_cleanup_task
     diamondvoy_chat_cleanup_task = None
     ptask = payment_automation_task
@@ -18830,6 +18837,8 @@ async def shutdown_event() -> None:
     daily_test_reminder_task = None
     hdtask = homework_deadline_reminder_task
     homework_deadline_reminder_task = None
+    smtask = system_metrics_task
+    system_metrics_task = None
     if not task:
         pass
     else:
@@ -18875,6 +18884,12 @@ async def shutdown_event() -> None:
         hdtask.cancel()
         try:
             await hdtask
+        except asyncio.CancelledError:
+            pass
+    if smtask:
+        smtask.cancel()
+        try:
+            await smtask
         except asyncio.CancelledError:
             pass
     if background_scheduler_lock_file is not None:
@@ -52372,6 +52387,115 @@ async def transfer_dcoins(
 @app.get("/health")
 async def health_check():
     return {"ok": True}
+
+
+def _ensure_system_metrics_schema() -> None:
+    """Create the aggregate-only monitoring history table on first use."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS system_metric_samples (
+                id BIGSERIAL PRIMARY KEY,
+                captured_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                load_per_cpu DOUBLE PRECISION NOT NULL DEFAULT 0,
+                memory_percent DOUBLE PRECISION NOT NULL DEFAULT 0,
+                disk_percent DOUBLE PRECISION NOT NULL DEFAULT 0
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_system_metric_samples_captured_at "
+            "ON system_metric_samples (captured_at DESC)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _system_metric_timestamp(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return str(value or "")
+
+
+def _store_system_metric_sample(metrics: dict[str, Any]) -> None:
+    """Persist one aggregate sample at most once per minute, with 30-day retention."""
+    _ensure_system_metrics_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT captured_at FROM system_metric_samples ORDER BY captured_at DESC LIMIT 1")
+        latest = cur.fetchone()
+        latest_at = latest["captured_at"] if latest else None
+        should_store = not isinstance(latest_at, datetime) or (
+            datetime.now(timezone.utc) - latest_at.astimezone(timezone.utc)
+        ).total_seconds() >= 60
+        if should_store:
+            cur.execute(
+                """
+                INSERT INTO system_metric_samples (cpu_percent, load_per_cpu, memory_percent, disk_percent)
+                VALUES (?, ?, ?, ?)
+                """,
+                (float(metrics["cpu_percent"]), float(metrics["load_per_cpu"]), float(metrics["memory_percent"]), float(metrics["disk_percent"])),
+            )
+            cur.execute("DELETE FROM system_metric_samples WHERE captured_at < CURRENT_TIMESTAMP - INTERVAL '30 days'")
+            conn.commit()
+    finally:
+        conn.close()
+
+
+async def _system_metrics_worker() -> None:
+    """Capture baseline capacity history even if no dashboard is open."""
+    while True:
+        try:
+            await asyncio.to_thread(_store_system_metric_sample, collect_system_metrics())
+        except Exception:
+            logger.exception("system_metrics_sample failed")
+        await asyncio.sleep(300)
+
+
+@app.get("/admin/system-metrics")
+async def admin_system_metrics(authorization: str | None = Header(default=None)):
+    """Return privacy-safe host capacity data to general administrators only."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    if not _is_general_admin_scope(_admin_ref_id(user)):
+        raise HTTPException(status_code=403, detail="Server monitoring is restricted to general administrators")
+
+    metrics = collect_system_metrics()
+    _store_system_metric_sample(metrics)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT captured_at, cpu_percent, load_per_cpu, memory_percent, disk_percent
+            FROM system_metric_samples
+            WHERE captured_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+            ORDER BY captured_at DESC
+            LIMIT 720
+            """
+        )
+        history = []
+        for row in cur.fetchall() or []:
+            item = dict(row)
+            item["captured_at"] = _system_metric_timestamp(item.get("captured_at"))
+            history.append(item)
+    finally:
+        conn.close()
+
+    latest_pressure = find_latest_pressure_event(history)
+    return {
+        "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "metrics": {key: value for key, value in metrics.items() if key != "captured_monotonic"},
+        "recommendations": build_system_advice(metrics),
+        "last_pressure": latest_pressure,
+        "history_window_days": 30,
+        "sampling_note": "Ko'rsatkichlar har 5 daqiqada avtomatik saqlanadi; dashboard ochiq bo'lsa yangiroq namuna ham olinadi.",
+    }
 
 
 # --- VIDEOS ENDPOINTS ---

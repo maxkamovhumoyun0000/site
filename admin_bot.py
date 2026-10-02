@@ -1173,7 +1173,7 @@ async def handle_admin_text(message: Message):
                                 add_user_to_group(new_user['id'], group_id)
                             added_count += 1
                         except Exception as ex:
-                            logger.error(f"Failed to create user {first_name} from file: {ex}")
+                            logger.error("Failed to create user from imported file: %s", ex)
                             
                     await message.answer(f"✅ {added_count} ta o'quvchi yaratildi va guruhga qo'shildi!")
                     
@@ -4379,7 +4379,7 @@ async def handle_user_type_selection(callback: CallbackQuery):
 # first and either swallows the update or returns without callback.answer().
 @dp.callback_query(lambda c: c.data.startswith(('set_lang_me_', 'att_noop', 'noop', 'pay_search:', 'pay_list:', 'pay_card:', 'pay_set:', 'subject_', 'user_test_', 'user_control_sub_', 'user_change_sub_', 'user_add_sub_', 'user_delete_sub_', 'delete_subject_confirm_', 'user_block_', 'user_unblock_', 'user_reset_', 'user_select_', 'admin_export_group_attendance:', 'group_list', 'grp_search_students:', 'grp_students_page:', 'grp_add_student:', 'grp_remove_student:', 'grp_set:', 'grp_delete_yes:', 'grp_delete_no:', 'approve_access_yes:', 'approve_access_no:', 'teacher_reset_', 'teacher_block_', 'teacher_unblock_', 'teacher_change_sub_', 'teacher_change_lang_', 'user_change_lang_', 'set_lang_', 'test_')))
 async def handle_callback(callback: CallbackQuery):
-    logger.info(f"🔘 CALLBACK: {callback.data} | User: {callback.from_user.id}")
+    logger.info("admin_callback received user_id=%s", callback.from_user.id)
     data = callback.data
     state = get_admin_state(callback.message.chat.id)
     # Use persisted language from DB to prevent "revert" after admin changes language.
@@ -7595,4 +7595,3 @@ async def handle_ask_remove_date(message: Message):
     
     state['step'] = 'main'
     await message.answer(t(lang, 'admin_auto_msg_16', default="O'quvchi guruhdan chiqarildi."))
-

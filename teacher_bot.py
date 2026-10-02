@@ -768,11 +768,11 @@ async def handle_login_and_messages(message: Message):
 
 async def handle_authenticated_message(message: Message):
     """Handle messages from authenticated teachers"""
-    logger.info(f"💬 TEACHER MESSAGE: {message.text} | User: {message.from_user.id}")
+    logger.info("teacher_message received user_id=%s chars=%s", message.from_user.id, len(message.text or ""))
     user = get_user_by_telegram(str(message.from_user.id))
     lang = detect_lang_from_user(user or message.from_user)
     
-    logger.info(f"🔍 Teacher user data: {user}")
+    logger.debug("teacher_message authenticated=%s", bool(user))
     
     if not user or user.get('login_type') != 3:
         await message.answer(t(lang, 'please_send_start'))

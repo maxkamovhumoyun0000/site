@@ -15,6 +15,8 @@ type DashboardSidebarProps = {
   onLogout: () => void;
   sectionLabel: (section: string) => string;
   notificationCount?: number;
+  /** Sections already exposed in the primary header/bottom navigation. */
+  primaryNavSections?: string[];
 };
 
 /// Compact, language-independent navigation glyphs.  The old first-letter
@@ -191,11 +193,14 @@ export function DashboardSidebar({
   onNavigate,
   sectionLabel,
   notificationCount = 0,
+  primaryNavSections = [],
 }: DashboardSidebarProps) {
   const tt = useWebT();
   const orderedSections = orderSections(visibleSections);
-
-  const mobileBottomSections = pickRoleBottomSections(orderedSections);
+  const primaryNavSet = new Set(primaryNavSections);
+  const mobileBottomSections = primaryNavSections.length
+    ? primaryNavSections.filter((item, index, all) => orderedSections.includes(item) && all.indexOf(item) === index).slice(0, 5)
+    : pickRoleBottomSections(orderedSections);
 
   const itemBase = "group flex min-h-[42px] w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm font-black transition-all outline-none";
   const itemActive = "border-cyan-400/55 bg-cyan-400/12 text-navy-950 shadow-sm dark:border-cyan-300/40 dark:bg-cyan-300/12 dark:text-white";
@@ -207,7 +212,7 @@ export function DashboardSidebar({
   function renderNavButtons(prefix = "") {
     const bottomSet = new Set(mobileBottomSections);
     return orderedSections
-      .filter((item) => item !== "profile")
+      .filter((item) => item !== "profile" && !primaryNavSet.has(item))
       .map((item, index) => {
         const active = currentSection === item;
         return (

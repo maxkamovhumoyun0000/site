@@ -140,7 +140,7 @@ async def send_userbot_otp_code(api_id: int, api_hash: str, phone_number: str) -
         err_msg = str(exc)
         if "PHONE_NUMBER_INVALID" in err_msg:
             return {"ok": False, "error": f"Telefon raqami Telegramda noto'g'ri ({phone}). Misol: +998901234567"}
-        logger.exception("send_userbot_otp_code failed for %s", phone)
+        logger.exception("send_userbot_otp_code failed")
         return {"ok": False, "error": f"Kod yuborishda xatolik: {err_msg}"}
 
 
@@ -201,7 +201,7 @@ async def verify_userbot_otp_code(phone_number: str, code: str, password: Option
             "message": "Userbot muvaffaqiyatli ulandi va faollashtirildi!",
         }
     except Exception as exc:
-        logger.exception("verify_userbot_otp_code failed for %s", phone)
+        logger.exception("verify_userbot_otp_code failed")
         return {"ok": False, "error": f"Tasdiqlashda xatolik: {str(exc)}"}
 
 
@@ -331,7 +331,7 @@ async def send_direct_userbot_message(phone_number: str, message_text: str, even
             log_userbot_message(phone, tg_user_id, event_type, message_text, "sent")
             return {"ok": True, "phone": phone, "telegram_user_id": tg_user_id}
         except Exception as exc:
-            logger.info("Sending to cached tg_user_id %s failed for %s (%s). Re-resolving contact...", tg_user_id, phone, exc)
+            logger.info("Cached userbot recipient delivery failed; resolving contact again")
             tg_user_id = None
 
     # Resolve contact via Pyrogram import_contacts.  Telegram does not offer a
@@ -378,11 +378,11 @@ async def send_direct_userbot_message(phone_number: str, message_text: str, even
         log_userbot_message(phone, tg_user_id, event_type, message_text, "flood_wait", f"FloodWait: {wait_seconds}s")
         return {"ok": False, "error": f"Telegram cheklovi: {wait_seconds} soniya kuting."}
     except UserPrivacyRestricted:
-        logger.info("UserPrivacyRestricted for phone %s", phone)
+        logger.info("Userbot recipient has privacy restrictions")
         log_userbot_message(phone, tg_user_id, event_type, message_text, "failed", "UserPrivacyRestricted")
         return {"ok": False, "error": "Ota-onada maxfiylik cheklovi bor."}
     except Exception as exc:
-        logger.exception("send_direct_userbot_message failed for %s", phone)
+        logger.exception("send_direct_userbot_message failed")
         log_userbot_message(phone, tg_user_id, event_type, message_text, "failed", str(exc))
         return {"ok": False, "error": f"Xabar yuborishda xatolik: {str(exc)}"}
 
@@ -438,7 +438,7 @@ def queue_userbot_notification(phone: str, text: str, event_type: str = "general
     if not clean_phone or not text:
         return
 
-    logger.info("Queueing/sending userbot notification to %s (type=%s)", clean_phone, event_type)
+    logger.info("Queueing/sending userbot notification type=%s", event_type)
 
     try:
         loop = asyncio.get_running_loop()
@@ -794,4 +794,3 @@ def handle_userbot_achievement_event(student_id: int, title: str, description: s
                 queue_userbot_notification(phone, msg_text, event_type="achievement")
     except Exception as exc:
         logger.exception("handle_userbot_achievement_event failed: %s", exc)
-

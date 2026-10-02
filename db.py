@@ -10375,7 +10375,7 @@ def clear_failed_logins(user_id: int) -> None:
 
 
 def create_user(first_name, last_name, phone, subject, login_type, owner_admin_id: int | None = None, parent_phone: str | None = None):
-    logger.info(f"db.create_user(login_type={login_type}, subject={subject}, first_name={first_name}, last_name={last_name})")
+    logger.info("db.create_user login_type=%s subject=%s", login_type, subject)
     conn = get_conn()
     cur = conn.cursor()
     try:

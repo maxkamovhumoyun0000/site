@@ -46,11 +46,21 @@ subprocess.run(['pg_dump', database_url, '--format=custom', '--file', str(backup
 if not backup_path.is_file() or backup_path.stat().st_size < 1024:
     raise RuntimeError('Database backup was not created correctly')
 print(f'backup:{backup_path.name} size:{backup_path.stat().st_size}')
+
+# Data yo'qolmasligi uchun eng yangi ikkita tekshirilgan backup saqlanadi.
+# Faqat bundan eskilari o'chiriladi; data/media/upload fayllariga tegilmaydi.
+backups = sorted(backup_dir.glob('diamond-site-*.dump'), key=lambda item: item.stat().st_mtime)
+for old_backup in backups[:-2]:
+    old_backup.unlink()
+    print(f'backup:removed:{old_backup.name}')
 PY"
 ```
 
 Backup muvaffaqiyatli yakunlangani tasdiqlanmaguncha keyingi deploy qadami
 bajarilmaydi.
+
+Bu tozalash faqat yangi backup kamida 1 KB ekanligi tekshirilgandan keyin
+ishlaydi va har doim eng yangi 2 ta backupni saqlab qoladi.
 
 ## Kodni Serverga Sync Qilish
 
@@ -110,6 +120,30 @@ ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
   'systemctl restart diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot'
 ```
+
+## Production Log Himoyasi
+
+Deploy vaqtida quyidagi sozlama barcha Diamond service'lar uchun production
+logging'ni yoqadi, development file-log yozuvini o‘chiradi va yangi fayllarni
+faqat root o‘qiy oladigan `0600` ruxsat bilan yaratadi. Mavjud loglar
+o‘chirilmaydi; ularning ruxsati ham `0600`ga tushiriladi. Legacy `logs/*.log`
+fayllari 14 kunlik, siqilgan rotation bilan boshqariladi.
+
+```bash
+cd /home/xumoyun-maxkamov/Desktop/diamond-site
+
+rsync -az -e 'ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no' \
+  ops/systemd/diamond-site-log-security.conf ops/logrotate/diamond-site \
+  root@31.220.87.193:/tmp/
+
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+  'for service in diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot; do install -d -m 0755 /etc/systemd/system/${service}.service.d; install -m 0644 /tmp/diamond-site-log-security.conf /etc/systemd/system/${service}.service.d/log-security.conf; done; install -m 0644 /tmp/diamond-site /etc/logrotate.d/diamond-site; find /root/diamond-site/logs -maxdepth 1 -type f -exec chmod 0600 -- {} +; systemctl daemon-reload'
+```
+
+Bu application-level maxfiylik himoyasi va access control'dir; u disk-level
+shifrlash o‘rnini bosa olmaydi. To‘liq at-rest shifrlash uchun LUKS yoki
+provider-managed encrypted volume, boot/key-management rejasi va alohida
+migratsiya kerak bo‘ladi.
 
 ## Deploydan Keyingi Smoke Test
 

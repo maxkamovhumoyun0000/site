@@ -21373,10 +21373,108 @@ const MEDIA_WORKSPACE_SECTIONS = [
   "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot",
 ] as const;
 
+function systemBytes(value: unknown) {
+  const bytes = Math.max(0, Number(value || 0));
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)) - 1);
+  return `${(bytes / (1024 ** (index + 1))).toFixed(index >= 2 ? 1 : 0)} ${units[index]}`;
+}
+
+function systemUptime(value: unknown) {
+  const seconds = Math.max(0, Math.floor(Number(value || 0)));
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return days ? `${days} kun ${hours} soat` : `${hours} soat ${Math.floor((seconds % 3600) / 60)} daqiqa`;
+}
+
+function ServerStatusDashboard() {
+  const [payload, setPayload] = useState<GenericRow | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson<GenericRow>("/admin/system-metrics", {
+        method: "GET",
+        token: localStorage.getItem("diamond_token") || "",
+        timeoutMs: 15000,
+        retries: 1,
+      });
+      setPayload(result || null);
+      setError("");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Server holati yuklanmadi.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(load, 60_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  const metrics = (payload?.metrics || {}) as GenericRow;
+  const cards = [
+    { label: "CPU", value: `${Number(metrics.cpu_percent || 0).toFixed(1)}%`, detail: `${metrics.cpu_cores || 0} yadro · load ${Number(metrics.load_1 || 0).toFixed(2)}`, tone: "asc-indigo" },
+    { label: "RAM", value: `${Number(metrics.memory_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.memory_available_bytes)} bo'sh`, tone: "asc-cyan" },
+    { label: "Disk", value: `${Number(metrics.disk_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.disk_free_bytes)} bo'sh`, tone: "asc-emerald" },
+    { label: "Swap", value: `${Number(metrics.swap_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.swap_used_bytes)} ishlatilgan`, tone: "asc-amber" },
+  ];
+  const lastPressure = payload?.last_pressure as GenericRow | null | undefined;
+  const pressureAt = lastPressure?.captured_at
+    ? new Intl.DateTimeFormat("uz-UZ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(lastPressure.captured_at)))
+    : "Hozircha yuqori yuklama qayd etilmadi";
+
+  return (
+    <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Live monitoring</p>
+          <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Server holati</h2>
+          <p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.</p>
+        </div>
+        <button type="button" className="btn btn-soft small" onClick={() => load()} disabled={loading}>{loading ? "Yangilanmoqda…" : "Yangilash"}</button>
+      </div>
+      {error ? <p className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
+      {payload ? <>
+        <div className="admin-hero-stats mb-4">
+          {cards.map((card) => <div key={card.label} className={`admin-stat-card ${card.tone}`}>
+            <div className="asc-bg-blob" /><div className="asc-value">{card.value}</div><div className="asc-label">{card.label}</div><div className="mt-1 text-xs font-bold text-ink-500 dark:text-white/60">{card.detail}</div>
+          </div>)}
+        </div>
+        <div className="grid gap-3 lg:grid-cols-3">
+          <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
+            <strong className="text-sm text-navy-900 dark:text-white">Yuklama va ishlash vaqti</strong>
+            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">1 / 5 / 15 min: <b>{Number(metrics.load_1 || 0).toFixed(2)} / {Number(metrics.load_5 || 0).toFixed(2)} / {Number(metrics.load_15 || 0).toFixed(2)}</b></p>
+            <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Uptime: <b>{systemUptime(metrics.uptime_seconds)}</b></p>
+          </div>
+          <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
+            <strong className="text-sm text-navy-900 dark:text-white">Oxirgi yuqori yuklama</strong>
+            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{pressureAt}</p>
+            {lastPressure?.causes?.length ? <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">Sabab: {lastPressure.causes.join(", ").toUpperCase()}</p> : null}
+          </div>
+          <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
+            <strong className="text-sm text-navy-900 dark:text-white">Tavsiya</strong>
+            <ul className="mt-2 space-y-1 text-sm text-ink-600 dark:text-slate-300">
+              {((payload.recommendations || []) as GenericRow[]).map((item, index) => <li key={`${item.code}-${index}`}>• {item.action}</li>)}
+            </ul>
+          </div>
+        </div>
+        <p className="mt-3 text-[11px] font-medium text-ink-500 dark:text-slate-400">{payload.sampling_note} Tarix faqat agregat resurs ko‘rsatkichlarini saqlaydi; foydalanuvchi yoki log ma’lumoti saqlanmaydi.</p>
+      </> : !loading && !error ? <p className="text-sm text-ink-500">Ma’lumot topilmadi.</p> : null}
+    </section>
+  );
+}
+
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
   const primarySections = MEDIA_WORKSPACE_SECTIONS.slice(0, 4);
   const columns = [MEDIA_WORKSPACE_SECTIONS.slice(4, 7), MEDIA_WORKSPACE_SECTIONS.slice(7, 10), MEDIA_WORKSPACE_SECTIONS.slice(10)];
   return <div className="flex flex-col gap-5 pb-10 animate-fade-in">
+    <ServerStatusDashboard />
     <div className="admin-hero-stats">
       {primarySections.map((section, index) => <button key={section} type="button" onClick={() => onNavigate(section)} className={`admin-stat-card ${["asc-indigo", "asc-cyan", "asc-emerald", "asc-amber"][index]}`}>
         <div className="asc-bg-blob" /><div className="asc-icon">{sectionIconGlyph(section)}</div><div className="asc-value">{index + 1}</div><div className="asc-label">{SECTION_LABELS[section]}</div>
@@ -23384,8 +23482,12 @@ function DashboardShell({
     return true;
   });
   const orderedSections = orderSections(visibleSections);
+  // Adminning eng ko'p ishlatiladigan yo'llari bir joyda: desktop header va
+  // telefonning pastki navigatsiyasi. Shu elementlar drawer/sidebar ichida
+  // qaytarilmaydi.
+  const primaryAdminSections = ["home", "users", "groups", "chats"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
-    ? ["home", "users", "groups", "payments", "family-groups"].filter((item) => orderedSections.includes(item))
+    ? primaryAdminSections
     : orderedSections.slice(0, 5);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
   const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
@@ -23929,7 +24031,7 @@ function DashboardShell({
     setDesktopDrawerOpen(false);
   }
 
-  const desktopHeaderSections = new Set(orderedSections.slice(0, 5));
+  const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
     if (item === "chats" || item === "notifications" || item === "profile") return false;
     if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
@@ -24063,6 +24165,7 @@ function DashboardShell({
           onLogout={onLogout}
           sectionLabel={(sectionId) => labelFor(sectionId, locale)}
           notificationCount={unreadCount}
+          primaryNavSections={activeRole === "admin" ? primaryAdminSections : undefined}
         />
       ) : null}
 
