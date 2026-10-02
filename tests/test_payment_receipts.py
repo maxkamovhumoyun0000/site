@@ -33,6 +33,29 @@ def test_receipt_public_payload_only_returns_immutable_snapshot() -> None:
     }
 
 
+def test_receipt_financial_snapshot_preserves_partial_payment_and_remaining_balance() -> None:
+    snapshot = api._receipt_financial_snapshot(
+        {
+            "amount": 100_000,
+            "remaining_after": 400_000,
+            "overpayment_after": 0,
+            "status_after": api.PAYMENT_STATUS_PARTIAL,
+        }
+    )
+
+    assert snapshot == {
+        "amount": 100_000.0,
+        "remaining_amount": 400_000.0,
+        "overpayment_amount": 0.0,
+        "payment_status": api.PAYMENT_STATUS_PARTIAL,
+    }
+
+
+def test_web_sessions_default_to_thirty_days_to_prevent_daily_logout() -> None:
+    assert api.WEB_SESSION_TOKEN_TTL_HOURS == 720
+    assert api.WEB_SESSION_TOKEN_TTL_HOURS == api.MOBILE_SESSION_TOKEN_TTL_HOURS
+
+
 def test_receipt_pdf_is_rendered_from_server_snapshot() -> None:
     pdf = api._receipt_pdf_bytes(
         {
