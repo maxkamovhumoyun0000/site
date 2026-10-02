@@ -20211,24 +20211,33 @@ function AdminSection({
                     <td>{Number(row.discount_amount || 0).toFixed(2)}</td>
                     <td>{Number(row.debt_amount || row.remaining_after || 0).toFixed(2)}</td>
                     <td>
-                      <div className="button-grid inline">
-                        <button
-                          className="btn btn-soft small"
-                          onClick={() => {
-                            const txUserId = Number(row.user_id || 0);
-                            if (!txUserId) return;
-                            setPaymentsSelectedStudentId(txUserId);
-                            openPaymentCalculation(txUserId).catch(() => null);
-                          }}
-                        >
-                          {pt("openDetail", "Batafsil")}
-                        </button>
-                        {Number(row.id || 0) > 0 ? (
-                          <button className="btn btn-soft small" disabled={receiptBusy} onClick={() => openPaymentReceipt(Number(row.id || 0)).catch(() => null)}>
-                            {receiptBusy ? "..." : "Chek"}
+                      {(() => {
+                        const refundId = Number(row.refund_id || 0);
+                        const isRefundRow = String(row.record_type || "") === "refund" && refundId > 0;
+                        const paymentId = Number(row.id || 0);
+                        return <div className="button-grid inline">
+                          <button
+                            className="btn btn-soft small"
+                            onClick={() => {
+                              const txUserId = Number(row.user_id || 0);
+                              if (!txUserId) return;
+                              setPaymentsSelectedStudentId(txUserId);
+                              openPaymentCalculation(txUserId).catch(() => null);
+                            }}
+                          >
+                            {pt("openDetail", "Batafsil")}
                           </button>
-                        ) : null}
-                      </div>
+                          {(isRefundRow || paymentId > 0) ? (
+                            <button
+                              className="btn btn-soft small"
+                              disabled={receiptBusy}
+                              onClick={() => (isRefundRow ? openRefundReceipt(refundId) : openPaymentReceipt(paymentId)).catch(() => null)}
+                            >
+                              {receiptBusy ? "..." : isRefundRow ? "Qaytarish cheki" : "Chek"}
+                            </button>
+                          ) : null}
+                        </div>;
+                      })()}
                     </td>
                   </tr>
                 ))}
