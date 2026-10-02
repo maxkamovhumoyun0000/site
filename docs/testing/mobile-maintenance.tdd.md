@@ -19,7 +19,7 @@ No separate plan was supplied; the journeys were derived from the request.
   exist.
 - GREEN validation: `PYTHONPATH=/tmp/diamond-maintenance-test:/root/diamond-site
   /root/diamond-site/.venv/bin/python -m pytest /tmp/test_app_version_controls.py`
-  completed with `7 passed` against an isolated copy of the final backend.
+  completed with `8 passed` against an isolated copy of the final backend.
 
 | # | Guarantee | Test / command | Type | Result |
 |---|---|---|---|---|
@@ -27,8 +27,9 @@ No separate plan was supplied; the journeys were derived from the request.
 | 2 | Per-app maintenance fields are normalized safely. | `tests/test_app_version_controls.py::test_maintenance_settings_payload_accepts_only_safe_app_specific_fields` | Unit | PASS |
 | 3 | An end time before (or equal to) start is rejected. | `tests/test_app_version_controls.py::test_maintenance_window_rejects_an_end_before_its_start` | Unit | PASS |
 | 4 | Developer-only identity excludes the Media account. | `tests/test_app_version_controls.py::test_developer_scope_is_limited_to_the_dedicated_login` | Unit | PASS |
-| 5 | Existing server monitoring and payment receipt regressions remain covered. | `tests/test_system_metrics.py`, `tests/test_payment_receipts.py` | Unit/integration | Previously green; re-run after production sync |
-| 6 | Both mobile projects compile and their suites remain green. | `flutter analyze && flutter test` in Student and Teacher repositories | Static/unit/widget | PASS: Student 15; Teacher 18 |
+| 5 | A Developer token is denied broad admin routes but allows its workspace APIs. | `tests/test_app_version_controls.py::test_developer_workspace_path_allowlist_excludes_broad_admin_routes` | Unit | PASS |
+| 6 | Existing server monitoring and payment receipt regressions remain covered. | `tests/test_system_metrics.py`, `tests/test_payment_receipts.py` | Unit/integration | Previously green; re-run after production sync |
+| 7 | Both mobile projects compile and their suites remain green. | `flutter analyze && flutter test` in Student and Teacher repositories | Static/unit/widget | PASS: Student 15; Teacher 18 |
 
 ## Coverage and known gaps
 

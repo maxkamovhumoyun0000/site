@@ -25367,7 +25367,7 @@ export default function DiamondEducationApp() {
         // The media account uses the existing admin API authorization but has
         // a separate, frontend-only workspace. Never replace it with the
         // backend's broad `admin` role after refreshing app state.
-        if (roleFromUser(userRef.current) !== "media" && effective && effective !== activeRole) {
+        if (!(["media", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {
           setActiveRole(effective);
         }
       } catch (error) {

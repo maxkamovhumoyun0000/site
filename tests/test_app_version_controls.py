@@ -95,3 +95,9 @@ def test_maintenance_window_rejects_an_end_before_its_start() -> None:
 def test_developer_scope_is_limited_to_the_dedicated_login() -> None:
     assert api._is_developer_account({"login_id": "developer-x-01"})
     assert not api._is_developer_account({"login_id": "MEDIA-X-01"})
+
+
+def test_developer_workspace_path_allowlist_excludes_broad_admin_routes() -> None:
+    assert api._developer_workspace_path_is_allowed("/developer/mobile-maintenance")
+    assert api._developer_workspace_path_is_allowed("/admin/system-metrics/")
+    assert not api._developer_workspace_path_is_allowed("/admin/payments/dashboard")

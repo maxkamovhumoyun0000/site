@@ -7710,6 +7710,37 @@ def _is_developer_account(user: dict) -> bool:
     return str((user or {}).get("login_id") or "").strip().upper() == expected
 
 
+_DEVELOPER_WORKSPACE_ALLOWED_PATHS = {
+    "/app/state",
+    "/auth/me",
+    "/auth/logout",
+    "/auth/presence/heartbeat",
+    "/user/account",
+    "/user/language",
+    "/developer/mobile-maintenance",
+    "/admin/system-metrics",
+}
+
+
+def _developer_workspace_path_is_allowed(path: str) -> bool:
+    return str(path or "").rstrip("/") in _DEVELOPER_WORKSPACE_ALLOWED_PATHS
+
+
+@app.middleware("http")
+async def developer_workspace_access_guard(request: Request, call_next):
+    """Keep the dedicated Developer login out of broad admin APIs."""
+    authorization = request.headers.get("Authorization")
+    if not authorization:
+        return await call_next(request)
+    try:
+        user = _user_row_from_bearer(authorization)
+    except HTTPException:
+        return await call_next(request)
+    if _is_developer_account(user) and not _developer_workspace_path_is_allowed(request.url.path):
+        return JSONResponse(status_code=403, content={"detail": "Developer account is limited to its workspace"})
+    return await call_next(request)
+
+
 def _require_developer_access(user: dict) -> None:
     _require_role(user, {"admin"})
     if not _is_developer_account(user):
