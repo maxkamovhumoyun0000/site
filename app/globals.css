@@ -5,6 +5,13 @@
 @tailwind utilities;
 
 :root {
+  /* Keep fresh production builds independent from Google Fonts/network cache. */
+  --font-inter-tight: "Segoe UI", Arial, sans-serif;
+  --font-manrope: "Segoe UI", Arial, sans-serif;
+  --font-sora: "Segoe UI", Arial, sans-serif;
+  --font-outfit: "Segoe UI", Arial, sans-serif;
+  --font-jakarta: "Segoe UI", Arial, sans-serif;
+  --font-inter: "Segoe UI", Arial, sans-serif;
   --navy-950: #000B3B;
   --navy-900: #000B3B;
   --navy-800: #001A88;

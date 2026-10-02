@@ -135,9 +135,13 @@ function escapeReceiptHtml(value: unknown): string {
 function receiptPrintHtml(receipt: GenericRow): string {
   const snapshot = (receipt.snapshot || {}) as GenericRow;
   const amount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0));
+  const remainingAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0));
   const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
   const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
   const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+  const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
+  const branch = String(snapshot.branch_name || "").trim();
+  const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
   const rows: Array<[string, unknown]> = [
     ["O'quvchi", snapshot.student_name], ["Guruh", snapshot.group_name], ["Fan / Kurs", snapshot.subject_name],
     ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
@@ -146,7 +150,7 @@ function receiptPrintHtml(receipt: GenericRow): string {
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
     @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(snapshot.brand || "DIAMOND EDUCATION")}</div><div class="center">${escapeReceiptHtml(snapshot.branch_name || "")}</div><hr class="rule"><div class="center"><b>TO'LOV CHEKI</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>TO'LOV:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">TO'LOV TASDIQLANDI</div></main></body></html>`;
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>TO'LOV CHEKI</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>TO'LOV:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>QOLDIQ:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">TO'LOV TASDIQLANDI</div></main></body></html>`;
 }
 
 type ApiUser = {
@@ -17269,6 +17273,7 @@ function AdminSection({
           card_id: paymentsConfirmDraft.paymentMethod === "card" && Number(paymentsConfirmDraft.cardId || 0) > 0 ? Number(paymentsConfirmDraft.cardId) : null,
           note: String(paymentsConfirmDraft.note || "").trim() || null,
           is_advance: Boolean(paymentsConfirmDraft.isAdvance),
+          is_partial: mode === "partial",
         },
         "POST",
         "Payment confirmed",
@@ -19068,6 +19073,8 @@ function AdminSection({
     const confirmGroupId = Number(paymentsConfirmDraft.groupId || 0);
     const confirmGroupRow = detailRows.find((row) => Number(row.group_id || 0) === confirmGroupId) || null;
     const remainingForConfirm = Number(confirmGroupRow?.debt_amount || 0);
+    const partialAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
+    const canConfirmPartial = Number.isFinite(partialAmountForConfirm) && partialAmountForConfirm > 0 && partialAmountForConfirm <= remainingForConfirm + 1e-9;
     const refundableTxForConfirm = getRefundablePaymentTransaction();
     const refundableAmountForConfirm = refundableTxForConfirm
       ? Math.max(0, Number(refundableTxForConfirm.payment_dcoin_amount || refundableTxForConfirm.paid_amount || 0) - Number(refundableTxForConfirm.refunded_amount || 0))
@@ -20077,6 +20084,13 @@ function AdminSection({
                       </button>
                       <button
                         className="btn btn-soft"
+                        disabled={paymentsConfirmBusy || !paymentsConfirmDraft.groupId || !canConfirmPartial}
+                        onClick={() => confirmStudentPayment("partial").catch(() => null)}
+                      >
+                        {paymentsConfirmBusy ? pt("confirming", "Tasdiqlanmoqda...") : pt("partialPayment", "Qisman to'lov")}
+                      </button>
+                      <button
+                        className="btn btn-soft"
                         disabled={paymentsRefundBusy || !refundableTxForConfirm || refundableAmountForConfirm <= 0}
                         onClick={() => refundSelectedPayment().catch(() => null)}
                       >
@@ -20097,8 +20111,7 @@ function AdminSection({
             <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
               <div className="row-between gap-3">
                 <div>
-                  <h3>DIAMOND EDUCATION</h3>
-                  <p className="text-sm text-ink-500 dark:text-navy-300">TO&apos;LOV CHEKI</p>
+                  <h3>TO&apos;LOV CHEKI</h3>
                 </div>
                 <button className="admin-modal-close" type="button" aria-label="Yopish" onClick={() => setReceiptPreview(null)}>×</button>
               </div>
@@ -20107,14 +20120,19 @@ function AdminSection({
                 const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
                 const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
                 const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
+                const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
+                const branch = String(snapshot.branch_name || "").trim();
+                const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
                 return <div className="mt-4 rounded-xl border border-line dark:border-white/10 p-4 text-sm space-y-2">
-                  <div className="text-center font-black text-base">{snapshot.branch_name || "Diamond Education"}</div>
+                  <div className="text-center font-black text-base">{brand}</div>
+                  {branchLabel ? <div className="text-center font-semibold text-xs text-ink-500 dark:text-navy-300">{branchLabel}</div> : null}
                   <hr />
                   <p><b>O&apos;quvchi:</b> {snapshot.student_name || "-"}</p>
                   <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
                   <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
                   <p><b>O&apos;qituvchi:</b> {teachers}</p>
                   <p className="text-base font-black"><b>To&apos;lov:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Qolgan qarz:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
                   <p><b>To&apos;lov turi:</b> {paymentType}</p>
                   <p><b>Usul:</b> {method}</p>
                   <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>

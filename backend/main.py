@@ -830,11 +830,13 @@ HOMEWORK_WINDOW_DAYS = 7
 DIAMONDVOY_CHAT_RETENTION_HOURS = 168
 DIAMONDVOY_CHAT_CLEANUP_INTERVAL_SEC = 1800
 PAYMENT_AUTOCALC_INTERVAL_SEC = 6 * 60 * 60
-WEB_SESSION_TOKEN_TTL_HOURS = 24
-# Mobile apps (Android/iOS) send a device_id on login; these sessions use a
-# rolling 30-day TTL so the user stays logged in between daily/weekly app
-# opens without being forced to re-enter their password. Web browser sessions
-# keep the shorter 24-hour TTL.
+# Browser sessions used to expire after 24 hours, which signed active users
+# out overnight. Keep the same 30-day lifetime as device-bound mobile sessions.
+# Password changes, explicit logout, session limits and account blocking still
+# invalidate a session immediately.
+WEB_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
+# Mobile apps (Android/iOS) send a device_id on login and use the same 30-day
+# session lifetime so users stay signed in between daily/weekly app opens.
 MOBILE_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
 # QR login tokens are one-time and short-lived, but 5 minutes was too strict for
 # real-world Telegram camera/share flow. Keep security by one-time use and
@@ -1880,6 +1882,7 @@ class PaymentConfirmRequest(BaseModel):
     card_id: int | None = None
     note: str | None = None
     is_advance: bool = False
+    is_partial: bool = False
 
 
 class PaymentRefundRequest(BaseModel):
@@ -39537,6 +39540,23 @@ def _payment_audit_event(cur: Any, *, event_type: str, actor_admin_id: int | Non
     )
 
 
+def _receipt_financial_snapshot(transaction: dict[str, Any]) -> dict[str, Any]:
+    """Keep the paid amount and balance at this transaction immutable on its receipt."""
+    def _money(value: Any) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return round(max(0.0, numeric), 2) if math.isfinite(numeric) else 0.0
+
+    return {
+        "amount": _money(transaction.get("amount")),
+        "remaining_amount": _money(transaction.get("remaining_after")),
+        "overpayment_amount": _money(transaction.get("overpayment_after")),
+        "payment_status": str(transaction.get("status_after") or PAYMENT_STATUS_UNPAID),
+    }
+
+
 def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
     cur.execute(
         """SELECT tx.*, TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
@@ -39557,7 +39577,7 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
         "group_name": str(tx.get("group_name") or f"Group #{int(tx.get('group_id') or 0)}").strip(),
         "subject_name": str(tx.get("subject_name") or tx.get("course_title") or "-").strip() or "-",
         "teachers": [str(tx.get("teacher_name") or "-").strip() or "-"],
-        "amount": round(float(tx.get("amount") or 0.0), 2),
+        **_receipt_financial_snapshot(tx),
         "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
         "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
         "branch_name": branch_name,
@@ -39570,13 +39590,54 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
     return tx, snapshot
 
 
+def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, actor_admin_id: int | None = None) -> dict[str, Any]:
+    """One-time migration for receipts issued before balances were printed.
+
+    Values come only from the original transaction's persisted `*_after`
+    columns; no current obligation data is used.
+    """
+    snapshot = _safe_json_object(receipt.get("snapshot_json"))
+    required = {"amount", "remaining_amount", "overpayment_amount", "payment_status"}
+    if required.issubset(snapshot):
+        receipt["snapshot"] = snapshot
+        return receipt
+    cur.execute(
+        "SELECT amount, remaining_after, overpayment_after, status_after FROM payment_transactions WHERE id=? LIMIT 1",
+        (int(receipt.get("payment_transaction_id") or 0),),
+    )
+    transaction = dict(cur.fetchone() or {})
+    if not transaction:
+        receipt["snapshot"] = snapshot
+        return receipt
+    fields = _receipt_financial_snapshot(transaction)
+    missing = {key: value for key, value in fields.items() if key not in snapshot}
+    if missing:
+        snapshot.update(missing)
+        cur.execute(
+            "UPDATE payment_receipts SET snapshot_json=? WHERE id=?",
+            (json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")), int(receipt.get("id") or 0)),
+        )
+        _payment_audit_event(
+            cur,
+            event_type="RECEIPT_SNAPSHOT_BACKFILLED",
+            actor_admin_id=actor_admin_id,
+            payment_transaction_id=int(receipt.get("payment_transaction_id") or 0),
+            receipt_id=str(receipt.get("receipt_id") or ""),
+            user_id=int(receipt.get("user_id") or 0),
+            group_id=int(receipt.get("group_id") or 0),
+            branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None,
+        )
+        receipt["snapshot_json"] = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    receipt["snapshot"] = snapshot
+    return receipt
+
+
 def _get_or_create_payment_receipt(cur: Any, transaction_id: int, *, actor_admin_id: int | None = None) -> dict[str, Any] | None:
     """Create exactly one immutable receipt per confirmed transaction."""
     cur.execute("SELECT * FROM payment_receipts WHERE payment_transaction_id=? LIMIT 1", (int(transaction_id),))
     existing = dict(cur.fetchone() or {})
     if existing:
-        existing["snapshot"] = _safe_json_object(existing.get("snapshot_json"))
-        return existing
+        return _backfill_receipt_financial_snapshot(cur, existing, actor_admin_id=actor_admin_id)
     tx, snapshot = _receipt_snapshot_from_transaction(cur, int(transaction_id))
     if not tx or not snapshot:
         return None
@@ -43572,7 +43633,11 @@ def _load_receipt_for_admin(receipt_id: str, user: dict[str, Any]) -> tuple[Any,
     if not _receipt_authorized_for_admin(receipt, admin_ref):
         conn.close()
         raise HTTPException(status_code=403, detail="Permission denied")
-    receipt["snapshot"] = _safe_json_object(receipt.get("snapshot_json"))
+    receipt = _backfill_receipt_financial_snapshot(
+        cur,
+        receipt,
+        actor_admin_id=int(user.get("id") or 0),
+    )
     return conn, cur, receipt, admin_ref
 
 
@@ -43640,11 +43705,15 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
     payment_type = "Oldindan to'lov" if snapshot.get("payment_type") == "advance" else "Oylik to'lov"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
+    brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
+    branch = str(snapshot.get("branch_name") or "").strip()
+    branch_line = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
     lines = [
-        str(snapshot.get("brand") or "DIAMOND EDUCATION"), str(snapshot.get("branch_name") or ""), "",
+        brand, *([branch_line] if branch_line else []), "",
         "TO'LOV CHEKI", "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
         f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
         f"O'qituvchi: {teachers}", "", f"TO'LOV: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"QOLGAN QARZ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
         f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
         f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
         f"Payment ID: {snapshot.get('payment_id') or '-'}", f"Receipt ID: {receipt.get('receipt_id') or '-'}", "",
@@ -45390,6 +45459,12 @@ async def admin_payments_student_confirm(
     obligation_id = int(obligation.get("id") or 0)
     if obligation_id <= 0:
         raise HTTPException(status_code=500, detail="Could not resolve payment obligation")
+    outstanding_amount = max(
+        0.0,
+        float(obligation.get("final_amount") or 0.0) - float(obligation.get("paid_amount") or 0.0),
+    )
+    if bool(payload.is_partial) and amount > outstanding_amount + 1e-9:
+        raise HTTPException(status_code=400, detail="Partial payment cannot exceed the remaining debt")
     _ensure_payment_automation_schema()
     conn = get_conn()
     cur = conn.cursor()

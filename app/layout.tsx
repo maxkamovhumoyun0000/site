@@ -3,15 +3,7 @@ import Script from "next/script";
 import PwaRegister from "./pwa-register";
 import { ThemeProvider } from "./ui/theme-provider";
 import { RootWebLocaleProvider } from "./ui/web-i18n";
-import { Inter_Tight, Manrope, Sora, Outfit, Plus_Jakarta_Sans, Inter } from "next/font/google";
 import "./globals.css";
-
-const interTight = Inter_Tight({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"], variable: "--font-inter-tight", display: "swap" });
-const manrope = Manrope({ subsets: ["latin"], weight: ["400", "500", "600", "700", "800"], variable: "--font-manrope", display: "swap" });
-const sora = Sora({ subsets: ["latin"], weight: ["500", "600", "700", "800"], variable: "--font-sora", display: "swap" });
-const outfit = Outfit({ subsets: ["latin"], weight: ["400", "600", "800", "900"], variable: "--font-outfit", display: "swap" });
-const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], weight: ["400", "500", "700", "800"], variable: "--font-jakarta", display: "swap" });
-const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
 
 export const metadata: Metadata = {
   title: "Diamond Education",
@@ -70,7 +62,7 @@ export default function RootLayout({
   };
 
   return (
-    <html lang="en" suppressHydrationWarning className={`${interTight.variable} ${manrope.variable} ${sora.variable} ${outfit.variable} ${jakarta.variable} ${inter.variable}`}>
+    <html lang="en" suppressHydrationWarning>
       <head>
         <link rel="icon" href="/logo.jpg" type="image/jpeg" />
         <link rel="shortcut icon" href="/logo.jpg" type="image/jpeg" />
