@@ -134,11 +134,15 @@ function escapeReceiptHtml(value: unknown): string {
 
 function receiptPrintHtml(receipt: GenericRow): string {
   const snapshot = (receipt.snapshot || {}) as GenericRow;
+  const isRefund = snapshot.receipt_kind === "refund";
   const amount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0));
   const remainingAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0));
   const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
   const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
-  const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+  const documentTitle = isRefund ? "QAYTARISH CHEKI" : "TO'LOV CHEKI";
+  const amountLabel = isRefund ? "QAYTARILGAN SUMMA" : "TO'LOV";
+  const statusLabel = isRefund ? "QAYTARISH TASDIQLANDI" : "TO'LOV TASDIQLANDI";
   const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
   const branch = String(snapshot.branch_name || "").trim();
   const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
@@ -147,10 +151,11 @@ function receiptPrintHtml(receipt: GenericRow): string {
     ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
     ["Tasdiqladi", snapshot.confirmed_by_name], ["Sana", snapshot.confirmed_at],
     ["Payment ID", snapshot.payment_id], ["Receipt ID", receipt.receipt_id],
+    ...(isRefund && snapshot.refund_note ? [["Izoh", snapshot.refund_note] as [string, unknown]] : []),
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
     @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>TO'LOV CHEKI</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>TO'LOV:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>QOLDIQ:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">TO'LOV TASDIQLANDI</div></main></body></html>`;
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>QOLDIQ:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">${escapeReceiptHtml(statusLabel)}</div></main></body></html>`;
 }
 
 type ApiUser = {
@@ -16776,13 +16781,32 @@ function AdminSection({
     }
   }
 
+  async function openRefundReceipt(refundId: number) {
+    const token = localStorage.getItem("diamond_token");
+    if (!token || refundId <= 0) return;
+    setReceiptBusy(true);
+    try {
+      const receipt = await requestJson<GenericRow>(`/admin/payments/refunds/${refundId}/receipt`, { token, timeoutMs: 30000 });
+      setReceiptPreview(receipt);
+    } catch (error) {
+      const normalized = normalizeNetworkError(error);
+      setPaymentsGeneralError(String(normalized.message || "Qaytarish chekini ochib bo'lmadi"));
+    } finally {
+      setReceiptBusy(false);
+    }
+  }
+
   async function downloadReceiptPdf(receipt: GenericRow) {
     const token = localStorage.getItem("diamond_token");
     const receiptId = String(receipt.receipt_id || "").trim();
     if (!token || !receiptId) return;
+    const refundId = Number(receipt.refund_id || 0);
+    const pdfPath = refundId > 0
+      ? `/admin/payments/refunds/${refundId}/receipt/pdf`
+      : `/admin/receipts/${encodeURIComponent(receiptId)}/pdf`;
     setReceiptBusy(true);
     try {
-      const response = await fetch(`${API_BASE}/admin/receipts/${encodeURIComponent(receiptId)}/pdf`, {
+      const response = await fetch(`${API_BASE}${pdfPath}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error("PDF yuklab bo'lmadi");
@@ -16807,8 +16831,12 @@ function AdminSection({
     const token = localStorage.getItem("diamond_token");
     const receiptId = String(receipt.receipt_id || "").trim();
     if (!token || !receiptId) return;
+    const refundId = Number(receipt.refund_id || 0);
+    const printPath = refundId > 0
+      ? `/admin/payments/refunds/${refundId}/receipt/print`
+      : `/admin/receipts/${encodeURIComponent(receiptId)}/print`;
     try {
-      await requestJson(`/admin/receipts/${encodeURIComponent(receiptId)}/print`, { method: "POST", token, timeoutMs: 15000 });
+      await requestJson(printPath, { method: "POST", token, timeoutMs: 15000 });
       const popup = window.open("", "_blank");
       if (!popup) throw new Error("Print oynasi bloklangan");
       popup.opener = null;
@@ -17252,15 +17280,12 @@ function AdminSection({
     }
   }
 
-  async function confirmStudentPayment(mode: "full" | "partial", amountOverride?: number) {
+  async function confirmStudentPayment() {
     const userId = Number(paymentsSelectedStudentId || 0);
     const groupId = Number(paymentsConfirmDraft.groupId || 0);
     const monthKey = String(paymentsConfirmDraft.ym || "").trim();
     if (!userId || !groupId || !monthKey) return;
-    const fullAmountSource = amountOverride ?? paymentsConfirmDraft.amount;
-    const amountNumber = mode === "full"
-      ? Number(fullAmountSource || 0)
-      : Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
+    const amountNumber = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) return;
     setPaymentsConfirmBusy(true);
     try {
@@ -17274,7 +17299,6 @@ function AdminSection({
           card_id: paymentsConfirmDraft.paymentMethod === "card" && Number(paymentsConfirmDraft.cardId || 0) > 0 ? Number(paymentsConfirmDraft.cardId) : null,
           note: String(paymentsConfirmDraft.note || "").trim() || null,
           is_advance: Boolean(paymentsConfirmDraft.isAdvance),
-          is_partial: mode === "partial",
         },
         "POST",
         "Payment confirmed",
@@ -17323,6 +17347,8 @@ function AdminSection({
       );
       if (!result) return;
       setPaymentsConfirmDraft((prev) => ({ ...prev, amount: "", note: "" }));
+      const refundId = Number(result.refund_id || 0);
+      if (refundId > 0) await openRefundReceipt(refundId);
       await Promise.allSettled([
         loadPaymentsTransactions(paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined),
         loadPaymentsStats(),
@@ -19074,8 +19100,8 @@ function AdminSection({
     const confirmGroupId = Number(paymentsConfirmDraft.groupId || 0);
     const confirmGroupRow = detailRows.find((row) => Number(row.group_id || 0) === confirmGroupId) || null;
     const remainingForConfirm = Number(confirmGroupRow?.debt_amount || 0);
-    const partialAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
-    const canConfirmPartial = Number.isFinite(partialAmountForConfirm) && partialAmountForConfirm > 0 && partialAmountForConfirm <= remainingForConfirm + 1e-9;
+    const paymentAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
+    const canConfirmPayment = Number.isFinite(paymentAmountForConfirm) && paymentAmountForConfirm > 0;
     const refundableTxForConfirm = getRefundablePaymentTransaction();
     const refundableAmountForConfirm = refundableTxForConfirm
       ? Math.max(0, Number(refundableTxForConfirm.payment_dcoin_amount || refundableTxForConfirm.paid_amount || 0) - Number(refundableTxForConfirm.refunded_amount || 0))
@@ -20054,6 +20080,7 @@ function AdminSection({
                         onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, amount: event.target.value }))}
                         placeholder="0.00"
                       />
+                      <small className="text-ink-500 dark:text-navy-300">Kiritilgan summa bo&apos;yicha to&apos;lov turi avtomatik aniqlanadi.</small>
                     </label>
                     <label className="pmc-field pmc-field-full">
                       <span>{pt("note", "Izoh")} {refundableAmountForConfirm > 0 ? pt("noteRefundRequired", "(qaytarish uchun majburiy)") : pt("optional", "(ixtiyoriy)")}</span>
@@ -20074,21 +20101,10 @@ function AdminSection({
                     <div className="pmc-action-buttons">
                       <button
                         className="btn btn-primary"
-                        disabled={paymentsConfirmBusy || !paymentsConfirmDraft.groupId || remainingForConfirm <= 0}
-                        onClick={() => {
-                          const fullAmount = Number(remainingForConfirm.toFixed(2));
-                          setPaymentsConfirmDraft((prev) => ({ ...prev, amount: fullAmount.toFixed(2) }));
-                          confirmStudentPayment("full", fullAmount).catch(() => null);
-                        }}
+                        disabled={paymentsConfirmBusy || !paymentsConfirmDraft.groupId || !canConfirmPayment}
+                        onClick={() => confirmStudentPayment().catch(() => null)}
                       >
-                        {paymentsConfirmBusy ? pt("confirming", "Tasdiqlanmoqda...") : pt("fullPayment", "To'liq to'lov")}
-                      </button>
-                      <button
-                        className="btn btn-soft"
-                        disabled={paymentsConfirmBusy || !paymentsConfirmDraft.groupId || !canConfirmPartial}
-                        onClick={() => confirmStudentPayment("partial").catch(() => null)}
-                      >
-                        {paymentsConfirmBusy ? pt("confirming", "Tasdiqlanmoqda...") : pt("partialPayment", "Qisman to'lov")}
+                        {paymentsConfirmBusy ? pt("confirming", "Tasdiqlanmoqda...") : pt("confirmPayment", "To'lovni tasdiqlash")}
                       </button>
                       <button
                         className="btn btn-soft"
@@ -20112,14 +20128,15 @@ function AdminSection({
             <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
               <div className="row-between gap-3">
                 <div>
-                  <h3>TO&apos;LOV CHEKI</h3>
+                  <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI" : "TO'LOV CHEKI"}</h3>
                 </div>
                 <button className="admin-modal-close" type="button" aria-label="Yopish" onClick={() => setReceiptPreview(null)}>×</button>
               </div>
               {receiptPreview ? (() => {
                 const snapshot = (receiptPreview.snapshot || {}) as GenericRow;
+                const isRefund = snapshot.receipt_kind === "refund";
                 const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
-                const paymentType = snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+                const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
                 const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
                 const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
                 const branch = String(snapshot.branch_name || "").trim();
@@ -20132,14 +20149,16 @@ function AdminSection({
                   <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
                   <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
                   <p><b>O&apos;qituvchi:</b> {teachers}</p>
-                  <p className="text-base font-black"><b>To&apos;lov:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>{isRefund ? "Qaytarilgan summa" : "To'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
                   <p className="text-base font-black"><b>Qolgan qarz:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
                   <p><b>To&apos;lov turi:</b> {paymentType}</p>
-                  <p><b>Usul:</b> {method}</p>
+                  <p><b>To&apos;lov usuli:</b> {method}</p>
                   <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>
                   <p><b>Sana:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
-                  <p className="text-xs text-ink-500 dark:text-navy-300">{snapshot.payment_id || "-"} · {receiptPreview.receipt_id || "-"}</p>
-                  <div className="text-center font-black pt-2">TO&apos;LOV TASDIQLANDI</div>
+                  <p><b>Payment ID:</b> {snapshot.payment_id || "-"}</p>
+                  <p><b>Receipt ID:</b> {receiptPreview.receipt_id || "-"}</p>
+                  {isRefund && snapshot.refund_note ? <p><b>Izoh:</b> {snapshot.refund_note}</p> : null}
+                  <div className="text-center font-black pt-2">{isRefund ? "QAYTARISH TASDIQLANDI" : "TO'LOV TASDIQLANDI"}</div>
                 </div>;
               })() : null}
               <div className="button-grid mt-4">
@@ -20156,20 +20175,17 @@ function AdminSection({
           </div>
           <p className="table-scroll-hint">{pt("swipeTableHint", "Jadvalni yon tomonga suring")}</p>
           <div className="table-wrap payments-transactions-table overflow-x-auto -mx-1 px-1 touch-pan-x" style={{ WebkitOverflowScrolling: 'touch' }}>
-            <table className="min-w-[1120px] w-full">
+            <table className="min-w-[820px] w-full">
               <thead>
                 <tr>
                   <th>{pt("paidAt", "To'langan vaqt")}</th>
                   <th>{pt("student", "Student")}</th>
-                  <th>{pt("group", "Guruh")}</th>
                   <th>{tt("common.subject", "Fan")}</th>
                   <th>{pt("teacher", "O'qituvchi")}</th>
                   <th>{pt("method", "Usul")}</th>
                   <th>{pt("paid", "To'langan")}</th>
                   <th>{pt("discount", "Chegirma")}</th>
                   <th>{pt("debtAfter", "Keyingi qarz")}</th>
-                  <th>{pt("overpaymentAfter", "Keyingi ortiqcha to'lov")}</th>
-                  <th>{pt("admin", "Admin")}</th>
                   <th>{pt("actions", "Amallar")}</th>
                 </tr>
               </thead>
@@ -20181,7 +20197,6 @@ function AdminSection({
                       <strong>{row.student_name || `#${row.user_id}`}</strong>
                       {row.note ? <small className="block text-ink-500 dark:text-navy-300">{row.note}</small> : null}
                     </td>
-                    <td>{row.group_name || row.group_id || "-"}</td>
                     <td>{row.group_subject || "-"}</td>
                     <td>{row.teacher_name || "-"}</td>
                     <td>
@@ -20195,8 +20210,6 @@ function AdminSection({
                     <td className="font-bold">{Number(row.paid_amount || row.payment_dcoin_amount || 0).toFixed(2)}</td>
                     <td>{Number(row.discount_amount || 0).toFixed(2)}</td>
                     <td>{Number(row.debt_amount || row.remaining_after || 0).toFixed(2)}</td>
-                    <td>{Number(row.overpayment_amount || row.overpayment_after || 0).toFixed(2)}</td>
-                    <td>{row.paid_by_admin_name || "-"}</td>
                     <td>
                       <div className="button-grid inline">
                         <button
@@ -20221,7 +20234,7 @@ function AdminSection({
                 ))}
                 {!paymentsTxRows.length ? (
                   <tr>
-                    <td colSpan={12} className="text-center text-ink-500 dark:text-navy-300">
+                    <td colSpan={9} className="text-center text-ink-500 dark:text-navy-300">
                       {pt("transactionsNotFound", "Tranzaksiyalar topilmadi.")}
                     </td>
                   </tr>
@@ -23544,7 +23557,7 @@ function DashboardShell({
     (appState?.sections?.[activeRole] as string[] | undefined),
     getUserSubjects(activeRole, user, appState),
   );
-  const rawRoleData = (activeRole === "media" || activeRole === "developer") ? (appState?.admin || {}) : (appState?.[activeRole] || {});
+  const rawRoleData = activeRole === "media" ? (appState?.admin || {}) : (appState?.[activeRole] || {});
   const roleData = activeRole === "student" ? { ...rawRoleData, user } : rawRoleData;
   const effectiveSections = activeRole === "support" && Array.isArray(roleData.groups) && roleData.groups.length
     ? Array.from(new Set([...sections, "groups", "group-attendance", "arena", "performance", "dcoin"]))
@@ -24741,7 +24754,7 @@ export default function DiamondEducationApp() {
       // A copied/back navigation URL can still contain role=admin because the
       // media account is backed by an admin API token. Do not let that URL
       // switch this account into the ordinary admin workspace.
-      const safeRole = accountRole === "media" ? "media" : urlRole;
+      const safeRole = accountRole === "media" || accountRole === "developer" ? accountRole : urlRole;
       if (safeRole !== urlRole) {
         params.set("role", safeRole);
         window.history.replaceState(null, "", `/?${params.toString()}`);
@@ -25267,7 +25280,7 @@ export default function DiamondEducationApp() {
         ) {
           setAppState((prev) => prev || cached);
           const cachedRole = cached?.effective_role as Role | undefined;
-          if (roleNow !== "media" && cachedRole && cachedRole !== activeRole) {
+          if (!(["media", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
           }
         }

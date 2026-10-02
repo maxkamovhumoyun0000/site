@@ -104,21 +104,29 @@ database, `data/`, upload/media va `node_modules/`ga tegmaydi:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
-  'cd /root/diamond-site && if [ -d .next ]; then find .next -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi && echo next-cache:cleared'
+  'systemctl stop diamond-site-frontend && cd /root/diamond-site && if [ -d .next ]; then find .next -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi && echo next-cache:cleared'
 ```
 
-Frontend build:
+`diamond-site-frontend` albatta to'xtatilgan bo'lishi kerak: ishlab turgan
+Next.js serveri ostida `.next` tozalansa, u eski HTML'ni yo'qolgan JavaScript
+chunklariga ulab, sahifani ochilmaydigan holatga keltirishi mumkin.
+
+Frontend build muvaffaqiyatli tugagachgina frontendni ishga tushiring:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
-  'cd /root/diamond-site && npm run build'
+  'cd /root/diamond-site && npm run build && systemctl start diamond-site-frontend'
 ```
+
+Build xato bersa frontendni ishga tushirmang; avval build xatosini tuzating.
+Bu qoida faqat eski `.next` build cache'i uchun — database, `data/`, media,
+upload va backup fayllariga tegilmaydi.
 
 ## Relaunch
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
-  'systemctl restart diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot'
+  'systemctl restart diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot'
 ```
 
 ## Production Log Himoyasi
@@ -239,7 +247,7 @@ git checkout -- .
 2. `data/`, upload/media, `.env`, `.venv`, `node_modules`, `.next` tegilmadi.
 3. Database backup olindi va fayl hajmi tekshirildi.
 4. Python compile OK.
-5. `npm run build` OK.
-6. Servislar restart qilindi.
+5. Frontend to'xtatildi, faqat `.next` cache tozalandi, `npm run build` OK bo'lgach frontend ishga tushirildi.
+6. Qolgan servislar restart qilindi.
 7. Smoke test `200`.
 8. `NRestarts=0`, servislar `active/running`.

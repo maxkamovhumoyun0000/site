@@ -959,6 +959,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "dpoint-settings",
         "profile",
     ],
+    "developer": ["home", "profile"],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
@@ -1885,7 +1886,6 @@ class PaymentConfirmRequest(BaseModel):
     card_id: int | None = None
     note: str | None = None
     is_advance: bool = False
-    is_partial: bool = False
 
 
 class PaymentRefundRequest(BaseModel):
@@ -6391,6 +6391,9 @@ def _placement_level_from_score(score: int, subject: str) -> tuple[str, str]:
 def _role_from_login_type(login_type: int | None, login_id: str | None = None) -> str:
     lt = int(login_type or 1)
     lid = (login_id or "").strip().upper()
+    developer_login = str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper()
+    if lid == developer_login:
+        return "developer"
     if lt in (1, 2):
         return "student"
     if lt == 6:
@@ -7742,7 +7745,7 @@ async def developer_workspace_access_guard(request: Request, call_next):
 
 
 def _require_developer_access(user: dict) -> None:
-    _require_role(user, {"admin"})
+    _require_role(user, {"developer"})
     if not _is_developer_account(user):
         raise HTTPException(status_code=403, detail="Developer workspace access is required")
 
@@ -16332,6 +16335,8 @@ def _build_student_dashboard_payload(user: dict, economy_rules_payload: dict[str
 
 
 def _build_role_boot_payload(user: dict, role: str, economy_rules_payload: dict[str, Any]) -> dict[str, Any]:
+    if role == "developer":
+        return {}
     if role == "student":
         return _build_student_dashboard_payload(user, economy_rules_payload)
     if role == "teacher":
@@ -21360,6 +21365,8 @@ async def app_state(
         base_payload["teacher"] = _build_teacher_payload(user)
     elif effective_role == "support":
         base_payload["support"] = _build_support_payload(user)
+    elif effective_role == "developer":
+        base_payload["developer"] = {}
     else:
         base_payload["admin"] = _build_admin_payload(user)
 
@@ -39746,6 +39753,43 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
     return tx, snapshot
 
 
+def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict[str, Any]) -> dict[str, Any]:
+    """Build a refund receipt only from the persisted refund and source payment rows."""
+    def _money(value: Any) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return round(max(0.0, numeric), 2) if math.isfinite(numeric) else 0.0
+
+    branch_admin_id, branch_name = _receipt_branch_snapshot(transaction)
+    refund_id = int(refund.get("id") or 0)
+    refund_type = str(refund.get("refund_type") or "partial").strip().lower()
+    return {
+        "receipt_kind": "refund",
+        "brand": "DIAMOND EDUCATION",
+        "student_name": str(transaction.get("student_name") or "-").strip() or "-",
+        "group_name": str(transaction.get("group_name") or f"Group #{int(refund.get('group_id') or 0)}").strip(),
+        "subject_name": str(transaction.get("subject_name") or transaction.get("course_title") or "-").strip() or "-",
+        "teachers": [str(transaction.get("teacher_name") or "-").strip() or "-"],
+        "amount": _money(refund.get("amount")),
+        "remaining_amount": _money(refund.get("debt_after")),
+        "overpayment_amount": _money(refund.get("overpayment_after")),
+        "payment_status": str(refund.get("status_after") or PAYMENT_STATUS_UNPAID),
+        "payment_method": str(transaction.get("payment_method") or "cash").strip().lower(),
+        "payment_type": "refund_full" if refund_type == "full" else "refund_partial",
+        "branch_name": branch_name,
+        "confirmed_by_name": str(refund.get("refunded_by_admin_name") or "Diamond Admin").strip() or "Diamond Admin",
+        "confirmed_at": str(refund.get("created_at") or ""),
+        "payment_id": f"REF-{refund_id}",
+        "source_payment_id": f"PAY-{int(refund.get('transaction_id') or 0)}",
+        "refund_note": str(refund.get("note") or "").strip(),
+        "group_id": int(refund.get("group_id") or 0),
+        "user_id": int(refund.get("user_id") or 0),
+        "branch_admin_id": branch_admin_id,
+    }
+
+
 def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, actor_admin_id: int | None = None) -> dict[str, Any]:
     """One-time migration for receipts issued before balances were printed.
 
@@ -39819,10 +39863,13 @@ def _get_or_create_payment_receipt(cur: Any, transaction_id: int, *, actor_admin
 
 
 def _receipt_public_payload(receipt: dict[str, Any]) -> dict[str, Any]:
-    return {"receipt_id": str(receipt.get("receipt_id") or ""),
-            "payment_transaction_id": int(receipt.get("payment_transaction_id") or 0),
-            "status": str(receipt.get("status") or "confirmed"), "created_at": str(receipt.get("created_at") or ""),
-            "snapshot": dict(receipt.get("snapshot") or _safe_json_object(receipt.get("snapshot_json")))}
+    payload = {"receipt_id": str(receipt.get("receipt_id") or ""),
+               "payment_transaction_id": int(receipt.get("payment_transaction_id") or 0),
+               "status": str(receipt.get("status") or "confirmed"), "created_at": str(receipt.get("created_at") or ""),
+               "snapshot": dict(receipt.get("snapshot") or _safe_json_object(receipt.get("snapshot_json")))}
+    if int(receipt.get("refund_id") or 0) > 0:
+        payload["refund_id"] = int(receipt["refund_id"])
+    return payload
 
 
 def _payment_ym_now() -> str:
@@ -43797,6 +43844,60 @@ def _load_receipt_for_admin(receipt_id: str, user: dict[str, Any]) -> tuple[Any,
     return conn, cur, receipt, admin_ref
 
 
+def _load_refund_receipt_for_admin(refund_id: int, user: dict[str, Any]) -> tuple[Any, Any, dict[str, Any], int]:
+    """Load an immutable refund receipt and enforce the same branch scope as payments."""
+    _ensure_payment_automation_schema()
+    admin_ref = _admin_ref_id(user)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT r.*, tx.payment_method, tx.is_advance,
+           TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
+           g.name AS group_name, g.subject AS subject_name, g.course_title, g.owner_admin_id,
+           TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
+           FROM payment_refunds r
+           JOIN payment_transactions tx ON tx.id=r.transaction_id
+           JOIN users u ON u.id=r.user_id
+           LEFT JOIN groups g ON g.id=r.group_id
+           LEFT JOIN users t ON t.id=g.teacher_id
+           WHERE r.id=? LIMIT 1""",
+        (int(refund_id),),
+    )
+    row = dict(cur.fetchone() or {})
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Refund receipt not found")
+    snapshot = _refund_receipt_snapshot_from_rows(row, row)
+    receipt = {
+        "receipt_id": f"REF-{int(row.get('id') or 0)}-01",
+        "refund_id": int(row.get("id") or 0),
+        "payment_transaction_id": int(row.get("transaction_id") or 0),
+        "user_id": int(row.get("user_id") or 0),
+        "group_id": int(row.get("group_id") or 0),
+        "branch_admin_id": snapshot.get("branch_admin_id"),
+        "status": "refunded",
+        "created_at": str(row.get("created_at") or ""),
+        "snapshot": snapshot,
+    }
+    if not _receipt_authorized_for_admin(receipt, admin_ref):
+        conn.close()
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return conn, cur, receipt, admin_ref
+
+
+def _audit_refund_receipt_event(cur: Any, *, event_type: str, user: dict[str, Any], receipt: dict[str, Any]) -> None:
+    _payment_audit_event(
+        cur,
+        event_type=event_type,
+        actor_admin_id=int(user.get("id") or 0),
+        payment_transaction_id=int(receipt.get("payment_transaction_id") or 0),
+        receipt_id=str(receipt.get("receipt_id") or ""),
+        user_id=int(receipt.get("user_id") or 0),
+        group_id=int(receipt.get("group_id") or 0),
+        branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None,
+    )
+
+
 @app.get("/admin/payments/transactions/{transaction_id}/receipt")
 async def admin_payment_transaction_receipt(
     transaction_id: int,
@@ -43851,6 +43952,22 @@ async def admin_receipt_detail(receipt_id: str, authorization: str | None = Head
         conn.close()
 
 
+@app.get("/admin/payments/refunds/{refund_id}/receipt")
+async def admin_payment_refund_receipt(refund_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_refund_receipt_for_admin(refund_id, user)
+    try:
+        _audit_refund_receipt_event(cur, event_type="REFUND_RECEIPT_VIEWED", user=user, receipt=receipt)
+        conn.commit()
+        return _receipt_public_payload(receipt)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     """Render server-side from the immutable snapshot, never client fields."""
     try:
@@ -43859,21 +43976,31 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         raise HTTPException(status_code=503, detail="Receipt PDF service is unavailable") from exc
     snapshot = dict(receipt.get("snapshot") or {})
     method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
-    payment_type = "Oldindan to'lov" if snapshot.get("payment_type") == "advance" else "Oylik to'lov"
+    is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
+    payment_type = (
+        "To'liq qaytarish" if snapshot.get("payment_type") == "refund_full"
+        else "Qisman qaytarish" if snapshot.get("payment_type") == "refund_partial"
+        else "Oldindan to'lov" if snapshot.get("payment_type") == "advance"
+        else "Oylik to'lov"
+    )
+    document_title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
+    amount_label = "QAYTARILGAN SUMMA" if is_refund else "TO'LOV"
+    result_label = "QAYTARISH TASDIQLANDI" if is_refund else "TO'LOV TASDIQLANDI"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
     brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
     branch = str(snapshot.get("branch_name") or "").strip()
     branch_line = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
     lines = [
         brand, *([branch_line] if branch_line else []), "",
-        "TO'LOV CHEKI", "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
+        document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
         f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
-        f"O'qituvchi: {teachers}", "", f"TO'LOV: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
         f"QOLGAN QARZ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
         f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
         f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
-        f"Payment ID: {snapshot.get('payment_id') or '-'}", f"Receipt ID: {receipt.get('receipt_id') or '-'}", "",
-        "TO'LOV TASDIQLANDI",
+        f"Payment ID: {snapshot.get('payment_id') or '-'}", f"Receipt ID: {receipt.get('receipt_id') or '-'}",
+        *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []), "",
+        result_label,
     ]
     doc = fitz.open()
     page = doc.new_page(width=300, height=560)
@@ -43904,6 +44031,24 @@ async def admin_receipt_pdf(receipt_id: str, authorization: str | None = Header(
         conn.close()
 
 
+@app.get("/admin/payments/refunds/{refund_id}/receipt/pdf")
+async def admin_refund_receipt_pdf(refund_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_refund_receipt_for_admin(refund_id, user)
+    try:
+        pdf = _receipt_pdf_bytes(receipt)
+        _audit_refund_receipt_event(cur, event_type="REFUND_RECEIPT_PDF_GENERATED", user=user, receipt=receipt)
+        conn.commit()
+        filename = f"receipt-{str(receipt.get('receipt_id') or 'refund')}.pdf"
+        return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @app.post("/admin/receipts/{receipt_id}/print")
 async def admin_receipt_printed(receipt_id: str, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -43914,6 +44059,22 @@ async def admin_receipt_printed(receipt_id: str, authorization: str | None = Hea
             payment_transaction_id=int(receipt.get("payment_transaction_id") or 0), receipt_id=str(receipt.get("receipt_id") or ""),
             user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
             branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
+        conn.commit()
+        return {"ok": True}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@app.post("/admin/payments/refunds/{refund_id}/receipt/print")
+async def admin_refund_receipt_printed(refund_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    conn, cur, receipt, _ = _load_refund_receipt_for_admin(refund_id, user)
+    try:
+        _audit_refund_receipt_event(cur, event_type="REFUND_RECEIPT_PRINT_REQUESTED", user=user, receipt=receipt)
         conn.commit()
         return {"ok": True}
     except Exception:
@@ -45619,8 +45780,6 @@ async def admin_payments_student_confirm(
         0.0,
         float(obligation.get("final_amount") or 0.0) - float(obligation.get("paid_amount") or 0.0),
     )
-    if bool(payload.is_partial) and amount > outstanding_amount + 1e-9:
-        raise HTTPException(status_code=400, detail="Partial payment cannot exceed the remaining debt")
     _ensure_payment_automation_schema()
     conn = get_conn()
     cur = conn.cursor()
