@@ -3,6 +3,7 @@ from __future__ import annotations
 import backend.main as api
 import db
 import diamondvoy_helpers as diamondvoy
+import pytest
 
 
 def test_force_update_compares_only_public_versions() -> None:
@@ -77,3 +78,20 @@ def test_maintenance_settings_payload_accepts_only_safe_app_specific_fields() ->
 
     assert normalized["student_maintenance_enabled"] == 1
     assert normalized["student_maintenance_message_uz"] == "Rejali texnik ishlar"
+
+
+def test_maintenance_window_rejects_an_end_before_its_start() -> None:
+    with pytest.raises(api.HTTPException, match="must be after"):
+        api._normalize_app_version_settings_payload(
+            {
+                "teacher": {
+                    "maintenance_starts_at": "2026-10-02T10:00:00Z",
+                    "maintenance_ends_at": "2026-10-02T08:00:00Z",
+                }
+            }
+        )
+
+
+def test_developer_scope_is_limited_to_the_dedicated_login() -> None:
+    assert api._is_developer_account({"login_id": "developer-x-01"})
+    assert not api._is_developer_account({"login_id": "MEDIA-X-01"})

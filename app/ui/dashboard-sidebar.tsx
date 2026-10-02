@@ -68,6 +68,7 @@ export function sectionIconGlyph(section: string) {
     bonus: "+",
     settings: "⚙",
     performance: "↗",
+    developer: "⌘",
     tests: "✓",
   };
   return glyphs[section] || "•";

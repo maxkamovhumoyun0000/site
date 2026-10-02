@@ -994,6 +994,7 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
+  if (String(user.login_id || "").trim().toLowerCase() === "developer-x-01") return "developer";
   // Media-X-01 is deliberately backed by an ordinary admin account so its
   // existing token continues to authorize the media tools. The frontend
   // narrows the visible workspace to the media-only set below.
@@ -21470,11 +21471,88 @@ function ServerStatusDashboard() {
   );
 }
 
+function datetimeLocalValue(value: unknown) {
+  const date = value ? new Date(String(value)) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function DeveloperMaintenancePanel() {
+  const [settings, setSettings] = useState<GenericRow>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { token: localStorage.getItem("diamond_token") || "", timeoutMs: 15000 });
+      setSettings(result || {});
+      setError("");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Maintenance sozlamalari yuklanmadi.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+  const update = (role: "student" | "teacher", key: string, value: unknown) => {
+    setSettings((previous) => ({ ...previous, [role]: { ...(previous[role] || {}), [key]: value } }));
+  };
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const payload: GenericRow = {};
+      for (const role of ["student", "teacher"] as const) {
+        const item = (settings[role] || {}) as GenericRow;
+        payload[role] = {
+          maintenance_enabled: Boolean(item.enabled),
+          maintenance_starts_at: item.starts_at ? new Date(String(item.starts_at)).toISOString() : "",
+          maintenance_ends_at: item.ends_at ? new Date(String(item.ends_at)).toISOString() : "",
+          maintenance_message_uz: String(item.message_uz || ""),
+        };
+      }
+      const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
+      setSettings(result || {});
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Saqlashda xatolik.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Mobile control</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Rejali maintenance</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.</p></div>
+      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? "Saqlanmoqda…" : "Saqlash"}</button>
+    </div>
+    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
+    <div className="grid gap-4 lg:grid-cols-2">
+      {(["student", "teacher"] as const).map((role) => {
+        const item = (settings[role] || {}) as GenericRow;
+        const title = role === "student" ? "🎓 Student App" : "👨‍🏫 Teacher App";
+        return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
+          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> Yoqilgan</label></div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Boshlanish<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Tugash<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label></div>
+          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">Ilovadagi xabar<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder="Rejali texnik ishlar olib borilmoqda." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label>
+          <p className="mt-2 text-xs font-medium text-ink-500">Holat: {item.active ? "hozir foydalanuvchilarga ko‘rsatilmoqda" : item.enabled ? "vaqt kelganda avtomatik yoqiladi" : "o‘chiq"}</p>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+function DeveloperWorkspace() {
+  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker="Developer workspace" title="Tizim boshqaruvi" subtitle="Server resurslari va mobil ilovalarning rejali maintenance boshqaruvi." /><ServerStatusDashboard /><DeveloperMaintenancePanel /></div>;
+}
+
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
   const primarySections = MEDIA_WORKSPACE_SECTIONS.slice(0, 4);
   const columns = [MEDIA_WORKSPACE_SECTIONS.slice(4, 7), MEDIA_WORKSPACE_SECTIONS.slice(7, 10), MEDIA_WORKSPACE_SECTIONS.slice(10)];
   return <div className="flex flex-col gap-5 pb-10 animate-fade-in">
-    <ServerStatusDashboard />
     <div className="admin-hero-stats">
       {primarySections.map((section, index) => <button key={section} type="button" onClick={() => onNavigate(section)} className={`admin-stat-card ${["asc-indigo", "asc-cyan", "asc-emerald", "asc-amber"][index]}`}>
         <div className="asc-bg-blob" /><div className="asc-icon">{sectionIconGlyph(section)}</div><div className="asc-value">{index + 1}</div><div className="asc-label">{SECTION_LABELS[section]}</div>
@@ -23466,7 +23544,7 @@ function DashboardShell({
     (appState?.sections?.[activeRole] as string[] | undefined),
     getUserSubjects(activeRole, user, appState),
   );
-  const rawRoleData = activeRole === "media" ? (appState?.admin || {}) : (appState?.[activeRole] || {});
+  const rawRoleData = (activeRole === "media" || activeRole === "developer") ? (appState?.admin || {}) : (appState?.[activeRole] || {});
   const roleData = activeRole === "student" ? { ...rawRoleData, user } : rawRoleData;
   const effectiveSections = activeRole === "support" && Array.isArray(roleData.groups) && roleData.groups.length
     ? Array.from(new Set([...sections, "groups", "group-attendance", "arena", "performance", "dcoin"]))
@@ -24109,6 +24187,12 @@ function DashboardShell({
       content = <ModeratorVoiceRoom role="support" />;
     } else {
       content = <SupportSection section={currentSection} data={roleData} user={user} onBookingStatus={onBookingStatus} onBookingAttendance={onBookingAttendance} onNavigate={handleNavigate} />;
+    }
+  } else if (activeRole === "developer") {
+    if (currentSection === "profile") {
+      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="admin" />;
+    } else {
+      content = <DeveloperWorkspace />;
     }
   } else {
     if (currentSection === "profile") {

@@ -18298,6 +18298,57 @@ def set_standard_admin_account_credentials(*args: Any, **kwargs: Any) -> list[di
         conn.close()
 
 
+def ensure_developer_account() -> dict[str, Any]:
+    """Create the narrowly identified Developer workspace account once.
+
+    The initial random password is deliberately discarded. A main admin must
+    use the existing user-management password reset flow to issue the first
+    credential, so a secret is never written to logs, source, or deploy output.
+    """
+    login_id = str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9_-]{4,64}", login_id):
+        raise ValueError("DEVELOPER_WEB_LOGIN_ID is invalid")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE UPPER(login_id)=? LIMIT 1", (login_id,))
+        row = cur.fetchone()
+        if row:
+            user_id = int(row["id"] if isinstance(row, dict) else row[0])
+            cur.execute(
+                """
+                UPDATE users
+                SET login_type=4, blocked=0, access_enabled=1,
+                    first_name='Developer', last_name='Account'
+                WHERE id=?
+                """,
+                (user_id,),
+            )
+            conn.commit()
+            return {"id": user_id, "login_id": login_id, "created": False}
+        cur.execute(
+            """
+            INSERT INTO users
+            (login_id, password, first_name, last_name, phone, subject, login_type, blocked, access_enabled, password_used)
+            VALUES (?, ?, 'Developer', 'Account', '', 'English', 4, 0, 1, 0)
+            RETURNING id
+            """,
+            (login_id, hash_password(_generate_secure_password(24))),
+        )
+        created = cur.fetchone()
+        user_id = int(created["id"] if isinstance(created, dict) else created[0])
+        conn.commit()
+        return {"id": user_id, "login_id": login_id, "created": True}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def _load_runtime_dpoint_rules_from_db() -> dict[str, float]:
     defaults = {
         "correct_answer_reward": 2.0,
@@ -25585,6 +25636,20 @@ def ensure_app_version_settings_schema():
                     """
                 )
             conn.commit()
+            # Existing installations already have this table, so CREATE TABLE
+            # above cannot add new maintenance columns by itself.
+            for statement in (
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS student_maintenance_enabled INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS student_maintenance_starts_at TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS student_maintenance_ends_at TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS student_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_enabled INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_starts_at TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_ends_at TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
+            ):
+                cur.execute(statement)
+            conn.commit()
             _mark_schema_ready(schema_key)
         except Exception:
             try:
@@ -25623,6 +25688,14 @@ def get_app_version_settings() -> dict:
             "min_teacher_build": 1,
             "teacher_play_store_url": "https://play.google.com/store/apps/details?id=com.diamond.teachers",
             "teacher_app_store_url": "",
+            "student_maintenance_enabled": 0,
+            "student_maintenance_starts_at": "",
+            "student_maintenance_ends_at": "",
+            "student_maintenance_message_uz": "",
+            "teacher_maintenance_enabled": 0,
+            "teacher_maintenance_starts_at": "",
+            "teacher_maintenance_ends_at": "",
+            "teacher_maintenance_message_uz": "",
         }
         # The previous template used an unrelated third-party App Store ID.
         # Never direct a forced update to another developer's app. The admin
@@ -25642,7 +25715,9 @@ def update_app_version_settings(fields: dict) -> dict:
     get_app_version_settings()
     allowed = {
         "min_student_version", "min_student_build", "student_play_store_url", "student_app_store_url",
-        "min_teacher_version", "min_teacher_build", "teacher_play_store_url", "teacher_app_store_url"
+        "min_teacher_version", "min_teacher_build", "teacher_play_store_url", "teacher_app_store_url",
+        "student_maintenance_enabled", "student_maintenance_starts_at", "student_maintenance_ends_at", "student_maintenance_message_uz",
+        "teacher_maintenance_enabled", "teacher_maintenance_starts_at", "teacher_maintenance_ends_at", "teacher_maintenance_message_uz",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:

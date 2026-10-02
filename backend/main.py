@@ -116,6 +116,7 @@ from db import (
     enable_access,
     ensure_diamondvoy_chat_schema,
     ensure_media_assets_schema,
+    ensure_developer_account,
     ensure_screenshot_demo_schema,
     ensure_student_channel_link_schema,
     ensure_universal_chat_schema,
@@ -7702,6 +7703,17 @@ def _require_role(user: dict, roles: set[str]) -> str:
     if role not in roles:
         raise HTTPException(status_code=403, detail="Permission denied")
     return role
+
+
+def _is_developer_account(user: dict) -> bool:
+    expected = str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper()
+    return str((user or {}).get("login_id") or "").strip().upper() == expected
+
+
+def _require_developer_access(user: dict) -> None:
+    _require_role(user, {"admin"})
+    if not _is_developer_account(user):
+        raise HTTPException(status_code=403, detail="Developer workspace access is required")
 
 
 def _require_book_upload_access(user: dict) -> str:
@@ -18785,6 +18797,12 @@ async def startup_event() -> None:
     except Exception:
         logger.exception("startup admin credential sync failed")
 
+    try:
+        developer_account = ensure_developer_account()
+        logger.info("startup developer workspace account ready id=%s created=%s", developer_account.get("id"), developer_account.get("created"))
+    except Exception:
+        logger.exception("startup developer workspace account setup failed")
+
     # Non-critical heavy cleanup/seed should not block API bind.
     async def _maintenance_runner() -> None:
         m_started = time.perf_counter()
@@ -19531,6 +19549,10 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             "min_build": f"min_{role}_build",
             "store_url": f"{role}_play_store_url",
             "ios_store_url": f"{role}_app_store_url",
+            "maintenance_enabled": f"{role}_maintenance_enabled",
+            "maintenance_starts_at": f"{role}_maintenance_starts_at",
+            "maintenance_ends_at": f"{role}_maintenance_ends_at",
+            "maintenance_message_uz": f"{role}_maintenance_message_uz",
         }.items():
             if source in nested:
                 normalized[target] = nested[source]
@@ -19541,7 +19563,74 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
         if not _APP_VERSION_RE.fullmatch(version):
             raise HTTPException(status_code=422, detail=f"{key} must use a version such as 2.7.0")
         normalized[key] = version
+    for role in ("student", "teacher"):
+        enabled_key = f"{role}_maintenance_enabled"
+        if enabled_key in normalized:
+            normalized[enabled_key] = 1 if bool(normalized[enabled_key]) else 0
+        for field in ("starts_at", "ends_at"):
+            key = f"{role}_maintenance_{field}"
+            if key not in normalized:
+                continue
+            raw_value = str(normalized[key] or "").strip()
+            if not raw_value:
+                normalized[key] = ""
+                continue
+            try:
+                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"{key} must be an ISO-8601 timestamp")
+            if parsed.tzinfo is None:
+                raise HTTPException(status_code=422, detail=f"{key} must include a timezone")
+            normalized[key] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        message_key = f"{role}_maintenance_message_uz"
+        if message_key in normalized:
+            normalized[message_key] = str(normalized[message_key] or "").strip()[:500]
+        starts_key = f"{role}_maintenance_starts_at"
+        ends_key = f"{role}_maintenance_ends_at"
+        if normalized.get(starts_key) and normalized.get(ends_key):
+            starts_at = datetime.fromisoformat(str(normalized[starts_key]).replace("Z", "+00:00"))
+            ends_at = datetime.fromisoformat(str(normalized[ends_key]).replace("Z", "+00:00"))
+            if ends_at <= starts_at:
+                raise HTTPException(status_code=422, detail=f"{ends_key} must be after {starts_key}")
     return normalized
+
+
+def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | None = None) -> dict[str, Any]:
+    role = "teacher" if str(app_name or "").strip().lower() == "teacher" else "student"
+    enabled = bool(int(settings.get(f"{role}_maintenance_enabled") or 0))
+    starts_at = str(settings.get(f"{role}_maintenance_starts_at") or "").strip()
+    ends_at = str(settings.get(f"{role}_maintenance_ends_at") or "").strip()
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+    def parse(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc) if parsed.tzinfo else None
+        except ValueError:
+            return None
+
+    start = parse(starts_at)
+    end = parse(ends_at)
+    active = enabled and (start is None or current >= start) and (end is None or current < end)
+    return {
+        "enabled": enabled,
+        "active": active,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "message_uz": str(settings.get(f"{role}_maintenance_message_uz") or "").strip(),
+    }
+
+
+def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _normalize_app_version_settings_payload(payload)
+    maintenance_keys = {
+        f"{role}_maintenance_{field}"
+        for role in ("student", "teacher")
+        for field in ("enabled", "starts_at", "ends_at", "message_uz")
+    }
+    return {key: value for key, value in normalized.items() if key in maintenance_keys}
 
 
 def _app_version_settings_response(settings: dict[str, Any]) -> dict[str, Any]:
@@ -19554,6 +19643,7 @@ def _app_version_settings_response(settings: dict[str, Any]) -> dict[str, Any]:
             "store_url": result.get(f"{role}_play_store_url") or "",
             "ios_store_url": result.get(f"{role}_app_store_url") or "",
         }
+        result[role]["maintenance"] = _maintenance_state(result, role)
     result["comparison"] = "version_only"
     return result
 
@@ -19591,6 +19681,7 @@ async def check_app_version(
         current_version, min_ver, build_number, min_build
     )
 
+    maintenance = _maintenance_state(settings, app_name)
     return {
         "force_update": force,
         "current_version": current_version,
@@ -19602,7 +19693,24 @@ async def check_app_version(
         "message_uz": "Ilovaning yangi versiyasi chiqdi! Davom etish uchun ilovani yangilang.",
         "message_ru": "Доступна новая версия приложения! Обновите приложение для продолжения.",
         "message_en": "A new version of the app is available! Please update to continue.",
+        "maintenance": maintenance,
     }
+
+
+@app.get("/developer/mobile-maintenance")
+async def developer_get_mobile_maintenance(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    settings = get_app_version_settings()
+    return {role: _maintenance_state(settings, role) for role in ("student", "teacher")}
+
+
+@app.post("/developer/mobile-maintenance")
+async def developer_update_mobile_maintenance(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    updated = update_app_version_settings(_normalize_maintenance_settings_payload(payload))
+    return {role: _maintenance_state(updated, role) for role in ("student", "teacher")}
 
 
 @app.get("/admin/app-version-settings")
@@ -19616,7 +19724,9 @@ async def admin_get_version_settings(authorization: str | None = Header(default=
 async def admin_update_version_settings(payload: dict, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    updated = update_app_version_settings(_normalize_app_version_settings_payload(payload))
+    normalized = _normalize_app_version_settings_payload(payload)
+    version_only = {key: value for key, value in normalized.items() if "_maintenance_" not in key}
+    updated = update_app_version_settings(version_only)
     return _app_version_settings_response(updated)
 
 
@@ -52459,11 +52569,9 @@ async def _system_metrics_worker() -> None:
 
 @app.get("/admin/system-metrics")
 async def admin_system_metrics(authorization: str | None = Header(default=None)):
-    """Return privacy-safe host capacity data to general administrators only."""
+    """Return privacy-safe host capacity data to the Developer workspace only."""
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
-    if not _is_general_admin_scope(_admin_ref_id(user)):
-        raise HTTPException(status_code=403, detail="Server monitoring is restricted to general administrators")
+    _require_developer_access(user)
 
     metrics = collect_system_metrics()
     _store_system_metric_sample(metrics)
