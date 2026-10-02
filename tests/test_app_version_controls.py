@@ -101,3 +101,10 @@ def test_developer_workspace_path_allowlist_excludes_broad_admin_routes() -> Non
     assert api._developer_workspace_path_is_allowed("/developer/mobile-maintenance")
     assert api._developer_workspace_path_is_allowed("/admin/system-metrics/")
     assert not api._developer_workspace_path_is_allowed("/admin/payments/dashboard")
+
+
+def test_developer_has_a_distinct_role_and_minimal_app_state() -> None:
+    assert api._role_from_login_type(4, "DEVELOPER-X-01") == "developer"
+    assert api._role_from_login_type(4, "ADMIN-X-01") == "admin"
+    assert api.SECTIONS_BY_ROLE["developer"] == ["home", "profile"]
+    assert api._build_role_boot_payload({}, "developer", {}) == {}
