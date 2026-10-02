@@ -51,6 +51,43 @@ def test_receipt_financial_snapshot_preserves_partial_payment_and_remaining_bala
     }
 
 
+def test_refund_receipt_snapshot_is_derived_from_the_persisted_refund_and_source_payment() -> None:
+    snapshot = api._refund_receipt_snapshot_from_rows(
+        {
+            "id": 17,
+            "transaction_id": 42,
+            "user_id": 5,
+            "group_id": 8,
+            "amount": 100_000,
+            "debt_after": 400_000,
+            "overpayment_after": 0,
+            "status_after": api.PAYMENT_STATUS_PARTIAL,
+            "refund_type": "partial",
+            "note": "Dars bekor qilindi",
+            "refunded_by_admin_name": "Main Admin",
+            "created_at": "2026-10-02T12:44:46+05:00",
+        },
+        {
+            "payment_method": "cash",
+            "is_advance": 0,
+            "student_name": "Ali Valiyev",
+            "group_name": "IELTS-901",
+            "subject_name": "IELTS",
+            "course_title": "IELTS",
+            "teacher_name": "Azizbek Karimov",
+            "owner_admin_id": 901,
+        },
+    )
+
+    assert snapshot["receipt_kind"] == "refund"
+    assert snapshot["amount"] == 100_000.0
+    assert snapshot["remaining_amount"] == 400_000.0
+    assert snapshot["payment_type"] == "refund_partial"
+    assert snapshot["refund_note"] == "Dars bekor qilindi"
+    assert snapshot["payment_id"] == "REF-17"
+    assert snapshot["confirmed_by_name"] == "Main Admin"
+
+
 def test_web_sessions_default_to_thirty_days_to_prevent_daily_logout() -> None:
     assert api.WEB_SESSION_TOKEN_TTL_HOURS == 720
     assert api.WEB_SESSION_TOKEN_TTL_HOURS == api.MOBILE_SESSION_TOKEN_TTL_HOURS
