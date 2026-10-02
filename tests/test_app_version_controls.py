@@ -37,3 +37,43 @@ def test_diamondvoy_accepts_uzbek_version_inflections_and_updates_both_apps(monk
 
     assert saved == {"min_student_version": "2.7.0", "min_teacher_version": "2.7.0"}
     assert reply is not None
+
+
+def test_maintenance_window_is_active_only_inside_its_configured_interval() -> None:
+    active = api._maintenance_state(
+        {
+            "student_maintenance_enabled": 1,
+            "student_maintenance_starts_at": "2026-10-02T08:00:00Z",
+            "student_maintenance_ends_at": "2026-10-02T10:00:00Z",
+        },
+        "student",
+        now=api.datetime(2026, 10, 2, 9, 0, tzinfo=api.timezone.utc),
+    )
+    before = api._maintenance_state(
+        {
+            "student_maintenance_enabled": 1,
+            "student_maintenance_starts_at": "2026-10-02T08:00:00Z",
+            "student_maintenance_ends_at": "2026-10-02T10:00:00Z",
+        },
+        "student",
+        now=api.datetime(2026, 10, 2, 7, 59, tzinfo=api.timezone.utc),
+    )
+
+    assert active["active"] is True
+    assert before["active"] is False
+
+
+def test_maintenance_settings_payload_accepts_only_safe_app_specific_fields() -> None:
+    normalized = api._normalize_app_version_settings_payload(
+        {
+            "student": {
+                "maintenance_enabled": True,
+                "maintenance_starts_at": "2026-10-02T08:00:00Z",
+                "maintenance_ends_at": "2026-10-02T10:00:00Z",
+                "maintenance_message_uz": "Rejali texnik ishlar",
+            }
+        }
+    )
+
+    assert normalized["student_maintenance_enabled"] == 1
+    assert normalized["student_maintenance_message_uz"] == "Rejali texnik ishlar"
