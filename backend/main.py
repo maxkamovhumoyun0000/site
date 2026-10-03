@@ -406,7 +406,6 @@ from diamondvoy_helpers import (
     diamondvoy_is_subject_related,
     resolve_query_subject,
     sanitize_diamondvoy_reply,
-    try_diamondvoy_app_version_action,
     try_diamondvoy_bot_info,
 )
 from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
@@ -959,7 +958,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "dpoint-settings",
         "profile",
     ],
-    "developer": ["home", "profile"],
+    "developer": ["home", "system-status", "mobile-release", "mobile-maintenance", "profile"],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
@@ -19604,6 +19603,8 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             "maintenance_starts_at": f"{role}_maintenance_starts_at",
             "maintenance_ends_at": f"{role}_maintenance_ends_at",
             "maintenance_message_uz": f"{role}_maintenance_message_uz",
+            "maintenance_message_ru": f"{role}_maintenance_message_ru",
+            "maintenance_message_en": f"{role}_maintenance_message_en",
         }.items():
             if source in nested:
                 normalized[target] = nested[source]
@@ -19633,9 +19634,10 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             if parsed.tzinfo is None:
                 raise HTTPException(status_code=422, detail=f"{key} must include a timezone")
             normalized[key] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        message_key = f"{role}_maintenance_message_uz"
-        if message_key in normalized:
-            normalized[message_key] = str(normalized[message_key] or "").strip()[:500]
+        for language in ("uz", "ru", "en"):
+            message_key = f"{role}_maintenance_message_{language}"
+            if message_key in normalized:
+                normalized[message_key] = str(normalized[message_key] or "").strip()[:500]
         starts_key = f"{role}_maintenance_starts_at"
         ends_key = f"{role}_maintenance_ends_at"
         if normalized.get(starts_key) and normalized.get(ends_key):
@@ -19646,8 +19648,16 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
     return normalized
 
 
-def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | None = None) -> dict[str, Any]:
+def _maintenance_state(
+    settings: dict[str, Any],
+    app_name: str,
+    now: datetime | None = None,
+    language: str = "uz",
+) -> dict[str, Any]:
     role = "teacher" if str(app_name or "").strip().lower() == "teacher" else "student"
+    locale = str(language or "uz").strip().lower()[:2]
+    if locale not in {"uz", "ru", "en"}:
+        locale = "uz"
     enabled = bool(int(settings.get(f"{role}_maintenance_enabled") or 0))
     starts_at = str(settings.get(f"{role}_maintenance_starts_at") or "").strip()
     ends_at = str(settings.get(f"{role}_maintenance_ends_at") or "").strip()
@@ -19665,12 +19675,20 @@ def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | 
     start = parse(starts_at)
     end = parse(ends_at)
     active = enabled and (start is None or current >= start) and (end is None or current < end)
+    messages = {
+        language: str(settings.get(f"{role}_maintenance_message_{language}") or "").strip()
+        for language in ("uz", "ru", "en")
+    }
+    selected_message = messages.get(locale) or messages["uz"] or messages["en"] or messages["ru"]
     return {
         "enabled": enabled,
         "active": active,
         "starts_at": starts_at,
         "ends_at": ends_at,
-        "message_uz": str(settings.get(f"{role}_maintenance_message_uz") or "").strip(),
+        "message": selected_message,
+        "message_uz": messages["uz"],
+        "message_ru": messages["ru"],
+        "message_en": messages["en"],
     }
 
 
@@ -19679,7 +19697,7 @@ def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> d
     maintenance_keys = {
         f"{role}_maintenance_{field}"
         for role in ("student", "teacher")
-        for field in ("enabled", "starts_at", "ends_at", "message_uz")
+        for field in ("enabled", "starts_at", "ends_at", "message_uz", "message_ru", "message_en")
     }
     return {key: value for key, value in normalized.items() if key in maintenance_keys}
 
@@ -19722,6 +19740,7 @@ async def check_app_version(
     platform: str = Query(default="android"),
     current_version: str = Query(default="1.0.0"),
     build_number: int = Query(default=1),
+    language: str = Query(default="uz", alias="lang"),
 ):
     """Public endpoint for Student and Teacher apps to check if force update is required."""
     settings = get_app_version_settings()
@@ -19749,7 +19768,7 @@ async def check_app_version(
         current_version, min_ver, build_number, min_build
     )
 
-    maintenance = _maintenance_state(settings, app_name)
+    maintenance = _maintenance_state(settings, app_name, language=language)
     return {
         "force_update": force,
         "current_version": current_version,
@@ -22278,29 +22297,6 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("delta", {"delta": "", "content": assistant_text})
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_add_students_stream(), media_type="text/event-stream")
-
-        if re.search(
-            r"(mobil.*versiy|app.*version|force.*update|versiy.*(boshqar|sozlam|yangil|qil|o.zgar)|app.*versiy|ilova.*versiy)",
-            norm,
-        ):
-            direct_action = None
-            if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", norm):
-                direct_action = try_diamondvoy_app_version_action(user_text, is_admin=True, lang=query_lang)
-            if direct_action is not None:
-                async def fast_app_version_action_stream():
-                    current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
-                    assistant_text = re.sub(r"<[^>]+>", "", html.unescape(str(direct_action))).strip()
-                    _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
-                    yield _sse_pack("delta", {"delta": assistant_text, "content": assistant_text})
-                    yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
-                return StreamingResponse(fast_app_version_action_stream(), media_type="text/event-stream")
-            async def fast_app_version_stream():
-                current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
-                assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "app_version"})
-                _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
-                yield _sse_pack("delta", {"delta": "", "content": assistant_text})
-                yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
-            return StreamingResponse(fast_app_version_stream(), media_type="text/event-stream")
 
     async def event_stream():
         current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"

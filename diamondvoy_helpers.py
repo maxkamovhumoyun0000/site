@@ -277,12 +277,6 @@ async def diamondvoy_gemini_answer(
     if lc not in ("ru", "en", "uz"):
         lc = "uz"
 
-    # Check direct admin app version commands/queries
-    if is_admin_context:
-        ver_action = try_diamondvoy_app_version_action(question, is_admin=True, lang=lang)
-        if ver_action is not None:
-            return ver_action
-
     # Static System Prompts (easily cached)
     if is_admin_context:
         if lc == "ru":
@@ -406,13 +400,6 @@ async def diamondvoy_gemini_answer_stream(
     lc = ((lang or "uz").lower())[:2]
     if lc not in ("ru", "en", "uz"):
         lc = "uz"
-
-    # Check direct admin app version commands/queries
-    if is_admin_context:
-        ver_action = try_diamondvoy_app_version_action(question, is_admin=True, lang=lang)
-        if ver_action is not None:
-            yield ver_action
-            return
 
     # Static System Prompts (easily cached)
     if is_admin_context:
@@ -566,7 +553,7 @@ _PERSONAL_HINTS = re.compile(
 )
 
 
-def try_diamondvoy_app_version_action(
+def _retired_diamondvoy_app_version_action(
     query: str,
     *,
     is_admin: bool = False,

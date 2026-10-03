@@ -21577,7 +21577,7 @@ function DeveloperMaintenancePanel() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tt]);
 
   useEffect(() => { load(); }, [load]);
   const update = (role: "student" | "teacher", key: string, value: unknown) => {
@@ -21595,6 +21595,8 @@ function DeveloperMaintenancePanel() {
           maintenance_starts_at: item.starts_at ? new Date(String(item.starts_at)).toISOString() : "",
           maintenance_ends_at: item.ends_at ? new Date(String(item.ends_at)).toISOString() : "",
           maintenance_message_uz: String(item.message_uz || ""),
+          maintenance_message_ru: String(item.message_ru || ""),
+          maintenance_message_en: String(item.message_en || ""),
         };
       }
       const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
@@ -21611,7 +21613,7 @@ function DeveloperMaintenancePanel() {
       <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">{tt("developer.maintenance.kicker", "Mobile control")}</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.maintenance.title", "Rejali maintenance")}</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.maintenance.subtitle", "Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.")}</p></div>
       <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button>
     </div>
-    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
+    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
     <div className="grid gap-4 lg:grid-cols-2">
       {(["student", "teacher"] as const).map((role) => {
         const item = (settings[role] || {}) as GenericRow;
@@ -21619,7 +21621,7 @@ function DeveloperMaintenancePanel() {
         return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
           <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold text-ink-700 dark:text-slate-200"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> {tt("developer.maintenance.enabled", "Yoqilgan")}</label></div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.starts", "Boshlanish")}<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.ends", "Tugash")}<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label></div>
-          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.message", "Ilovadagi xabar")}<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder={tt("developer.maintenance.messagePlaceholder", "Rejali texnik ishlar olib borilmoqda.")} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+          <div className="mt-3 grid gap-3"><p className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.messages", "Ilovadagi xabarlar")}</p>{(["uz", "ru", "en"] as const).map((language) => <label key={language} className="block text-xs font-bold text-ink-600 dark:text-slate-300">{tt(`developer.maintenance.language.${language}`, language.toUpperCase())}<textarea value={String(item[`message_${language}`] || "")} onChange={(event) => update(role, `message_${language}`, event.target.value)} maxLength={500} rows={2} placeholder={tt("developer.maintenance.messagePlaceholder", "Rejali texnik ishlar olib borilmoqda.")} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>)}</div>
           <p className="mt-2 text-xs font-medium text-ink-500 dark:text-slate-400">{tt("developer.status", "Holat")}: {item.active ? tt("developer.maintenance.active", "hozir foydalanuvchilarga ko‘rsatilmoqda") : item.enabled ? tt("developer.maintenance.scheduled", "vaqt kelganda avtomatik yoqiladi") : tt("developer.maintenance.off", "o‘chiq")}</p>
         </div>;
       })}
@@ -21695,9 +21697,16 @@ function DeveloperReleasePanel() {
   </section>;
 }
 
-function DeveloperWorkspace() {
+function DeveloperWorkspace({ section, onNavigate }: { section: string; onNavigate: (section: string) => void }) {
   const tt = useWebT();
-  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><ServerStatusDashboard /><DeveloperReleasePanel /><DeveloperMaintenancePanel /></div>;
+  const pages = [
+    { id: "system-status", icon: "◉", title: tt("section.system-status", "Server holati"), description: tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.") },
+    { id: "mobile-release", icon: "↑", title: tt("section.mobile-release", "Mobil relizlar"), description: tt("developer.release.subtitle", "Minimal versiya va store manzillarini boshqaring.") },
+    { id: "mobile-maintenance", icon: "⚙", title: tt("section.mobile-maintenance", "Maintenance"), description: tt("developer.maintenance.subtitle", "Student va teacher ilovalari uchun rejali maintenance boshqaruvi.") },
+  ];
+  const panel = section === "system-status" ? <ServerStatusDashboard /> : section === "mobile-release" ? <DeveloperReleasePanel /> : section === "mobile-maintenance" ? <DeveloperMaintenancePanel /> : null;
+  if (panel) return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={pages.find((page) => page.id === section)?.title || tt("developer.title", "Tizim boshqaruvi")} subtitle={pages.find((page) => page.id === section)?.description || ""} />{panel}</div>;
+  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><div className="grid gap-4 lg:grid-cols-3">{pages.map((page, index) => <button key={page.id} type="button" onClick={() => onNavigate(page.id)} className={`admin-stat-card ${["asc-cyan", "asc-indigo", "asc-amber"][index]} text-left transition-transform hover:-translate-y-0.5`}><div className="asc-bg-blob" /><div className="asc-icon">{page.icon}</div><div className="asc-label mt-3 text-base">{page.title}</div><p className="mt-2 text-sm font-medium text-ink-500 dark:text-white/65">{page.description}</p></button>)}</div></div>;
 }
 
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
@@ -24329,7 +24338,7 @@ function DashboardShell({
     if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="admin" />;
     } else {
-      content = <DeveloperWorkspace />;
+      content = <DeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
     }
   } else {
     if (currentSection === "profile") {

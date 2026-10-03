@@ -70,6 +70,9 @@ export function sectionIconGlyph(section: string) {
     settings: "⚙",
     performance: "↗",
     developer: "⌘",
+    "system-status": "◉",
+    "mobile-release": "↑",
+    "mobile-maintenance": "⚙",
     tests: "✓",
   };
   return glyphs[section] || "•";

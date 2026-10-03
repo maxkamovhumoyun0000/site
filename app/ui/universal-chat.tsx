@@ -2763,15 +2763,6 @@ export function UniversalChat({
                 >
                   👥 Yangi o'quvchilar qo'shish
                 </button>
-                <button
-                  className="px-5 py-2.5 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] text-white text-xs font-black uppercase tracking-wider shadow-sm active:translate-y-0.5 active:border-b-2 hover:bg-[#1429f2]"
-                  onClick={() => {
-                    setInput("Mobil ilovalar versiyasi");
-                    setTimeout(() => sendDiamondvoyMessage("Mobil ilovalar versiyasi").catch(() => null), 50);
-                  }}
-                >
-                  🚀 Mobil Ilovalar Versiyasi
-                </button>
               </div>
             )}
           </div>
@@ -2821,11 +2812,6 @@ export function UniversalChat({
                       }
                       if (parsed.type === "wizard_trigger" && parsed.wizard === "add_students") {
                         return <DiamondVoyAddStudentsWizard chatId={activeChatId!} apiFetch={apiFetch} onSuccess={() => {
-                          loadAiMessages(activeChatId!).catch(() => null);
-                        }} />;
-                      }
-                      if (parsed.type === "wizard_trigger" && parsed.wizard === "app_version") {
-                        return <DiamondVoyAppVersionWizard apiFetch={apiFetch} onSuccess={() => {
                           loadAiMessages(activeChatId!).catch(() => null);
                         }} />;
                       }
