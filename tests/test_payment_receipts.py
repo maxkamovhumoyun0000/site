@@ -46,6 +46,7 @@ def test_receipt_financial_snapshot_preserves_partial_payment_and_remaining_bala
 
     assert snapshot == {
         "amount": 100_000.0,
+        "total_paid_amount": 100_000.0,
         "remaining_amount": 400_000.0,
         "overpayment_amount": 0.0,
         "payment_status": api.PAYMENT_STATUS_PARTIAL,
@@ -68,11 +69,32 @@ def test_receipt_financial_snapshot_preserves_current_and_total_paid_amounts() -
     assert snapshot["remaining_amount"] == 200_000.0
 
 
+def test_refund_receipt_financial_snapshot_keeps_zero_total_paid() -> None:
+    snapshot = api._receipt_financial_snapshot(
+        {
+            "amount": 100_000,
+            "paid_total_after": 0,
+            "remaining_after": 100_000,
+            "overpayment_after": 0,
+            "status_after": api.PAYMENT_STATUS_UNPAID,
+        }
+    )
+
+    assert snapshot["total_paid_amount"] == 0.0
+
+
 def test_payment_amount_cannot_exceed_the_outstanding_or_refundable_limit() -> None:
     assert api._payment_require_amount_within_limit(100_000, 100_000, field_name="Payment") == 100_000.0
 
     with pytest.raises(api.HTTPException, match="cannot exceed"):
         api._payment_require_amount_within_limit(100_000.01, 100_000, field_name="Payment")
+
+
+def test_attendance_credit_is_not_carried_into_a_future_month_early(monkeypatch) -> None:
+    monkeypatch.setattr(api, "_payment_ym_now", lambda: "2026-10")
+
+    assert api._payment_carry_forward_is_due("2026-10") is True
+    assert api._payment_carry_forward_is_due("2026-11") is False
 
 
 def test_refund_receipt_snapshot_is_derived_from_the_persisted_refund_and_source_payment() -> None:
@@ -83,6 +105,7 @@ def test_refund_receipt_snapshot_is_derived_from_the_persisted_refund_and_source
             "user_id": 5,
             "group_id": 8,
             "amount": 100_000,
+            "paid_total_after": 300_000,
             "debt_after": 400_000,
             "overpayment_after": 0,
             "status_after": api.PAYMENT_STATUS_PARTIAL,
@@ -105,6 +128,7 @@ def test_refund_receipt_snapshot_is_derived_from_the_persisted_refund_and_source
 
     assert snapshot["receipt_kind"] == "refund"
     assert snapshot["amount"] == 100_000.0
+    assert snapshot["total_paid_amount"] == 300_000.0
     assert snapshot["remaining_amount"] == 400_000.0
     assert snapshot["payment_type"] == "refund_partial"
     assert snapshot["refund_note"] == "Dars bekor qilindi"
@@ -140,3 +164,12 @@ def test_receipt_pdf_is_rendered_from_server_snapshot() -> None:
 
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 500
+
+    import fitz
+
+    document = fitz.open(stream=pdf, filetype="pdf")
+    pdf_text = "\n".join(page.get_text() for page in document)
+    document.close()
+    assert "JAMI TO'LANGAN" in pdf_text
+    assert "Receipt ID" in pdf_text
+    assert "Payment ID" not in pdf_text

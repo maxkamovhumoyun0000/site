@@ -136,26 +136,27 @@ function receiptPrintHtml(receipt: GenericRow): string {
   const snapshot = (receipt.snapshot || {}) as GenericRow;
   const isRefund = snapshot.receipt_kind === "refund";
   const amount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0));
+  const totalPaidAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0));
   const remainingAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0));
   const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
-  const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
-  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
-  const documentTitle = isRefund ? "QAYTARISH CHEKI" : "TO'LOV CHEKI";
-  const amountLabel = isRefund ? "QAYTARILGAN SUMMA" : "TO'LOV";
-  const statusLabel = isRefund ? "QAYTARISH TASDIQLANDI" : "TO'LOV TASDIQLANDI";
+  const method = snapshot.payment_method === "card" ? "Karta / Карта" : "Naqd / Наличные";
+  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
+  const documentTitle = isRefund ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ";
+  const amountLabel = isRefund ? "Joriy qaytarish / Текущий возврат" : "Joriy to'lov / Текущий платёж";
+  const statusLabel = isRefund ? "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" : "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА";
   const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
   const branch = String(snapshot.branch_name || "").trim();
   const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
   const rows: Array<[string, unknown]> = [
-    ["O'quvchi", snapshot.student_name], ["Guruh", snapshot.group_name], ["Fan / Kurs", snapshot.subject_name],
-    ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
-    ["Tasdiqladi", snapshot.confirmed_by_name], ["Sana", snapshot.confirmed_at],
-    ["Payment ID", snapshot.payment_id], ["Receipt ID", receipt.receipt_id],
-    ...(isRefund && snapshot.refund_note ? [["Izoh", snapshot.refund_note] as [string, unknown]] : []),
+    ["O'quvchi / Ученик", snapshot.student_name], ["Guruh / Группа", snapshot.group_name], ["Fan / Kurs / Предмет / Курс", snapshot.subject_name],
+    ["O'qituvchi / Преподаватель", teachers], ["To'lov turi / Тип оплаты", paymentType], ["To'lov usuli / Способ оплаты", method],
+    ["Tasdiqladi / Подтвердил(а)", snapshot.confirmed_by_name], ["Sana / Дата", snapshot.confirmed_at],
+    ["Receipt ID / ID чека", receipt.receipt_id],
+    ...(isRefund && snapshot.refund_note ? [["Izoh / Комментарий", snapshot.refund_note] as [string, unknown]] : []),
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
     @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>QOLDIQ:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">${escapeReceiptHtml(statusLabel)}</div></main></body></html>`;
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО:</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">${escapeReceiptHtml(statusLabel)}</div></main></body></html>`;
 }
 
 type ApiUser = {
@@ -16184,6 +16185,11 @@ function AdminSection({
   const deferredPaymentsTeacherFilter = useDeferredValue(paymentsTeacherFilter);
   const deferredPaymentsGroupQuery = useDeferredValue(paymentsGroupQuery);
   const deferredPaymentsStatsSearch = useDeferredValue(paymentsStatsSearch);
+  // The student grid is server-backed.  Debouncing text inputs prevents an
+  // expensive aggregate query for every keypress while keeping the explicit
+  // Search button and Enter key immediate.
+  const debouncedPaymentsStudentSearch = useDebouncedValue(paymentsStudentSearch, 360);
+  const debouncedPaymentsStudentTeacher = useDebouncedValue(paymentsTeacherFilter, 360);
   const debouncedDpointHistorySearch = useDebouncedValue(dpointHistorySearch, 350);
 
   async function onAdminCall(
@@ -16781,16 +16787,18 @@ function AdminSection({
     }
   }
 
-  async function openRefundReceipt(refundId: number) {
+  async function openRefundReceipt(refundId: number): Promise<GenericRow | null> {
     const token = localStorage.getItem("diamond_token");
-    if (!token || refundId <= 0) return;
+    if (!token || refundId <= 0) return null;
     setReceiptBusy(true);
     try {
       const receipt = await requestJson<GenericRow>(`/admin/payments/refunds/${refundId}/receipt`, { token, timeoutMs: 30000 });
       setReceiptPreview(receipt);
+      return receipt;
     } catch (error) {
       const normalized = normalizeNetworkError(error);
       setPaymentsGeneralError(String(normalized.message || "Qaytarish chekini ochib bo'lmadi"));
+      return null;
     } finally {
       setReceiptBusy(false);
     }
@@ -16827,7 +16835,7 @@ function AdminSection({
     }
   }
 
-  async function printReceipt(receipt: GenericRow) {
+  async function printReceipt(receipt: GenericRow, targetWindow?: Window | null) {
     const token = localStorage.getItem("diamond_token");
     const receiptId = String(receipt.receipt_id || "").trim();
     if (!token || !receiptId) return;
@@ -16837,7 +16845,7 @@ function AdminSection({
       : `/admin/receipts/${encodeURIComponent(receiptId)}/print`;
     try {
       await requestJson(printPath, { method: "POST", token, timeoutMs: 15000 });
-      const popup = window.open("", "_blank");
+      const popup = targetWindow || window.open("", "_blank");
       if (!popup) throw new Error("Print oynasi bloklangan");
       popup.opener = null;
       popup.document.open();
@@ -16972,7 +16980,10 @@ function AdminSection({
     }
   }
 
-  const loadPaymentsStudentsList = useCallback(async (pageOverride?: number) => {
+  const loadPaymentsStudentsList = useCallback(async (
+    pageOverride?: number,
+    immediateFilters?: { search?: string; teacher?: string },
+  ) => {
     const token = localStorage.getItem("diamond_token");
     if (!token) return;
     
@@ -16997,8 +17008,10 @@ function AdminSection({
     params.set("limit", String(limit));
     params.set("offset", String(offset));
     
-    if (paymentsStudentSearch.trim()) {
-      params.set("q", paymentsStudentSearch.trim());
+    const studentSearch = String(immediateFilters?.search ?? debouncedPaymentsStudentSearch).trim();
+    const teacherSearch = String(immediateFilters?.teacher ?? debouncedPaymentsStudentTeacher).trim();
+    if (studentSearch) {
+      params.set("q", studentSearch);
     }
     if (paymentsStatusFilter !== "all") {
       params.set("status", paymentsStatusFilter);
@@ -17006,8 +17019,8 @@ function AdminSection({
     if (paymentsSubjectFilter !== "all") {
       params.set("subject", paymentsSubjectFilter);
     }
-    if (paymentsTeacherFilter.trim()) {
-      params.set("teacher_name", paymentsTeacherFilter.trim());
+    if (teacherSearch) {
+      params.set("teacher_name", teacherSearch);
     }
     
     try {
@@ -17037,10 +17050,10 @@ function AdminSection({
   }, [
     paymentsMonthFilter,
     paymentsStudentPage,
-    paymentsStudentSearch,
+    debouncedPaymentsStudentSearch,
     paymentsStatusFilter,
     paymentsSubjectFilter,
-    paymentsTeacherFilter,
+    debouncedPaymentsStudentTeacher,
   ]);
 
   async function loadPaymentsStats() {
@@ -17252,6 +17265,20 @@ function AdminSection({
     }) || null;
   }
 
+  function getAttendanceRefundableAmount() {
+    const transaction = getRefundablePaymentTransaction();
+    if (!transaction) return 0;
+    const selectedGroup = Number(paymentsConfirmDraft.groupId || paymentsSelectedGroupId || 0);
+    const selectedYm = String(paymentsConfirmDraft.ym || paymentsMonthFilter || "").trim();
+    const months = ((paymentsDetail?.overview?.months || []) as GenericRow[]);
+    const month = months.find((row) => String(row.ym || "") === selectedYm) || ((paymentsDetail?.overview?.current_month || {}) as GenericRow);
+    const group = ((month?.items || []) as GenericRow[]).find((row) => Number(row.group_id || 0) === selectedGroup) || null;
+    const excusedLessons = Number(group?.sababli_lessons || group?.excused_lessons || 0);
+    const attendanceCredit = Math.max(0, Number(group?.overpayment_amount || 0));
+    const transactionBalance = Math.max(0, Number(transaction.payment_dcoin_amount || transaction.paid_amount || 0) - Number(transaction.refunded_amount || 0));
+    return excusedLessons > 0 ? Math.min(attendanceCredit, transactionBalance) : 0;
+  }
+
   async function openPaymentCalculation(studentIdArg?: number) {
     const token = localStorage.getItem("diamond_token");
     const selectedStudentId = Number(studentIdArg || paymentsSelectedStudentId || 0);
@@ -17287,6 +17314,10 @@ function AdminSection({
     if (!userId || !groupId || !monthKey) return;
     const amountNumber = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) return;
+    // Opening synchronously from the click keeps browser popup protection from
+    // blocking the receipt.  The document is populated only after the server
+    // has issued the immutable receipt.
+    const autoPrintWindow = window.open("", "_blank");
     setPaymentsConfirmBusy(true);
     try {
       const result = await onAdminCall(
@@ -17303,13 +17334,23 @@ function AdminSection({
         "POST",
         "Payment confirmed",
       );
-      if (!result) return;
+      if (!result) {
+        autoPrintWindow?.close();
+        return;
+      }
       const returnedDebt = Number(result.debt_amount || 0);
       setPaymentsConfirmDraft((prev) => ({
         ...prev,
         amount: returnedDebt > 0 ? returnedDebt.toFixed(2) : "",
         note: "",
       }));
+      const receipt = (result.receipt || null) as GenericRow | null;
+      if (receipt?.receipt_id) {
+        setReceiptPreview(receipt);
+        await printReceipt(receipt, autoPrintWindow);
+      } else {
+        autoPrintWindow?.close();
+      }
       void Promise.allSettled([
         loadPaymentsTransactions(paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined),
         loadPaymentsStats(),
@@ -17328,15 +17369,20 @@ function AdminSection({
       return;
     }
     const transactionId = Number(transaction.id || 0);
-    const refundableAmount = Math.max(0, Number(transaction.payment_dcoin_amount || transaction.paid_amount || 0) - Number(transaction.refunded_amount || 0));
+    const refundableAmount = getAttendanceRefundableAmount();
     const draftAmount = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
-    const amount = Number.isFinite(draftAmount) && draftAmount > 0 ? Math.min(draftAmount, refundableAmount) : refundableAmount;
+    const amount = Number.isFinite(draftAmount) && draftAmount > 0 ? draftAmount : refundableAmount;
     const note = String(paymentsConfirmDraft.note || "").trim();
     if (!note) {
       emitUiToast("Refund uchun izoh majburiy.", "error");
       return;
     }
+    if (amount - refundableAmount > 1e-9) {
+      emitUiToast("Qaytarish summasi sababli davomatdan hosil bo'lgan summadan oshmasligi kerak.", "error");
+      return;
+    }
     if (!transactionId || amount <= 0) return;
+    const autoPrintWindow = window.open("", "_blank");
     setPaymentsRefundBusy(true);
     try {
       const result = await onAdminCall(
@@ -17345,10 +17391,18 @@ function AdminSection({
         "POST",
         "Refund completed",
       );
-      if (!result) return;
+      if (!result) {
+        autoPrintWindow?.close();
+        return;
+      }
       setPaymentsConfirmDraft((prev) => ({ ...prev, amount: "", note: "" }));
       const refundId = Number(result.refund_id || 0);
-      if (refundId > 0) await openRefundReceipt(refundId);
+      const receipt = refundId > 0 ? await openRefundReceipt(refundId) : null;
+      if (receipt?.receipt_id) {
+        await printReceipt(receipt, autoPrintWindow);
+      } else {
+        autoPrintWindow?.close();
+      }
       await Promise.allSettled([
         loadPaymentsTransactions(paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined),
         loadPaymentsStats(),
@@ -17606,7 +17660,7 @@ function AdminSection({
     if (section !== "payments") return;
     const timer = window.setTimeout(() => {
       loadPaymentsStudentsList().catch(() => null);
-    }, 100);
+    }, 360);
     return () => window.clearTimeout(timer);
   }, [section, loadPaymentsStudentsList]);
 
@@ -19103,9 +19157,7 @@ function AdminSection({
     const paymentAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     const canConfirmPayment = Number.isFinite(paymentAmountForConfirm) && paymentAmountForConfirm > 0;
     const refundableTxForConfirm = getRefundablePaymentTransaction();
-    const refundableAmountForConfirm = refundableTxForConfirm
-      ? Math.max(0, Number(refundableTxForConfirm.payment_dcoin_amount || refundableTxForConfirm.paid_amount || 0) - Number(refundableTxForConfirm.refunded_amount || 0))
-      : 0;
+    const refundableAmountForConfirm = getAttendanceRefundableAmount();
     const maxChartValue = Math.max(1, ...normalizedChartSeries.map((row) => Math.max(Number(row.paid_amount || 0), Number(row.debt_amount || 0))));
     const piePaid = Math.max(0, Number(chartPie.paid_amount || 0));
     const pieDebt = Math.max(0, Number(chartPie.debt_amount || 0));
@@ -19220,7 +19272,7 @@ function AdminSection({
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   setPaymentsStudentPage(1);
-                  loadPaymentsStudentsList(1).catch(() => null);
+                  loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
                 }
               }}
               placeholder={pt("searchPlaceholder", "Student ismi yoki telefon...")}
@@ -19257,7 +19309,7 @@ function AdminSection({
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   setPaymentsStudentPage(1);
-                  loadPaymentsStudentsList(1).catch(() => null);
+                  loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
                 }
               }}
               placeholder={pt("teacherName", "O'qituvchi ismi")}
@@ -19268,7 +19320,10 @@ function AdminSection({
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => { setPaymentsStudentPage(1); loadPaymentsStudentsList(1).catch(() => null); }}
+              onClick={() => {
+                setPaymentsStudentPage(1);
+                loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
               {tt("common.search", "Qidirish")}
@@ -19283,7 +19338,7 @@ function AdminSection({
                   setPaymentsSubjectFilter("all");
                   setPaymentsTeacherFilter("");
                   setPaymentsStudentPage(1);
-                  setTimeout(() => { loadPaymentsStudentsList(1).catch(() => null); }, 0);
+                  setTimeout(() => { loadPaymentsStudentsList(1, { search: "", teacher: "" }).catch(() => null); }, 0);
                 }}
               >
                 {tt("common.clear", "Tozalash")}
@@ -19927,6 +19982,7 @@ function AdminSection({
                       const activeLessons = Number(row.membership_lessons || row.student_active_lesson_count || row.active_lessons || 0);
                       const excusedLessons = Number(row.sababli_lessons || row.excused_lessons || 0);
                       const pricePerLesson = Number(row.price_per_lesson || 0);
+                      const attendanceRefundable = excusedLessons > 0 ? Math.min(overpayAmount, paidAmount) : 0;
                       const isSelected = Number(paymentsConfirmDraft.groupId || 0) === groupId;
                       const statusClass = debtAmount > 0 ? "pmc-group-debt" : overpayAmount > 0 ? "pmc-group-overpay" : "pmc-group-paid";
                       return (
@@ -20008,6 +20064,12 @@ function AdminSection({
                               <span className="pmc-stat-label">{pt("groupCard.paid", "To'langan")}</span>
                               <span className="pmc-stat-value pmc-stat-paid">{paidAmount.toFixed(2)}</span>
                             </div>
+                            {attendanceRefundable > 0 && (
+                              <div className="pmc-stat">
+                                <span className="pmc-stat-label">Qaytarilishi mumkin (sababli davomat)</span>
+                                <span className="pmc-stat-value pmc-stat-excused">{attendanceRefundable.toFixed(2)}</span>
+                              </div>
+                            )}
                           </div>
 
                           {isSelected && (
@@ -20095,7 +20157,7 @@ function AdminSection({
                     <div className="pmc-debt-chips">
                       <span className="pmc-chip pmc-chip-debt">{pt("remainingDebt", "Qolgan qarz")}: <strong>{remainingForConfirm.toFixed(2)}</strong></span>
                       {refundableAmountForConfirm > 0 && (
-                        <span className="pmc-chip pmc-chip-refund">{pt("refundable", "Qaytarilishi mumkin")}: <strong>{refundableAmountForConfirm.toFixed(2)}</strong></span>
+                        <span className="pmc-chip pmc-chip-refund">Qaytarilishi mumkin (sababli davomat): <strong>{refundableAmountForConfirm.toFixed(2)}</strong><small> Qaytarilmasa, keyingi oyga o'tadi.</small></span>
                       )}
                     </div>
                     <div className="pmc-action-buttons">
@@ -20128,15 +20190,15 @@ function AdminSection({
             <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
               <div className="row-between gap-3">
                 <div>
-                  <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI" : "TO'LOV CHEKI"}</h3>
+                  <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ"}</h3>
                 </div>
                 <button className="admin-modal-close" type="button" aria-label="Yopish" onClick={() => setReceiptPreview(null)}>×</button>
               </div>
               {receiptPreview ? (() => {
                 const snapshot = (receiptPreview.snapshot || {}) as GenericRow;
                 const isRefund = snapshot.receipt_kind === "refund";
-                const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
-                const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+                const method = snapshot.payment_method === "card" ? "Karta / Карта" : "Naqd / Наличные";
+                const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
                 const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
                 const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
                 const branch = String(snapshot.branch_name || "").trim();
@@ -20145,20 +20207,20 @@ function AdminSection({
                   <div className="text-center font-black text-base">{brand}</div>
                   {branchLabel ? <div className="text-center font-semibold text-xs text-ink-500 dark:text-navy-300">{branchLabel}</div> : null}
                   <hr />
-                  <p><b>O&apos;quvchi:</b> {snapshot.student_name || "-"}</p>
-                  <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
-                  <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
-                  <p><b>O&apos;qituvchi:</b> {teachers}</p>
-                  <p className="text-base font-black"><b>{isRefund ? "Qaytarilgan summa" : "To'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
-                  <p className="text-base font-black"><b>Qolgan qarz:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
-                  <p><b>To&apos;lov turi:</b> {paymentType}</p>
-                  <p><b>To&apos;lov usuli:</b> {method}</p>
-                  <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>
-                  <p><b>Sana:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
-                  <p><b>Payment ID:</b> {snapshot.payment_id || "-"}</p>
-                  <p><b>Receipt ID:</b> {receiptPreview.receipt_id || "-"}</p>
-                  {isRefund && snapshot.refund_note ? <p><b>Izoh:</b> {snapshot.refund_note}</p> : null}
-                  <div className="text-center font-black pt-2">{isRefund ? "QAYTARISH TASDIQLANDI" : "TO'LOV TASDIQLANDI"}</div>
+                  <p><b>O&apos;quvchi / Ученик:</b> {snapshot.student_name || "-"}</p>
+                  <p><b>Guruh / Группа:</b> {snapshot.group_name || "-"}</p>
+                  <p><b>Fan / Kurs / Предмет / Курс:</b> {snapshot.subject_name || "-"}</p>
+                  <p><b>O&apos;qituvchi / Преподаватель:</b> {teachers}</p>
+                  <p className="text-base font-black"><b>{isRefund ? "Joriy qaytarish / Текущий возврат" : "Joriy to'lov / Текущий платёж"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Jami to&apos;langan / Всего оплачено:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Qoldiq / Остаток:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
+                  <p><b>To&apos;lov turi / Тип оплаты:</b> {paymentType}</p>
+                  <p><b>To&apos;lov usuli / Способ оплаты:</b> {method}</p>
+                  <p><b>Tasdiqladi / Подтвердил(а):</b> {snapshot.confirmed_by_name || "-"}</p>
+                  <p><b>Sana / Дата:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
+                  <p><b>Receipt ID / ID чека:</b> {receiptPreview.receipt_id || "-"}</p>
+                  {isRefund && snapshot.refund_note ? <p><b>Izoh / Комментарий:</b> {snapshot.refund_note}</p> : null}
+                  <div className="text-center font-black pt-2">{isRefund ? "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" : "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА"}</div>
                 </div>;
               })() : null}
               <div className="button-grid mt-4">
@@ -20215,28 +20277,15 @@ function AdminSection({
                         const refundId = Number(row.refund_id || 0);
                         const isRefundRow = String(row.record_type || "") === "refund" && refundId > 0;
                         const paymentId = Number(row.id || 0);
-                        return <div className="button-grid inline">
+                        return (isRefundRow || paymentId > 0) ? (
                           <button
                             className="btn btn-soft small"
-                            onClick={() => {
-                              const txUserId = Number(row.user_id || 0);
-                              if (!txUserId) return;
-                              setPaymentsSelectedStudentId(txUserId);
-                              openPaymentCalculation(txUserId).catch(() => null);
-                            }}
+                            disabled={receiptBusy}
+                            onClick={() => (isRefundRow ? openRefundReceipt(refundId) : openPaymentReceipt(paymentId)).catch(() => null)}
                           >
-                            {pt("openDetail", "Batafsil")}
+                            {receiptBusy ? "..." : isRefundRow ? "Qaytarish cheki" : "Chek"}
                           </button>
-                          {(isRefundRow || paymentId > 0) ? (
-                            <button
-                              className="btn btn-soft small"
-                              disabled={receiptBusy}
-                              onClick={() => (isRefundRow ? openRefundReceipt(refundId) : openPaymentReceipt(paymentId)).catch(() => null)}
-                            >
-                              {receiptBusy ? "..." : isRefundRow ? "Qaytarish cheki" : "Chek"}
-                            </button>
-                          ) : null}
-                        </div>;
+                        ) : <span>-</span>;
                       })()}
                     </td>
                   </tr>

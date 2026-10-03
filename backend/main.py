@@ -39441,6 +39441,7 @@ def _ensure_payment_automation_schema() -> None:
             confirmed_by_admin_id BIGINT,
             confirmed_by_admin_name TEXT,
             status_after TEXT,
+            paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             remaining_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             overpayment_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             refunded_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -39460,6 +39461,7 @@ def _ensure_payment_automation_schema() -> None:
             note TEXT NOT NULL,
             status_before TEXT,
             status_after TEXT,
+            paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             debt_after DOUBLE PRECISION,
             overpayment_after DOUBLE PRECISION,
             previous_overpayment_amount DOUBLE PRECISION,
@@ -39642,6 +39644,8 @@ def _ensure_payment_automation_schema() -> None:
     for alter_sql in (
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_id BIGINT",
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS refunded_amount DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE payment_refunds ADD COLUMN IF NOT EXISTS paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0",
     ):
         try:
             cur.execute(alter_sql)
@@ -39712,8 +39716,10 @@ def _receipt_financial_snapshot(transaction: dict[str, Any]) -> dict[str, Any]:
             return 0.0
         return round(max(0.0, numeric), 2) if math.isfinite(numeric) else 0.0
 
+    paid_total_after = transaction.get("paid_total_after")
     return {
         "amount": _money(transaction.get("amount")),
+        "total_paid_amount": _money(transaction.get("amount") if paid_total_after is None else paid_total_after),
         "remaining_amount": _money(transaction.get("remaining_after")),
         "overpayment_amount": _money(transaction.get("overpayment_after")),
         "payment_status": str(transaction.get("status_after") or PAYMENT_STATUS_UNPAID),
@@ -39773,6 +39779,7 @@ def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict
         "subject_name": str(transaction.get("subject_name") or transaction.get("course_title") or "-").strip() or "-",
         "teachers": [str(transaction.get("teacher_name") or "-").strip() or "-"],
         "amount": _money(refund.get("amount")),
+        "total_paid_amount": _money(refund.get("paid_total_after")),
         "remaining_amount": _money(refund.get("debt_after")),
         "overpayment_amount": _money(refund.get("overpayment_after")),
         "payment_status": str(refund.get("status_after") or PAYMENT_STATUS_UNPAID),
@@ -39797,12 +39804,12 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
     columns; no current obligation data is used.
     """
     snapshot = _safe_json_object(receipt.get("snapshot_json"))
-    required = {"amount", "remaining_amount", "overpayment_amount", "payment_status"}
+    required = {"amount", "total_paid_amount", "remaining_amount", "overpayment_amount", "payment_status"}
     if required.issubset(snapshot):
         receipt["snapshot"] = snapshot
         return receipt
     cur.execute(
-        "SELECT amount, remaining_after, overpayment_after, status_after FROM payment_transactions WHERE id=? LIMIT 1",
+        "SELECT amount, paid_total_after, remaining_after, overpayment_after, status_after FROM payment_transactions WHERE id=? LIMIT 1",
         (int(receipt.get("payment_transaction_id") or 0),),
     )
     transaction = dict(cur.fetchone() or {})
@@ -39912,6 +39919,20 @@ def _payment_require_positive_amount(value: Any, *, field_name: str = "amount") 
     if numeric > 1_000_000_000:
         raise HTTPException(status_code=400, detail=f"{field_name} is too large")
     return float(numeric)
+
+
+def _payment_require_amount_within_limit(value: Any, limit: Any, *, field_name: str) -> float:
+    """Reject overpayments and over-refunds using server-side persisted limits."""
+    amount = _payment_require_positive_amount(value, field_name=field_name)
+    try:
+        maximum = float(limit)
+    except (TypeError, ValueError):
+        maximum = 0.0
+    if not math.isfinite(maximum) or maximum < 0:
+        maximum = 0.0
+    if amount - maximum > 1e-9:
+        raise HTTPException(status_code=400, detail=f"{field_name} cannot exceed the available balance")
+    return amount
 
 
 def _payment_next_ym(ym: str) -> str:
@@ -41069,12 +41090,19 @@ def _payment_card_rows(active_only: bool = True) -> list[dict[str, Any]]:
     return rows
 
 
+def _payment_carry_forward_is_due(target_ym: str) -> bool:
+    """Only apply a credit once the target calendar month has started."""
+    return str(target_ym or "") <= _payment_ym_now()
+
+
 def _payment_apply_carry_forward_for_obligation(obligation_row: dict) -> dict[str, Any]:
     oid = int(obligation_row.get("id") or 0)
     uid = int(obligation_row.get("user_id") or 0)
     gid = int(obligation_row.get("group_id") or 0)
     ym = str(obligation_row.get("ym") or "")
     if oid <= 0 or uid <= 0 or gid <= 0 or not ym:
+        return obligation_row
+    if not _payment_carry_forward_is_due(ym):
         return obligation_row
     prev_ym = _prev_month_ym(ym)
     _ensure_payment_automation_schema()
@@ -43975,36 +44003,44 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     except Exception as exc:  # pragma: no cover - deployment dependency guard
         raise HTTPException(status_code=503, detail="Receipt PDF service is unavailable") from exc
     snapshot = dict(receipt.get("snapshot") or {})
-    method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
+    method = "Karta / Карта" if snapshot.get("payment_method") == "card" else "Naqd / Наличные"
     is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
     payment_type = (
-        "To'liq qaytarish" if snapshot.get("payment_type") == "refund_full"
-        else "Qisman qaytarish" if snapshot.get("payment_type") == "refund_partial"
-        else "Oldindan to'lov" if snapshot.get("payment_type") == "advance"
-        else "Oylik to'lov"
+        "To'liq qaytarish / Полный возврат" if snapshot.get("payment_type") == "refund_full"
+        else "Qisman qaytarish / Частичный возврат" if snapshot.get("payment_type") == "refund_partial"
+        else "Oldindan to'lov / Предоплата" if snapshot.get("payment_type") == "advance"
+        else "Oylik to'lov / Ежемесячная оплата"
     )
-    document_title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
-    amount_label = "QAYTARILGAN SUMMA" if is_refund else "TO'LOV"
-    result_label = "QAYTARISH TASDIQLANDI" if is_refund else "TO'LOV TASDIQLANDI"
+    document_title = "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" if is_refund else "TO'LOV CHEKI / ЧЕК ОПЛАТЫ"
+    amount_label = "JORIY QAYTARISH / ТЕКУЩИЙ ВОЗВРАТ" if is_refund else "JORIY TO'LOV / ТЕКУЩИЙ ПЛАТЁЖ"
+    result_label = "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" if is_refund else "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
     brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
     branch = str(snapshot.get("branch_name") or "").strip()
     branch_line = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
+    total_paid_amount = snapshot.get("total_paid_amount")
+    if total_paid_amount is None:
+        total_paid_amount = snapshot.get("amount")
     lines = [
         brand, *([branch_line] if branch_line else []), "",
-        document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
-        f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
-        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
-        f"QOLGAN QARZ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
-        f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
-        f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
-        f"Payment ID: {snapshot.get('payment_id') or '-'}", f"Receipt ID: {receipt.get('receipt_id') or '-'}",
-        *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []), "",
+        document_title, "", f"O'quvchi / Ученик: {snapshot.get('student_name') or '-'}",
+        f"Guruh / Группа: {snapshot.get('group_name') or '-'}", f"Fan / Kurs / Предмет / Курс: {snapshot.get('subject_name') or '-'}",
+        f"O'qituvchi / Преподаватель: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО: {float(total_paid_amount or 0):,.2f} so'm",
+        f"QOLDIQ / ОСТАТОК: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
+        f"To'lov turi / Тип оплаты: {payment_type}", f"To'lov usuli / Способ оплаты: {method}",
+        f"Tasdiqladi / Подтвердил(а): {snapshot.get('confirmed_by_name') or '-'}", f"Sana / Дата: {snapshot.get('confirmed_at') or '-'}",
+        f"Receipt ID / ID чека: {receipt.get('receipt_id') or '-'}",
+        *([f"Izoh / Комментарий: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []), "",
         result_label,
     ]
     doc = fitz.open()
-    page = doc.new_page(width=300, height=560)
-    page.insert_textbox(fitz.Rect(24, 24, 276, 536), "\n".join(lines), fontsize=10, fontname="helv", align=1)
+    page = doc.new_page(width=300, height=600)
+    font_kwargs: dict[str, Any] = {"fontname": "helv"}
+    dejavu_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if os.path.isfile(dejavu_font):
+        font_kwargs = {"fontname": "dejavu", "fontfile": dejavu_font}
+    page.insert_textbox(fitz.Rect(24, 24, 276, 576), "\n".join(lines), fontsize=9, align=1, **font_kwargs)
     data = doc.tobytes(garbage=4, deflate=True)
     doc.close()
     return data
@@ -45119,10 +45155,15 @@ async def admin_payments_students(
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
+    _ensure_admin_perf_indexes()
     month_key = _payment_validate_ym(ym) if ym and str(ym).strip() else _payment_ym_now()
     
-    # Run Recalc check
-    _payment_recalc_for_view_if_stale({month_key}, trigger_source="students_list", freshness_seconds=900)
+    # A free-text search must remain read-only and responsive.  It uses the
+    # latest persisted obligations; the normal unfiltered view still performs
+    # the bounded stale-data refresh.
+    search_term = str(q or "").strip()
+    if not search_term:
+        _payment_recalc_for_view_if_stale({month_key}, trigger_source="students_list", freshness_seconds=900)
     
     # Restrict to scoped groups
     scoped_group_ids = {int(g.get("id") or 0) for g in _scope_groups_for_admin(admin_ref, _safe_call(get_all_groups, []) or [])}
@@ -45154,6 +45195,7 @@ async def admin_payments_students(
         FROM payment_monthly_obligations o
         LEFT JOIN groups g ON g.id = o.group_id
         LEFT JOIN users t ON t.id = g.teacher_id
+        LEFT JOIN users student_user ON student_user.id = o.user_id
         WHERE o.ym = ? AND o.group_id IN ({placeholders})
     """
     
@@ -45167,6 +45209,12 @@ async def admin_payments_students(
     if teacher_name and str(teacher_name).strip():
         cte_where.append("LOWER(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) LIKE ?")
         cte_params.append(f"%{str(teacher_name).strip().lower()}%")
+
+    # Filter before aggregate/string_agg.  Previously this filter ran only
+    # after all students and groups for the month were aggregated.
+    if search_term:
+        cte_where.append("LOWER(COALESCE(student_user.first_name,'') || ' ' || COALESCE(student_user.last_name,'') || ' ' || COALESCE(student_user.phone,'')) LIKE ?")
+        cte_params.append(f"%{search_term.lower()}%")
         
     if cte_where:
         sql += " AND " + " AND ".join(cte_where)
@@ -45186,11 +45234,6 @@ async def admin_payments_students(
     where_clauses = ["1=1"]
     params = cte_params
     
-    if q and str(q).strip():
-        q_norm = f"%{str(q).strip().lower()}%"
-        where_clauses.append("LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'')) LIKE ?")
-        params.append(q_norm)
-        
     if status and str(status).strip() and status != "all":
         status_val = str(status).strip().lower()
         if status_val == "to'langan":
@@ -45780,6 +45823,11 @@ async def admin_payments_student_confirm(
         0.0,
         float(obligation.get("final_amount") or 0.0) - float(obligation.get("paid_amount") or 0.0),
     )
+    amount = _payment_require_amount_within_limit(
+        payload.amount,
+        outstanding_amount,
+        field_name="Payment",
+    )
     _ensure_payment_automation_schema()
     conn = get_conn()
     cur = conn.cursor()
@@ -45887,11 +45935,12 @@ async def admin_payments_student_confirm(
             """
             UPDATE payment_transactions
             SET status_after=?,
+                paid_total_after=?,
                 remaining_after=?,
                 overpayment_after=?
             WHERE id=?
             """,
-            (status, float(remaining), float(overpayment), tx_id),
+            (status, float(paid_total_amount), float(remaining), float(overpayment), tx_id),
         )
         branch_admin_id, _ = _receipt_branch_snapshot(group)
         _payment_audit_event(
@@ -46143,16 +46192,18 @@ async def admin_payments_refund_transaction(
     if not _can_manage_group(admin_ref, group_row):
         conn.close()
         raise HTTPException(status_code=403, detail="Permission denied")
-    refundable = float(tx.get("amount") or 0.0) - float(tx.get("refunded_amount") or 0.0)
-    if amount - refundable > 1e-9:
-        conn.close()
-        raise HTTPException(status_code=400, detail="Refund amount exceeds refundable balance")
+    source_refundable = max(0.0, float(tx.get("amount") or 0.0) - float(tx.get("refunded_amount") or 0.0))
     obligation_id = int(tx.get("obligation_id") or 0)
     if obligation_id <= 0:
         conn.close()
         raise HTTPException(status_code=400, detail="Transaction has no obligation link")
     cur.execute("SELECT * FROM payment_monthly_obligations WHERE id=? LIMIT 1", (obligation_id,))
     obligation_before = dict(cur.fetchone() or {})
+    # A refund is available only for the credit produced by this month's
+    # excused attendance.  Normal confirmed payments remain non-refundable.
+    attendance_refundable = max(0.0, float(obligation_before.get("overpayment_amount") or 0.0))
+    refundable = min(source_refundable, attendance_refundable)
+    amount = _payment_require_amount_within_limit(payload.amount, refundable, field_name="Refund")
     status_before = str(obligation_before.get("status") or PAYMENT_STATUS_UNPAID)
     previous_overpayment_amount = float(obligation_before.get("overpayment_amount") or 0.0)
     cur.execute(
@@ -46297,12 +46348,14 @@ async def admin_payments_refund_transaction(
             """
             UPDATE payment_refunds
             SET status_after=?,
+                paid_total_after=?,
                 debt_after=?,
                 overpayment_after=?
             WHERE id=?
             """,
             (
                 status_after_refund,
+                float(paid_after_refund),
                 float(debt_after_refund),
                 float(overpayment_after_refund),
                 int(refund_id),
