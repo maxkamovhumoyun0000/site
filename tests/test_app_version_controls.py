@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import backend.main as api
-import db
 import diamondvoy_helpers as diamondvoy
 import pytest
 
@@ -26,18 +25,8 @@ def test_diamondvoy_payload_maps_to_the_persisted_flat_fields() -> None:
     assert payload["teacher_app_store_url"] == "https://example.test/teacher"
 
 
-def test_diamondvoy_accepts_uzbek_version_inflections_and_updates_both_apps(monkeypatch) -> None:
-    saved: dict[str, object] = {}
-    settings = {"min_student_version": "2.6.0", "min_teacher_version": "2.6.0"}
-    monkeypatch.setattr(db, "get_app_version_settings", lambda: {**settings, **saved})
-    monkeypatch.setattr(db, "update_app_version_settings", lambda fields: saved.update(fields) or {**settings, **saved})
-
-    reply = diamondvoy.try_diamondvoy_app_version_action(
-        "ilovalar versiyasini 2.7.0 yangilaylik", is_admin=True, lang="uz",
-    )
-
-    assert saved == {"min_student_version": "2.7.0", "min_teacher_version": "2.7.0"}
-    assert reply is not None
+def test_diamondvoy_has_no_mobile_release_mutator() -> None:
+    assert not hasattr(diamondvoy, "try_diamondvoy_app_version_action")
 
 
 def test_maintenance_window_is_active_only_inside_its_configured_interval() -> None:
@@ -78,6 +67,21 @@ def test_maintenance_settings_payload_accepts_only_safe_app_specific_fields() ->
 
     assert normalized["student_maintenance_enabled"] == 1
     assert normalized["student_maintenance_message_uz"] == "Rejali texnik ishlar"
+
+
+def test_maintenance_state_selects_the_mobile_app_language() -> None:
+    state = api._maintenance_state(
+        {
+            "student_maintenance_enabled": 1,
+            "student_maintenance_message_uz": "O‘zbekcha xabar",
+            "student_maintenance_message_ru": "Сообщение по-русски",
+            "student_maintenance_message_en": "English message",
+        },
+        "student",
+        language="ru",
+    )
+
+    assert state["message"] == "Сообщение по-русски"
 
 
 def test_maintenance_window_rejects_an_end_before_its_start() -> None:
