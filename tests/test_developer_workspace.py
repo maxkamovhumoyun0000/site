@@ -7,6 +7,10 @@ def test_developer_workspace_allows_only_its_mobile_release_endpoint() -> None:
     assert api._developer_workspace_path_is_allowed("/developer/mobile-release")
 
 
+def test_developer_has_separate_system_release_and_maintenance_pages() -> None:
+    assert api.SECTIONS_BY_ROLE["developer"] == ["home", "system-status", "mobile-release", "mobile-maintenance", "profile"]
+
+
 def test_developer_release_payload_keeps_maintenance_settings_out() -> None:
     payload = api._normalize_developer_release_payload(
         {
