@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import backend.main as api
+import pytest
 
 
 def test_receipt_branch_snapshot_uses_existing_group_owner_relation(monkeypatch) -> None:
@@ -49,6 +50,29 @@ def test_receipt_financial_snapshot_preserves_partial_payment_and_remaining_bala
         "overpayment_amount": 0.0,
         "payment_status": api.PAYMENT_STATUS_PARTIAL,
     }
+
+
+def test_receipt_financial_snapshot_preserves_current_and_total_paid_amounts() -> None:
+    snapshot = api._receipt_financial_snapshot(
+        {
+            "amount": 100_000,
+            "paid_total_after": 300_000,
+            "remaining_after": 200_000,
+            "overpayment_after": 0,
+            "status_after": api.PAYMENT_STATUS_PARTIAL,
+        }
+    )
+
+    assert snapshot["amount"] == 100_000.0
+    assert snapshot["total_paid_amount"] == 300_000.0
+    assert snapshot["remaining_amount"] == 200_000.0
+
+
+def test_payment_amount_cannot_exceed_the_outstanding_or_refundable_limit() -> None:
+    assert api._payment_require_amount_within_limit(100_000, 100_000, field_name="Payment") == 100_000.0
+
+    with pytest.raises(api.HTTPException, match="cannot exceed"):
+        api._payment_require_amount_within_limit(100_000.01, 100_000, field_name="Payment")
 
 
 def test_refund_receipt_snapshot_is_derived_from_the_persisted_refund_and_source_payment() -> None:
