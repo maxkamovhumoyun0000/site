@@ -7724,6 +7724,7 @@ _DEVELOPER_WORKSPACE_ALLOWED_PATHS = {
     "/user/account",
     "/user/language",
     "/developer/mobile-maintenance",
+    "/developer/mobile-release",
     "/admin/system-metrics",
 }
 
@@ -19683,6 +19684,23 @@ def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> d
     return {key: value for key, value in normalized.items() if key in maintenance_keys}
 
 
+def _normalize_developer_release_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Accept only mobile release fields exposed to the restricted developer login."""
+    normalized = _normalize_app_version_settings_payload(payload)
+    release_keys = {
+        f"min_{role}_version"
+        for role in ("student", "teacher")
+    } | {
+        f"min_{role}_build"
+        for role in ("student", "teacher")
+    } | {
+        f"{role}_{platform}_store_url"
+        for role in ("student", "teacher")
+        for platform in ("play", "app")
+    }
+    return {key: value for key, value in normalized.items() if key in release_keys}
+
+
 def _app_version_settings_response(settings: dict[str, Any]) -> dict[str, Any]:
     """Serve both the long-lived flat contract and DiamondVoy's form shape."""
     result = dict(settings or {})
@@ -19761,6 +19779,21 @@ async def developer_update_mobile_maintenance(payload: dict, authorization: str 
     _require_developer_access(user)
     updated = update_app_version_settings(_normalize_maintenance_settings_payload(payload))
     return {role: _maintenance_state(updated, role) for role in ("student", "teacher")}
+
+
+@app.get("/developer/mobile-release")
+async def developer_get_mobile_release(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    return _app_version_settings_response(get_app_version_settings())
+
+
+@app.post("/developer/mobile-release")
+async def developer_update_mobile_release(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    updated = update_app_version_settings(_normalize_developer_release_payload(payload))
+    return _app_version_settings_response(updated)
 
 
 @app.get("/admin/app-version-settings")

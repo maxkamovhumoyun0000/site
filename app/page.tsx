@@ -21451,14 +21451,24 @@ function systemBytes(value: unknown) {
   return `${(bytes / (1024 ** (index + 1))).toFixed(index >= 2 ? 1 : 0)} ${units[index]}`;
 }
 
-function systemUptime(value: unknown) {
+function systemUptime(value: unknown, tt: (key: string, fallback?: string) => string) {
   const seconds = Math.max(0, Math.floor(Number(value || 0)));
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
-  return days ? `${days} kun ${hours} soat` : `${hours} soat ${Math.floor((seconds % 3600) / 60)} daqiqa`;
+  return days
+    ? tt("developer.metrics.uptimeDays", "{days} kun {hours} soat").replace("{days}", String(days)).replace("{hours}", String(hours))
+    : tt("developer.metrics.uptimeHours", "{hours} soat {minutes} daqiqa").replace("{hours}", String(hours)).replace("{minutes}", String(Math.floor((seconds % 3600) / 60)));
+}
+
+function systemAdviceText(tt: (key: string, fallback?: string) => string, code: unknown, fallback: unknown) {
+  const known = ["healthy", "disk", "memory", "cpu", "swap"];
+  const safeCode = known.includes(String(code)) ? String(code) : "healthy";
+  return tt(`developer.metrics.advice.${safeCode}`, String(fallback || ""));
 }
 
 function ServerStatusDashboard() {
+  const tt = useWebT();
+  const locale = useWebLocale();
   const [payload, setPayload] = useState<GenericRow | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -21475,11 +21485,11 @@ function ServerStatusDashboard() {
       setPayload(result || null);
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Server holati yuklanmadi.");
+      setError(loadError instanceof Error ? loadError.message : tt("developer.metrics.loadError", "Server holati yuklanmadi."));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tt]);
 
   useEffect(() => {
     load();
@@ -21489,25 +21499,26 @@ function ServerStatusDashboard() {
 
   const metrics = (payload?.metrics || {}) as GenericRow;
   const cards = [
-    { label: "CPU", value: `${Number(metrics.cpu_percent || 0).toFixed(1)}%`, detail: `${metrics.cpu_cores || 0} yadro · load ${Number(metrics.load_1 || 0).toFixed(2)}`, tone: "asc-indigo" },
-    { label: "RAM", value: `${Number(metrics.memory_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.memory_available_bytes)} bo'sh`, tone: "asc-cyan" },
-    { label: "Disk", value: `${Number(metrics.disk_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.disk_free_bytes)} bo'sh`, tone: "asc-emerald" },
-    { label: "Swap", value: `${Number(metrics.swap_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.swap_used_bytes)} ishlatilgan`, tone: "asc-amber" },
+    { label: "CPU", value: `${Number(metrics.cpu_percent || 0).toFixed(1)}%`, detail: `${metrics.cpu_cores || 0} ${tt("developer.metrics.cores", "yadro")} · load ${Number(metrics.load_1 || 0).toFixed(2)}`, tone: "asc-indigo" },
+    { label: "RAM", value: `${Number(metrics.memory_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.memory_available_bytes)} ${tt("developer.metrics.free", "bo'sh")}`, tone: "asc-cyan" },
+    { label: "Disk", value: `${Number(metrics.disk_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.disk_free_bytes)} ${tt("developer.metrics.free", "bo'sh")}`, tone: "asc-emerald" },
+    { label: "Swap", value: `${Number(metrics.swap_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.swap_used_bytes)} ${tt("developer.metrics.used", "ishlatilgan")}`, tone: "asc-amber" },
   ];
   const lastPressure = payload?.last_pressure as GenericRow | null | undefined;
   const pressureAt = lastPressure?.captured_at
-    ? new Intl.DateTimeFormat("uz-UZ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(lastPressure.captured_at)))
-    : "Hozircha yuqori yuklama qayd etilmadi";
+    ? new Intl.DateTimeFormat(locale === "ru" ? "ru-RU" : locale === "en" ? "en-US" : "uz-UZ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(lastPressure.captured_at)))
+    : tt("developer.metrics.noPressure", "Hozircha yuqori yuklama qayd etilmadi");
+  const history = ((payload?.history || []) as GenericRow[]).slice(0, 48).reverse();
 
   return (
     <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Live monitoring</p>
-          <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Server holati</h2>
-          <p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.</p>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">{tt("developer.metrics.kicker", "Live monitoring")}</p>
+          <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.metrics.title", "Server holati")}</h2>
+          <p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.")}</p>
         </div>
-        <button type="button" className="btn btn-soft small" onClick={() => load()} disabled={loading}>{loading ? "Yangilanmoqda…" : "Yangilash"}</button>
+        <button type="button" className="btn btn-soft small" onClick={() => load()} disabled={loading}>{loading ? tt("developer.metrics.refreshing", "Yangilanmoqda…") : tt("developer.metrics.refresh", "Yangilash")}</button>
       </div>
       {error ? <p className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
       {payload ? <>
@@ -21518,24 +21529,25 @@ function ServerStatusDashboard() {
         </div>
         <div className="grid gap-3 lg:grid-cols-3">
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">Yuklama va ishlash vaqti</strong>
-            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">1 / 5 / 15 min: <b>{Number(metrics.load_1 || 0).toFixed(2)} / {Number(metrics.load_5 || 0).toFixed(2)} / {Number(metrics.load_15 || 0).toFixed(2)}</b></p>
-            <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Uptime: <b>{systemUptime(metrics.uptime_seconds)}</b></p>
+            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.loadAndUptime", "Yuklama va ishlash vaqti")}</strong>
+            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{tt("developer.metrics.load", "1 / 5 / 15 min")}: <b>{Number(metrics.load_1 || 0).toFixed(2)} / {Number(metrics.load_5 || 0).toFixed(2)} / {Number(metrics.load_15 || 0).toFixed(2)}</b></p>
+            <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">{tt("developer.metrics.uptime", "Uptime")}: <b>{systemUptime(metrics.uptime_seconds, tt)}</b></p>
           </div>
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">Oxirgi yuqori yuklama</strong>
+            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.lastPressure", "Oxirgi yuqori yuklama")}</strong>
             <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{pressureAt}</p>
-            {lastPressure?.causes?.length ? <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">Sabab: {lastPressure.causes.join(", ").toUpperCase()}</p> : null}
+            {lastPressure?.causes?.length ? <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">{tt("developer.metrics.cause", "Sabab")}: {lastPressure.causes.join(", ").toUpperCase()}</p> : null}
           </div>
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">Tavsiya</strong>
+            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.recommendation", "Tavsiya")}</strong>
             <ul className="mt-2 space-y-1 text-sm text-ink-600 dark:text-slate-300">
-              {((payload.recommendations || []) as GenericRow[]).map((item, index) => <li key={`${item.code}-${index}`}>• {item.action}</li>)}
+              {((payload.recommendations || []) as GenericRow[]).map((item, index) => <li key={`${item.code}-${index}`}>• {systemAdviceText(tt, item.code, item.action)}</li>)}
             </ul>
           </div>
         </div>
-        <p className="mt-3 text-[11px] font-medium text-ink-500 dark:text-slate-400">{payload.sampling_note} Tarix faqat agregat resurs ko‘rsatkichlarini saqlaydi; foydalanuvchi yoki log ma’lumoti saqlanmaydi.</p>
-      </> : !loading && !error ? <p className="text-sm text-ink-500">Ma’lumot topilmadi.</p> : null}
+        <div className="mt-3 rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]"><div className="flex items-center justify-between gap-2"><strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.history", "So‘nggi yuklama tarixi")}</strong><span className="text-[11px] font-medium text-ink-500 dark:text-slate-400">{tt("developer.metrics.historyHint", "CPU / RAM / Disk")}</span></div>{history.length ? <div className="mt-3 flex h-20 items-end gap-1" aria-label={tt("developer.metrics.history", "So‘nggi yuklama tarixi")}>{history.map((sample, index) => { const level = Math.max(Number(sample.cpu_percent || 0), Number(sample.memory_percent || 0), Number(sample.disk_percent || 0)); return <span key={`${sample.captured_at}-${index}`} title={`${formatWhen(sample.captured_at)} · ${level.toFixed(1)}%`} className="min-w-[3px] flex-1 rounded-t bg-cyan-500/70 dark:bg-cyan-300/70" style={{ height: `${Math.max(4, Math.min(100, level))}%` }} />; })}</div> : <p className="mt-2 text-sm text-ink-500 dark:text-slate-400">{tt("developer.metrics.historyEmpty", "Tarix uchun namuna yig‘ilmoqda.")}</p>}</div>
+        <p className="mt-3 text-[11px] font-medium text-ink-500 dark:text-slate-400">{tt("developer.metrics.samplingNote", "Ko‘rsatkichlar har 5 daqiqada avtomatik saqlanadi; tarix faqat agregat resurs ko‘rsatkichlaridan iborat.")}</p>
+      </> : !loading && !error ? <p className="text-sm text-ink-500 dark:text-slate-400">{tt("developer.metrics.empty", "Ma’lumot topilmadi.")}</p> : null}
     </section>
   );
 }
@@ -21548,6 +21560,7 @@ function datetimeLocalValue(value: unknown) {
 }
 
 function DeveloperMaintenancePanel() {
+  const tt = useWebT();
   const [settings, setSettings] = useState<GenericRow>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -21560,7 +21573,7 @@ function DeveloperMaintenancePanel() {
       setSettings(result || {});
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Maintenance sozlamalari yuklanmadi.");
+      setError(loadError instanceof Error ? loadError.message : tt("developer.maintenance.loadError", "Maintenance sozlamalari yuklanmadi."));
     } finally {
       setLoading(false);
     }
@@ -21587,7 +21600,7 @@ function DeveloperMaintenancePanel() {
       const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
       setSettings(result || {});
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Saqlashda xatolik.");
+      setError(saveError instanceof Error ? saveError.message : tt("developer.maintenance.saveError", "Saqlashda xatolik."));
     } finally {
       setSaving(false);
     }
@@ -21595,19 +21608,87 @@ function DeveloperMaintenancePanel() {
 
   return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
     <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Mobile control</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Rejali maintenance</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.</p></div>
-      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? "Saqlanmoqda…" : "Saqlash"}</button>
+      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">{tt("developer.maintenance.kicker", "Mobile control")}</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.maintenance.title", "Rejali maintenance")}</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.maintenance.subtitle", "Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.")}</p></div>
+      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button>
     </div>
     {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
     <div className="grid gap-4 lg:grid-cols-2">
       {(["student", "teacher"] as const).map((role) => {
         const item = (settings[role] || {}) as GenericRow;
-        const title = role === "student" ? "🎓 Student App" : "👨‍🏫 Teacher App";
+        const title = role === "student" ? `🎓 ${tt("developer.studentApp", "Student App")}` : `👨‍🏫 ${tt("developer.teacherApp", "Teacher App")}`;
         return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> Yoqilgan</label></div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Boshlanish<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Tugash<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label></div>
-          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">Ilovadagi xabar<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder="Rejali texnik ishlar olib borilmoqda." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label>
-          <p className="mt-2 text-xs font-medium text-ink-500">Holat: {item.active ? "hozir foydalanuvchilarga ko‘rsatilmoqda" : item.enabled ? "vaqt kelganda avtomatik yoqiladi" : "o‘chiq"}</p>
+          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold text-ink-700 dark:text-slate-200"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> {tt("developer.maintenance.enabled", "Yoqilgan")}</label></div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.starts", "Boshlanish")}<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.ends", "Tugash")}<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label></div>
+          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.message", "Ilovadagi xabar")}<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder={tt("developer.maintenance.messagePlaceholder", "Rejali texnik ishlar olib borilmoqda.")} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+          <p className="mt-2 text-xs font-medium text-ink-500 dark:text-slate-400">{tt("developer.status", "Holat")}: {item.active ? tt("developer.maintenance.active", "hozir foydalanuvchilarga ko‘rsatilmoqda") : item.enabled ? tt("developer.maintenance.scheduled", "vaqt kelganda avtomatik yoqiladi") : tt("developer.maintenance.off", "o‘chiq")}</p>
+        </div>;
+      })}
+    </div>
+  </section>;
+}
+
+function DeveloperReleasePanel() {
+  const tt = useWebT();
+  const [settings, setSettings] = useState<GenericRow>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson<GenericRow>("/developer/mobile-release", { token: localStorage.getItem("diamond_token") || "", timeoutMs: 15000 });
+      setSettings(result || {});
+      setError("");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : tt("developer.release.loadError", "Release sozlamalari yuklanmadi."));
+    } finally {
+      setLoading(false);
+    }
+  }, [tt]);
+
+  useEffect(() => { load(); }, [load]);
+  const update = (role: "student" | "teacher", key: string, value: unknown) => {
+    setSettings((previous) => ({ ...previous, [role]: { ...(previous[role] || {}), [key]: value } }));
+  };
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const payload: GenericRow = {};
+      for (const role of ["student", "teacher"] as const) {
+        const item = (settings[role] || {}) as GenericRow;
+        payload[role] = {
+          min_version: String(item.min_version || "").trim(),
+          min_build: Math.max(0, Number(item.min_build || 0)),
+          store_url: String(item.store_url || "").trim(),
+          ios_store_url: String(item.ios_store_url || "").trim(),
+        };
+      }
+      const result = await requestJson<GenericRow>("/developer/mobile-release", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
+      setSettings(result || {});
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : tt("developer.release.saveError", "Release sozlamalari saqlanmadi."));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-600 dark:text-violet-300">{tt("developer.release.kicker", "Release control")}</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.release.title", "Mobil ilova relizi")}</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.release.subtitle", "Minimal versiya va store manzillarini boshqaring. Store manzilisiz ilova majburan yangilanmaydi.")}</p></div>
+      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button>
+    </div>
+    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
+    <div className="grid gap-4 lg:grid-cols-2">
+      {(["student", "teacher"] as const).map((role) => {
+        const item = (settings[role] || {}) as GenericRow;
+        const title = role === "student" ? `🎓 ${tt("developer.studentApp", "Student App")}` : `👨‍🏫 ${tt("developer.teacherApp", "Teacher App")}`;
+        return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
+          <strong className="text-base text-navy-900 dark:text-white">{title}</strong>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.minVersion", "Minimal versiya")}<input value={String(item.min_version || "")} onChange={(event) => update(role, "min_version", event.target.value)} placeholder="4.0.1" className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.minBuild", "Minimal build")}<input value={String(item.min_build || "")} onChange={(event) => update(role, "min_build", event.target.value)} type="number" min="0" className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label></div>
+          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.android", "Google Play URL")}<input value={String(item.store_url || "")} onChange={(event) => update(role, "store_url", event.target.value)} type="url" placeholder="https://play.google.com/..." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.ios", "App Store URL")}<input value={String(item.ios_store_url || "")} onChange={(event) => update(role, "ios_store_url", event.target.value)} type="url" placeholder="https://apps.apple.com/..." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
         </div>;
       })}
     </div>
@@ -21615,7 +21696,8 @@ function DeveloperMaintenancePanel() {
 }
 
 function DeveloperWorkspace() {
-  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker="Developer workspace" title="Tizim boshqaruvi" subtitle="Server resurslari va mobil ilovalarning rejali maintenance boshqaruvi." /><ServerStatusDashboard /><DeveloperMaintenancePanel /></div>;
+  const tt = useWebT();
+  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><ServerStatusDashboard /><DeveloperReleasePanel /><DeveloperMaintenancePanel /></div>;
 }
 
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
