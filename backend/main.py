@@ -2437,7 +2437,10 @@ class FeedbackAdminReplyRequest(BaseModel):
 
 
 class FeedbackStatusRequest(BaseModel):
-    status: Literal["Yangi", "Ko‘rilmoqda", "Ko'rilmoqda", "Hal qilindi", "new", "reviewing", "resolved"]
+    status: Literal[
+        "Yangi", "Ko‘rilmoqda", "Ko'rilmoqda", "Javob kutilmoqda", "Hal qilindi",
+        "new", "reviewing", "awaiting_user", "waiting_for_user", "resolved",
+    ]
 
 
 class FeedbackDpointActionRequest(BaseModel):
@@ -11668,9 +11671,17 @@ def _normalize_feedback_status(value: str | None) -> str:
     low = raw.lower()
     if low in {"reviewing", "korilmoqda", "ko'rilmoqda", "ko‘rilmoqda"}:
         return "Ko‘rilmoqda"
+    if low in {"awaiting_user", "waiting_for_user", "javob kutilmoqda", "javob_kutilmoqda"}:
+        return "Javob kutilmoqda"
     if low in {"resolved", "done", "hal qilindi", "hal_qilindi"}:
         return "Hal qilindi"
     return "Yangi"
+
+
+def _feedback_status_after_message(current_status: str | None, sender_role: str | None) -> str:
+    """Keep a feedback thread actionable after either participant writes."""
+    del current_status  # The sender always determines who needs to act next.
+    return "Javob kutilmoqda" if str(sender_role or "").strip().lower() == "admin" else "Yangi"
 
 
 def _final_chat_cleanup_if_due(*, force: bool = False) -> int:
@@ -12828,7 +12839,10 @@ def _feedback_insert_message(thread_id: int, sender_user_id: int, sender_role: s
         if not msg_id:
             cur.execute("SELECT currval(pg_get_serial_sequence('feedback_messages', 'id')) as id")
             msg_id = int((cur.fetchone() or {}).get("id") or 0)
-        cur.execute("UPDATE feedback_threads SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(thread_id),))
+        cur.execute(
+            "UPDATE feedback_threads SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (_feedback_status_after_message(None, sender_role), int(thread_id)),
+        )
         conn.commit()
         cur.execute("SELECT * FROM feedback_messages WHERE id=? LIMIT 1", (msg_id,))
         return dict(cur.fetchone() or {})

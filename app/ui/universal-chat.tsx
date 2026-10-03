@@ -47,6 +47,20 @@ const DIAMONDVOY_FILE_EXTENSIONS = new Set([
 
 type ActivePane = "diamondvoy" | "community" | "feedback" | null;
 
+const feedbackStatusMeta = (value?: string | null) => {
+  const status = String(value || "Yangi");
+  if (status === "Ko‘rilmoqda" || status === "Ko'rilmoqda") {
+    return { label: "Ko‘rilmoqda", hint: "Administrator masalani ko‘rib chiqmoqda.", tone: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-200" };
+  }
+  if (status === "Javob kutilmoqda") {
+    return { label: "Javob kutilmoqda", hint: "Administrator javob berdi — sizning fikringiz kutilmoqda.", tone: "bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200" };
+  }
+  if (status === "Hal qilindi") {
+    return { label: "Hal qilindi", hint: "Murojaat yakunlangan. Zarur bo‘lsa yana yozishingiz mumkin.", tone: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-200" };
+  }
+  return { label: "Yangi", hint: "Murojaatingiz administrator ko‘rishini kutmoqda.", tone: "bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-200" };
+};
+
 type ChatAttachment = {
   id?: number;
   url: string;
@@ -1669,10 +1683,17 @@ export function UniversalChat({
   apiFetch,
   userId,
   userRole,
+  feedbackOnly = false,
+  onOpenFeedback,
+  onExitFeedback,
 }: {
   apiFetch: (path: string, options?: any) => Promise<any>;
   userId: number;
   userRole: string;
+  /** Opens feedback as its own application page instead of a chat sub-pane. */
+  feedbackOnly?: boolean;
+  onOpenFeedback?: () => void;
+  onExitFeedback?: () => void;
 }) {
   const tt = useWebT();
   const role = String(userRole || "").toLowerCase();
@@ -1680,7 +1701,7 @@ export function UniversalChat({
   const isStudent = role === "student";
   const canRegenerate = ["admin", "teacher", "support"].includes(role);
 
-  const [activePane, setActivePane] = useState<ActivePane>(null);
+  const [activePane, setActivePane] = useState<ActivePane>(feedbackOnly ? "feedback" : null);
   const [aiChats, setAiChats] = useState<DiamondvoyChat[]>([]);
   const [activeChatId, setActiveChatId] = useState<number | null>(null);
   const [aiMessages, setAiMessages] = useState<DiamondvoyMessage[]>([]);
@@ -1709,6 +1730,8 @@ export function UniversalChat({
   const [error, setError] = useState("");
   const [adminStatusFilter, setAdminStatusFilter] = useState("");
   const [adminSearch, setAdminSearch] = useState("");
+  const [adminSearchQuery, setAdminSearchQuery] = useState("");
+  const [feedbackStatusSaving, setFeedbackStatusSaving] = useState(false);
   const [dpointAmount, setDpointAmount] = useState("");
   const [dpointReason, setDpointReason] = useState("");
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia>(null);
@@ -1735,6 +1758,18 @@ export function UniversalChat({
   const msgLongPressTimerRef = useRef<number | null>(null);
   const communityLastMessageIdRef = useRef(0);
   const activeChat = useMemo(() => aiChats.find((chat) => chat.id === activeChatId) || null, [aiChats, activeChatId]);
+  const returnFromFeedback = useCallback(() => {
+    if (feedbackOnly) {
+      onExitFeedback?.();
+      return;
+    }
+    setActivePane(null);
+  }, [feedbackOnly, onExitFeedback]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAdminSearchQuery(adminSearch.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [adminSearch]);
 
   const scrollToBottom = useCallback((force = false) => {
     const node =
@@ -1924,7 +1959,7 @@ export function UniversalChat({
     try {
       const params = new URLSearchParams();
       if (adminStatusFilter) params.set("status", adminStatusFilter);
-      if (adminSearch.trim()) params.set("search", adminSearch.trim());
+      if (adminSearchQuery) params.set("search", adminSearchQuery);
       params.set("limit", "80");
       const payload = await apiFetch(`/feedback/threads?${params.toString()}`);
       const rows = Array.isArray(payload?.items) ? payload.items : [];
@@ -1935,7 +1970,7 @@ export function UniversalChat({
     } finally {
       setLoadingBody(false);
     }
-  }, [apiFetch, adminSearch, adminStatusFilter, isAdmin]);
+  }, [apiFetch, adminSearchQuery, adminStatusFilter, isAdmin]);
 
   const loadAdminThreadDetail = useCallback(
     async (threadId: number) => {
@@ -1959,6 +1994,7 @@ export function UniversalChat({
   );
 
   useEffect(() => {
+    if (feedbackOnly) return;
     loadDiamondvoyChats().catch(() => null);
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => null);
@@ -1968,7 +2004,11 @@ export function UniversalChat({
       clearChatLongPressTimer();
       if (msgLongPressTimerRef.current) window.clearTimeout(msgLongPressTimerRef.current);
     };
-  }, [loadDiamondvoyChats]);
+  }, [feedbackOnly, loadDiamondvoyChats]);
+
+  useEffect(() => {
+    if (feedbackOnly) setActivePane("feedback");
+  }, [feedbackOnly]);
 
   // A completed test hands its immutable review snapshot to Diamondvoy via
   // sessionStorage.  It is consumed once, stays in the student's browser only,
@@ -2051,14 +2091,6 @@ export function UniversalChat({
       loadOwnFeedback().catch(() => null);
     }
   }, [activePane, isAdmin, loadAdminThreads, loadOwnFeedback]);
-
-  useEffect(() => {
-    if (!isAdmin || activePane !== "feedback") return;
-    const timer = window.setTimeout(() => {
-      loadAdminThreads().catch(() => null);
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [adminSearch, adminStatusFilter, activePane, isAdmin, loadAdminThreads]);
 
   useEffect(() => {
     scrollToBottom(false);
@@ -2424,6 +2456,7 @@ export function UniversalChat({
 
   async function updateFeedbackStatus(status: string) {
     if (!activeFeedbackThreadId) return;
+    setFeedbackStatusSaving(true);
     setError("");
     try {
       const payload = await apiFetch(`/feedback/threads/${activeFeedbackThreadId}/status`, {
@@ -2437,6 +2470,8 @@ export function UniversalChat({
       loadAdminThreads().catch(() => null);
     } catch (err) {
       setError(parseError(err, tt("chat.error.status", "Status saqlanmadi. Qayta urinib ko'ring.")));
+    } finally {
+      setFeedbackStatusSaving(false);
     }
   }
 
@@ -2477,6 +2512,10 @@ export function UniversalChat({
         <button
           type="button"
           onClick={() => {
+            if (onOpenFeedback) {
+              onOpenFeedback();
+              return;
+            }
             setActivePane("feedback");
             setActiveChatId(null);
             setInput("");
@@ -3002,18 +3041,21 @@ export function UniversalChat({
   );
 
   const UserFeedbackPane = (
-    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-white dark:bg-navy-950", activePane === "feedback" && !isAdmin ? "flex" : "hidden")}>
-      <div className="px-3 sm:px-5 py-3 border-b border-line dark:border-white/10 flex items-center justify-between gap-3">
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/70 dark:bg-navy-950", activePane === "feedback" && !isAdmin ? "flex" : "hidden")}>
+      <div className="px-4 sm:px-6 py-4 border-b border-line dark:border-white/10 bg-white/95 dark:bg-navy-900/95 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
+          <button type="button" onClick={returnFromFeedback} className={cx("p-2 rounded-xl border border-line dark:border-white/15 text-ink-700 dark:text-white", feedbackOnly ? "" : "lg:hidden")}>‹</button>
           <div>
             <h3 className="font-black text-navy-900 dark:text-white">{tt("chat.feedback.title", "Taklif & Shikoyat")}</h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300">{feedbackDetail?.thread?.status || tt("feedback.status.new", "Yangi")}</p>
+            <p className="text-xs text-ink-500 dark:text-navy-300">Fikringiz bevosita administratorga yetadi.</p>
           </div>
         </div>
-        <button type="button" onClick={() => loadOwnFeedback().catch(() => null)} className="px-3 py-2 rounded-lg border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white">↻</button>
+        <button type="button" onClick={() => loadOwnFeedback().catch(() => null)} className="px-3 py-2 rounded-xl border border-line dark:border-white/15 text-xs font-bold text-ink-700 dark:text-white" aria-label="Yangilash">↻</button>
       </div>
-      <div ref={feedbackScrollRef} className="flex-1 overflow-y-auto px-3 sm:px-6 py-4 space-y-3">
+      <div className="mx-4 mt-4 sm:mx-6 rounded-2xl border border-line bg-white px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/5">
+        <div className="flex flex-wrap items-center gap-2"><span className={cx("rounded-full px-2.5 py-1 text-xs font-black", feedbackStatusMeta(feedbackDetail?.thread?.status).tone)}>{feedbackStatusMeta(feedbackDetail?.thread?.status).label}</span><span className="text-xs text-ink-600 dark:text-navy-200">{feedbackStatusMeta(feedbackDetail?.thread?.status).hint}</span></div>
+      </div>
+      <div ref={feedbackScrollRef} className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 space-y-3">
         {(feedbackDetail?.messages || []).map((message) => {
           const mine = message.sender_user_id === Number(userId);
           return (
@@ -3045,7 +3087,7 @@ export function UniversalChat({
           event.preventDefault();
           sendFeedbackMessage().catch(() => null);
         }}
-        className="border-t border-line dark:border-white/10 bg-white dark:bg-navy-950 px-3 sm:px-5 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)]"
+        className="border-t border-line dark:border-white/10 bg-white dark:bg-navy-950 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)]"
       >
         {ComposerImages}
         <div className="flex gap-2 pb-2">
@@ -3063,11 +3105,11 @@ export function UniversalChat({
   );
 
   const AdminFeedbackPane = (
-    <section className={cx("universal-admin-feedback-pane flex-1 min-w-0 min-h-0 bg-white dark:bg-navy-950", activePane === "feedback" && isAdmin ? "flex" : "hidden")}>
+    <section className={cx("universal-admin-feedback-pane flex-1 min-w-0 min-h-0 bg-slate-50/70 dark:bg-navy-950", activePane === "feedback" && isAdmin ? "flex" : "hidden")}>
       <div className={cx("universal-admin-feedback-list w-full md:w-[320px] xl:w-[360px] border-r border-line dark:border-white/10 flex-col min-h-0", activeFeedbackThreadId ? "hidden md:flex" : "flex")}>
         <div className="px-3 py-3 border-b border-line dark:border-white/10 space-y-2">
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
+            <button type="button" onClick={returnFromFeedback} className={cx("p-2 rounded-xl border border-line dark:border-white/15 text-ink-700 dark:text-white", feedbackOnly ? "" : "lg:hidden")}>‹</button>
             <h3 className="font-black text-navy-900 dark:text-white">Taklif & Shikoyat</h3>
           </div>
           <input value={adminSearch} onChange={(event) => setAdminSearch(event.target.value)} placeholder="Ism familya qidirish" className="w-full rounded-lg border border-line dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 text-sm text-navy-900 dark:text-white" />
@@ -3075,15 +3117,16 @@ export function UniversalChat({
             <option value="">Hammasi</option>
             <option value="Yangi">{tt("feedback.status.new", "Yangi")}</option>
             <option value="Ko‘rilmoqda">{tt("feedback.status.reviewing", "Ko'rilmoqda")}</option>
+            <option value="Javob kutilmoqda">Javob kutilmoqda</option>
             <option value="Hal qilindi">{tt("feedback.status.resolved", "Hal qilindi")}</option>
           </select>
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {adminThreads.map((thread) => (
-            <button key={thread.id} type="button" onClick={() => loadAdminThreadDetail(thread.id).catch(() => null)} className="universal-feedback-thread-button w-full text-left rounded-lg border border-line dark:border-white/10 bg-white dark:bg-white/5 px-3 py-3 hover:border-cyan-300">
+            <button key={thread.id} type="button" onClick={() => loadAdminThreadDetail(thread.id).catch(() => null)} className={cx("universal-feedback-thread-button w-full text-left rounded-xl border bg-white dark:bg-white/5 px-3 py-3 transition hover:border-cyan-300", activeFeedbackThreadId === thread.id ? "border-cyan-400 ring-2 ring-cyan-400/20 dark:border-cyan-300" : "border-line dark:border-white/10")}>
               <div className="flex items-center justify-between gap-2">
                 <p className="font-black text-sm text-navy-900 dark:text-white truncate">{thread.user_name}</p>
-                <span className="text-[11px] px-2 py-1 rounded-full bg-cyan-100 dark:bg-cyan-500/15 text-cyan-700 dark:text-cyan-200">{thread.status}</span>
+                <span className={cx("text-[11px] px-2 py-1 rounded-full font-bold", feedbackStatusMeta(thread.status).tone)}>{feedbackStatusMeta(thread.status).label}</span>
               </div>
               <p className="text-xs text-ink-500 dark:text-navy-300 mt-1">{thread.role}</p>
               <p className="text-xs text-ink-600 dark:text-navy-300 mt-2 line-clamp-2">{thread.last_message_preview || "-"}</p>
@@ -3125,9 +3168,10 @@ export function UniversalChat({
                   </p>
                 </div>
               </div>
-              <select value={adminFeedbackDetail.thread.status} onChange={(event) => updateFeedbackStatus(event.target.value).catch(() => null)} className="universal-feedback-status rounded-lg border border-line dark:border-white/15 bg-white dark:bg-navy-900 px-3 py-2 text-sm text-navy-900 dark:text-white">
+              <select value={adminFeedbackDetail.thread.status} disabled={feedbackStatusSaving} onChange={(event) => updateFeedbackStatus(event.target.value).catch(() => null)} className="universal-feedback-status rounded-xl border border-line dark:border-white/15 bg-white dark:bg-navy-900 px-3 py-2 text-sm font-bold text-navy-900 dark:text-white disabled:opacity-50">
                 <option value="Yangi">{tt("feedback.status.new", "Yangi")}</option>
                 <option value="Ko‘rilmoqda">{tt("feedback.status.reviewing", "Ko'rilmoqda")}</option>
+                <option value="Javob kutilmoqda">Javob kutilmoqda</option>
                 <option value="Hal qilindi">{tt("feedback.status.resolved", "Hal qilindi")}</option>
               </select>
             </div>
@@ -3165,7 +3209,7 @@ export function UniversalChat({
 
   return (
     <div className="universal-chat-root fixed inset-0 z-[60] flex bg-white dark:bg-navy-950 text-navy-900 dark:text-white overflow-hidden" style={{ height: "var(--tg-viewport-height, 100dvh)" }}>
-      {Sidebar}
+      {!feedbackOnly && Sidebar}
       {DiamondvoyPane}
       {CommunityPane}
       {UserFeedbackPane}

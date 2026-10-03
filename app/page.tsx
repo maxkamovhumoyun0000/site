@@ -23632,31 +23632,15 @@ function DashboardShell({
   // Adminning eng ko'p ishlatiladigan yo'llari bir joyda: desktop header va
   // telefonning pastki navigatsiyasi. Shu elementlar drawer/sidebar ichida
   // qaytarilmaydi.
-  const primaryAdminSections = ["home", "users", "groups", "chats"].filter((item) => orderedSections.includes(item));
+  const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
-    ? primaryAdminSections
+    ? primaryAdminSections.filter((item) => item !== "chats")
     : orderedSections.slice(0, 5);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
   const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
     ? "home"
     : normalizedSection;
   const [isMobileLayout, setIsMobileLayout] = useState(false);
-  const [isNarrowDesktop, setIsNarrowDesktop] = useState(false);
-
-  useEffect(() => {
-    const media = window.matchMedia("(max-width: 900px)");
-    setIsNarrowDesktop(media.matches);
-    const listener = (e: MediaQueryListEvent) => setIsNarrowDesktop(e.matches);
-    if (media.addEventListener) {
-      media.addEventListener("change", listener);
-    } else {
-      media.addListener(listener);
-    }
-    return () => {
-      if (media.removeEventListener) media.removeEventListener("change", listener);
-      else media.removeListener(listener);
-    };
-  }, []);
 
   // Tablet recovery for stuck loading page (user-reported issue on tablet)
   const [showTabletRecovery, setShowTabletRecovery] = useState(false);
@@ -24156,7 +24140,7 @@ function DashboardShell({
 
   useEffect(() => {
     const webApp = window.Telegram?.WebApp;
-    const isChats = currentSection === "chats" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
+    const isChats = currentSection === "chats" || currentSection === "feedback" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
     if (isChats) {
       document.documentElement.classList.add("chats-fullscreen-root");
       document.body.classList.add("chats-fullscreen-body");
@@ -24181,7 +24165,7 @@ function DashboardShell({
   const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
     if (item === "chats" || item === "notifications" || item === "profile") return false;
-    if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
+    if (desktopHeaderSections.has(item)) return false;
     return true;
   });
 
@@ -24200,7 +24184,9 @@ function DashboardShell({
 
   let content: React.ReactNode = null;
   if (currentSection === "chats" || currentSection === "diamondvoy") {
-    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
+    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} onOpenFeedback={() => handleNavigate("feedback")} />;
+  } else if (currentSection === "feedback") {
+    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} feedbackOnly onExitFeedback={() => handleNavigate("chats")} />;
   } else if (currentSection === "study-room") {
     content = <StudyRoomChat apiFetch={authedApiFetch} role={activeRole} userId={Number(user?.id || 0)} />;
   } else if (activeRole === "student") {
@@ -24292,7 +24278,7 @@ function DashboardShell({
     }
   }
 
-  const isChatsFullscreen = currentSection === "chats" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
+  const isChatsFullscreen = currentSection === "chats" || currentSection === "feedback" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
   const shellClass = [
     "app-shell",
     "app-native-shell",
