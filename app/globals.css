@@ -15476,6 +15476,7 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 .payments-transactions-table th {
   min-width: 92px;
   white-space: nowrap !important;
+  vertical-align: middle;
 }
 
 .payments-transactions-table td:nth-child(2),
@@ -15490,7 +15491,6 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 
 .payments-transactions-table td:nth-child(2) strong,
 .payments-transactions-table td:nth-child(2) small,
-.payments-transactions-table td:nth-child(5),
 .payments-transactions-table td:nth-child(11) {
   display: block;
   overflow: hidden;

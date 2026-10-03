@@ -173,3 +173,4 @@ def test_receipt_pdf_is_rendered_from_server_snapshot() -> None:
     assert "JAMI TO'LANGAN" in pdf_text
     assert "Receipt ID" in pdf_text
     assert "Payment ID" not in pdf_text
+    assert "TO'LOV TASDIQLANDI" not in pdf_text

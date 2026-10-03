@@ -44013,7 +44013,6 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     )
     document_title = "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" if is_refund else "TO'LOV CHEKI / ЧЕК ОПЛАТЫ"
     amount_label = "JORIY QAYTARISH / ТЕКУЩИЙ ВОЗВРАТ" if is_refund else "JORIY TO'LOV / ТЕКУЩИЙ ПЛАТЁЖ"
-    result_label = "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" if is_refund else "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
     brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
     branch = str(snapshot.get("branch_name") or "").strip()
@@ -44031,8 +44030,7 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         f"To'lov turi / Тип оплаты: {payment_type}", f"To'lov usuli / Способ оплаты: {method}",
         f"Tasdiqladi / Подтвердил(а): {snapshot.get('confirmed_by_name') or '-'}", f"Sana / Дата: {snapshot.get('confirmed_at') or '-'}",
         f"Receipt ID / ID чека: {receipt.get('receipt_id') or '-'}",
-        *([f"Izoh / Комментарий: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []), "",
-        result_label,
+        *([f"Izoh / Комментарий: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
     ]
     doc = fitz.open()
     page = doc.new_page(width=300, height=600)

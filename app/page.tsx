@@ -143,7 +143,6 @@ function receiptPrintHtml(receipt: GenericRow): string {
   const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
   const documentTitle = isRefund ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ";
   const amountLabel = isRefund ? "Joriy qaytarish / Текущий возврат" : "Joriy to'lov / Текущий платёж";
-  const statusLabel = isRefund ? "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" : "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА";
   const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
   const branch = String(snapshot.branch_name || "").trim();
   const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
@@ -156,7 +155,7 @@ function receiptPrintHtml(receipt: GenericRow): string {
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
     @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО:</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="status">${escapeReceiptHtml(statusLabel)}</div></main></body></html>`;
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО:</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"></main></body></html>`;
 }
 
 type ApiUser = {
@@ -20220,7 +20219,6 @@ function AdminSection({
                   <p><b>Sana / Дата:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
                   <p><b>Receipt ID / ID чека:</b> {receiptPreview.receipt_id || "-"}</p>
                   {isRefund && snapshot.refund_note ? <p><b>Izoh / Комментарий:</b> {snapshot.refund_note}</p> : null}
-                  <div className="text-center font-black pt-2">{isRefund ? "QAYTARISH TASDIQLANDI / ВОЗВРАТ ПОДТВЕРЖДЁН" : "TO'LOV TASDIQLANDI / ОПЛАТА ПОДТВЕРЖДЕНА"}</div>
                 </div>;
               })() : null}
               <div className="button-grid mt-4">

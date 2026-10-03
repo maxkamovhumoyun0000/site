@@ -24,7 +24,7 @@ No plan file was supplied. The journeys were derived from the payment-screen req
 | 1 | A receipt snapshot keeps its current payment, running paid total, and remaining balance. | `tests/test_payment_receipts.py` | Unit | PASS |
 | 2 | A total of zero after a refund remains zero and is not replaced with the original payment amount. | `test_refund_receipt_financial_snapshot_keeps_zero_total_paid` | Unit | PASS |
 | 3 | Amounts above the persisted payment/refund limit are rejected. | `test_payment_amount_cannot_exceed_the_outstanding_or_refundable_limit` | Unit | PASS |
-| 4 | The server-rendered PDF contains the total-paid and Receipt ID fields, without Payment ID. | `test_receipt_pdf_is_rendered_from_server_snapshot` | Unit | PASS |
+| 4 | The server-rendered PDF contains total-paid and Receipt ID fields, without Payment ID or an approval-status footer. | `test_receipt_pdf_is_rendered_from_server_snapshot` | Unit | PASS |
 | 5 | The TypeScript payment screen, including auto-print and debounced search changes, type-checks. | `node_modules/.bin/tsc --noEmit` in a temporary verification copy | Static check | PASS |
 | 6 | Attendance credit is not carried into a future calendar month early. | `test_attendance_credit_is_not_carried_into_a_future_month_early` | Unit | PASS |
 
