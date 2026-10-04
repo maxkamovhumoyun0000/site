@@ -9,7 +9,8 @@ NAVIGATION = (ROOT / "app" / "ui" / "navigation-config.ts").read_text(encoding="
 
 class LocalAutomaticPrintingTests(unittest.TestCase):
     def test_confirmed_payment_and_refund_try_the_local_agent_before_browser_fallback(self) -> None:
-        self.assertIn('import { printReceiptWithLocalAgent } from "./ui/local-print-agent"', PAGE)
+        self.assertIn('from "./ui/local-print-agent"', PAGE)
+        self.assertIn("printReceiptWithLocalAgent", PAGE)
         self.assertIn("const localPrint = await printReceiptWithLocalAgent(receipt);", PAGE)
         self.assertIn("if (localPrint.printed)", PAGE)
         self.assertIn("await printReceipt(receipt, autoPrintWindow);", PAGE)
@@ -19,6 +20,11 @@ class LocalAutomaticPrintingTests(unittest.TestCase):
         self.assertIn('section === "local-print-agent"', PAGE)
         self.assertIn('/downloads/install-diamond-print-agent-windows.ps1', PAGE)
         self.assertIn('/downloads/LOCAL_PRINT_AGENT_README.md', PAGE)
+
+    def test_developer_can_test_print_and_save_local_paper_settings(self) -> None:
+        self.assertIn("printLocalAgentTestReceipt", PAGE)
+        self.assertIn("saveLocalPrintAgentSettings", PAGE)
+        self.assertIn("paper_width_mm", PAGE)
 
 
 if __name__ == "__main__":

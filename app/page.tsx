@@ -70,6 +70,7 @@ import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
+import { localPrintAgentHealth, printLocalAgentTestReceipt, printReceiptWithLocalAgent, saveLocalPrintAgentSettings, type LocalPrintAgentSettings } from "./ui/local-print-agent";
 function Settings3DToggle() {
   const tt = useWebT();
   const [isOff, setIsOff] = useState(false);
@@ -139,23 +140,23 @@ function receiptPrintHtml(receipt: GenericRow): string {
   const totalPaidAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0));
   const remainingAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0));
   const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
-  const method = snapshot.payment_method === "card" ? "Karta / Карта" : "Naqd / Наличные";
-  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
-  const documentTitle = isRefund ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ";
-  const amountLabel = isRefund ? "QAYTARILDI / ВОЗВРАТ" : "JORIY TO'LOV / ТЕКУЩИЙ ПЛАТЁЖ";
+  const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
+  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
+  const documentTitle = isRefund ? "QAYTARISH CHEKI" : "TO'LOV CHEKI";
+  const amountLabel = isRefund ? "Qaytarildi" : "Joriy to'lov";
   const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
   const branch = String(snapshot.branch_name || "").trim();
   const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
   const rows: Array<[string, unknown]> = [
-    ["O'quvchi / Ученик", snapshot.student_name], ["Guruh / Группа", snapshot.group_name], ["Fan / Курс", snapshot.subject_name],
-    ["O'qituvchi / Преподаватель", teachers], ["To'lov turi / Тип", paymentType], ["To'lov usuli / Способ", method],
-    ["Tasdiqladi / Подтвердил", snapshot.confirmed_by_name], ["Sana / Дата", snapshot.confirmed_at],
-    ["Chek ID / ID чека", receipt.receipt_id],
-    ...(isRefund && snapshot.refund_note ? [["Izoh / Примечание", snapshot.refund_note] as [string, unknown]] : []),
+    ["O'quvchi", snapshot.student_name], ["Guruh", snapshot.group_name], ["Fan", snapshot.subject_name],
+    ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
+    ["Tasdiqladi", snapshot.confirmed_by_name], ["Sana", snapshot.confirmed_at],
+    ["Chek ID", receipt.receipt_id],
+    ...(isRefund && snapshot.refund_note ? [["Izoh", snapshot.refund_note] as [string, unknown]] : []),
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
-    @page{size:48mm auto;margin:0}html,body{width:48mm;min-height:0;margin:0;padding:0}body{font:10px/1.28 Arial,sans-serif;color:#111}.receipt{box-sizing:border-box;width:48mm;margin:0;padding:0}.center{text-align:center}.brand{font-weight:800;font-size:11px;letter-spacing:.1px;word-break:break-word}.rule{border:0;border-top:1px dashed #222;margin:4px 0}.title{font-size:9px;font-weight:800}.amount{font-weight:800;font-size:10px;display:flex;justify-content:space-between;gap:2mm}.row{margin:3px 0;word-break:break-word}.label{display:block;color:#444;font-size:7.5px;line-height:1.15;margin-bottom:.4mm}@media screen{body{background:#f3f4f6;padding:12px}.receipt{background:#fff;padding:2mm;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center title">${escapeReceiptHtml(documentTitle)}</div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}</main></body></html>`;
+    @page{size:48mm auto;margin:0}html,body{width:48mm;min-height:0;margin:0;padding:0}body{font:9.5px/1.16 Arial,sans-serif;color:#111}.receipt{box-sizing:border-box;width:48mm;margin:0;padding:0 1.5mm}.center{text-align:center}.brand{font-weight:800;font-size:10px;letter-spacing:.1px;word-break:break-word}.rule{border:0;border-top:1px dashed #222;margin:2px 0}.title{font-size:8.5px;font-weight:800}.amount{font-weight:800;font-size:9.5px;display:flex;justify-content:space-between;gap:1mm}.row{margin:2px 0;word-break:break-word}.label{display:block;color:#444;font-size:7px;line-height:1.1;margin-bottom:.2mm}@media screen{body{background:#f3f4f6;padding:12px}.receipt{background:#fff;padding:2mm;box-shadow:0 2px 16px #0002}}
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center title">${escapeReceiptHtml(documentTitle)}</div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>Jami to'langan</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>Qoldiq</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}</main></body></html>`;
 }
 
 type ApiUser = {
@@ -16844,6 +16845,11 @@ function AdminSection({
       : `/admin/receipts/${encodeURIComponent(receiptId)}/print`;
     try {
       await requestJson(printPath, { method: "POST", token, timeoutMs: 15000 });
+      const localPrint = await printReceiptWithLocalAgent(receipt);
+      if (localPrint.printed) {
+        targetWindow?.close();
+        return;
+      }
       const popup = targetWindow || window.open("", "_blank");
       if (!popup) throw new Error("Print oynasi bloklangan");
       popup.opener = null;
@@ -20196,8 +20202,8 @@ function AdminSection({
               {receiptPreview ? (() => {
                 const snapshot = (receiptPreview.snapshot || {}) as GenericRow;
                 const isRefund = snapshot.receipt_kind === "refund";
-                const method = snapshot.payment_method === "card" ? "Karta / Карта" : "Naqd / Наличные";
-                const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
+                const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
+                const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
                 const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
                 const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
                 const branch = String(snapshot.branch_name || "").trim();
@@ -20206,19 +20212,19 @@ function AdminSection({
                   <div className="text-center font-black text-base">{brand}</div>
                   {branchLabel ? <div className="text-center font-semibold text-xs text-ink-500 dark:text-navy-300">{branchLabel}</div> : null}
                   <hr />
-                  <p><b>O&apos;quvchi / Ученик:</b> {snapshot.student_name || "-"}</p>
-                  <p><b>Guruh / Группа:</b> {snapshot.group_name || "-"}</p>
-                  <p><b>Fan / Kurs / Предмет / Курс:</b> {snapshot.subject_name || "-"}</p>
-                  <p><b>O&apos;qituvchi / Преподаватель:</b> {teachers}</p>
-                  <p className="text-base font-black"><b>{isRefund ? "Joriy qaytarish / Текущий возврат" : "Joriy to'lov / Текущий платёж"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
-                  <p className="text-base font-black"><b>Jami to&apos;langan / Всего оплачено:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0))} so&apos;m</p>
-                  <p className="text-base font-black"><b>Qoldiq / Остаток:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
-                  <p><b>To&apos;lov turi / Тип оплаты:</b> {paymentType}</p>
-                  <p><b>To&apos;lov usuli / Способ оплаты:</b> {method}</p>
-                  <p><b>Tasdiqladi / Подтвердил(а):</b> {snapshot.confirmed_by_name || "-"}</p>
-                  <p><b>Sana / Дата:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
-                  <p><b>Chek ID / ID чека:</b> {receiptPreview.receipt_id || "-"}</p>
-                  {isRefund && snapshot.refund_note ? <p><b>Izoh / Комментарий:</b> {snapshot.refund_note}</p> : null}
+                  <p><b>O&apos;quvchi:</b> {snapshot.student_name || "-"}</p>
+                  <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
+                  <p><b>Fan:</b> {snapshot.subject_name || "-"}</p>
+                  <p><b>O&apos;qituvchi:</b> {teachers}</p>
+                  <p className="text-base font-black"><b>{isRefund ? "Qaytarildi" : "Joriy to'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Jami to&apos;langan:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Qoldiq:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
+                  <p><b>To&apos;lov turi:</b> {paymentType}</p>
+                  <p><b>To&apos;lov usuli:</b> {method}</p>
+                  <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>
+                  <p><b>Sana:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
+                  <p><b>Chek ID:</b> {receiptPreview.receipt_id || "-"}</p>
+                  {isRefund && snapshot.refund_note ? <p><b>Izoh:</b> {snapshot.refund_note}</p> : null}
                 </div>;
               })() : null}
               <div className="button-grid mt-4">
@@ -21697,16 +21703,103 @@ function DeveloperReleasePanel() {
   </section>;
 }
 
+function LocalPrintAgentPanel() {
+  const tt = useWebT();
+  const [checking, setChecking] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [status, setStatus] = useState<{ online: boolean; printer?: string; settings?: LocalPrintAgentSettings } | null>(null);
+  const [settings, setSettings] = useState<LocalPrintAgentSettings>({ paper_width_mm: 57.5, side_padding_mm: 1.5, line_width: 32 });
+
+  const check = useCallback(async () => {
+    setChecking(true);
+    const result = await localPrintAgentHealth();
+    setStatus(result);
+    if (result.settings) setSettings(result.settings);
+    setChecking(false);
+  }, []);
+
+  async function testPrint() {
+    setTesting(true);
+    setNotice("");
+    const result = await printLocalAgentTestReceipt();
+    setNotice(result.printed ? tt("developer.print.testSent", "Test chek printerga yuborildi.") : tt("developer.print.testFailed", "Test chek yuborilmadi. Agent va printerni tekshiring."));
+    setTesting(false);
+  }
+
+  async function saveSettings() {
+    setSaving(true);
+    setNotice("");
+    const result = await saveLocalPrintAgentSettings(settings);
+    if (result.saved) {
+      setSettings(result.settings || settings);
+      setNotice(tt("developer.print.saved", "O‘lchamlar shu kompyuterga doimiy saqlandi."));
+      await check();
+    } else {
+      setNotice(tt("developer.print.saveFailed", "O‘lcham saqlanmadi. Agent ishlayotganini tekshiring."));
+    }
+    setSaving(false);
+  }
+
+  useEffect(() => { void check(); }, [check]);
+
+  return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-600 dark:text-emerald-300">{tt("developer.print.kicker", "Local print")}</p>
+        <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.print.title", "Lokal chek printeri")}</h2>
+        <p className="mt-1 max-w-2xl text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.print.subtitle", "To‘lov yoki qaytarish tasdiqlansa, agent chekni shu kompyuterdagi termal printerga avtomatik yuboradi.")}</p>
+      </div>
+      <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? tt("developer.print.checking", "Tekshirilmoqda…") : tt("developer.print.check", "Holatni tekshirish")}</button>
+    </div>
+    <div className={`mb-5 rounded-2xl border p-3 text-sm font-bold ${status?.online ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200" : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
+      {status?.online ? `${tt("developer.print.online", "Agent tayyor")}: ${status.printer || tt("developer.print.defaultPrinter", "standart printer")}` : tt("developer.print.offline", "Agent topilmadi. Avtomatik chop etish uchun uni shu kompyuterda ishga tushiring; sayt brauzer-print usuliga qaytadi.")}
+    </div>
+    <article className="mb-5 rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-base font-black text-navy-900 dark:text-white">{tt("developer.print.sizeTitle", "Chek o‘lchami")}</h3><p className="mt-1 text-sm text-ink-600 dark:text-slate-300">{tt("developer.print.sizeHint", "Bu qiymatlar faqat hozirgi printer ulangan kompyuterda saqlanadi.")}</p></div><button type="button" className="btn btn-primary small" disabled={!status?.online || saving} onClick={() => void saveSettings()}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button></div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.paperWidth", "Qog‘oz eni (mm)")}<input type="number" min="48" max="58" step="0.1" value={settings.paper_width_mm} onChange={(event) => setSettings((prev) => ({ ...prev, paper_width_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.sidePadding", "Ikki chet bo‘shlig‘i (mm)")}<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((prev) => ({ ...prev, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.characters", "Satr belgilari")}<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((prev) => ({ ...prev, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" className="btn btn-soft small" disabled={!status?.online || testing} onClick={() => void testPrint()}>{testing ? tt("developer.print.testing", "Yuborilmoqda…") : tt("developer.print.test", "Test chek chiqarish")}</button>{notice ? <span className="text-sm font-bold text-ink-600 dark:text-slate-300">{notice}</span> : null}</div>
+    </article>
+    <div className="grid gap-4 lg:grid-cols-2">
+      <article className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
+        <h3 className="text-base font-black text-navy-900 dark:text-white">Windows</h3>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-ink-600 dark:text-slate-300">
+          <li>{tt("developer.print.windowsStep1", "Termal printerni Windows Default printer sifatida belgilang.")}</li>
+          <li>{tt("developer.print.windowsStep2", "Quyidagi 3 faylni bitta papkaga yuklab oling.")}</li>
+          <li>{tt("developer.print.windowsStep3", "PowerShell orqali installer faylini ishga tushiring.")}</li>
+        </ol>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <a className="btn btn-primary small" href="/downloads/install-diamond-print-agent-windows.ps1" download>{tt("developer.print.downloadInstaller", "Installer (.ps1)")}</a>
+          <a className="btn btn-soft small" href="/downloads/diamond-print-agent.py" download>{tt("developer.print.downloadAgent", "Agent (.py)")}</a>
+          <a className="btn btn-soft small" href="/downloads/run-diamond-print-agent-windows.bat" download>{tt("developer.print.downloadStarter", "Starter (.bat)")}</a>
+        </div>
+      </article>
+      <article className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
+        <h3 className="text-base font-black text-navy-900 dark:text-white">{tt("developer.print.guide", "Qo‘llanma va Linux")}</h3>
+        <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{tt("developer.print.guideText", "Windows, XP-58IIL/Linux sozlash, test chop etish va xavfsizlik bo‘yicha to‘liq yo‘riqnoma.")}</p>
+        <div className="mt-4 flex flex-wrap gap-2"><a className="btn btn-soft small" href="/downloads/LOCAL_PRINT_AGENT_README.md" download>{tt("developer.print.downloadGuide", "Qo‘llanmani yuklash")}</a></div>
+        <code className="mt-4 block overflow-x-auto rounded-xl bg-navy-950 p-3 text-xs text-emerald-200">powershell -ExecutionPolicy Bypass -File .\install-diamond-print-agent-windows.ps1 -Start</code>
+      </article>
+    </div>
+  </section>;
+}
+
 function DeveloperWorkspace({ section, onNavigate }: { section: string; onNavigate: (section: string) => void }) {
   const tt = useWebT();
   const pages = [
     { id: "system-status", icon: "◉", title: tt("section.system-status", "Server holati"), description: tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.") },
     { id: "mobile-release", icon: "↑", title: tt("section.mobile-release", "Mobil relizlar"), description: tt("developer.release.subtitle", "Minimal versiya va store manzillarini boshqaring.") },
     { id: "mobile-maintenance", icon: "⚙", title: tt("section.mobile-maintenance", "Maintenance"), description: tt("developer.maintenance.subtitle", "Student va teacher ilovalari uchun rejali maintenance boshqaruvi.") },
+    { id: "local-print-agent", icon: "▣", title: tt("section.local-print-agent", "Lokal chek printeri"), description: tt("developer.print.subtitle", "Tasdiqlangan cheklarni termal printerga avtomatik yuboring.") },
   ];
-  const panel = section === "system-status" ? <ServerStatusDashboard /> : section === "mobile-release" ? <DeveloperReleasePanel /> : section === "mobile-maintenance" ? <DeveloperMaintenancePanel /> : null;
+  const panel = section === "system-status" ? <ServerStatusDashboard /> : section === "mobile-release" ? <DeveloperReleasePanel /> : section === "mobile-maintenance" ? <DeveloperMaintenancePanel /> : section === "local-print-agent" ? <LocalPrintAgentPanel /> : null;
   if (panel) return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={pages.find((page) => page.id === section)?.title || tt("developer.title", "Tizim boshqaruvi")} subtitle={pages.find((page) => page.id === section)?.description || ""} />{panel}</div>;
-  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><div className="grid gap-4 lg:grid-cols-3">{pages.map((page, index) => <button key={page.id} type="button" onClick={() => onNavigate(page.id)} className={`admin-stat-card ${["asc-cyan", "asc-indigo", "asc-amber"][index]} text-left transition-transform hover:-translate-y-0.5`}><div className="asc-bg-blob" /><div className="asc-icon">{page.icon}</div><div className="asc-label mt-3 text-base">{page.title}</div><p className="mt-2 text-sm font-medium text-ink-500 dark:text-white/65">{page.description}</p></button>)}</div></div>;
+  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><div className="grid gap-4 lg:grid-cols-3">{pages.map((page, index) => <button key={page.id} type="button" onClick={() => onNavigate(page.id)} className={`admin-stat-card ${["asc-cyan", "asc-indigo", "asc-amber", "asc-emerald"][index]} text-left transition-transform hover:-translate-y-0.5`}><div className="asc-bg-blob" /><div className="asc-icon">{page.icon}</div><div className="asc-label mt-3 text-base">{page.title}</div><p className="mt-2 text-sm font-medium text-ink-500 dark:text-white/65">{page.description}</p></button>)}</div></div>;
 }
 
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {

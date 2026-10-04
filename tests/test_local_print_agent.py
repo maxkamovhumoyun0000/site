@@ -1,4 +1,6 @@
 import importlib.util
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -41,6 +43,16 @@ class LocalPrintAgentTests(unittest.TestCase):
             agent.validate_payload({"receipt_id": "PAY-1", "unexpected": "field"})
         with self.assertRaises(ValueError):
             agent.validate_payload({"receipt_id": "PAY-1", "brand": "x" * 401})
+
+    def test_paper_settings_are_validated_and_persisted_per_local_computer(self):
+        agent = load_agent()
+        settings = agent.validate_settings({"paper_width_mm": 57.5, "side_padding_mm": 1.5, "line_width": 32})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "settings.json"
+            agent.save_settings(settings, path)
+            self.assertEqual(agent.load_settings(path), settings)
+        with self.assertRaises(ValueError):
+            agent.validate_settings({"paper_width_mm": 80, "side_padding_mm": 20, "line_width": 1})
 
 
 if __name__ == "__main__":
