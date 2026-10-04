@@ -407,7 +407,6 @@ from diamondvoy_helpers import (
     diamondvoy_is_subject_related,
     resolve_query_subject,
     sanitize_diamondvoy_reply,
-    try_diamondvoy_app_version_action,
     try_diamondvoy_bot_info,
 )
 from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
@@ -23088,17 +23087,6 @@ async def _diamondvoy_stream_events(
             r"(mobil.*versiy|app.*version|force.*update|versiy.*(boshqar|sozlam|yangil|qil|o.zgar)|app.*versiy|ilova.*versiy)",
             norm,
         ):
-            direct_action = None
-            if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", norm):
-                direct_action = try_diamondvoy_app_version_action(user_text, is_admin=True, lang=query_lang)
-            if direct_action is not None:
-                async def fast_app_version_action_stream():
-                    current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
-                    assistant_text = re.sub(r"<[^>]+>", "", html.unescape(str(direct_action))).strip()
-                    _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
-                    yield _sse_pack("delta", {"delta": assistant_text, "content": assistant_text})
-                    yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
-                return StreamingResponse(fast_app_version_action_stream(), media_type="text/event-stream")
             async def fast_app_version_stream():
                 current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
                 assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "app_version"})
