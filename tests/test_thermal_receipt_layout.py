@@ -36,8 +36,17 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
     def test_developer_printer_guide_has_copy_paste_commands_for_the_new_agent(self) -> None:
         self.assertIn("Windows buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
         self.assertIn("Linux buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
-        self.assertIn("Driver buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
+        self.assertIn("Windows o‘rnatish (agent + drayver)", DEVELOPER_WORKSPACE)
+        self.assertIn("Windows print sozlamasini ochish", DEVELOPER_WORKSPACE)
+        self.assertNotIn("Driver buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
         self.assertIn("Server chekni yaratadi", DEVELOPER_WORKSPACE)
+
+    def test_developer_install_steps_explain_agent_driver_and_validation(self) -> None:
+        """The Developer page must make it clear that the main installer also installs the driver."""
+        self.assertIn("Agent + drayverni o‘rnatish", DEVELOPER_WORKSPACE)
+        self.assertIn("Administrator tasdiqlash oynasi", DEVELOPER_WORKSPACE)
+        self.assertIn("O‘rnatishdan keyin tekshirish", DEVELOPER_WORKSPACE)
+        self.assertIn("taxminan 15 mm", DEVELOPER_WORKSPACE)
 
     def test_developer_printer_guide_is_one_clear_installation_flow(self) -> None:
         """The developer sees one installation guide, not duplicate download instructions."""
