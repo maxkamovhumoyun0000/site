@@ -11,7 +11,7 @@ DEVELOPER_WORKSPACE = (Path(__file__).resolve().parents[1] / "app" / "ui" / "dev
 class ThermalReceiptLayoutTests(unittest.TestCase):
     def test_xprinter_receipt_is_server_generated_and_compact(self) -> None:
         """The 56mm printer gets a server-created raw document, not browser HTML."""
-        self.assertIn("page = doc.new_page(width=158.74", BACKEND)
+        self.assertIn("page = doc.new_page(width=_RECEIPT_PDF_PAGE_WIDTH", BACKEND)
         self.assertIn("def _receipt_escpos_document", BACKEND)
         self.assertNotIn("function receiptPrintHtml", SOURCE)
         self.assertIn("printReceiptWithLocalAgent", SOURCE)

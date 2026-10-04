@@ -45027,6 +45027,12 @@ _RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x90"
 # Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
 # cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
 _RECEIPT_ESC_CUT = b"\x1dV\x42\x04"
+# Every receipt path (new payment, refund, history print and PDF fallback)
+# uses the same printable 56 mm profile.
+_RECEIPT_PDF_PAGE_WIDTH = 158.74
+_RECEIPT_PDF_FONT_SIZE = 7
+_RECEIPT_PDF_MIN_HEIGHT = 96
+_RECEIPT_PDF_LINE_HEIGHT = 10
 
 
 def _receipt_line_width(value: Any) -> int:
@@ -45174,11 +45180,17 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
     ]
     doc = fitz.open()
-    refund_font_size = 7
-    page_height = max(180, 18 + len(lines) * (12 if is_refund else 13))
-    # 56mm page width matches the XP-58IIL driver setting used by browser fallback.
-    page = doc.new_page(width=158.74, height=page_height)
-    page.insert_textbox(fitz.Rect(6, 6, 152.74, page_height - 6), "\n".join(lines), fontsize=refund_font_size if is_refund else 8, fontname="helv", align=0)
+    page_height = max(_RECEIPT_PDF_MIN_HEIGHT, 16 + len(lines) * _RECEIPT_PDF_LINE_HEIGHT)
+    # This is the same 56 mm width and compact text profile as the ESC/POS
+    # receipt used for confirmation and history reprints.
+    page = doc.new_page(width=_RECEIPT_PDF_PAGE_WIDTH, height=page_height)
+    page.insert_textbox(
+        fitz.Rect(6, 6, _RECEIPT_PDF_PAGE_WIDTH - 6, page_height - 6),
+        "\n".join(lines),
+        fontsize=_RECEIPT_PDF_FONT_SIZE,
+        fontname="helv",
+        align=0,
+    )
     data = doc.tobytes(garbage=4, deflate=True)
     doc.close()
     return data
