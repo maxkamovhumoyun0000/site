@@ -217,8 +217,8 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
         self.assertIn("diamond-print-agent.py", installer)
 
-    def test_legacy_second_printer_mode_keeps_compact_font_but_removes_cut_feed(self) -> None:
-        """The second printer needs the same compact font, without `42 04` cut/feed bytes."""
+    def test_legacy_second_printer_matches_primary_footer_eject_without_cut_bytes(self) -> None:
+        """The second printer keeps the primary 18 mm footer margin, but never prints `42 04`."""
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent_legacy", agent_path)
         self.assertIsNotNone(spec)
@@ -228,9 +228,10 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
 
         source = module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
         rendered = module.legacy_plain_text_document(source)
-        self.assertEqual(rendered, module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n\n\n\n\n")
+        self.assertEqual(rendered, module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT)
         self.assertNotIn(module.ESC_CUT, rendered)
-        self.assertNotIn(module.ESC_EJECT_BEFORE_CUT, rendered)
+        self.assertIn(module.ESC_EJECT_BEFORE_CUT, rendered)
+        self.assertFalse(rendered.endswith(b"\n\n\n\n\n"))
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
     def test_agent_reports_paper_out_to_the_web_application(self) -> None:
