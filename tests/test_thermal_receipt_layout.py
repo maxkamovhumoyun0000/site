@@ -234,6 +234,13 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertFalse(rendered.endswith(b"\n\n\n\n\n"))
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
+    def test_agent_internal_test_receipt_uses_the_same_35_column_profile(self) -> None:
+        """Manual agent diagnostics must not use the old wider 42-column format."""
+        agent = (Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py").read_text(encoding="utf-8")
+        diagnostic = agent.split("if args.test:", 1)[1].split("print(f\"Test sent", 1)[0]
+        self.assertIn('separator = b"-" * LINE_WIDTH', diagnostic)
+        self.assertNotIn('b"------------------------------------------\\n"', diagnostic)
+
     def test_agent_reports_paper_out_to_the_web_application(self) -> None:
         """The browser must be able to stop a receipt and warn staff before an empty-roll print."""
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
