@@ -71,6 +71,7 @@ import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
 import { localPrintAgentHealth, printLocalAgentTestReceipt, printReceiptWithLocalAgent, saveLocalPrintAgentSettings, type LocalPrintAgentSettings } from "./ui/local-print-agent";
+import { DeveloperWorkspace as FullDeveloperWorkspace } from "./ui/developer-workspace";
 function Settings3DToggle() {
   const tt = useWebT();
   const [isOff, setIsOff] = useState(false);
@@ -20195,7 +20196,7 @@ function AdminSection({
             <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
               <div className="row-between gap-3">
                 <div>
-                  <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ"}</h3>
+                  <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI" : "TO'LOV CHEKI"}</h3>
                 </div>
                 <button className="admin-modal-close" type="button" aria-label="Yopish" onClick={() => setReceiptPreview(null)}>×</button>
               </div>
@@ -21789,7 +21790,7 @@ function LocalPrintAgentPanel() {
   </section>;
 }
 
-function DeveloperWorkspace({ section, onNavigate }: { section: string; onNavigate: (section: string) => void }) {
+function DeveloperToolsWorkspace({ section, onNavigate }: { section: string; onNavigate: (section: string) => void }) {
   const tt = useWebT();
   const pages = [
     { id: "system-status", icon: "◉", title: tt("section.system-status", "Server holati"), description: tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.") },
@@ -24430,8 +24431,10 @@ function DashboardShell({
   } else if (activeRole === "developer") {
     if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="admin" />;
+    } else if (["system-status", "mobile-release", "mobile-maintenance", "local-print-agent"].includes(currentSection)) {
+      content = <DeveloperToolsWorkspace section={currentSection} onNavigate={handleNavigate} />;
     } else {
-      content = <DeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
+      content = <FullDeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
     }
   } else {
     if (currentSection === "profile") {

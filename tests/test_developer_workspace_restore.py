@@ -43,5 +43,8 @@ def test_developer_workspace_backend_contract_is_available_and_protected():
     )
     for route in routes:
         assert route in BACKEND
+    allowed_paths = BACKEND.split("_DEVELOPER_WORKSPACE_ALLOWED_PATHS =", 1)[1].split("def _developer_workspace_path_is_allowed", 1)[0]
+    for route in routes:
+        assert f'"{route}"' in allowed_paths
     assert "def _ensure_developer_tables" in BACKEND
     assert "_require_developer_access(user)" in BACKEND

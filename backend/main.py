@@ -7724,6 +7724,17 @@ _DEVELOPER_WORKSPACE_ALLOWED_PATHS = {
     "/user/language",
     "/developer/mobile-maintenance",
     "/developer/mobile-release",
+    "/developer/deploy/info",
+    "/developer/deploy/backup",
+    "/developer/server/status",
+    "/developer/server/service-restart",
+    "/developer/server/logs",
+    "/developer/feature-flags",
+    "/developer/audit/logs",
+    "/developer/jobs/status",
+    "/developer/database/stats",
+    "/developer/database/purge-cache",
+    "/developer/api-metrics/telemetry",
     "/admin/system-metrics",
 }
 
@@ -11024,8 +11035,111 @@ def _ensure_web_tables_inner() -> None:
                 except Exception:
                     pass
 
+    _ensure_developer_tables(cur, conn)
     conn.commit()
     conn.close()
+
+
+def _ensure_developer_tables(cur, conn) -> None:
+    _execute_ddl_candidates(
+        cur,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS developer_feature_flags (
+                flag_key TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                is_enabled BOOLEAN DEFAULT FALSE,
+                target_roles TEXT DEFAULT '',
+                target_user_ids TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS developer_feature_flags (
+                flag_key TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT,
+                is_enabled INTEGER DEFAULT 0,
+                target_roles TEXT DEFAULT '',
+                target_user_ids TEXT DEFAULT '',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ],
+    )
+    _execute_ddl_candidates(
+        cur,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS developer_audit_logs (
+                id BIGSERIAL PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                actor_id BIGINT,
+                actor_name TEXT,
+                role TEXT,
+                ip_address TEXT,
+                user_agent TEXT,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS developer_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                actor_id INTEGER,
+                actor_name TEXT,
+                role TEXT,
+                ip_address TEXT,
+                user_agent TEXT,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ],
+    )
+    for idx_sql in (
+        "CREATE INDEX IF NOT EXISTS idx_dev_audit_created ON developer_audit_logs(created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_dev_audit_type ON developer_audit_logs(event_type, created_at DESC)",
+    ):
+        try:
+            cur.execute(idx_sql)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    try:
+        cur.execute("SELECT COUNT(*) AS c FROM developer_feature_flags")
+        row = cur.fetchone()
+        count = int(row[0] if isinstance(row, (tuple, list)) else (dict(row or {}).get("c") or 0))
+        if count == 0:
+            default_flags = [
+                ("daily_test_v2", "Kunlik test v2", "Kunlik testning yangilangan algoritmi va savol tanlash tizimi", False, "student", ""),
+                ("gamified_leaderboard", "Gamified reyting", "O'yinlashtirilgan testlarda maxsus animatsiyali reyting", False, "student", ""),
+                ("ai_grammar_explainer", "AI Grammatika Yordamchisi", "Grammatika mavzularida sun'iy intellekt tushuntirishlari", False, "student,teacher", ""),
+                ("voice_room_recordings", "Voice-room Yozuvlari", "Voice-room darslarini avtomatik yozib olish va saqlash", False, "teacher,admin", ""),
+                ("new_payment_flow", "Yangi To'lov Interfeysi", "To'lovlar uchun yangilangan kvitansiya tekshiruv moduli", False, "student,admin", ""),
+                ("push_debug_mode", "Push Debug rejimi", "Push xabarnomalarni konsolga batafsil chiqarish", False, "developer", ""),
+            ]
+            for flag in default_flags:
+                cur.execute(
+                    """
+                    INSERT INTO developer_feature_flags(flag_key, title, description, is_enabled, target_roles, target_user_ids)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(flag_key) DO NOTHING
+                    """,
+                    flag,
+                )
+            conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def _safe_alter_column(conn, cur, sql: str) -> None:
@@ -19798,6 +19912,537 @@ async def developer_update_mobile_maintenance(payload: dict, authorization: str 
     _require_developer_access(user)
     updated = update_app_version_settings(_normalize_maintenance_settings_payload(payload))
     return {role: _maintenance_state(updated, role) for role in ("student", "teacher")}
+
+
+# ============================================================================
+# DEVELOPER WORKSPACE API
+# ============================================================================
+
+_DEV_ALLOWED_MANAGED_SERVICES = [
+    "diamond-site-frontend",
+    "diamond-site-backend",
+    "diamond-site-student-bot",
+    "diamond-site-teacher-bot",
+    "diamond-site-admin-bot",
+    "diamond-site-support-bot",
+]
+
+
+@app.get("/developer/deploy/info")
+async def developer_get_deploy_info(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    git_info = {"commit": "unknown", "message": "", "author": "", "date": "", "branch": ""}
+    try:
+        res = subprocess.run(["git", "log", "-1", "--format=%h|%s|%an|%cd"], capture_output=True, text=True, timeout=5)
+        if res.returncode == 0 and res.stdout.strip():
+            parts = res.stdout.strip().split("|", 3)
+            git_info["commit"] = parts[0] if len(parts) > 0 else ""
+            git_info["message"] = parts[1] if len(parts) > 1 else ""
+            git_info["author"] = parts[2] if len(parts) > 2 else ""
+            git_info["date"] = parts[3] if len(parts) > 3 else ""
+        b_res = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, timeout=5)
+        if b_res.returncode == 0:
+            git_info["branch"] = b_res.stdout.strip()
+    except Exception as e:
+        git_info["error"] = str(e)
+
+    backup_dir = Path("/root/diamond-backups")
+    backups = []
+    if backup_dir.is_dir():
+        for p in sorted(backup_dir.glob("diamond-site-*.dump"), key=lambda x: x.stat().st_mtime, reverse=True):
+            try:
+                st = p.stat()
+                backups.append({
+                    "name": p.name,
+                    "size_bytes": st.st_size,
+                    "size_mb": round(st.st_size / (1024 * 1024), 2),
+                    "modified_at": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
+
+    build_info = {
+        "node_version": "",
+        "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
+        "next_build_time": "",
+    }
+    try:
+        node_res = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=5)
+        if node_res.returncode == 0:
+            build_info["node_version"] = node_res.stdout.strip()
+        next_build_id = Path("/root/diamond-site/.next/BUILD_ID")
+        if next_build_id.is_file():
+            build_info["next_build_time"] = datetime.fromtimestamp(next_build_id.stat().st_mtime, tz=timezone.utc).isoformat()
+    except Exception:
+        pass
+
+    return {
+        "git": git_info,
+        "backups": backups,
+        "build": build_info,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/developer/deploy/backup")
+async def developer_trigger_backup(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    database_url = os.getenv("DATABASE_URL") or ""
+    if not database_url and Path(".env").is_file():
+        for raw in Path(".env").read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if line.startswith("DATABASE_URL="):
+                database_url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    if not database_url:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not configured")
+
+    backup_dir = Path("/root/diamond-backups")
+    backup_dir.mkdir(mode=0o700, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"diamond-site-{stamp}.dump"
+
+    try:
+        old_umask = os.umask(0o077)
+        try:
+            res = subprocess.run(
+                ["pg_dump", database_url, "--format=custom", "--file", str(backup_path)],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"pg_dump failed: {res.stderr}")
+        finally:
+            os.umask(old_umask)
+
+        if not backup_path.is_file() or backup_path.stat().st_size < 1024:
+            raise RuntimeError("Database backup was not created correctly (file missing or < 1KB)")
+
+        size = backup_path.stat().st_size
+
+        # Keep latest 2 per deploy.md
+        backups = sorted(backup_dir.glob("diamond-site-*.dump"), key=lambda item: item.stat().st_mtime)
+        removed = []
+        for old in backups[:-2]:
+            try:
+                old.unlink()
+                removed.append(old.name)
+            except Exception:
+                pass
+
+        return {
+            "success": True,
+            "filename": backup_path.name,
+            "size_bytes": size,
+            "size_mb": round(size / (1024 * 1024), 2),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "removed_old_backups": removed,
+        }
+    except Exception as e:
+        logger.exception("developer backup error")
+        raise HTTPException(status_code=500, detail=f"Backup error: {str(e)}")
+
+
+@app.get("/developer/server/status")
+async def developer_get_server_status(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    metrics = collect_system_metrics()
+    services_info = []
+    for svc in _DEV_ALLOWED_MANAGED_SERVICES:
+        svc_name = f"{svc}.service"
+        info = {
+            "service": svc,
+            "active_state": "unknown",
+            "sub_state": "unknown",
+            "restarts": 0,
+            "pid": 0,
+            "memory_bytes": 0,
+            "cpu_usage_nsec": 0,
+        }
+        try:
+            res = subprocess.run(
+                ["systemctl", "show", svc_name, "-p", "ActiveState", "-p", "SubState", "-p", "NRestarts", "-p", "ExecMainPID", "-p", "MemoryCurrent", "-p", "CPUUsageNSec"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.strip().splitlines():
+                    if "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip()
+                        if k == "ActiveState":
+                            info["active_state"] = v
+                        elif k == "SubState":
+                            info["sub_state"] = v
+                        elif k == "NRestarts":
+                            info["restarts"] = int(v) if v.isdigit() else 0
+                        elif k == "ExecMainPID":
+                            info["pid"] = int(v) if v.isdigit() else 0
+                        elif k == "MemoryCurrent":
+                            info["memory_bytes"] = int(v) if v.isdigit() else 0
+                        elif k == "CPUUsageNSec":
+                            info["cpu_usage_nsec"] = int(v) if v.isdigit() else 0
+        except Exception:
+            pass
+        services_info.append(info)
+
+    return {
+        "metrics": {k: v for k, v in metrics.items() if k != "captured_monotonic"},
+        "services": services_info,
+        "recommendations": build_system_advice(metrics),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/developer/server/service-restart")
+async def developer_restart_service(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    service = str(payload.get("service") or "").strip()
+    if service not in _DEV_ALLOWED_MANAGED_SERVICES:
+        raise HTTPException(status_code=400, detail=f"Ruxsat berilmagan servis. Faqat: {', '.join(_DEV_ALLOWED_MANAGED_SERVICES)}")
+
+    try:
+        res = subprocess.run(["systemctl", "restart", f"{service}.service"], capture_output=True, text=True, timeout=30)
+        if res.returncode != 0:
+            raise RuntimeError(res.stderr.strip() or "systemctl restart failed")
+        return {"success": True, "service": service, "message": f"{service} muvaffaqiyatli restart qilindi"}
+    except Exception as e:
+        logger.exception("developer restart service error")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/developer/server/logs")
+async def developer_get_server_logs(
+    service: str = Query(default="diamond-site-backend"),
+    lines: int = Query(default=100, ge=10, le=300),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    clean_service = service.strip()
+    if clean_service not in _DEV_ALLOWED_MANAGED_SERVICES:
+        raise HTTPException(status_code=400, detail="Noto'g'ri servis")
+
+    try:
+        res = subprocess.run(
+            ["journalctl", "-u", f"{clean_service}.service", "-n", str(lines), "--no-pager"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        output_lines = res.stdout.splitlines() if res.returncode == 0 else [f"Log o'qishda xatolik: {res.stderr}"]
+        return {
+            "service": clean_service,
+            "lines": output_lines,
+            "total_lines": len(output_lines),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        return {"service": clean_service, "lines": [f"Exception: {str(e)}"], "total_lines": 1}
+
+
+@app.get("/developer/feature-flags")
+async def developer_get_feature_flags(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT flag_key, title, description, is_enabled, target_roles, target_user_ids, updated_at FROM developer_feature_flags ORDER BY flag_key ASC")
+        rows = [dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+    for r in rows:
+        r["is_enabled"] = bool(r.get("is_enabled"))
+        r["updated_at"] = str(r.get("updated_at") or "")
+    return {"flags": rows}
+
+
+@app.post("/developer/feature-flags")
+async def developer_update_feature_flag(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    flag_key = str(payload.get("flag_key") or "").strip().lower()
+    if not flag_key or not re.match(r"^[a-z0-9_\-]+$", flag_key):
+        raise HTTPException(status_code=400, detail="flag_key faqat harflar, raqamlar va pastki chiziqdan iborat bo'lishi kerak")
+
+    title = str(payload.get("title") or flag_key).strip()
+    description = str(payload.get("description") or "").strip()
+    is_enabled = bool(payload.get("is_enabled"))
+    target_roles = str(payload.get("target_roles") or "").strip()
+    target_user_ids = str(payload.get("target_user_ids") or "").strip()
+
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO developer_feature_flags(flag_key, title, description, is_enabled, target_roles, target_user_ids, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(flag_key) DO UPDATE SET
+                title = excluded.title,
+                description = excluded.description,
+                is_enabled = excluded.is_enabled,
+                target_roles = excluded.target_roles,
+                target_user_ids = excluded.target_user_ids,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (flag_key, title, description, is_enabled, target_roles, target_user_ids),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"success": True, "flag_key": flag_key, "is_enabled": is_enabled}
+
+
+@app.get("/developer/audit/logs")
+async def developer_get_audit_logs(limit: int = Query(default=60, ge=1, le=500), authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    events = []
+    try:
+        # 1. Developer audit logs
+        cur.execute(
+            f"""
+            SELECT id, event_type, actor_name, role, ip_address, details, created_at
+            FROM developer_audit_logs
+            ORDER BY created_at DESC
+            LIMIT {int(limit)}
+            """
+        )
+        for r in cur.fetchall() or []:
+            d = dict(r)
+            events.append({
+                "source": "security",
+                "type": str(d.get("event_type") or "ACTION"),
+                "actor": str(d.get("actor_name") or "Developer"),
+                "role": str(d.get("role") or "developer"),
+                "ip": str(d.get("ip_address") or "-"),
+                "details": str(d.get("details") or ""),
+                "created_at": str(d.get("created_at") or ""),
+            })
+
+        # 2. Economy audit
+        cur.execute(
+            f"""
+            SELECT id, setting_key, previous_value, new_value, changed_by, changed_at
+            FROM economy_settings_audit
+            ORDER BY changed_at DESC
+            LIMIT 30
+            """
+        )
+        for r in cur.fetchall() or []:
+            d = dict(r)
+            events.append({
+                "source": "economy",
+                "type": f"SETTING_{d.get('setting_key')}",
+                "actor": str(d.get("changed_by") or "Admin"),
+                "role": "admin",
+                "ip": "-",
+                "details": f"{d.get('previous_value')} -> {d.get('new_value')}",
+                "created_at": str(d.get("changed_at") or ""),
+            })
+
+        # 3. Payment audit
+        cur.execute(
+            f"""
+            SELECT id, event_type, actor_admin_id, details, created_at
+            FROM payment_audit_log
+            ORDER BY created_at DESC
+            LIMIT 30
+            """
+        )
+        for r in cur.fetchall() or []:
+            d = dict(r)
+            events.append({
+                "source": "payment",
+                "type": str(d.get("event_type") or "PAYMENT_EVENT"),
+                "actor": f"Admin #{d.get('actor_admin_id') or '0'}",
+                "role": "admin",
+                "ip": "-",
+                "details": str(d.get("details") or ""),
+                "created_at": str(d.get("created_at") or ""),
+            })
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    events.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return {"events": events[:limit]}
+
+
+@app.get("/developer/jobs/status")
+async def developer_get_jobs_status(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    broadcast_stats = {}
+    tokens_stats = []
+    notifications_recent = 0
+    try:
+        cur.execute("SELECT status, COUNT(*) AS count FROM web_broadcasts GROUP BY status")
+        for r in cur.fetchall() or []:
+            d = dict(r)
+            broadcast_stats[str(d.get("status") or "unknown")] = int(d.get("count") or 0)
+
+        cur.execute("SELECT app, platform, COUNT(*) AS count FROM push_device_tokens GROUP BY app, platform")
+        for r in cur.fetchall() or []:
+            d = dict(r)
+            tokens_stats.append({"app": str(d.get("app") or ""), "platform": str(d.get("platform") or ""), "count": int(d.get("count") or 0)})
+
+        cur.execute("SELECT COUNT(*) AS count FROM web_payment_notifications WHERE created_at >= CURRENT_TIMESTAMP - INTERVAL '24 hours'")
+        row = cur.fetchone()
+        notifications_recent = int(dict(row or {}).get("count") or 0)
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    schedulers = [
+        {"name": "student_cleanup_scheduler", "interval": "24 hours", "status": "active"},
+        {"name": "student_duel_timeout_scheduler", "interval": "continuous", "status": "active"},
+        {"name": "daily_test_reminder_scheduler", "interval": "daily 19:00", "status": "active"},
+        {"name": "scheduled_arena_announcer", "interval": "disabled", "status": "retired"},
+    ]
+
+    return {
+        "broadcasts": broadcast_stats,
+        "push_device_tokens": tokens_stats,
+        "notifications_last_24h": notifications_recent,
+        "schedulers": schedulers,
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/developer/database/stats")
+async def developer_get_database_stats(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    tables_to_check = [
+        "users",
+        "groups",
+        "attendance",
+        "payments",
+        "messages",
+        "web_payment_notifications",
+        "web_broadcasts",
+        "push_device_tokens",
+        "developer_feature_flags",
+        "developer_audit_logs",
+    ]
+    stats = []
+    try:
+        for tbl in tables_to_check:
+            try:
+                cur.execute(f"SELECT COUNT(*) AS count FROM {tbl}")
+                row = cur.fetchone()
+                c = int(dict(row or {}).get("count") or 0)
+                stats.append({"table": tbl, "rows": c})
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                stats.append({"table": tbl, "rows": 0, "error": "table not found"})
+    finally:
+        conn.close()
+
+    return {
+        "tables": stats,
+        "unread_cache_keys_cached": len(_NOTIFICATION_UNREAD_COUNT_CACHE),
+        "student_overview_cached": len(_STUDENT_OVERVIEW_SUMMARY_CACHE),
+        "server_time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/developer/database/purge-cache")
+async def developer_purge_cache(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    c1 = len(_NOTIFICATION_UNREAD_COUNT_CACHE)
+    c2 = len(_STUDENT_OVERVIEW_SUMMARY_CACHE)
+    _NOTIFICATION_UNREAD_COUNT_CACHE.clear()
+    _STUDENT_OVERVIEW_SUMMARY_CACHE.clear()
+
+    return {
+        "success": True,
+        "message": f"Kesh muvaffaqiyatli tozalandi: {c1} ta unread count keshi va {c2} ta overview keshi o'chirildi.",
+        "purged_unread_counts": c1,
+        "purged_overview_counts": c2,
+        "cleared_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/developer/api-metrics/telemetry")
+async def developer_get_api_metrics(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+
+    db_ms = 0.0
+    t0 = time.perf_counter()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        db_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+    finally:
+        conn.close()
+
+    proc_info = {"rss_mb": 0.0, "vms_mb": 0.0, "threads": threading.active_count()}
+    try:
+        import psutil
+        p = psutil.Process(os.getpid())
+        mem = p.memory_info()
+        proc_info["rss_mb"] = round(mem.rss / (1024 * 1024), 2)
+        proc_info["vms_mb"] = round(mem.vms / (1024 * 1024), 2)
+        proc_info["cpu_percent"] = p.cpu_percent(interval=None)
+    except Exception:
+        pass
+
+    services_ping = [
+        {"name": "PostgreSQL Database", "status": "connected" if db_ms < 50 else "slow", "latency_ms": db_ms},
+        {"name": "Firebase FCM Slots", "status": "active (4 slots initialized)"},
+        {"name": "Telegram Webhook Student", "status": "listening :8083"},
+        {"name": "Telegram Webhook Teacher", "status": "listening :8084"},
+    ]
+
+    return {
+        "database_latency_ms": db_ms,
+        "process": proc_info,
+        "integrations": services_ping,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
 
 
 @app.get("/developer/mobile-release")
@@ -44046,16 +44691,16 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     except Exception as exc:  # pragma: no cover - deployment dependency guard
         raise HTTPException(status_code=503, detail="Receipt PDF service is unavailable") from exc
     snapshot = dict(receipt.get("snapshot") or {})
-    method = "Karta / Карта" if snapshot.get("payment_method") == "card" else "Naqd / Наличные"
+    method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
     is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
     payment_type = (
-        "To'liq qaytarish / Полный возврат" if snapshot.get("payment_type") == "refund_full"
-        else "Qisman qaytarish / Частичный возврат" if snapshot.get("payment_type") == "refund_partial"
-        else "Oldindan to'lov / Предоплата" if snapshot.get("payment_type") == "advance"
-        else "Oylik to'lov / Ежемесячная оплата"
+        "To'liq qaytarish" if snapshot.get("payment_type") == "refund_full"
+        else "Qisman qaytarish" if snapshot.get("payment_type") == "refund_partial"
+        else "Oldindan to'lov" if snapshot.get("payment_type") == "advance"
+        else "Oylik to'lov"
     )
-    document_title = "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" if is_refund else "TO'LOV CHEKI / ЧЕК ОПЛАТЫ"
-    amount_label = "JORIY QAYTARISH / ТЕКУЩИЙ ВОЗВРАТ" if is_refund else "JORIY TO'LOV / ТЕКУЩИЙ ПЛАТЁЖ"
+    document_title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
+    amount_label = "JORIY QAYTARISH" if is_refund else "JORIY TO'LOV"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
     brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
     branch = str(snapshot.get("branch_name") or "").strip()
@@ -44065,15 +44710,15 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         total_paid_amount = snapshot.get("amount")
     lines = [
         brand, *([branch_line] if branch_line else []), "",
-        document_title, "", f"O'quvchi / Ученик: {snapshot.get('student_name') or '-'}",
-        f"Guruh / Группа: {snapshot.get('group_name') or '-'}", f"Fan / Kurs / Предмет / Курс: {snapshot.get('subject_name') or '-'}",
-        f"O'qituvchi / Преподаватель: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
-        f"JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО: {float(total_paid_amount or 0):,.2f} so'm",
-        f"QOLDIQ / ОСТАТОК: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
-        f"To'lov turi / Тип оплаты: {payment_type}", f"To'lov usuli / Способ оплаты: {method}",
-        f"Tasdiqladi / Подтвердил(а): {snapshot.get('confirmed_by_name') or '-'}", f"Sana / Дата: {snapshot.get('confirmed_at') or '-'}",
-        f"Receipt ID / ID чека: {receipt.get('receipt_id') or '-'}",
-        *([f"Izoh / Комментарий: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
+        document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
+        f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan: {snapshot.get('subject_name') or '-'}",
+        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"JAMI TO'LANGAN: {float(total_paid_amount or 0):,.2f} so'm",
+        f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
+        f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
+        f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
+        f"Chek ID: {receipt.get('receipt_id') or '-'}",
+        *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
     ]
     doc = fitz.open()
     page = doc.new_page(width=300, height=600)

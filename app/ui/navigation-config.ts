@@ -68,7 +68,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "feedback", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "feedback", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "sms", "admin-callbacks", "voice-rooms", "profile"],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
-  developer: ["home", "system-status", "mobile-release", "mobile-maintenance", "local-print-agent", "profile"],
+  developer: ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-flags", "developer-audit", "developer-jobs", "developer-database", "developer-api-metrics", "system-status", "mobile-release", "mobile-maintenance", "local-print-agent", "profile"],
   support: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "feedback", "bookings", "calendar", "attendance", "homework", "materials", "analytics", "settings", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "voice-rooms", "profile"],
 };
 
@@ -187,6 +187,14 @@ export const SECTION_LABELS: Record<string, string> = {
   "mobile-release": "Mobil relizlar",
   "mobile-maintenance": "Maintenance",
   "local-print-agent": "Lokal chek printeri",
+  "developer-deploy": "Deploy Markazi",
+  "developer-server": "Server va Loglar",
+  "developer-maintenance": "Rejali Maintenance",
+  "developer-flags": "Feature Flags",
+  "developer-audit": "Audit va Xavfsizlik",
+  "developer-jobs": "Queue va Joblar",
+  "developer-database": "Database va Kesh",
+  "developer-api-metrics": "API Telemetriya",
   materials: "Materiallar Kutubxonasi",
   kpi: "Mening KPI",
   notes: "Mening Notlarim",
