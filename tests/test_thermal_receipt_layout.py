@@ -48,6 +48,14 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("details[4:]", receipt_source)
         self.assertIn("job.extend(_RECEIPT_ESC_CUT)", receipt_source)
 
+    def test_receipt_header_and_every_separator_use_the_small_receipt_font(self) -> None:
+        """Header and rules must not wrap or look larger than payment-method/date rows."""
+        receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        self.assertIn("separator = b\"-\" * compact_width", receipt_source)
+        self.assertIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_FONT_COMPACT", receipt_source)
+        self.assertNotIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON", receipt_source)
+        self.assertNotIn("b\"-\" * width", receipt_source)
+
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
