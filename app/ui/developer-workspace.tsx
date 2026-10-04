@@ -147,7 +147,7 @@ function LocalPrintAgentPanel() {
     setTesting(true);
     try {
       const token = localStorage.getItem("diamond_token") || "";
-      const document = await requestJson<ServerPrintDocument>("/developer/print-agents/test-document", { method: "POST", token });
+      const document = await requestJson<ServerPrintDocument>("/developer/print-agents/test-document", { method: "POST", token, body: { line_width: settings.line_width } });
       const result = await printReceiptWithLocalAgent(document);
       setNotice(result.printed
         ? "Server yaratgan ixcham test cheki printerga yuborildi."
@@ -215,7 +215,7 @@ function LocalPrintAgentPanel() {
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Ikki chet bo‘shlig‘i (mm)<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((previous) => ({ ...previous, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Satr belgilari<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((previous) => ({ ...previous, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
       </div>
-      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Agent chekning mazmunini hisoblamaydi; server tayyorlagan hujjatni printerga yuboradi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval taxminan 13 mm tashqariga chiqariladi.</p>
+      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Test cheki ham haqiqiy to‘lov/refund cheki kabi serverda kichik shrift va DIAMOND EDUCATION sarlavhasi bilan yaratiladi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval taxminan 15 mm tashqariga chiqariladi.</p>
       <div className="mt-5 flex flex-wrap gap-3">
         <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? "Tekshirilmoqda…" : "Holatni tekshirish"}</button>
         <button type="button" className="btn btn-primary small" onClick={() => void save()} disabled={!status?.online || saving}>{saving ? "Saqlanmoqda…" : "O‘lchamni saqlash"}</button>
@@ -240,7 +240,7 @@ function LocalPrintAgentPanel() {
           <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(linuxInstallCommand)}>Linux buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-linux.sh" download>Installer faylini yuklash</a></div>
         </article>
       </div>
-      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">Agent Windows ochilganda yoki Linux tizimi ishga tushganda avtomatik yoqiladi. Default printer bo‘lmasa ham XP-58/XPrinter/Thermal/Receipt nomli printerni qidiradi.</p>
+      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">O‘rnatish paytida Windows uchun administrator tasdiqlashi so‘raladi: agent XP-58IIL uchun xavfsiz Generic/Text raw drayverini tayyorlaydi. Linuxda CUPS raw queue avtomatik yaratiladi. Default printer shart emas.</p>
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
       <h3 className="text-base font-black text-navy-900 dark:text-white">2-qadam: sozlash — 56 mm</h3>

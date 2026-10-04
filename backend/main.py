@@ -20072,16 +20072,17 @@ async def developer_print_agent_heartbeat(
 
 
 @app.post("/developer/print-agents/test-document")
-async def developer_print_agent_test_document(authorization: str | None = Header(default=None)):
+async def developer_print_agent_test_document(payload: dict | None = None, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_developer_access(user)
     receipt = {"receipt_id": f"TEST-{datetime.now(ZoneInfo('Asia/Tashkent')).strftime('%Y%m%d%H%M')}", "snapshot": {
         "brand": "DIAMOND EDUCATION", "student_name": "Test chek", "group_name": "Developer tekshiruvi",
         "subject_name": "Termal printer", "teachers": ["Developer"], "payment_method": "cash",
         "confirmed_by_name": "Developer", "confirmed_at": datetime.now(timezone.utc).isoformat(),
-        "amount": 0, "total_paid_amount": 0, "remaining_amount": 0,
+        "amount": 15000, "total_paid_amount": 15000, "remaining_amount": 0,
     }}
-    return {"ok": True, **_receipt_print_document_payload(receipt)}
+    line_width = _receipt_line_width((payload or {}).get("line_width") if isinstance(payload, dict) else 35)
+    return {"ok": True, **_receipt_print_document_payload(receipt, line_width)}
 
 
 @app.get("/developer/deploy/info")
@@ -45017,9 +45018,9 @@ _RECEIPT_ESC_BOLD_OFF = b"\x1bE\x00"
 _RECEIPT_ESC_FONT_COMPACT = b"\x1bM\x01"
 _RECEIPT_ESC_FONT_NORMAL = b"\x1bM\x00"
 _RECEIPT_BRAND = "DIAMOND EDUCATION"
-# ESC J feeds in 1/203-inch units. 104 units are about 13 mm: enough to move
+# ESC J feeds in 1/203-inch units. 120 units are about 15 mm: enough to move
 # the final date/receipt-ID rows past the XP-58IIL exit before cutting.
-_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x68"
+_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x78"
 # Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
 # cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
 _RECEIPT_ESC_CUT = b"\x1dV\x42\x04"

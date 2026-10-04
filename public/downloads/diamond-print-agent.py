@@ -51,8 +51,10 @@ ESC_ALIGN_LEFT = b"\x1ba\x00"
 ESC_ALIGN_CENTER = b"\x1ba\x01"
 ESC_BOLD_ON = b"\x1bE\x01"
 ESC_BOLD_OFF = b"\x1bE\x00"
-# ESC J 104 feeds about 13 mm so a test receipt also exits the XP-58IIL mouth.
-ESC_EJECT_BEFORE_CUT = b"\x1bJ\x68"
+ESC_FONT_COMPACT = b"\x1bM\x01"
+ESC_FONT_NORMAL = b"\x1bM\x00"
+# ESC J 120 feeds about 15 mm so a test receipt also exits the XP-58IIL mouth.
+ESC_EJECT_BEFORE_CUT = b"\x1bJ\x78"
 # GS V B n asks compatible cutters to cut after exactly n additional lines.
 # Match the server document: feed four default vertical-motion units
 # (4 × 0.125 mm = 0.5 mm) before cutting, without a driver-sized page tail.
@@ -525,7 +527,12 @@ def main() -> int:
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
     if args.test:
-        diagnostic = ESC_INIT + ESC_ALIGN_CENTER + b"DIAMOND PRINTER TEST\n" + ESC_ALIGN_LEFT + ESC_EJECT_BEFORE_CUT + ESC_CUT
+        diagnostic = (
+            ESC_INIT + ESC_ALIGN_CENTER + ESC_FONT_COMPACT + b"DIAMOND EDUCATION\n"
+            + ESC_ALIGN_LEFT + b"------------------------------------------\n"
+            + b"TEST CHEK\nJoriy to'lov: 15 000 SO'M\nJami to'langan: 15 000 SO'M\nQoldiq: 0 SO'M\n"
+            + b"------------------------------------------\nChek ID: TEST\n" + ESC_FONT_NORMAL + ESC_EJECT_BEFORE_CUT + ESC_CUT
+        )
         print(f"Test sent to: {send_to_printer(diagnostic, args.printer)}")
         return 0
     httpd = ThreadingHTTPServer((HOST, args.port), AgentHandler)
