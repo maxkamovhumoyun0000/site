@@ -148,8 +148,22 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         thermal = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
         pdf = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
         self.assertIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_FONT_COMPACT", thermal)
-        self.assertIn("refund_font_size = 7", pdf)
-        self.assertIn("fontsize=refund_font_size if is_refund else 8", pdf)
+        self.assertIn("_RECEIPT_PDF_FONT_SIZE = 7", BACKEND)
+        self.assertIn("fontsize=_RECEIPT_PDF_FONT_SIZE", pdf)
+
+    def test_new_refund_and_history_receipts_share_one_56mm_profile(self) -> None:
+        """Every receipt route must use the same 56mm width and compact fallback font."""
+        self.assertIn("_RECEIPT_PDF_PAGE_WIDTH = 158.74", BACKEND)
+        self.assertIn("_RECEIPT_PDF_MIN_HEIGHT = 96", BACKEND)
+        self.assertNotIn("refund_font_size", BACKEND)
+        for route in (
+            '@app.post("/admin/receipts/{receipt_id}/print")',
+            '@app.post("/admin/payments/refunds/{refund_id}/receipt/print")',
+            '@app.get("/admin/receipts/{receipt_id}/pdf")',
+            '@app.get("/admin/payments/refunds/{refund_id}/receipt/pdf")',
+        ):
+            self.assertIn(route, BACKEND)
+        self.assertIn("lineWidth = Number(localAgent.settings?.line_width || 35)", SOURCE)
 
     def test_receipt_shows_applied_discount_amount_on_thermal_and_pdf_outputs(self) -> None:
         """A non-zero saved monthly discount must be visible on both printable formats."""
