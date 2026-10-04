@@ -235,6 +235,21 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertFalse(rendered.endswith(b"\n\n\n\n\n"))
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
+    def test_agent_forces_compact_font_for_every_printer_document(self) -> None:
+        """Both printers must receive Font B even when the server ends with a normal-font reset."""
+        agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
+        spec = importlib.util.spec_from_file_location("diamond_print_agent_compact", agent_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        source = module.ESC_INIT + module.ESC_FONT_NORMAL + b"Chek ID: TEST\n" + module.ESC_FONT_COMPACT + b"Jami: 15 000\n"
+        rendered = module.force_compact_font_document(source)
+        self.assertEqual(rendered, module.ESC_INIT + module.ESC_FONT_COMPACT_FOR_LEGACY + b"Chek ID: TEST\n" + module.ESC_FONT_COMPACT_FOR_LEGACY + b"Jami: 15 000\n")
+        self.assertNotIn(module.ESC_FONT_NORMAL, rendered)
+        self.assertIn("document = force_compact_font_document(document)", agent_path.read_text(encoding="utf-8"))
+
     def test_agent_internal_test_receipt_uses_the_same_35_column_profile(self) -> None:
         """Manual agent diagnostics must not use the old wider 42-column format."""
         agent = (Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py").read_text(encoding="utf-8")
