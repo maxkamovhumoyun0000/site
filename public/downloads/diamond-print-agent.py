@@ -565,11 +565,12 @@ def main() -> int:
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
     if args.test:
+        separator = b"-" * LINE_WIDTH
         diagnostic = (
             ESC_INIT + ESC_ALIGN_CENTER + ESC_FONT_COMPACT + b"DIAMOND EDUCATION\n"
-            + ESC_ALIGN_LEFT + b"------------------------------------------\n"
+            + ESC_ALIGN_LEFT + separator + b"\n"
             + b"TEST CHEK\nJoriy to'lov: 15 000 SO'M\nJami to'langan: 15 000 SO'M\nQoldiq: 0 SO'M\n"
-            + b"------------------------------------------\nChek ID: TEST\n" + ESC_FONT_NORMAL + ESC_EJECT_BEFORE_CUT + ESC_CUT
+            + separator + b"\nChek ID: TEST\n" + ESC_FONT_NORMAL + ESC_EJECT_BEFORE_CUT + ESC_CUT
         )
         print(f"Test sent to: {send_to_printer(diagnostic, args.printer, plain_text=args.plain_text)}")
         return 0
