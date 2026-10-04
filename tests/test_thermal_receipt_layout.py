@@ -166,8 +166,8 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
         self.assertIn("diamond-print-agent.py", installer)
 
-    def test_legacy_second_printer_mode_removes_escpos_control_bytes(self) -> None:
-        """A printer that prints `42 04` must receive receipt text, never cut/feed commands."""
+    def test_legacy_second_printer_mode_keeps_compact_font_but_removes_cut_feed(self) -> None:
+        """The second printer needs the same compact font, without `42 04` cut/feed bytes."""
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent_legacy", agent_path)
         self.assertIsNotNone(spec)
@@ -175,10 +175,11 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         assert spec and spec.loader
         spec.loader.exec_module(module)
 
-        source = module.ESC_INIT + module.ESC_ALIGN_CENTER + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
+        source = module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
         rendered = module.legacy_plain_text_document(source)
-        self.assertEqual(rendered, b"TEST\n\n\n\n\n")
+        self.assertEqual(rendered, module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n\n\n\n\n")
         self.assertNotIn(module.ESC_CUT, rendered)
+        self.assertNotIn(module.ESC_EJECT_BEFORE_CUT, rendered)
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
     def test_agent_reports_paper_out_to_the_web_application(self) -> None:
