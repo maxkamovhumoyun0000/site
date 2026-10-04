@@ -142,20 +142,20 @@ function receiptPrintHtml(receipt: GenericRow): string {
   const method = snapshot.payment_method === "card" ? "Karta / Карта" : "Naqd / Наличные";
   const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish / Полный возврат" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish / Частичный возврат" : snapshot.payment_type === "advance" ? "Oldindan to'lov / Предоплата" : "Oylik to'lov / Ежемесячная оплата";
   const documentTitle = isRefund ? "QAYTARISH CHEKI / ЧЕК ВОЗВРАТА" : "TO'LOV CHEKI / ЧЕК ОПЛАТЫ";
-  const amountLabel = isRefund ? "Joriy qaytarish / Текущий возврат" : "Joriy to'lov / Текущий платёж";
+  const amountLabel = isRefund ? "QAYTARILDI / ВОЗВРАТ" : "JORIY TO'LOV / ТЕКУЩИЙ ПЛАТЁЖ";
   const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
   const branch = String(snapshot.branch_name || "").trim();
   const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
   const rows: Array<[string, unknown]> = [
-    ["O'quvchi / Ученик", snapshot.student_name], ["Guruh / Группа", snapshot.group_name], ["Fan / Kurs / Предмет / Курс", snapshot.subject_name],
-    ["O'qituvchi / Преподаватель", teachers], ["To'lov turi / Тип оплаты", paymentType], ["To'lov usuli / Способ оплаты", method],
-    ["Tasdiqladi / Подтвердил(а)", snapshot.confirmed_by_name], ["Sana / Дата", snapshot.confirmed_at],
-    ["Receipt ID / ID чека", receipt.receipt_id],
-    ...(isRefund && snapshot.refund_note ? [["Izoh / Комментарий", snapshot.refund_note] as [string, unknown]] : []),
+    ["O'quvchi / Ученик", snapshot.student_name], ["Guruh / Группа", snapshot.group_name], ["Fan / Курс", snapshot.subject_name],
+    ["O'qituvchi / Преподаватель", teachers], ["To'lov turi / Тип", paymentType], ["To'lov usuli / Способ", method],
+    ["Tasdiqladi / Подтвердил", snapshot.confirmed_by_name], ["Sana / Дата", snapshot.confirmed_at],
+    ["Chek ID / ID чека", receipt.receipt_id],
+    ...(isRefund && snapshot.refund_note ? [["Izoh / Примечание", snapshot.refund_note] as [string, unknown]] : []),
   ];
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
-    @page{size:80mm auto;margin:7mm} body{font:12px/1.45 Arial,sans-serif;color:#111;margin:0}.receipt{width:66mm;margin:auto}.center{text-align:center}.brand{font-weight:800;font-size:16px;letter-spacing:.4px}.rule{border:0;border-top:1px dashed #222;margin:12px 0}.amount{font-weight:800;font-size:15px;display:flex;justify-content:space-between}.row{margin:6px 0}.label{display:block;color:#555;font-size:10px}.status{font-weight:800;text-align:center;margin-top:15px}@media screen{body{background:#f3f4f6;padding:24px}.receipt{background:#fff;padding:20px;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center"><b>${escapeReceiptHtml(documentTitle)}</b></div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}:</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО:</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК:</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"></main></body></html>`;
+    @page{size:48mm auto;margin:0}html,body{width:48mm;min-height:0;margin:0;padding:0}body{font:10px/1.28 Arial,sans-serif;color:#111}.receipt{box-sizing:border-box;width:48mm;margin:0;padding:0}.center{text-align:center}.brand{font-weight:800;font-size:11px;letter-spacing:.1px;word-break:break-word}.rule{border:0;border-top:1px dashed #222;margin:4px 0}.title{font-size:9px;font-weight:800}.amount{font-weight:800;font-size:10px;display:flex;justify-content:space-between;gap:2mm}.row{margin:3px 0;word-break:break-word}.label{display:block;color:#444;font-size:7.5px;line-height:1.15;margin-bottom:.4mm}@media screen{body{background:#f3f4f6;padding:12px}.receipt{background:#fff;padding:2mm;box-shadow:0 2px 16px #0002}}
+  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center title">${escapeReceiptHtml(documentTitle)}</div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>JAMI TO'LANGAN / ВСЕГО ОПЛАЧЕНО</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>QOLDIQ / ОСТАТОК</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}</main></body></html>`;
 }
 
 type ApiUser = {
@@ -20217,7 +20217,7 @@ function AdminSection({
                   <p><b>To&apos;lov usuli / Способ оплаты:</b> {method}</p>
                   <p><b>Tasdiqladi / Подтвердил(а):</b> {snapshot.confirmed_by_name || "-"}</p>
                   <p><b>Sana / Дата:</b> {formatWhen(String(snapshot.confirmed_at || ""))}</p>
-                  <p><b>Receipt ID / ID чека:</b> {receiptPreview.receipt_id || "-"}</p>
+                  <p><b>Chek ID / ID чека:</b> {receiptPreview.receipt_id || "-"}</p>
                   {isRefund && snapshot.refund_note ? <p><b>Izoh / Комментарий:</b> {snapshot.refund_note}</p> : null}
                 </div>;
               })() : null}
