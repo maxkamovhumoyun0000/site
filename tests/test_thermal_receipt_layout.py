@@ -190,6 +190,17 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("&include_history=true", SOURCE)
         self.assertIn("detailPayload?.default_ym", SOURCE)
 
+    def test_payment_confirmation_fields_open_blank_for_manual_entry(self) -> None:
+        """The admin must choose month/group and enter amount; no saved debt is silently prefilled."""
+        derive = SOURCE.split("function _derivePaymentConfirmDraft", 1)[1].split("function getRefundablePaymentTransaction", 1)[0]
+        self.assertIn('ym: ""', derive)
+        self.assertIn("groupId: 0", derive)
+        self.assertIn('amount: ""', derive)
+        self.assertNotIn("debtAmount", derive)
+        group_selector = SOURCE.split('value={paymentsConfirmDraft.groupId || 0}', 1)[1].split("</select>", 1)[0]
+        self.assertIn("groupId: gid", group_selector)
+        self.assertIn('amount: ""', group_selector)
+
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
