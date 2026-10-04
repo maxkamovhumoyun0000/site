@@ -45017,6 +45017,9 @@ _RECEIPT_ESC_BOLD_OFF = b"\x1bE\x00"
 _RECEIPT_ESC_FONT_COMPACT = b"\x1bM\x01"
 _RECEIPT_ESC_FONT_NORMAL = b"\x1bM\x00"
 _RECEIPT_BRAND = "DIAMOND EDUCATION"
+# ESC J feeds in 1/203-inch units. 64 units are about 8 mm: enough to move
+# the final date/receipt-ID rows past the XP-58IIL exit before cutting.
+_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x40"
 # Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
 # cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
 _RECEIPT_ESC_CUT = b"\x1dV\x42\x04"
@@ -45111,6 +45114,7 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
         for line in _receipt_wrap_line(f"{label}: {value or '-'}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
     job.extend(_RECEIPT_ESC_FONT_NORMAL)
+    job.extend(_RECEIPT_ESC_EJECT_BEFORE_CUT)
     job.extend(_RECEIPT_ESC_CUT)
     return bytes(job)
 
