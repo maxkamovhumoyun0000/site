@@ -53,8 +53,8 @@ ESC_BOLD_ON = b"\x1bE\x01"
 ESC_BOLD_OFF = b"\x1bE\x00"
 ESC_FONT_COMPACT = b"\x1bM\x01"
 ESC_FONT_NORMAL = b"\x1bM\x00"
-# ESC J 120 feeds about 15 mm so a test receipt also exits the XP-58IIL mouth.
-ESC_EJECT_BEFORE_CUT = b"\x1bJ\x78"
+# ESC J 144 feeds about 18 mm so a test receipt also exits the XP-58IIL mouth.
+ESC_EJECT_BEFORE_CUT = b"\x1bJ\x90"
 # GS V B n asks compatible cutters to cut after exactly n additional lines.
 # Match the server document: feed four default vertical-motion units
 # (4 × 0.125 mm = 0.5 mm) before cutting, without a driver-sized page tail.
@@ -201,6 +201,31 @@ def decode_print_document(raw: object) -> bytes:
     return document
 
 
+def legacy_plain_text_document(document: bytes) -> bytes:
+    """Remove ESC/POS controls for legacy printers that render commands as text.
+
+    Some USB receipt mechanisms do not implement ESC/POS.  In particular they
+    visibly print the bytes from ``GS V B 04`` as ``42 04``.  The server remains
+    responsible for rendering the receipt; this compatibility path keeps only
+    its printable content and uses blank lines for a safe manual-tear margin.
+    """
+    rendered = bytearray()
+    cursor = 0
+    while cursor < len(document):
+        current = document[cursor]
+        if current == 0x1B:  # ESC: initialise, code page, align, font, feed.
+            command = document[cursor + 1] if cursor + 1 < len(document) else None
+            cursor += 2 if command == ord("@") else 3
+            continue
+        if current == 0x1D and document[cursor + 1:cursor + 3] == b"VB":  # GS V B n cut.
+            cursor += 4
+            continue
+        if current in (0x0A, 0x0D, 0x09) or current >= 0x20:
+            rendered.append(current)
+        cursor += 1
+    return bytes(rendered).rstrip(b"\r\n") + b"\n\n\n\n\n"
+
+
 def sanitized_settings(settings: dict[str, float | int | str]) -> dict[str, float | int | str | bool]:
     return {
         key: settings[key]
@@ -326,8 +351,10 @@ def print_linux(document: bytes, printer: str) -> None:
         raise RuntimeError(completed.stderr.decode("utf-8", errors="replace").strip() or "printer rejected the job")
 
 
-def send_to_printer(document: bytes, printer: str) -> str:
+def send_to_printer(document: bytes, printer: str, *, plain_text: bool = False) -> str:
     selected = printer.strip() or default_printer()
+    if plain_text:
+        document = legacy_plain_text_document(document)
     if os.name == "nt":
         if not selected:
             raise RuntimeError("Windows default printer is not configured")
@@ -501,7 +528,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             if paper_status == "paper_out":
                 raise PrinterPaperOutError(paper_message)
             document = decode_print_document(payload)
-            printer = send_to_printer(document, printer)
+            printer = send_to_printer(document, printer, plain_text=self.server.plain_text)
             self.reply(HTTPStatus.OK, {"ok": True, "printer": printer, "paper_status": paper_status, "paper_message": paper_message})
         except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
             self.reply(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -522,6 +549,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Diamond Education local receipt printer")
     parser.add_argument("--port", type=int, default=PORT)
     parser.add_argument("--printer", default=os.environ.get("DIAMOND_PRINTER", ""), help="Windows printer name or CUPS queue")
+    parser.add_argument("--plain-text", action="store_true", help="Legacy printer mode: remove ESC/POS cut/feed controls")
     parser.add_argument("--test", action="store_true", help="Print a short test receipt and exit")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
@@ -533,10 +561,11 @@ def main() -> int:
             + b"TEST CHEK\nJoriy to'lov: 15 000 SO'M\nJami to'langan: 15 000 SO'M\nQoldiq: 0 SO'M\n"
             + b"------------------------------------------\nChek ID: TEST\n" + ESC_FONT_NORMAL + ESC_EJECT_BEFORE_CUT + ESC_CUT
         )
-        print(f"Test sent to: {send_to_printer(diagnostic, args.printer)}")
+        print(f"Test sent to: {send_to_printer(diagnostic, args.printer, plain_text=args.plain_text)}")
         return 0
     httpd = ThreadingHTTPServer((HOST, args.port), AgentHandler)
     httpd.printer = args.printer.strip()
+    httpd.plain_text = args.plain_text
     httpd.settings_path = default_settings_path()
     httpd.settings = load_settings(httpd.settings_path)
     httpd.heartbeat_stop = threading.Event()

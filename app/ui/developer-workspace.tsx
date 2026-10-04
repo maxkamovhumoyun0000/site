@@ -215,7 +215,7 @@ function LocalPrintAgentPanel() {
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Ikki chet bo‘shlig‘i (mm)<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((previous) => ({ ...previous, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Satr belgilari<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((previous) => ({ ...previous, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
       </div>
-      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Test cheki ham haqiqiy to‘lov/refund cheki kabi serverda kichik shrift va DIAMOND EDUCATION sarlavhasi bilan yaratiladi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval taxminan 15 mm tashqariga chiqariladi.</p>
+      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Test cheki ham haqiqiy to‘lov/refund cheki kabi serverda kichik shrift va DIAMOND EDUCATION sarlavhasi bilan yaratiladi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval taxminan 18 mm tashqariga chiqariladi.</p>
       <div className="mt-5 flex flex-wrap gap-3">
         <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? "Tekshirilmoqda…" : "Holatni tekshirish"}</button>
         <button type="button" className="btn btn-primary small" onClick={() => void save()} disabled={!status?.online || saving}>{saving ? "Saqlanmoqda…" : "O‘lchamni saqlash"}</button>
@@ -224,12 +224,12 @@ function LocalPrintAgentPanel() {
       {notice ? <p className="mt-4 text-sm font-bold text-ink-600 dark:text-slate-300">{notice}</p> : null}
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">1-qadam: o‘rnatish — Printer agentini o‘rnatish</h3>
-      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Bu dastur chekni yaratmaydi: server tayyor chekni yuboradi, agent esa uni shu kompyuterdagi XP-58IIL printerida chiqaradi. Har bir filial kompyuteriga alohida o‘rnating.</p>
+      <h3 className="text-base font-black text-navy-900 dark:text-white">1-qadam: o‘rnatish — Agent + drayverni o‘rnatish</h3>
+      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Bu bitta installer agentni ham, printer uchun raw drayver/queue’ni ham tayyorlaydi. Server chekni yaratadi; agent esa uni shu kompyuterdagi XP-58IIL printerida chiqaradi. Har bir filial kompyuteriga alohida o‘rnating.</p>
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <article className="rounded-2xl border border-line p-4 dark:border-white/10">
-          <h4 className="font-black text-navy-900 dark:text-white">Windows 10/11</h4>
-          <p className="mt-2 text-sm text-ink-600 dark:text-slate-300"><strong>1.</strong> Printerni USB orqali ulang. <strong>2.</strong> PowerShell oynasini oching. <strong>3.</strong> Quyidagi tugmani bosing, buyruqni qo‘ying va Enter bosing.</p>
+          <h4 className="font-black text-navy-900 dark:text-white">Windows o‘rnatish (agent + drayver)</h4>
+          <p className="mt-2 text-sm text-ink-600 dark:text-slate-300"><strong>1.</strong> Printerni USB orqali ulang. <strong>2.</strong> PowerShell oynasini oching. <strong>3.</strong> Quyidagi tugmani bosing, buyruqni qo‘ying va Enter bosing. <strong>Administrator tasdiqlash oynasi</strong> chiqsa, Yes bosing — XP-58IIL raw drayveri avtomatik tayyorlanadi.</p>
           <code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-200">{windowsInstallCommand}</code>
           <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(windowsInstallCommand)}>Windows buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-windows.cmd" download>Installer faylini yuklash</a></div>
         </article>
@@ -240,19 +240,19 @@ function LocalPrintAgentPanel() {
           <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(linuxInstallCommand)}>Linux buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-linux.sh" download>Installer faylini yuklash</a></div>
         </article>
       </div>
-      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">O‘rnatish paytida Windows uchun administrator tasdiqlashi so‘raladi: agent XP-58IIL uchun xavfsiz Generic/Text raw drayverini tayyorlaydi. Linuxda CUPS raw queue avtomatik yaratiladi. Default printer shart emas.</p>
+      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">Windowsda administrator tasdiqlashi bilan xavfsiz Generic/Text raw drayveri, Linuxda CUPS raw queue avtomatik tayyorlanadi. Bir nechta USB printer topilsa, noto‘g‘ri A4 printerga ulanmaslik uchun installer avtomatik queue yaratmaydi. Default printer shart emas.</p>
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">2-qadam: sozlash — 56 mm</h3>
-      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Avval yuqoridagi <strong>Holatni tekshirish</strong> tugmasini bosing. Keyin 56 mm, 1.5 mm va 35 belgi sozlamasini <strong>O‘lchamni saqlash</strong> orqali saqlang. Windowsda printer qog‘ozini sozlash kerak bo‘lsa, yordamchi oynani oching: Paper Size — Custom/Receipt, eni 56 mm, uzunligi Auto yoki 80 mm, Margin — 0.</p>
+      <h3 className="text-base font-black text-navy-900 dark:text-white">2-qadam: sozlash — O‘rnatishdan keyin tekshirish</h3>
+      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300"><strong>Holatni tekshirish</strong> tugmasini bosing. Agent va XP-58IIL ko‘rinsa, 56 mm, 1.5 mm va 35 belgi sozlamasini <strong>O‘lchamni saqlash</strong> orqali saqlang. Quyidagi tugma drayver o‘rnatish uchun emas: faqat Windowsdagi qog‘oz formatini 56 mm ga sozlash oynasini ochadi.</p>
       <code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-200">{windowsDriverCommand}</code>
-      <div className="mt-4 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(windowsDriverCommand)}>Driver buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/configure-xprinter-56mm-windows.ps1" download>Yordamchi faylni yuklash</a></div>
+      <div className="mt-4 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(windowsDriverCommand)}>Windows print sozlamasini ochish</button><a className="btn btn-soft small" href="/downloads/configure-xprinter-56mm-windows.ps1" download>56 mm yordamchi faylini yuklash</a></div>
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-black text-navy-900 dark:text-white">3-qadam: filialga ulash</h3>
-          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Pastda Filial nomi va Kompyuter nomini yozing, so‘ng <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing. Oxirida <strong>Test chek chiqarish</strong> orqali tekshiring. Chek kesilishidan oldin taxminan 13 mm tashqariga chiqadi.</p>
+          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Pastda Filial nomi va Kompyuter nomini yozing, so‘ng <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing. Oxirida <strong>Test chek chiqarish</strong> orqali tekshiring. Chek kesilishidan oldin taxminan 18 mm tashqariga chiqadi.</p>
         </div>
         <button type="button" className="btn btn-soft small" onClick={() => void loadAgents()} disabled={agentsLoading}>{agentsLoading ? "Yangilanmoqda…" : "Ro‘yxatni yangilash"}</button>
       </div>

@@ -45018,9 +45018,9 @@ _RECEIPT_ESC_BOLD_OFF = b"\x1bE\x00"
 _RECEIPT_ESC_FONT_COMPACT = b"\x1bM\x01"
 _RECEIPT_ESC_FONT_NORMAL = b"\x1bM\x00"
 _RECEIPT_BRAND = "DIAMOND EDUCATION"
-# ESC J feeds in 1/203-inch units. 120 units are about 15 mm: enough to move
+# ESC J feeds in 1/203-inch units. 144 units are about 18 mm: enough to move
 # the final date/receipt-ID rows past the XP-58IIL exit before cutting.
-_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x78"
+_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\x1bJ\x90"
 # Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
 # cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
 _RECEIPT_ESC_CUT = b"\x1dV\x42\x04"
@@ -45155,10 +45155,11 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
     ]
     doc = fitz.open()
-    page_height = max(180, 18 + len(lines) * 13)
+    refund_font_size = 7
+    page_height = max(180, 18 + len(lines) * (12 if is_refund else 13))
     # 56mm page width matches the XP-58IIL driver setting used by browser fallback.
     page = doc.new_page(width=158.74, height=page_height)
-    page.insert_textbox(fitz.Rect(6, 6, 152.74, page_height - 6), "\n".join(lines), fontsize=8, fontname="helv", align=0)
+    page.insert_textbox(fitz.Rect(6, 6, 152.74, page_height - 6), "\n".join(lines), fontsize=refund_font_size if is_refund else 8, fontname="helv", align=0)
     data = doc.tobytes(garbage=4, deflate=True)
     doc.close()
     return data

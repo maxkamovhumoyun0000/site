@@ -50,7 +50,7 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
 
     def test_developer_printer_guide_is_one_clear_installation_flow(self) -> None:
         """The developer sees one installation guide, not duplicate download instructions."""
-        self.assertIn("Printer agentini o‘rnatish", DEVELOPER_WORKSPACE)
+        self.assertIn("Agent + drayverni o‘rnatish", DEVELOPER_WORKSPACE)
         self.assertIn("1-qadam: o‘rnatish", DEVELOPER_WORKSPACE)
         self.assertIn("2-qadam: sozlash", DEVELOPER_WORKSPACE)
         self.assertIn("3-qadam: filialga ulash", DEVELOPER_WORKSPACE)
@@ -165,6 +165,21 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         installer = (agent_path.parent / "install-diamond-print-agent-linux.sh").read_text(encoding="utf-8")
         self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
         self.assertIn("diamond-print-agent.py", installer)
+
+    def test_legacy_second_printer_mode_removes_escpos_control_bytes(self) -> None:
+        """A printer that prints `42 04` must receive receipt text, never cut/feed commands."""
+        agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
+        spec = importlib.util.spec_from_file_location("diamond_print_agent_legacy", agent_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        source = module.ESC_INIT + module.ESC_ALIGN_CENTER + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
+        rendered = module.legacy_plain_text_document(source)
+        self.assertEqual(rendered, b"TEST\n\n\n\n\n")
+        self.assertNotIn(module.ESC_CUT, rendered)
+        self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
     def test_agent_reports_paper_out_to_the_web_application(self) -> None:
         """The browser must be able to stop a receipt and warn staff before an empty-roll print."""
