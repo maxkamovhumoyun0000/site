@@ -5,6 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 PAGE = (ROOT / "app" / "page.tsx").read_text(encoding="utf-8")
 NAVIGATION = (ROOT / "app" / "ui" / "navigation-config.ts").read_text(encoding="utf-8")
+NEXT_CONFIG = (ROOT / "next.config.ts").read_text(encoding="utf-8")
 
 
 class LocalAutomaticPrintingTests(unittest.TestCase):
@@ -25,6 +26,9 @@ class LocalAutomaticPrintingTests(unittest.TestCase):
         self.assertIn("printLocalAgentTestReceipt", PAGE)
         self.assertIn("saveLocalPrintAgentSettings", PAGE)
         self.assertIn("paper_width_mm", PAGE)
+
+    def test_csp_allows_only_the_loopback_print_agent_connection(self) -> None:
+        self.assertIn("http://127.0.0.1:18765", NEXT_CONFIG)
 
 
 if __name__ == "__main__":
