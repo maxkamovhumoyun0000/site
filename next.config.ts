@@ -54,7 +54,10 @@ const nextConfig: NextConfig = {
       "img-src 'self' data: blob: https:",
       "font-src 'self' data: https:",
       "media-src 'self' blob: https:",
-      "connect-src 'self' https: wss:",
+      // The printer agent is loopback-only and serves no content. Keeping an
+      // exact host/port here allows automatic receipts without broad http:
+      // access for arbitrary local services.
+      "connect-src 'self' https: wss: http://127.0.0.1:18765",
       "worker-src 'self' blob:",
       "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org",
       "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
