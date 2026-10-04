@@ -151,9 +151,8 @@ def _apply_elimination_after_stage(run_id: int, stage_done: int) -> None:
 
 
 async def run_daily_arena_coordinator(bot: Bot, run_id: int) -> None:
-    run = get_scheduled_arena_run(run_id)
-    if not run:
-        return
+    """Daily Arena has been retired. Coordinator is disabled."""
+    return
     subject = str(run.get("subject") or "English")
     min_p = int(run.get("min_players") or 10)
     parts = list_arena_run_participants(run_id)

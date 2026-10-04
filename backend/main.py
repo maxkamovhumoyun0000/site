@@ -29,6 +29,7 @@ from contextlib import contextmanager, suppress
 from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 from urllib.parse import parse_qs, parse_qsl, quote, urlparse
@@ -406,6 +407,7 @@ from diamondvoy_helpers import (
     diamondvoy_is_subject_related,
     resolve_query_subject,
     sanitize_diamondvoy_reply,
+    try_diamondvoy_app_version_action,
     try_diamondvoy_bot_info,
 )
 from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
@@ -958,7 +960,19 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "dpoint-settings",
         "profile",
     ],
-    "developer": ["home", "system-status", "mobile-release", "mobile-maintenance", "profile"],
+    "developer": [
+        "home",
+        "developer-server",
+        "developer-deploy",
+        "developer-maintenance",
+        "developer-flags",
+        "developer-audit",
+        "developer-jobs",
+        "developer-database",
+        "developer-api-metrics",
+        "local-print-agent",
+        "profile",
+    ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
@@ -1885,6 +1899,7 @@ class PaymentConfirmRequest(BaseModel):
     card_id: int | None = None
     note: str | None = None
     is_advance: bool = False
+    idempotency_key: str | None = Field(default=None, max_length=100)
 
 
 class PaymentRefundRequest(BaseModel):
@@ -2436,10 +2451,7 @@ class FeedbackAdminReplyRequest(BaseModel):
 
 
 class FeedbackStatusRequest(BaseModel):
-    status: Literal[
-        "Yangi", "Ko‘rilmoqda", "Ko'rilmoqda", "Javob kutilmoqda", "Hal qilindi",
-        "new", "reviewing", "awaiting_user", "waiting_for_user", "resolved",
-    ]
+    status: Literal["Yangi", "Ko‘rilmoqda", "Ko'rilmoqda", "Hal qilindi", "new", "reviewing", "resolved"]
 
 
 class FeedbackDpointActionRequest(BaseModel):
@@ -2550,7 +2562,23 @@ RETIRED_ARENA_NOTIFICATION_TYPES = frozenset({
     "daily_arena_prestart",
     "group_arena_started",
     "group_arena_questions_ready",
+    "arena_scheduled_soon",
+    "arena_scheduled_started",
+    "arena_daily_join_soon_t10",
+    "arena_prestart",
+    "daily_arena",
 })
+
+
+def _is_retired_arena_notification(notification_type: str | None) -> bool:
+    t = str(notification_type or "").strip().lower()
+    if not t:
+        return False
+    if t in RETIRED_ARENA_NOTIFICATION_TYPES:
+        return True
+    if "arena" in t and ("daily" in t or "scheduled" in t or "prestart" in t):
+        return True
+    return False
 
 
 def _require_enabled_competition_mode(mode: str | None) -> None:
@@ -7723,24 +7751,15 @@ _DEVELOPER_WORKSPACE_ALLOWED_PATHS = {
     "/user/account",
     "/user/language",
     "/developer/mobile-maintenance",
-    "/developer/mobile-release",
-    "/developer/deploy/info",
-    "/developer/deploy/backup",
-    "/developer/server/status",
-    "/developer/server/service-restart",
-    "/developer/server/logs",
-    "/developer/feature-flags",
-    "/developer/audit/logs",
-    "/developer/jobs/status",
-    "/developer/database/stats",
-    "/developer/database/purge-cache",
-    "/developer/api-metrics/telemetry",
     "/admin/system-metrics",
 }
 
 
 def _developer_workspace_path_is_allowed(path: str) -> bool:
-    return str(path or "").rstrip("/") in _DEVELOPER_WORKSPACE_ALLOWED_PATHS
+    clean = str(path or "").rstrip("/")
+    if clean.startswith("/developer"):
+        return True
+    return clean in _DEVELOPER_WORKSPACE_ALLOWED_PATHS
 
 
 @app.middleware("http")
@@ -11099,9 +11118,47 @@ def _ensure_developer_tables(cur, conn) -> None:
             """,
         ],
     )
+    _execute_ddl_candidates(
+        cur,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS developer_print_agents (
+                id UUID PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                branch_name TEXT NOT NULL,
+                station_name TEXT NOT NULL,
+                platform TEXT DEFAULT '',
+                printer_name TEXT DEFAULT '',
+                settings_json TEXT DEFAULT '{}',
+                last_seen_at TIMESTAMP,
+                revoked_at TIMESTAMP,
+                created_by_id BIGINT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS developer_print_agents (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                branch_name TEXT NOT NULL,
+                station_name TEXT NOT NULL,
+                platform TEXT DEFAULT '',
+                printer_name TEXT DEFAULT '',
+                settings_json TEXT DEFAULT '{}',
+                last_seen_at TIMESTAMP,
+                revoked_at TIMESTAMP,
+                created_by_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        ],
+    )
     for idx_sql in (
         "CREATE INDEX IF NOT EXISTS idx_dev_audit_created ON developer_audit_logs(created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_dev_audit_type ON developer_audit_logs(event_type, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_dev_print_agents_seen ON developer_print_agents(last_seen_at DESC)",
     ):
         try:
             cur.execute(idx_sql)
@@ -11125,14 +11182,14 @@ def _ensure_developer_tables(cur, conn) -> None:
                 ("new_payment_flow", "Yangi To'lov Interfeysi", "To'lovlar uchun yangilangan kvitansiya tekshiruv moduli", False, "student,admin", ""),
                 ("push_debug_mode", "Push Debug rejimi", "Push xabarnomalarni konsolga batafsil chiqarish", False, "developer", ""),
             ]
-            for flag in default_flags:
+            for f in default_flags:
                 cur.execute(
                     """
                     INSERT INTO developer_feature_flags(flag_key, title, description, is_enabled, target_roles, target_user_ids)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(flag_key) DO NOTHING
                     """,
-                    flag,
+                    f,
                 )
             conn.commit()
     except Exception:
@@ -11785,17 +11842,9 @@ def _normalize_feedback_status(value: str | None) -> str:
     low = raw.lower()
     if low in {"reviewing", "korilmoqda", "ko'rilmoqda", "ko‘rilmoqda"}:
         return "Ko‘rilmoqda"
-    if low in {"awaiting_user", "waiting_for_user", "javob kutilmoqda", "javob_kutilmoqda"}:
-        return "Javob kutilmoqda"
     if low in {"resolved", "done", "hal qilindi", "hal_qilindi"}:
         return "Hal qilindi"
     return "Yangi"
-
-
-def _feedback_status_after_message(current_status: str | None, sender_role: str | None) -> str:
-    """Keep a feedback thread actionable after either participant writes."""
-    del current_status  # The sender always determines who needs to act next.
-    return "Javob kutilmoqda" if str(sender_role or "").strip().lower() == "admin" else "Yangi"
 
 
 def _final_chat_cleanup_if_due(*, force: bool = False) -> int:
@@ -12953,10 +13002,7 @@ def _feedback_insert_message(thread_id: int, sender_user_id: int, sender_role: s
         if not msg_id:
             cur.execute("SELECT currval(pg_get_serial_sequence('feedback_messages', 'id')) as id")
             msg_id = int((cur.fetchone() or {}).get("id") or 0)
-        cur.execute(
-            "UPDATE feedback_threads SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (_feedback_status_after_message(None, sender_role), int(thread_id)),
-        )
+        cur.execute("UPDATE feedback_threads SET updated_at=CURRENT_TIMESTAMP WHERE id=?", (int(thread_id),))
         conn.commit()
         cur.execute("SELECT * FROM feedback_messages WHERE id=? LIMIT 1", (msg_id,))
         return dict(cur.fetchone() or {})
@@ -16643,9 +16689,10 @@ def _build_student_payload(user: dict) -> dict:
     }
     bookings = _serialize_booking_rows(_safe_call(lambda: list_lesson_bookings_for_student(user_id, active_only=True), []) or [])
     leaderboard = _leaderboard_payload(subject=subjects[0] if subjects else None, limit=12)
-    own_reviews = _safe_call(lambda: _list_student_review_rows(user_id, limit=6), []) or []
+    seven_days_ago_iso = (datetime.now() - timedelta(days=7)).isoformat()
     review_notifications = [
         {
+            "id": f"review_reward:{user_id}:{str(r.get('reward_granted_at') or '').strip()}",
             "title": "Review reward",
             "message": f"Review tasdiqlandi. +{int(float(r.get('reward_dcoin') or 0))} D'point berildi.",
             "created_at": r.get("reward_granted_at"),
@@ -16655,7 +16702,10 @@ def _build_student_payload(user: dict) -> dict:
             "button_url": "/?section=profile",
         }
         for r in own_reviews
-        if str(r.get("status") or "").lower() == "approved" and float(r.get("reward_dcoin") or 0) > 0 and r.get("reward_granted_at")
+        if str(r.get("status") or "").lower() == "approved"
+        and float(r.get("reward_dcoin") or 0) > 0
+        and r.get("reward_granted_at")
+        and str(r.get("reward_granted_at") or "") >= seven_days_ago_iso
     ]
     today_iso = _now_tashkent_date()
     completed_today_by_subject: set[str] = set()
@@ -16677,6 +16727,7 @@ def _build_student_payload(user: dict) -> dict:
         if subj not in completed_today_by_subject:
             schedule_notifications.append(
                 {
+                    "id": f"daily_test_reminder:{user_id}:{today_iso}:{subj}",
                     "title": "Daily Test",
                     "message": f"{subj} daily test bugun ochiq. Bosib darhol boshlang.",
                     "created_at": f"{today_iso}T09:00:00+05:00",
@@ -16768,6 +16819,7 @@ def _build_student_payload(user: dict) -> dict:
 
         schedule_notifications.append(
             {
+                "id": f"payment_reminder:{user_id}:{payment_current.get('year_month') or today_iso[:7]}",
                 "title": title_text,
                 "message": msg_text,
                 "created_at": _now_utc().isoformat(),
@@ -16844,7 +16896,10 @@ def _build_student_payload(user: dict) -> dict:
         "bookings": bookings,
         "reviews": [_serialize_review_row(r, include_private=True) for r in own_reviews],
         "review_policy": _review_policy_for_user(user),
-        "notifications": schedule_notifications + review_notifications,
+        "notifications": [
+            {**n, "read": str(n.get("id") or "") in (_notification_read_key_set(user_id) if user_id > 0 else set())}
+            for n in (schedule_notifications + review_notifications)
+        ],
         "articles": _list_articles_for_role("student", include_drafts=False, include_content=False),
         "dcoin": {
             "rules": {
@@ -18321,20 +18376,7 @@ def _build_teacher_payload(user: dict) -> dict:
         )
     top_students.sort(key=lambda item: (-(item.get("tests_completed") or 0), -(item.get("dcoin_total") or 0)))
 
-    notifications = []
-    for row in test_history[:8]:
-        notifications.append(
-            {
-                "id": f"teacher_daily_test_update:{user_id}:{row.get('test_date') or 'unknown'}",
-                "title": "Daily Test Update",
-                "message": f"{row.get('test_date')}: {int(row.get('completed_attempts') or 0)} attempts completed.",
-                "created_at": row.get("test_date"),
-                "type": "tests",
-                "target_screen": "tests",
-                "button_text": "Open tests",
-                "button_url": "/?section=tests",
-            }
-        )
+    notifications: list[dict[str, Any]] = []
     bookings_all, _ = _safe_call(lambda: list_lesson_bookings(status=None, page=1, per_page=300), ([], 1))
     support_requests = []
     for booking in bookings_all or []:
@@ -19717,8 +19759,6 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             "maintenance_starts_at": f"{role}_maintenance_starts_at",
             "maintenance_ends_at": f"{role}_maintenance_ends_at",
             "maintenance_message_uz": f"{role}_maintenance_message_uz",
-            "maintenance_message_ru": f"{role}_maintenance_message_ru",
-            "maintenance_message_en": f"{role}_maintenance_message_en",
         }.items():
             if source in nested:
                 normalized[target] = nested[source]
@@ -19748,10 +19788,9 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             if parsed.tzinfo is None:
                 raise HTTPException(status_code=422, detail=f"{key} must include a timezone")
             normalized[key] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-        for language in ("uz", "ru", "en"):
-            message_key = f"{role}_maintenance_message_{language}"
-            if message_key in normalized:
-                normalized[message_key] = str(normalized[message_key] or "").strip()[:500]
+        message_key = f"{role}_maintenance_message_uz"
+        if message_key in normalized:
+            normalized[message_key] = str(normalized[message_key] or "").strip()[:500]
         starts_key = f"{role}_maintenance_starts_at"
         ends_key = f"{role}_maintenance_ends_at"
         if normalized.get(starts_key) and normalized.get(ends_key):
@@ -19762,16 +19801,8 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
     return normalized
 
 
-def _maintenance_state(
-    settings: dict[str, Any],
-    app_name: str,
-    now: datetime | None = None,
-    language: str = "uz",
-) -> dict[str, Any]:
+def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | None = None) -> dict[str, Any]:
     role = "teacher" if str(app_name or "").strip().lower() == "teacher" else "student"
-    locale = str(language or "uz").strip().lower()[:2]
-    if locale not in {"uz", "ru", "en"}:
-        locale = "uz"
     enabled = bool(int(settings.get(f"{role}_maintenance_enabled") or 0))
     starts_at = str(settings.get(f"{role}_maintenance_starts_at") or "").strip()
     ends_at = str(settings.get(f"{role}_maintenance_ends_at") or "").strip()
@@ -19789,20 +19820,12 @@ def _maintenance_state(
     start = parse(starts_at)
     end = parse(ends_at)
     active = enabled and (start is None or current >= start) and (end is None or current < end)
-    messages = {
-        language: str(settings.get(f"{role}_maintenance_message_{language}") or "").strip()
-        for language in ("uz", "ru", "en")
-    }
-    selected_message = messages.get(locale) or messages["uz"] or messages["en"] or messages["ru"]
     return {
         "enabled": enabled,
         "active": active,
         "starts_at": starts_at,
         "ends_at": ends_at,
-        "message": selected_message,
-        "message_uz": messages["uz"],
-        "message_ru": messages["ru"],
-        "message_en": messages["en"],
+        "message_uz": str(settings.get(f"{role}_maintenance_message_uz") or "").strip(),
     }
 
 
@@ -19811,26 +19834,9 @@ def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> d
     maintenance_keys = {
         f"{role}_maintenance_{field}"
         for role in ("student", "teacher")
-        for field in ("enabled", "starts_at", "ends_at", "message_uz", "message_ru", "message_en")
+        for field in ("enabled", "starts_at", "ends_at", "message_uz")
     }
     return {key: value for key, value in normalized.items() if key in maintenance_keys}
-
-
-def _normalize_developer_release_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
-    """Accept only mobile release fields exposed to the restricted developer login."""
-    normalized = _normalize_app_version_settings_payload(payload)
-    release_keys = {
-        f"min_{role}_version"
-        for role in ("student", "teacher")
-    } | {
-        f"min_{role}_build"
-        for role in ("student", "teacher")
-    } | {
-        f"{role}_{platform}_store_url"
-        for role in ("student", "teacher")
-        for platform in ("play", "app")
-    }
-    return {key: value for key, value in normalized.items() if key in release_keys}
 
 
 def _app_version_settings_response(settings: dict[str, Any]) -> dict[str, Any]:
@@ -19854,7 +19860,6 @@ async def check_app_version(
     platform: str = Query(default="android"),
     current_version: str = Query(default="1.0.0"),
     build_number: int = Query(default=1),
-    language: str = Query(default="uz", alias="lang"),
 ):
     """Public endpoint for Student and Teacher apps to check if force update is required."""
     settings = get_app_version_settings()
@@ -19882,7 +19887,7 @@ async def check_app_version(
         current_version, min_ver, build_number, min_build
     )
 
-    maintenance = _maintenance_state(settings, app_name, language=language)
+    maintenance = _maintenance_state(settings, app_name)
     return {
         "force_update": force,
         "current_version": current_version,
@@ -19926,6 +19931,158 @@ _DEV_ALLOWED_MANAGED_SERVICES = [
     "diamond-site-admin-bot",
     "diamond-site-support-bot",
 ]
+
+
+def _print_agent_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _verify_print_agent_token(agent_id: str, token: str) -> bool:
+    clean_id = str(agent_id or "").strip()
+    clean_token = str(token or "").strip()
+    if not clean_id or not clean_token:
+        return False
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT token_hash, revoked_at FROM developer_print_agents WHERE id=?", (clean_id,))
+        row = cur.fetchone()
+        item = dict(row) if row else {}
+        return bool(item and not item.get("revoked_at") and hmac.compare_digest(str(item.get("token_hash") or ""), _print_agent_token_hash(clean_token)))
+    finally:
+        conn.close()
+
+
+def _print_agent_value(value: Any, *, field: str, limit: int = 100) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text or len(text) > limit:
+        raise HTTPException(status_code=400, detail=f"{field} 1 dan {limit} belgigacha bo‘lishi kerak")
+    return text
+
+
+def _print_agent_public_row(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    seen = item.get("last_seen_at")
+    online = False
+    if isinstance(seen, datetime):
+        current = datetime.now(seen.tzinfo or timezone.utc)
+        online = seen >= current - timedelta(minutes=3)
+        item["last_seen_at"] = seen.astimezone(timezone.utc).isoformat() if seen.tzinfo else seen.replace(tzinfo=timezone.utc).isoformat()
+    else:
+        item["last_seen_at"] = str(seen or "")
+    item["online"] = online
+    item["revoked"] = bool(item.get("revoked_at"))
+    for key in ("revoked_at", "created_at", "updated_at"):
+        item[key] = str(item.get(key) or "")
+    try:
+        item["settings"] = json.loads(str(item.pop("settings_json") or "{}"))
+    except (TypeError, ValueError):
+        item["settings"] = {}
+    return item
+
+
+@app.get("/developer/print-agents")
+async def developer_list_print_agents(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT id, branch_name, station_name, platform, printer_name, settings_json,
+                   last_seen_at, revoked_at, created_at, updated_at
+            FROM developer_print_agents ORDER BY branch_name ASC, station_name ASC, created_at DESC
+        """)
+        agents = [_print_agent_public_row(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+    return {"agents": agents}
+
+
+@app.post("/developer/print-agents/enroll")
+async def developer_enroll_print_agent(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    branch_name = _print_agent_value(payload.get("branch_name"), field="Filial nomi")
+    station_name = _print_agent_value(payload.get("station_name"), field="Kompyuter nomi")
+    agent_id = str(uuid4())
+    agent_token = secrets.token_urlsafe(32)
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO developer_print_agents (id, token_hash, branch_name, station_name, created_by_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (agent_id, _print_agent_token_hash(agent_token), branch_name, station_name, int(user.get("id") or 0) or None))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"success": True, "agent_id": agent_id, "agent_token": agent_token,
+            "server_url": str(os.getenv("PRINT_AGENT_PUBLIC_API_URL") or "https://diamond-education.uz/api").rstrip("/")}
+
+
+@app.post("/developer/print-agents/revoke")
+async def developer_revoke_print_agent(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    agent_id = str(payload.get("agent_id") or "").strip()
+    if not agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID kerak")
+    _ensure_web_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE developer_print_agents SET revoked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?", (agent_id,))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=404, detail="Agent topilmadi")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"success": True, "agent_id": agent_id}
+
+
+@app.post("/developer/print-agents/heartbeat")
+async def developer_print_agent_heartbeat(
+    payload: dict,
+    x_diamond_print_agent: str | None = Header(default=None, alias="X-Diamond-Print-Agent"),
+):
+    agent_id = str(payload.get("agent_id") or "").strip()
+    if not _verify_print_agent_token(agent_id, str(x_diamond_print_agent or "")):
+        raise HTTPException(status_code=401, detail="Print agent token yaroqsiz")
+    printer_name = " ".join(str(payload.get("printer_name") or "").strip().split())[:160]
+    platform_name = " ".join(str(payload.get("platform") or "").strip().split())[:40]
+    raw_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    settings = {key: raw_settings[key] for key in ("paper_width_mm", "side_padding_mm", "line_width") if key in raw_settings}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE developer_print_agents
+            SET printer_name=?, platform=?, settings_json=?, last_seen_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND revoked_at IS NULL
+        """, (printer_name, platform_name, json.dumps(settings, ensure_ascii=False), agent_id))
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=401, detail="Print agent faol emas")
+        conn.commit()
+    finally:
+        conn.close()
+    return {"success": True}
+
+
+@app.post("/developer/print-agents/test-document")
+async def developer_print_agent_test_document(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    receipt = {"receipt_id": f"TEST-{datetime.now(ZoneInfo('Asia/Tashkent')).strftime('%Y%m%d%H%M')}", "snapshot": {
+        "brand": "DIAMOND EDUCATION", "student_name": "Test chek", "group_name": "Developer tekshiruvi",
+        "subject_name": "Termal printer", "teachers": ["Developer"], "payment_method": "cash",
+        "confirmed_by_name": "Developer", "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        "amount": 0, "total_paid_amount": 0, "remaining_amount": 0,
+    }}
+    return {"ok": True, **_receipt_print_document_payload(receipt)}
 
 
 @app.get("/developer/deploy/info")
@@ -20442,22 +20599,6 @@ async def developer_get_api_metrics(authorization: str | None = Header(default=N
         "integrations": services_ping,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
-
-
-@app.get("/developer/mobile-release")
-async def developer_get_mobile_release(authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_developer_access(user)
-    return _app_version_settings_response(get_app_version_settings())
-
-
-@app.post("/developer/mobile-release")
-async def developer_update_mobile_release(payload: dict, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_developer_access(user)
-    updated = update_app_version_settings(_normalize_developer_release_payload(payload))
-    return _app_version_settings_response(updated)
 
 
 @app.get("/admin/app-version-settings")
@@ -22943,6 +23084,29 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_add_students_stream(), media_type="text/event-stream")
 
+        if re.search(
+            r"(mobil.*versiy|app.*version|force.*update|versiy.*(boshqar|sozlam|yangil|qil|o.zgar)|app.*versiy|ilova.*versiy)",
+            norm,
+        ):
+            direct_action = None
+            if re.search(r"\b\d+\.\d+(?:\.\d+)?\b", norm):
+                direct_action = try_diamondvoy_app_version_action(user_text, is_admin=True, lang=query_lang)
+            if direct_action is not None:
+                async def fast_app_version_action_stream():
+                    current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
+                    assistant_text = re.sub(r"<[^>]+>", "", html.unescape(str(direct_action))).strip()
+                    _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+                    yield _sse_pack("delta", {"delta": assistant_text, "content": assistant_text})
+                    yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
+                return StreamingResponse(fast_app_version_action_stream(), media_type="text/event-stream")
+            async def fast_app_version_stream():
+                current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
+                assistant_text = json.dumps({"type": "wizard_trigger", "wizard": "app_version"})
+                _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
+                yield _sse_pack("delta", {"delta": "", "content": assistant_text})
+                yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
+            return StreamingResponse(fast_app_version_stream(), media_type="text/event-stream")
+
     async def event_stream():
         current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
         assistant_text = ""
@@ -25190,11 +25354,24 @@ def _broadcast_notifications_for_user(user: dict, role: str) -> list[dict]:
     _ensure_web_tables()
     uid = int(user.get("id") or 0)
     group_ids = {int(g.get("id") or 0) for g in (_safe_call(lambda: get_user_groups(uid), []) or [])}
+    thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM web_broadcasts WHERE status IN ('pending','queued','sending','done','completed') ORDER BY created_at DESC, id DESC LIMIT 120")
-    rows = [dict(r) for r in (cur.fetchall() or [])]
-    conn.close()
+    try:
+        cur.execute(
+            """
+            SELECT *
+            FROM web_broadcasts
+            WHERE status IN ('pending','queued','sending','done','completed')
+              AND (created_at >= ? OR created_at IS NULL)
+            ORDER BY created_at DESC, id DESC
+            LIMIT 25
+            """,
+            (thirty_days_ago,),
+        )
+        rows = [dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
     out: list[dict] = []
     for row in rows:
         target_type = str(row.get("target_type") or "").strip()
@@ -25233,26 +25410,30 @@ def _payment_notifications_for_user(user: dict) -> list[dict]:
     _ensure_web_tables()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT
-            id,
-            notification_type,
-            title,
-            message,
-            button_text,
-            button_url,
-            target_screen,
-            created_at
-        FROM web_payment_notifications
-        WHERE user_id=?
-        ORDER BY created_at DESC, id DESC
-        LIMIT 40
-        """,
-        (int(user_id),),
-    )
-    rows = [dict(r) for r in (cur.fetchall() or [])]
-    conn.close()
+    sixty_days_ago = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        cur.execute(
+            """
+            SELECT
+                id,
+                notification_type,
+                title,
+                message,
+                button_text,
+                button_url,
+                target_screen,
+                created_at
+            FROM web_payment_notifications
+            WHERE user_id=?
+              AND (created_at >= ? OR created_at IS NULL)
+            ORDER BY created_at DESC, id DESC
+            LIMIT 40
+            """,
+            (int(user_id), sixty_days_ago),
+        )
+        rows = [dict(r) for r in (cur.fetchall() or [])]
+    finally:
+        conn.close()
     out: list[dict] = []
     import re
     for row in rows:
@@ -25321,15 +25502,18 @@ def _student_notifications_for_user_light(user: dict) -> list[dict]:
     conn = get_conn()
     cur = conn.cursor()
     try:
+        seven_days_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
         cur.execute(
             """
             SELECT status, reward_dcoin, reward_granted_at
             FROM web_student_reviews
             WHERE user_id=?
+              AND LOWER(COALESCE(status,''))='approved'
+              AND reward_granted_at >= ?
             ORDER BY created_at DESC, id DESC
-            LIMIT 6
+            LIMIT 3
             """,
-            (user_id,),
+            (user_id, seven_days_ago),
         )
         own_reviews = [dict(r) for r in (cur.fetchall() or [])]
     finally:
@@ -25396,13 +25580,20 @@ def _collect_notifications_for_user(user: dict, limit: int | None = 120) -> list
             "auto_start_intent": raw.get("auto_start_intent"),
         }
         normalized.append(item)
-    # A broadcast is an explicit admin announcement, not an ordinary inbox
-    # reminder.  Promote it before applying the API limit so the mobile and
-    # web popup pollers cannot miss it when a student has many routine items.
-    normalized = [
-        *[item for item in normalized if item["type"].strip().lower() == "broadcast"],
-        *[item for item in normalized if item["type"].strip().lower() != "broadcast"],
-    ]
+    uid = int(user.get("id") or 0)
+    read_keys = _notification_read_key_set(uid) if uid > 0 else set()
+    seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+
+    def _notification_sort_key(item: dict) -> tuple[int, str]:
+        itype = item["type"].strip().lower()
+        iid = str(item.get("id") or "")
+        is_unread = iid not in read_keys
+        created = str(item.get("created_at") or "")
+        # Only unread broadcasts from the last 7 days get priority 1 (promoted to top)
+        priority = 1 if (itype == "broadcast" and is_unread and created >= seven_days_ago) else 0
+        return (priority, created)
+
+    normalized.sort(key=_notification_sort_key, reverse=True)
     if limit is None:
         return normalized
     return normalized[: max(1, min(120, int(limit)))]
@@ -25412,7 +25603,7 @@ def _notification_read_key_set(user_id: int) -> set[str]:
     _ensure_web_tables()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT notification_key FROM web_notification_reads WHERE user_id=? LIMIT 1000", (int(user_id),))
+    cur.execute("SELECT notification_key FROM web_notification_reads WHERE user_id=? ORDER BY read_at DESC LIMIT 5000", (int(user_id),))
     rows = cur.fetchall() or []
     conn.close()
     out: set[str] = set()
@@ -25441,21 +25632,26 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
     read_keys = _notification_read_key_set(uid)
     conn = get_conn()
     cur = conn.cursor()
+    retired_types = list(sorted(RETIRED_ARENA_NOTIFICATION_TYPES))
+    placeholders = ", ".join("?" for _ in retired_types)
+    sixty_days_ago = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S")
+    thirty_days_ago = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")
     try:
         cur.execute(
-            """
+            f"""
             SELECT COUNT(*) AS count
             FROM web_payment_notifications n
             WHERE n.user_id=?
-              AND COALESCE(n.notification_type, '') NOT IN (?, ?, ?, ?)
+              AND (n.created_at >= ? OR n.created_at IS NULL)
+              AND COALESCE(n.notification_type, '') NOT IN ({placeholders})
               AND NOT EXISTS (
                 SELECT 1
                 FROM web_notification_reads r
                 WHERE r.user_id=?
-                  AND r.notification_key = ('payment_notification:' || n.id)
+                  AND (r.notification_key = ('payment_notification:' || n.id) OR r.notification_key = CAST(n.id AS TEXT))
               )
             """,
-            (uid, *sorted(RETIRED_ARENA_NOTIFICATION_TYPES), uid),
+            (uid, sixty_days_ago, *retired_types, uid),
         )
         unread += int((dict(cur.fetchone() or {}).get("count") or 0))
     except Exception:
@@ -25488,14 +25684,16 @@ def _fast_materialized_notification_unread_count(user: dict) -> int:
             SELECT id, target_type, target_ids_json
             FROM web_broadcasts
             WHERE status IN ('pending','queued','sending','done','completed')
+              AND (created_at >= ? OR created_at IS NULL)
             ORDER BY created_at DESC, id DESC
-            LIMIT 120
-            """
+            LIMIT 25
+            """,
+            (thirty_days_ago,),
         )
         for row_raw in (cur.fetchall() or []):
             row = dict(row_raw)
             bid = int(row.get("id") or 0)
-            if bid <= 0 or f"broadcast:{bid}" in read_keys:
+            if bid <= 0 or f"broadcast:{bid}" in read_keys or str(bid) in read_keys:
                 continue
             target_type = str(row.get("target_type") or "").strip()
             ids = _broadcast_target_ids(row, target_type)
@@ -27358,8 +27556,8 @@ def _get_students_for_daily_arena(subject: str) -> list[dict[str, Any]]:
 
 
 async def _competition_notify_daily_prestart(session: dict[str, Any]) -> None:
-    if str(session.get("mode") or "") != "daily":
-        return
+    """Daily arena is permanently retired. Never send prestart notices."""
+    return
     subject = _normalize_subject_label(str(session.get("subject") or "English")) or "English"
     marker = f"{subject}:{_now_tashkent_date()}:{session.get('id') or ''}"
     # Fast in-memory dedup
@@ -36604,19 +36802,35 @@ async def mark_notification_read(notification_id: str, authorization: str | None
     key = str(notification_id or "").strip()
     if not key:
         raise HTTPException(status_code=400, detail="notification_id is required")
+    keys_to_insert = [key]
+    if key.isdigit():
+        keys_to_insert.append(f"payment_notification:{key}")
+        keys_to_insert.append(f"broadcast:{key}")
+    elif key.startswith("payment_notification:"):
+        raw_num = key.split(":", 1)[1]
+        if raw_num.isdigit():
+            keys_to_insert.append(raw_num)
+    elif key.startswith("broadcast:"):
+        raw_num = key.split(":", 1)[1]
+        if raw_num.isdigit():
+            keys_to_insert.append(raw_num)
+
     _ensure_web_tables()
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO web_notification_reads(user_id, notification_key, read_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, notification_key) DO NOTHING
-        """,
-        (uid, key),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        for k in keys_to_insert:
+            cur.execute(
+                """
+                INSERT INTO web_notification_reads(user_id, notification_key, read_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, notification_key) DO NOTHING
+                """,
+                (uid, k),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     _invalidate_notification_unread_count(uid)
     return {"message": "Notification marked as read", "notification_id": key}
 
@@ -36626,24 +36840,49 @@ async def mark_notifications_read_all(authorization: str | None = Header(default
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
     uid = int(user.get("id") or 0)
-    items = _collect_notifications_for_user(user, limit=None)
     _ensure_web_tables()
     conn = get_conn()
     cur = conn.cursor()
-    for row in items:
-        key = str(row.get("id") or "").strip()
-        if not key:
-            continue
+    try:
+        # 1. Bulk mark all payment notifications for this user as read
         cur.execute(
             """
             INSERT INTO web_notification_reads(user_id, notification_key, read_at)
-            VALUES (?, ?, CURRENT_TIMESTAMP)
+            SELECT user_id, ('payment_notification:' || CAST(id AS TEXT)), CURRENT_TIMESTAMP
+            FROM web_payment_notifications
+            WHERE user_id=?
             ON CONFLICT(user_id, notification_key) DO NOTHING
             """,
-            (uid, key),
+            (uid,),
         )
-    conn.commit()
-    conn.close()
+        # 2. Bulk mark active broadcasts as read for this user
+        cur.execute(
+            """
+            INSERT INTO web_notification_reads(user_id, notification_key, read_at)
+            SELECT ?, ('broadcast:' || CAST(id AS TEXT)), CURRENT_TIMESTAMP
+            FROM web_broadcasts
+            WHERE status IN ('pending','queued','sending','done','completed')
+            ON CONFLICT(user_id, notification_key) DO NOTHING
+            """,
+            (uid,),
+        )
+        # 3. Mark any items currently surfaced by _collect_notifications_for_user
+        items = _collect_notifications_for_user(user, limit=None)
+        for row in items:
+            key = str(row.get("id") or "").strip()
+            if not key:
+                continue
+            cur.execute(
+                """
+                INSERT INTO web_notification_reads(user_id, notification_key, read_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, notification_key) DO NOTHING
+                """,
+                (uid, key),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     _invalidate_notification_unread_count(uid)
     return {"message": "All notifications marked as read"}
 
@@ -40125,11 +40364,11 @@ def _ensure_payment_automation_schema() -> None:
             payment_method TEXT NOT NULL DEFAULT 'cash',
             card_id BIGINT,
             note TEXT,
+            idempotency_key TEXT,
             is_advance INTEGER NOT NULL DEFAULT 0,
             confirmed_by_admin_id BIGINT,
             confirmed_by_admin_name TEXT,
             status_after TEXT,
-            paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             remaining_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             overpayment_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             refunded_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
@@ -40149,7 +40388,6 @@ def _ensure_payment_automation_schema() -> None:
             note TEXT NOT NULL,
             status_before TEXT,
             status_after TEXT,
-            paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0,
             debt_after DOUBLE PRECISION,
             overpayment_after DOUBLE PRECISION,
             previous_overpayment_amount DOUBLE PRECISION,
@@ -40332,8 +40570,7 @@ def _ensure_payment_automation_schema() -> None:
     for alter_sql in (
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_id BIGINT",
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS refunded_amount DOUBLE PRECISION NOT NULL DEFAULT 0",
-        "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0",
-        "ALTER TABLE payment_refunds ADD COLUMN IF NOT EXISTS paid_total_after DOUBLE PRECISION NOT NULL DEFAULT 0",
+        "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
     ):
         try:
             cur.execute(alter_sql)
@@ -40345,6 +40582,7 @@ def _ensure_payment_automation_schema() -> None:
                 pass
     for idx_sql in (
         "CREATE INDEX IF NOT EXISTS idx_payment_transactions_card_id ON payment_transactions(card_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_tx_idempotency_key ON payment_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_cards_dedupe ON payment_cards(card_number, owner_first_name, owner_last_name)",
         "CREATE INDEX IF NOT EXISTS idx_payment_tx_user_created ON payment_transactions(user_id, created_at DESC, id DESC)",
         "CREATE INDEX IF NOT EXISTS idx_payment_tx_ym_created ON payment_transactions(ym, created_at DESC, id DESC)",
@@ -40395,7 +40633,51 @@ def _payment_audit_event(cur: Any, *, event_type: str, actor_admin_id: int | Non
     )
 
 
-def _receipt_financial_snapshot(transaction: dict[str, Any]) -> dict[str, Any]:
+def _receipt_total_paid_at(
+    cur: Any,
+    *,
+    obligation_id: int,
+    occurred_at: Any,
+    payment_transaction_id: int | None = None,
+    refund_id: int | None = None,
+) -> float:
+    """Return the net paid total at one immutable payment/refund event.
+
+    Receipts must show the balance at the event time, not the student's later
+    balance. The payment and refund ledger is the source of truth here.
+    """
+    oid = int(obligation_id or 0)
+    timestamp = str(occurred_at or "").strip()
+    if oid <= 0 or not timestamp:
+        return 0.0
+
+    transaction_clause = "created_at <= ?"
+    transaction_params: list[Any] = [oid, timestamp]
+    if payment_transaction_id:
+        transaction_clause = "(created_at < ? OR (created_at = ? AND id <= ?))"
+        transaction_params = [oid, timestamp, timestamp, int(payment_transaction_id)]
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM payment_transactions "
+        f"WHERE obligation_id=? AND {transaction_clause}",
+        tuple(transaction_params),
+    )
+    paid = float((cur.fetchone() or {}).get("total") or 0.0)
+
+    refund_clause = "created_at < ?"
+    refund_params: list[Any] = [oid, timestamp]
+    if refund_id:
+        refund_clause = "(created_at < ? OR (created_at = ? AND id <= ?))"
+        refund_params = [oid, timestamp, timestamp, int(refund_id)]
+    cur.execute(
+        f"SELECT COALESCE(SUM(amount), 0) AS total FROM payment_refunds "
+        f"WHERE obligation_id=? AND {refund_clause}",
+        tuple(refund_params),
+    )
+    refunded = float((cur.fetchone() or {}).get("total") or 0.0)
+    return round(max(0.0, paid - refunded), 2)
+
+
+def _receipt_financial_snapshot(transaction: dict[str, Any], *, total_paid_amount: Any = None) -> dict[str, Any]:
     """Keep the paid amount and balance at this transaction immutable on its receipt."""
     def _money(value: Any) -> float:
         try:
@@ -40404,10 +40686,9 @@ def _receipt_financial_snapshot(transaction: dict[str, Any]) -> dict[str, Any]:
             return 0.0
         return round(max(0.0, numeric), 2) if math.isfinite(numeric) else 0.0
 
-    paid_total_after = transaction.get("paid_total_after")
     return {
         "amount": _money(transaction.get("amount")),
-        "total_paid_amount": _money(transaction.get("amount") if paid_total_after is None else paid_total_after),
+        "total_paid_amount": _money(total_paid_amount),
         "remaining_amount": _money(transaction.get("remaining_after")),
         "overpayment_amount": _money(transaction.get("overpayment_after")),
         "payment_status": str(transaction.get("status_after") or PAYMENT_STATUS_UNPAID),
@@ -40427,6 +40708,12 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
     tx = dict(cur.fetchone() or {})
     if not tx:
         return None, None
+    total_paid_amount = _receipt_total_paid_at(
+        cur,
+        obligation_id=int(tx.get("obligation_id") or 0),
+        occurred_at=tx.get("created_at"),
+        payment_transaction_id=int(tx.get("id") or transaction_id),
+    )
     branch_admin_id, branch_name = _receipt_branch_snapshot(tx)
     snapshot = {
         "brand": "DIAMOND EDUCATION",
@@ -40434,7 +40721,7 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
         "group_name": str(tx.get("group_name") or f"Group #{int(tx.get('group_id') or 0)}").strip(),
         "subject_name": str(tx.get("subject_name") or tx.get("course_title") or "-").strip() or "-",
         "teachers": [str(tx.get("teacher_name") or "-").strip() or "-"],
-        **_receipt_financial_snapshot(tx),
+        **_receipt_financial_snapshot(tx, total_paid_amount=total_paid_amount),
         "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
         "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
         "branch_name": branch_name,
@@ -40447,7 +40734,7 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
     return tx, snapshot
 
 
-def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict[str, Any]) -> dict[str, Any]:
+def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict[str, Any], *, cur: Any) -> dict[str, Any]:
     """Build a refund receipt only from the persisted refund and source payment rows."""
     def _money(value: Any) -> float:
         try:
@@ -40459,6 +40746,12 @@ def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict
     branch_admin_id, branch_name = _receipt_branch_snapshot(transaction)
     refund_id = int(refund.get("id") or 0)
     refund_type = str(refund.get("refund_type") or "partial").strip().lower()
+    total_paid_amount = _receipt_total_paid_at(
+        cur,
+        obligation_id=int(refund.get("obligation_id") or transaction.get("obligation_id") or 0),
+        occurred_at=refund.get("created_at"),
+        refund_id=refund_id,
+    )
     return {
         "receipt_kind": "refund",
         "brand": "DIAMOND EDUCATION",
@@ -40467,7 +40760,7 @@ def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict
         "subject_name": str(transaction.get("subject_name") or transaction.get("course_title") or "-").strip() or "-",
         "teachers": [str(transaction.get("teacher_name") or "-").strip() or "-"],
         "amount": _money(refund.get("amount")),
-        "total_paid_amount": _money(refund.get("paid_total_after")),
+        "total_paid_amount": _money(total_paid_amount),
         "remaining_amount": _money(refund.get("debt_after")),
         "overpayment_amount": _money(refund.get("overpayment_after")),
         "payment_status": str(refund.get("status_after") or PAYMENT_STATUS_UNPAID),
@@ -40497,14 +40790,23 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
         receipt["snapshot"] = snapshot
         return receipt
     cur.execute(
-        "SELECT amount, paid_total_after, remaining_after, overpayment_after, status_after FROM payment_transactions WHERE id=? LIMIT 1",
+        "SELECT id, obligation_id, amount, remaining_after, overpayment_after, status_after, created_at "
+        "FROM payment_transactions WHERE id=? LIMIT 1",
         (int(receipt.get("payment_transaction_id") or 0),),
     )
     transaction = dict(cur.fetchone() or {})
     if not transaction:
         receipt["snapshot"] = snapshot
         return receipt
-    fields = _receipt_financial_snapshot(transaction)
+    fields = _receipt_financial_snapshot(
+        transaction,
+        total_paid_amount=_receipt_total_paid_at(
+            cur,
+            obligation_id=int(transaction.get("obligation_id") or 0),
+            occurred_at=transaction.get("created_at"),
+            payment_transaction_id=int(transaction.get("id") or 0),
+        ),
+    )
     missing = {key: value for key, value in fields.items() if key not in snapshot}
     if missing:
         snapshot.update(missing)
@@ -40609,18 +40911,14 @@ def _payment_require_positive_amount(value: Any, *, field_name: str = "amount") 
     return float(numeric)
 
 
-def _payment_require_amount_within_limit(value: Any, limit: Any, *, field_name: str) -> float:
-    """Reject overpayments and over-refunds using server-side persisted limits."""
-    amount = _payment_require_positive_amount(value, field_name=field_name)
-    try:
-        maximum = float(limit)
-    except (TypeError, ValueError):
-        maximum = 0.0
-    if not math.isfinite(maximum) or maximum < 0:
-        maximum = 0.0
-    if amount - maximum > 1e-9:
-        raise HTTPException(status_code=400, detail=f"{field_name} cannot exceed the available balance")
-    return amount
+def _payment_idempotency_key(value: Any) -> str | None:
+    """Accept a client retry key without treating equal payments as duplicates."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{15,99}", raw):
+        raise HTTPException(status_code=400, detail="Invalid payment idempotency key")
+    return raw
 
 
 def _payment_next_ym(ym: str) -> str:
@@ -41778,19 +42076,12 @@ def _payment_card_rows(active_only: bool = True) -> list[dict[str, Any]]:
     return rows
 
 
-def _payment_carry_forward_is_due(target_ym: str) -> bool:
-    """Only apply a credit once the target calendar month has started."""
-    return str(target_ym or "") <= _payment_ym_now()
-
-
 def _payment_apply_carry_forward_for_obligation(obligation_row: dict) -> dict[str, Any]:
     oid = int(obligation_row.get("id") or 0)
     uid = int(obligation_row.get("user_id") or 0)
     gid = int(obligation_row.get("group_id") or 0)
     ym = str(obligation_row.get("ym") or "")
     if oid <= 0 or uid <= 0 or gid <= 0 or not ym:
-        return obligation_row
-    if not _payment_carry_forward_is_due(ym):
         return obligation_row
     prev_ym = _prev_month_ym(ym)
     _ensure_payment_automation_schema()
@@ -43380,7 +43671,16 @@ def _payment_upsert_web_notification(
     threading.Thread(
         target=push_notifications.send_push_to_user,
         args=(int(user_id), str(title or "Diamond Education"), str(message or "")),
-        kwargs={"data": {"target_screen": str(target_screen or ""), "button_url": str(button_url or ""), "notification_type": str(notification_type or "")}},
+        kwargs={
+            "data": {
+                "notification_id": f"payment_notification:{inserted_id}",
+                "id": f"payment_notification:{inserted_id}",
+                "raw_id": str(inserted_id),
+                "target_screen": str(target_screen or ""),
+                "button_url": str(button_url or ""),
+                "notification_type": str(notification_type or ""),
+            }
+        },
         daemon=True,
     ).start()
     return inserted_id
@@ -44583,7 +44883,7 @@ def _load_refund_receipt_for_admin(refund_id: int, user: dict[str, Any]) -> tupl
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Refund receipt not found")
-    snapshot = _refund_receipt_snapshot_from_rows(row, row)
+    snapshot = _refund_receipt_snapshot_from_rows(row, row, cur=cur)
     receipt = {
         "receipt_id": f"REF-{int(row.get('id') or 0)}-01",
         "refund_id": int(row.get("id") or 0),
@@ -44684,6 +44984,115 @@ async def admin_payment_refund_receipt(refund_id: int, authorization: str | None
         conn.close()
 
 
+def _receipt_timestamp_tashkent(value: Any) -> str:
+    """Render an immutable receipt timestamp in Uzbekistan local time."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "-"
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw.split(".", 1)[0]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(ZoneInfo("Asia/Tashkent")).strftime("%d.%m.%Y %H:%M")
+
+
+_RECEIPT_ESC_INIT = b"\x1b@\x1b\x74\x11"
+_RECEIPT_ESC_ALIGN_LEFT = b"\x1ba\x00"
+_RECEIPT_ESC_ALIGN_CENTER = b"\x1ba\x01"
+_RECEIPT_ESC_BOLD_ON = b"\x1bE\x01"
+_RECEIPT_ESC_BOLD_OFF = b"\x1bE\x00"
+_RECEIPT_BRAND = "DIAMOND EDUCATION"
+# Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
+# cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
+_RECEIPT_ESC_CUT = b"\x1dV\x42\x04"
+
+
+def _receipt_line_width(value: Any) -> int:
+    try:
+        return max(24, min(42, int(value or 36)))
+    except (TypeError, ValueError):
+        return 36
+
+
+def _receipt_money(value: Any) -> str:
+    try:
+        amount = max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        amount = 0.0
+    rendered = f"{amount:,.2f}".replace(",", " ")
+    return rendered[:-3] if rendered.endswith(".00") else rendered
+
+
+def _receipt_wrap_line(value: Any, width: int) -> list[str]:
+    text = " ".join(str(value or "-").replace("\r", " ").replace("\n", " ").split()) or "-"
+    result: list[str] = []
+    while len(text) > width:
+        cut = text.rfind(" ", 0, width + 1)
+        cut = cut if cut > 0 else width
+        result.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    return [*result, text]
+
+
+def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> bytes:
+    """Generate the complete immutable thermal receipt on the server.
+
+    The local agent receives only these ready-to-spool bytes and never sees a
+    receipt template or performs receipt calculations.
+    """
+    width = _receipt_line_width(line_width)
+    snapshot = dict(receipt.get("snapshot") or _safe_json_object(receipt.get("snapshot_json")))
+    is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
+    method = "Karta" if str(snapshot.get("payment_method") or "").lower() == "card" else "Naqd"
+    teachers = ", ".join(str(item) for item in (snapshot.get("teachers") or []) if str(item).strip()) or "-"
+    brand = _RECEIPT_BRAND
+    branch = str(snapshot.get("branch_name") or "").strip()
+    branch = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
+    title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
+    totals = [
+        ("Qaytarildi" if is_refund else "Joriy to'lov", f"{_receipt_money(snapshot.get('amount'))} SO'M"),
+        ("Jami to'langan", f"{_receipt_money(snapshot.get('total_paid_amount'))} SO'M"),
+        ("Qoldiq", f"{_receipt_money(snapshot.get('remaining_amount'))} SO'M"),
+    ]
+    details = [
+        ("O'quvchi", snapshot.get("student_name")), ("Guruh", snapshot.get("group_name")),
+        ("Fan", snapshot.get("subject_name")), ("O'qituvchi", teachers), ("To'lov usuli", method),
+        ("Tasdiqladi", snapshot.get("confirmed_by_name")), ("Sana", _receipt_timestamp_tashkent(snapshot.get("confirmed_at"))),
+        *([("Izoh", snapshot.get("refund_note"))] if is_refund and snapshot.get("refund_note") else []),
+        ("Chek ID", receipt.get("receipt_id")),
+    ]
+    job = bytearray(_RECEIPT_ESC_INIT + _RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON)
+    for line in _receipt_wrap_line(brand.upper(), width):
+        job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(_RECEIPT_ESC_BOLD_OFF)
+    if branch:
+        for line in _receipt_wrap_line(branch, width):
+            job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(_RECEIPT_ESC_ALIGN_LEFT + (b"-" * width) + b"\n")
+    job.extend(_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON + title.encode("cp866", errors="replace") + b"\n" + _RECEIPT_ESC_BOLD_OFF)
+    job.extend(_RECEIPT_ESC_ALIGN_LEFT + (b"-" * width) + b"\n")
+    for label, value in details[:4]:
+        for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
+            job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend((b"-" * width) + b"\n")
+    for label, value in totals:
+        for line in _receipt_wrap_line(f"{label}: {value}", width):
+            job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend((b"-" * width) + b"\n")
+    for label, value in details[4:]:
+        for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
+            job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(_RECEIPT_ESC_CUT)
+    return bytes(job)
+
+
+def _receipt_print_document_payload(receipt: dict[str, Any], line_width: Any = 36) -> dict[str, str]:
+    document = _receipt_escpos_document(receipt, line_width)
+    return {"receipt_id": str(receipt.get("receipt_id") or ""), "document_base64": base64.b64encode(document).decode("ascii")}
+
+
 def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     """Render server-side from the immutable snapshot, never client fields."""
     try:
@@ -44693,40 +45102,29 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     snapshot = dict(receipt.get("snapshot") or {})
     method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
     is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
-    payment_type = (
-        "To'liq qaytarish" if snapshot.get("payment_type") == "refund_full"
-        else "Qisman qaytarish" if snapshot.get("payment_type") == "refund_partial"
-        else "Oldindan to'lov" if snapshot.get("payment_type") == "advance"
-        else "Oylik to'lov"
-    )
     document_title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
-    amount_label = "JORIY QAYTARISH" if is_refund else "JORIY TO'LOV"
+    amount_label = "QAYTARILGAN SUMMA" if is_refund else "TO'LOV"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
-    brand = str(snapshot.get("brand") or "DIAMOND EDUCATION").strip() or "DIAMOND EDUCATION"
+    brand = _RECEIPT_BRAND
     branch = str(snapshot.get("branch_name") or "").strip()
     branch_line = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
-    total_paid_amount = snapshot.get("total_paid_amount")
-    if total_paid_amount is None:
-        total_paid_amount = snapshot.get("amount")
     lines = [
         brand, *([branch_line] if branch_line else []), "",
         document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
-        f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan: {snapshot.get('subject_name') or '-'}",
+        f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
         f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
-        f"JAMI TO'LANGAN: {float(total_paid_amount or 0):,.2f} so'm",
+        f"JAMI TO'LANGAN: {float(snapshot.get('total_paid_amount') or 0):,.2f} so'm",
         f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
-        f"To'lov turi: {payment_type}", f"To'lov usuli: {method}",
-        f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}", f"Sana: {snapshot.get('confirmed_at') or '-'}",
+        f"To'lov usuli: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",
+        f"Sana: {_receipt_timestamp_tashkent(snapshot.get('confirmed_at'))}",
         f"Chek ID: {receipt.get('receipt_id') or '-'}",
         *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
     ]
     doc = fitz.open()
-    page = doc.new_page(width=300, height=600)
-    font_kwargs: dict[str, Any] = {"fontname": "helv"}
-    dejavu_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    if os.path.isfile(dejavu_font):
-        font_kwargs = {"fontname": "dejavu", "fontfile": dejavu_font}
-    page.insert_textbox(fitz.Rect(24, 24, 276, 576), "\n".join(lines), fontsize=9, align=1, **font_kwargs)
+    page_height = max(180, 18 + len(lines) * 13)
+    # 56mm page width matches the XP-58IIL driver setting used by browser fallback.
+    page = doc.new_page(width=158.74, height=page_height)
+    page.insert_textbox(fitz.Rect(6, 6, 152.74, page_height - 6), "\n".join(lines), fontsize=8, fontname="helv", align=0)
     data = doc.tobytes(garbage=4, deflate=True)
     doc.close()
     return data
@@ -44772,7 +45170,7 @@ async def admin_refund_receipt_pdf(refund_id: int, authorization: str | None = H
 
 
 @app.post("/admin/receipts/{receipt_id}/print")
-async def admin_receipt_printed(receipt_id: str, authorization: str | None = Header(default=None)):
+async def admin_receipt_printed(receipt_id: str, payload: dict | None = None, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     conn, cur, receipt, _ = _load_receipt_for_admin(receipt_id, user)
@@ -44782,7 +45180,7 @@ async def admin_receipt_printed(receipt_id: str, authorization: str | None = Hea
             user_id=int(receipt.get("user_id") or 0), group_id=int(receipt.get("group_id") or 0),
             branch_admin_id=int(receipt.get("branch_admin_id") or 0) or None)
         conn.commit()
-        return {"ok": True}
+        return {"ok": True, **_receipt_print_document_payload(receipt, (payload or {}).get("line_width"))}
     except Exception:
         conn.rollback()
         raise
@@ -44791,14 +45189,14 @@ async def admin_receipt_printed(receipt_id: str, authorization: str | None = Hea
 
 
 @app.post("/admin/payments/refunds/{refund_id}/receipt/print")
-async def admin_refund_receipt_printed(refund_id: int, authorization: str | None = Header(default=None)):
+async def admin_refund_receipt_printed(refund_id: int, payload: dict | None = None, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     conn, cur, receipt, _ = _load_refund_receipt_for_admin(refund_id, user)
     try:
         _audit_refund_receipt_event(cur, event_type="REFUND_RECEIPT_PRINT_REQUESTED", user=user, receipt=receipt)
         conn.commit()
-        return {"ok": True}
+        return {"ok": True, **_receipt_print_document_payload(receipt, (payload or {}).get("line_width"))}
     except Exception:
         conn.rollback()
         raise
@@ -45841,15 +46239,10 @@ async def admin_payments_students(
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
-    _ensure_admin_perf_indexes()
     month_key = _payment_validate_ym(ym) if ym and str(ym).strip() else _payment_ym_now()
     
-    # A free-text search must remain read-only and responsive.  It uses the
-    # latest persisted obligations; the normal unfiltered view still performs
-    # the bounded stale-data refresh.
-    search_term = str(q or "").strip()
-    if not search_term:
-        _payment_recalc_for_view_if_stale({month_key}, trigger_source="students_list", freshness_seconds=900)
+    # Run Recalc check
+    _payment_recalc_for_view_if_stale({month_key}, trigger_source="students_list", freshness_seconds=900)
     
     # Restrict to scoped groups
     scoped_group_ids = {int(g.get("id") or 0) for g in _scope_groups_for_admin(admin_ref, _safe_call(get_all_groups, []) or [])}
@@ -45881,7 +46274,6 @@ async def admin_payments_students(
         FROM payment_monthly_obligations o
         LEFT JOIN groups g ON g.id = o.group_id
         LEFT JOIN users t ON t.id = g.teacher_id
-        LEFT JOIN users student_user ON student_user.id = o.user_id
         WHERE o.ym = ? AND o.group_id IN ({placeholders})
     """
     
@@ -45895,12 +46287,6 @@ async def admin_payments_students(
     if teacher_name and str(teacher_name).strip():
         cte_where.append("LOWER(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) LIKE ?")
         cte_params.append(f"%{str(teacher_name).strip().lower()}%")
-
-    # Filter before aggregate/string_agg.  Previously this filter ran only
-    # after all students and groups for the month were aggregated.
-    if search_term:
-        cte_where.append("LOWER(COALESCE(student_user.first_name,'') || ' ' || COALESCE(student_user.last_name,'') || ' ' || COALESCE(student_user.phone,'')) LIKE ?")
-        cte_params.append(f"%{search_term.lower()}%")
         
     if cte_where:
         sql += " AND " + " AND ".join(cte_where)
@@ -45920,6 +46306,11 @@ async def admin_payments_students(
     where_clauses = ["1=1"]
     params = cte_params
     
+    if q and str(q).strip():
+        q_norm = f"%{str(q).strip().lower()}%"
+        where_clauses.append("LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'')) LIKE ?")
+        params.append(q_norm)
+        
     if status and str(status).strip() and status != "all":
         status_val = str(status).strip().lower()
         if status_val == "to'langan":
@@ -46467,6 +46858,7 @@ async def admin_payments_student_confirm(
     clean_note = str(payload.note or "").strip()
     if len(clean_note) > 1000:
         raise HTTPException(status_code=400, detail="note is too long")
+    idempotency_key = _payment_idempotency_key(payload.idempotency_key)
     groups = _safe_call(lambda: get_user_groups(int(user_id)), []) or []
     group = next((g for g in groups if int(g.get("id") or 0) == int(payload.group_id)), None)
     if not group:
@@ -46509,11 +46901,6 @@ async def admin_payments_student_confirm(
         0.0,
         float(obligation.get("final_amount") or 0.0) - float(obligation.get("paid_amount") or 0.0),
     )
-    amount = _payment_require_amount_within_limit(
-        payload.amount,
-        outstanding_amount,
-        field_name="Payment",
-    )
     _ensure_payment_automation_schema()
     conn = get_conn()
     cur = conn.cursor()
@@ -46536,47 +46923,87 @@ async def admin_payments_student_confirm(
     group_name = str(group.get("name") or "").strip() or f"Group #{int(payload.group_id)}"
     course_title = str(obligation.get("course_title") or group.get("course_title") or "").strip() or None
     try:
-        # Guard against accidental duplicate submissions within a short window.
-        cur.execute(
-            """
-            SELECT id, created_at
-            FROM payment_transactions
-            WHERE obligation_id=?
-              AND user_id=?
-              AND group_id=?
-              AND ym=?
-              AND amount=?
-              AND payment_method=?
-              AND COALESCE(note, '')=?
-              AND confirmed_by_admin_id=?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (
-                int(obligation_id),
-                int(user_id),
-                int(payload.group_id),
-                month_key,
-                float(amount),
-                payment_method,
-                clean_note,
-                int(user.get("id") or 0),
-            ),
-        )
-        last_same = dict(cur.fetchone() or {})
-        if last_same:
-            created_at = _parse_utc_timestamp(str(last_same.get("created_at") or ""))
-            if created_at and (_now_utc() - created_at).total_seconds() <= 20:
-                raise HTTPException(status_code=409, detail="Duplicate payment submission detected")
+        if idempotency_key and _is_postgres_enabled():
+            # Serializes same-key clicks/retries before either can create a row.
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"payment-confirm:{idempotency_key}",))
+        if idempotency_key:
+            cur.execute("SELECT * FROM payment_transactions WHERE idempotency_key=? LIMIT 1", (idempotency_key,))
+            replay = dict(cur.fetchone() or {})
+            if replay:
+                same_request = (
+                    int(replay.get("user_id") or 0) == int(user_id)
+                    and int(replay.get("group_id") or 0) == int(payload.group_id)
+                    and str(replay.get("ym") or "") == month_key
+                    and abs(float(replay.get("amount") or 0) - float(amount)) <= 1e-9
+                    and str(replay.get("payment_method") or "") == payment_method
+                    and int(replay.get("confirmed_by_admin_id") or 0) == int(user.get("id") or 0)
+                )
+                if not same_request:
+                    raise HTTPException(status_code=409, detail="Payment idempotency key conflicts with an existing payment")
+                receipt = _get_or_create_payment_receipt(cur, int(replay.get("id") or 0), actor_admin_id=int(user.get("id") or 0))
+                cur.execute("SELECT final_amount, paid_amount, debt_amount, overpayment_amount FROM payment_monthly_obligations WHERE id=? LIMIT 1", (int(replay.get("obligation_id") or 0),))
+                replay_obligation = dict(cur.fetchone() or {})
+                _payment_audit_event(
+                    cur,
+                    event_type="PAYMENT_CONFIRM_REPLAYED",
+                    actor_admin_id=int(user.get("id") or 0),
+                    payment_transaction_id=int(replay.get("id") or 0),
+                    receipt_id=str((receipt or {}).get("receipt_id") or ""),
+                    user_id=int(user_id),
+                    group_id=int(payload.group_id),
+                    branch_admin_id=_receipt_branch_snapshot(group)[0],
+                )
+                conn.commit()
+                return {
+                    "message": "Payment already confirmed",
+                    "duplicate": True,
+                    "transaction_id": int(replay.get("id") or 0),
+                    "receipt": _receipt_public_payload(receipt) if receipt else None,
+                    "status": str(replay.get("status_after") or PAYMENT_STATUS_UNPAID),
+                    "final_amount": float(replay_obligation.get("final_amount") or 0.0),
+                    "paid_amount": float(replay_obligation.get("paid_amount") or 0.0),
+                    "debt_amount": float(replay_obligation.get("debt_amount") or replay.get("remaining_after") or 0.0),
+                    "overpayment_amount": float(replay_obligation.get("overpayment_amount") or replay.get("overpayment_after") or 0.0),
+                    "bonus_events": [],
+                    "referral_event": {"applied": False},
+                }
+        if not idempotency_key:
+            # Backward compatibility for old cached browser tabs. Modern
+            # clients use the key above, so legitimate equal payments work.
+            cur.execute(
+                """
+                SELECT id, created_at
+                FROM payment_transactions
+                WHERE obligation_id=?
+                  AND user_id=?
+                  AND group_id=?
+                  AND ym=?
+                  AND amount=?
+                  AND payment_method=?
+                  AND COALESCE(note, '')=?
+                  AND confirmed_by_admin_id=?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    int(obligation_id), int(user_id), int(payload.group_id), month_key,
+                    float(amount), payment_method, clean_note, int(user.get("id") or 0),
+                ),
+            )
+            last_same = dict(cur.fetchone() or {})
+            if last_same:
+                created_at = _parse_utc_timestamp(str(last_same.get("created_at") or ""))
+                if created_at and (_now_utc() - created_at).total_seconds() <= 20:
+                    raise HTTPException(status_code=409, detail="Duplicate payment submission detected")
 
         cur.execute(
             """
             INSERT INTO payment_transactions
             (
-                obligation_id, user_id, group_id, ym, amount, payment_method, card_id, note, is_advance,
+                obligation_id, user_id, group_id, ym, amount, payment_method, card_id, note, idempotency_key, is_advance,
                 confirmed_by_admin_id, confirmed_by_admin_name, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 obligation_id,
@@ -46587,6 +47014,7 @@ async def admin_payments_student_confirm(
                 payment_method,
                 int(selected_card_id) if int(selected_card_id) > 0 else None,
                 (clean_note or None),
+                idempotency_key,
                 1 if bool(payload.is_advance) else 0,
                 int(user.get("id") or 0),
                 _display_name(user),
@@ -46621,12 +47049,11 @@ async def admin_payments_student_confirm(
             """
             UPDATE payment_transactions
             SET status_after=?,
-                paid_total_after=?,
                 remaining_after=?,
                 overpayment_after=?
             WHERE id=?
             """,
-            (status, float(paid_total_amount), float(remaining), float(overpayment), tx_id),
+            (status, float(remaining), float(overpayment), tx_id),
         )
         branch_admin_id, _ = _receipt_branch_snapshot(group)
         _payment_audit_event(
@@ -46878,18 +47305,16 @@ async def admin_payments_refund_transaction(
     if not _can_manage_group(admin_ref, group_row):
         conn.close()
         raise HTTPException(status_code=403, detail="Permission denied")
-    source_refundable = max(0.0, float(tx.get("amount") or 0.0) - float(tx.get("refunded_amount") or 0.0))
+    refundable = float(tx.get("amount") or 0.0) - float(tx.get("refunded_amount") or 0.0)
+    if amount - refundable > 1e-9:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Refund amount exceeds refundable balance")
     obligation_id = int(tx.get("obligation_id") or 0)
     if obligation_id <= 0:
         conn.close()
         raise HTTPException(status_code=400, detail="Transaction has no obligation link")
     cur.execute("SELECT * FROM payment_monthly_obligations WHERE id=? LIMIT 1", (obligation_id,))
     obligation_before = dict(cur.fetchone() or {})
-    # A refund is available only for the credit produced by this month's
-    # excused attendance.  Normal confirmed payments remain non-refundable.
-    attendance_refundable = max(0.0, float(obligation_before.get("overpayment_amount") or 0.0))
-    refundable = min(source_refundable, attendance_refundable)
-    amount = _payment_require_amount_within_limit(payload.amount, refundable, field_name="Refund")
     status_before = str(obligation_before.get("status") or PAYMENT_STATUS_UNPAID)
     previous_overpayment_amount = float(obligation_before.get("overpayment_amount") or 0.0)
     cur.execute(
@@ -47034,14 +47459,12 @@ async def admin_payments_refund_transaction(
             """
             UPDATE payment_refunds
             SET status_after=?,
-                paid_total_after=?,
                 debt_after=?,
                 overpayment_after=?
             WHERE id=?
             """,
             (
                 status_after_refund,
-                float(paid_after_refund),
                 float(debt_after_refund),
                 float(overpayment_after_refund),
                 int(refund_id),

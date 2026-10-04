@@ -52,7 +52,6 @@ export function sectionIconGlyph(section: string) {
     "dpoint-settings": "D",
     sms: "▰",
     chats: "◌",
-    feedback: "✎",
     notifications: "!",
     profile: "●",
     "daily-test": "✓",
@@ -70,9 +69,14 @@ export function sectionIconGlyph(section: string) {
     settings: "⚙",
     performance: "↗",
     developer: "⌘",
-    "system-status": "◉",
-    "mobile-release": "↑",
-    "mobile-maintenance": "⚙",
+    "developer-deploy": "▲",
+    "developer-server": "⌘",
+    "developer-maintenance": "⏸",
+    "developer-flags": "⚑",
+    "developer-audit": "🛡",
+    "developer-jobs": "⚡",
+    "developer-database": "🗄",
+    "developer-api-metrics": "📈",
     tests: "✓",
   };
   return glyphs[section] || "•";
@@ -102,7 +106,7 @@ export function orderSections(sections: string[]) {
   const roleOrder = sectionSet.has("grammar") && sectionSet.has("vocabulary")
     ? [
         "home", "grammar", "vocabulary", "daily-test", "gamified", "arena", "leaderboard", "dcoin",
-        "videos", "books", "homework", "support", "chats", "feedback", "notifications", "profile",
+        "videos", "books", "homework", "support", "chats", "notifications", "profile",
       ]
     : sectionSet.has("vocabulary-bank")
       ? [
@@ -116,18 +120,31 @@ export function orderSections(sections: string[]) {
           "attendance", "holidays", "admin-callbacks",
           "videos", "books", "grammar", "courses", "gifts", "reviews", "leaderboard",
           "generator", "results", "competitions-history", "broadcasts", "surveys",
-          "domain-email", "dpoint-settings", "sms", "chats", "feedback", "notifications", "profile",
+          "domain-email", "dpoint-settings", "sms", "chats", "notifications", "profile",
         ]
       : sectionSet.has("performance") && sectionSet.has("homework")
         ? [
             "home", "groups", "attendance", "homework", "arena", "tests", "performance", "dcoin",
-            "leaderboard", "generator", "videos", "books", "chats", "feedback", "notifications", "profile",
+            "leaderboard", "generator", "videos", "books", "chats", "notifications", "profile",
           ]
         : sectionSet.has("bookings")
           ? [
               "home", "bookings", "attendance", "homework", "calendar", "schedule", "hours", "filial", "bonus", "settings",
-              "leaderboard", "videos", "books", "chats", "feedback", "notifications", "profile",
+              "leaderboard", "videos", "books", "chats", "notifications", "profile",
             ]
+          : sectionSet.has("developer-server") || sectionSet.has("developer-deploy")
+            ? [
+                "home",
+                "developer-server",
+                "developer-deploy",
+                "developer-maintenance",
+                "developer-flags",
+                "developer-audit",
+                "developer-jobs",
+                "developer-database",
+                "developer-api-metrics",
+                "profile",
+              ]
           : sections;
   return [
     ...roleOrder.filter((item) => sectionSet.has(item)),
@@ -170,6 +187,15 @@ function pickRoleBottomSections(orderedSections: string[]) {
     return items.slice(0, 5);
   };
 
+  if (has("developer-server") || has("developer-deploy")) {
+    return [
+      has("home") ? "home" : "",
+      has("developer-server") ? "developer-server" : "",
+      has("developer-deploy") ? "developer-deploy" : "",
+      has("developer-maintenance") ? "developer-maintenance" : "",
+      has("developer-flags") ? "developer-flags" : "",
+    ].filter(Boolean);
+  }
   if (has("grammar") && has("vocabulary") && has("chats")) {
     return complete(["vocabulary", "arena"], ["grammar", "leaderboard", "books"]);
   }
@@ -216,8 +242,9 @@ export function DashboardSidebar({
 
   function renderNavButtons(prefix = "") {
     const bottomSet = new Set(mobileBottomSections);
+    const excludedSet = isMobileLayout ? bottomSet : primaryNavSet;
     return orderedSections
-      .filter((item) => item !== "profile" && !primaryNavSet.has(item))
+      .filter((item) => item !== "profile" && !excludedSet.has(item))
       .map((item, index) => {
         const active = currentSection === item;
         return (

@@ -10,15 +10,17 @@ port to other machines and it does not retain payment or student data.
 from __future__ import annotations
 
 import argparse
+import base64
 import ctypes
 import json
 import os
-import platform
+import re
 import shutil
 import subprocess
 import sys
-import textwrap
-import unicodedata
+import threading
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,9 +29,18 @@ from typing import Any
 
 HOST = "127.0.0.1"
 PORT = 18765
-LINE_WIDTH = 32  # 58mm / XP-58 class printer at normal font size.
+LINE_WIDTH = 35  # 56mm XP-58IIL driver page at normal font size.
 MAX_BODY_BYTES = 16_384
-DEFAULT_SETTINGS = {"paper_width_mm": 57.5, "side_padding_mm": 1.5, "line_width": LINE_WIDTH}
+DEFAULT_SETTINGS = {
+    "paper_width_mm": 56.0,
+    "side_padding_mm": 1.5,
+    "line_width": LINE_WIDTH,
+    "agent_id": "",
+    "agent_token": "",
+    "branch_name": "",
+    "station_name": "",
+    "server_url": "https://diamond-education.uz/api",
+}
 ALLOWED_ORIGINS = {
     "https://diamond-education.uz",
     "https://www.diamond-education.uz",
@@ -40,7 +51,11 @@ ESC_ALIGN_LEFT = b"\x1ba\x00"
 ESC_ALIGN_CENTER = b"\x1ba\x01"
 ESC_BOLD_ON = b"\x1bE\x01"
 ESC_BOLD_OFF = b"\x1bE\x00"
-ESC_CUT = b"\x1dV\x00"
+# GS V B n asks compatible cutters to cut after exactly n additional lines.
+# Match the server document: feed four default vertical-motion units
+# (4 × 0.125 mm = 0.5 mm) before cutting, without a driver-sized page tail.
+ESC_CUT = b"\x1dV\x42\x04"
+THERMAL_PRINTER_PATTERN = re.compile(r"(?:xp[-_ ]?58|xprinter|thermal|receipt|pos[-_ ]?58|58mm|tm[-_ ]?t)", re.IGNORECASE)
 
 
 def default_settings_path() -> Path:
@@ -52,7 +67,7 @@ def default_settings_path() -> Path:
     return Path.home() / ".config" / "diamond-education" / "print-agent.json"
 
 
-def validate_settings(raw: object) -> dict[str, float | int]:
+def validate_settings(raw: object) -> dict[str, float | int | str]:
     if not isinstance(raw, dict) or set(raw) - set(DEFAULT_SETTINGS):
         raise ValueError("invalid printer settings")
     try:
@@ -65,13 +80,35 @@ def validate_settings(raw: object) -> dict[str, float | int]:
         raise ValueError("printer settings are outside the supported range")
     if side_padding * 2 >= paper_width:
         raise ValueError("side padding leaves no printable width")
-    return {"paper_width_mm": round(paper_width, 2), "side_padding_mm": round(side_padding, 2), "line_width": line_width}
+    result: dict[str, float | int | str] = {
+        "paper_width_mm": round(paper_width, 2), "side_padding_mm": round(side_padding, 2), "line_width": line_width,
+    }
+    for key, limit in (("agent_id", 80), ("agent_token", 160), ("branch_name", 100), ("station_name", 100)):
+        value = " ".join(str(raw.get(key, "")).strip().split())
+        if len(value) > limit:
+            raise ValueError(f"{key} is too long")
+        result[key] = value
+    server_url = str(raw.get("server_url", DEFAULT_SETTINGS["server_url"])).strip().rstrip("/")
+    if server_url and not re.match(r"^https://[^/]+(?:/[^?#]*)?$|^http://(?:127\.0\.0\.1|localhost)(?::\d+)?(?:/[^?#]*)?$", server_url):
+        raise ValueError("server_url must be HTTPS")
+    result["server_url"] = server_url
+    return result
 
 
-def load_settings(path: Path | None = None) -> dict[str, float | int]:
+def load_settings(path: Path | None = None) -> dict[str, float | int | str]:
     target = path or default_settings_path()
     try:
-        return validate_settings(json.loads(target.read_text(encoding="utf-8")))
+        stored = validate_settings(json.loads(target.read_text(encoding="utf-8")))
+        # Earlier agent builds used 57.5mm / 36 columns.  Migrate only that
+        # untouched legacy default; a deliberately saved custom size remains.
+        if (stored.get("paper_width_mm"), stored.get("side_padding_mm"), stored.get("line_width")) == (57.5, 1.5, 36):
+            stored.update({"paper_width_mm": 56.0, "line_width": LINE_WIDTH})
+            temporary = target.with_suffix(f"{target.suffix}.tmp")
+            temporary.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+            temporary.replace(target)
+            if os.name != "nt":
+                target.chmod(0o600)
+        return stored
     except FileNotFoundError:
         return dict(DEFAULT_SETTINGS)
     except (OSError, ValueError, json.JSONDecodeError):
@@ -79,9 +116,12 @@ def load_settings(path: Path | None = None) -> dict[str, float | int]:
         return dict(DEFAULT_SETTINGS)
 
 
-def save_settings(raw: object, path: Path | None = None) -> dict[str, float | int]:
-    settings = validate_settings(raw)
+def save_settings(raw: object, path: Path | None = None) -> dict[str, float | int | str]:
     target = path or default_settings_path()
+    if not isinstance(raw, dict):
+        raise ValueError("invalid printer settings")
+    existing = load_settings(target)
+    settings = validate_settings({**existing, **raw})
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(f"{target.suffix}.tmp")
     temporary.write_text(json.dumps(settings, ensure_ascii=False), encoding="utf-8")
@@ -91,7 +131,7 @@ def save_settings(raw: object, path: Path | None = None) -> dict[str, float | in
     return settings
 
 
-def printable_columns(settings: dict[str, float | int]) -> int:
+def printable_columns(settings: dict[str, float | int | str]) -> int:
     """Keep the configured character width inside the selected roll and side inset."""
     physical_columns = int((float(settings["paper_width_mm"]) - 2 * float(settings["side_padding_mm"])) / 1.5)
     return max(24, min(int(settings["line_width"]), physical_columns))
@@ -138,76 +178,103 @@ def validate_payload(raw: object) -> dict[str, Any]:
     return result
 
 
-def display_width(text: str) -> int:
-    return sum(2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1 for char in text)
+def decode_print_document(raw: object) -> bytes:
+    """Accept only a server-generated, ready-to-spool ESC/POS document."""
+    if not isinstance(raw, dict) or set(raw) - {"receipt_id", "document_base64"}:
+        raise ValueError("server print document is invalid")
+    encoded = clean_text(raw.get("document_base64"), limit=MAX_BODY_BYTES)
+    try:
+        document = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ValueError("server print document is invalid") from exc
+    if not 8 <= len(document) <= MAX_BODY_BYTES or not document.startswith(ESC_INIT) or not document.endswith(ESC_CUT):
+        raise ValueError("server print document is invalid")
+    return document
 
 
-def wrap_line(text: str, line_width: int = LINE_WIDTH) -> list[str]:
-    # Payment data is Latin/Cyrillic in normal use.  textwrap preserves words
-    # while the final slicing also gives a deterministic bound for long IDs.
-    value = clean_text(text, limit=180)
-    if not value:
-        return [""]
-    return textwrap.wrap(value, width=line_width, break_long_words=True, break_on_hyphens=False) or [""]
+def sanitized_settings(settings: dict[str, float | int | str]) -> dict[str, float | int | str | bool]:
+    return {
+        key: settings[key]
+        for key in ("paper_width_mm", "side_padding_mm", "line_width", "agent_id", "branch_name", "station_name")
+    } | {"registered": bool(settings.get("agent_id") and settings.get("agent_token"))}
 
 
-def receipt_lines(payload: dict[str, Any], settings: dict[str, float | int] | None = None) -> list[str]:
-    line_width = printable_columns(validate_settings(settings or DEFAULT_SETTINGS))
-    lines = [payload["brand"].upper(), payload["branch"], "-" * line_width, payload["title"].upper(), "-" * line_width]
-    for row in payload["lines"]:
-        lines.extend(wrap_line(row["label"], line_width))
-        lines.extend(wrap_line(row["value"], line_width))
-    if payload["totals"]:
-        lines.append("-" * line_width)
-        for row in payload["totals"]:
-            lines.extend(wrap_line(row["label"], line_width))
-            lines.extend(wrap_line(row["value"], line_width))
-    lines.extend(["-" * line_width, f"CHEK ID: {payload['receipt_id']}"])
-    return [line for line in lines if line]
+def linux_printer_inventory() -> tuple[list[str], str]:
+    """Read CUPS queues and its default without relying on desktop settings."""
+    if not shutil.which("lpstat"):
+        raise RuntimeError("CUPS client topilmadi; avval Linux installerini ishga tushiring")
+    queues = subprocess.run(["lpstat", "-p"], check=False, capture_output=True, text=True)
+    if queues.returncode != 0:
+        raise RuntimeError(queues.stderr.strip() or "CUPS printer ro'yxatini o'qib bo'lmadi")
+    names = [match.group(1) for line in queues.stdout.splitlines() if (match := re.match(r"^printer\s+(\S+)", line))]
+    default = subprocess.run(["lpstat", "-d"], check=False, capture_output=True, text=True)
+    default_match = re.search(r":\s*(\S+)\s*$", default.stdout)
+    return names, default_match.group(1) if default_match else ""
 
 
-def printable_line_lengths(payload: dict[str, Any]) -> list[int]:
-    return [display_width(line) for line in receipt_lines(validate_payload(payload))]
+def choose_thermal_printer(printers: list[str], default: str) -> str:
+    """Prefer a receipt queue and never silently send a receipt to a random A4 printer."""
+    names = [str(name).strip() for name in printers if str(name).strip()]
+    thermal = [name for name in names if THERMAL_PRINTER_PATTERN.search(name)]
+    if len(thermal) == 1:
+        return thermal[0]
+    if len(thermal) > 1 and default in thermal:
+        return default
+    if len(names) == 1:
+        return names[0]
+    if default and default in names and not thermal:
+        return default
+    if not names:
+        raise RuntimeError("CUPS printer topilmadi; printerni Linux sozlamalarida qo'shing")
+    raise RuntimeError("Termal printerni aniqlab bo'lmadi; DIAMOND_PRINTER bilan queue nomini belgilang")
 
 
-def escpos_text(text: str) -> bytes:
-    # CP866 is supported by common ESC/POS printers and keeps Russian labels
-    # readable. Unsupported glyphs degrade safely instead of failing a receipt.
-    return unicodedata.normalize("NFKC", text).encode("cp866", errors="replace")
+def choose_linux_printer(printers: list[str], default: str) -> str:
+    """Compatibility wrapper for Linux-specific tests and diagnostics."""
+    return choose_thermal_printer(printers, default)
 
 
-def build_escpos_document(raw_payload: object, settings: dict[str, float | int] | None = None) -> bytes:
-    payload = validate_payload(raw_payload)
-    active_settings = validate_settings(settings or DEFAULT_SETTINGS)
-    line_width = printable_columns(active_settings)
-    job = bytearray(ESC_INIT)
-    job.extend(ESC_ALIGN_CENTER + ESC_BOLD_ON)
-    for line in wrap_line(payload["brand"].upper(), line_width):
-        job.extend(escpos_text(line) + b"\n")
-    job.extend(ESC_BOLD_OFF)
-    if payload["branch"]:
-        for line in wrap_line(payload["branch"], line_width):
-            job.extend(escpos_text(line) + b"\n")
-    job.extend(ESC_ALIGN_LEFT)
-    for line in receipt_lines({**payload, "brand": "", "branch": ""}, active_settings)[2:]:
-        job.extend(escpos_text(line) + b"\n")
-    job.extend(b"\n\n\n" + ESC_CUT)
-    return bytes(job)
+def windows_printer_inventory() -> tuple[list[str], str]:
+    """Enumerate local/network queues through Winspool without external tools."""
+    from ctypes import wintypes
+
+    class PRINTER_INFO_4W(ctypes.Structure):
+        _fields_ = [("pPrinterName", wintypes.LPWSTR), ("pServerName", wintypes.LPWSTR), ("Attributes", wintypes.DWORD)]
+
+    winspool = ctypes.WinDLL("winspool.drv", use_last_error=True)
+    needed = wintypes.DWORD(0)
+    returned = wintypes.DWORD(0)
+    flags = 0x00000002 | 0x00000004  # PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS
+    winspool.EnumPrintersW(flags, None, 4, None, 0, ctypes.byref(needed), ctypes.byref(returned))
+    if not needed.value:
+        return [], ""
+    buffer = (ctypes.c_byte * needed.value)()
+    if not winspool.EnumPrintersW(flags, None, 4, buffer, needed.value, ctypes.byref(needed), ctypes.byref(returned)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    records = ctypes.cast(buffer, ctypes.POINTER(PRINTER_INFO_4W))
+    names = [records[index].pPrinterName for index in range(returned.value) if records[index].pPrinterName]
+    size = wintypes.DWORD(0)
+    winspool.GetDefaultPrinterW(None, ctypes.byref(size))
+    if not size.value:
+        return names, ""
+    default = ctypes.create_unicode_buffer(size.value)
+    if not winspool.GetDefaultPrinterW(default, ctypes.byref(size)):
+        return names, ""
+    return names, default.value
 
 
 def default_printer() -> str:
     if os.name == "nt":
-        from ctypes import wintypes
-
-        size = wintypes.DWORD(0)
-        ctypes.windll.winspool.GetDefaultPrinterW(None, ctypes.byref(size))
-        if not size.value:
-            raise RuntimeError("Windows default printer is not configured")
-        buffer = ctypes.create_unicode_buffer(size.value)
-        if not ctypes.windll.winspool.GetDefaultPrinterW(buffer, ctypes.byref(size)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        return buffer.value
-    return os.environ.get("DIAMOND_PRINTER", "").strip()
+        configured = os.environ.get("DIAMOND_PRINTER", "").strip()
+        if configured:
+            return configured
+        printers, default = windows_printer_inventory()
+        return choose_thermal_printer(printers, default)
+    configured = os.environ.get("DIAMOND_PRINTER", "").strip()
+    if configured:
+        return configured
+    printers, default = linux_printer_inventory()
+    return choose_linux_printer(printers, default)
 
 
 def print_windows(document: bytes, printer: str) -> None:
@@ -258,7 +325,46 @@ def send_to_printer(document: bytes, printer: str) -> str:
         print_windows(document, selected)
         return selected
     print_linux(document, selected)
-    return selected or "CUPS default"
+    return selected
+
+
+def detected_printer_name(configured: str) -> tuple[str, str]:
+    try:
+        return configured or default_printer(), ""
+    except RuntimeError as exc:
+        return "", str(exc)
+
+
+def report_agent_heartbeat(settings: dict[str, float | int | str], printer_name: str) -> bool:
+    """Send an agent heartbeat containing only station health, never receipt data."""
+    agent_id = str(settings.get("agent_id") or "").strip()
+    agent_token = str(settings.get("agent_token") or "").strip()
+    server_url = str(settings.get("server_url") or "").strip().rstrip("/")
+    if not agent_id or not agent_token or not server_url:
+        return False
+    body = json.dumps({
+        "agent_id": agent_id,
+        "printer_name": printer_name,
+        "platform": sys.platform,
+        "settings": sanitized_settings(settings),
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        f"{server_url}/developer/print-agents/heartbeat",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Diamond-Print-Agent": agent_token},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return 200 <= int(response.status) < 300
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError):
+        return False
+
+
+def agent_heartbeat_loop(server: ThreadingHTTPServer) -> None:
+    while not server.heartbeat_stop.wait(60):
+        printer_name, _ = detected_printer_name(server.printer)
+        report_agent_heartbeat(server.settings, printer_name)
 
 
 class AgentHandler(BaseHTTPRequestHandler):
@@ -306,10 +412,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         if not self.origin_is_allowed():
             self.reply(HTTPStatus.FORBIDDEN, {"ok": False, "error": "origin is not allowed"})
             return
+        printer, printer_error = detected_printer_name(self.server.printer)
         self.reply(HTTPStatus.OK, {
             "ok": True,
-            "printer": self.server.printer or default_printer() or "CUPS default",
-            "settings": self.server.settings,
+            "printer": printer,
+            "printer_error": printer_error,
+            "settings": sanitized_settings(self.server.settings),
         })
 
     def do_POST(self) -> None:  # noqa: N802
@@ -326,9 +434,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             if self.path == "/v1/settings":
                 self.server.settings = save_settings(payload, self.server.settings_path)
-                self.reply(HTTPStatus.OK, {"ok": True, "settings": self.server.settings})
+                printer_name, _ = detected_printer_name(self.server.printer)
+                threading.Thread(target=report_agent_heartbeat, args=(self.server.settings, printer_name), daemon=True).start()
+                self.reply(HTTPStatus.OK, {"ok": True, "settings": sanitized_settings(self.server.settings)})
                 return
-            document = build_escpos_document(payload, self.server.settings)
+            document = decode_print_document(payload)
             printer = send_to_printer(document, self.server.printer)
             self.reply(HTTPStatus.OK, {"ok": True, "printer": printer})
         except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
@@ -346,19 +456,24 @@ def main() -> int:
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
     if args.test:
-        sample = {"receipt_id": "TEST-LOCAL-PRINT", "title": "TEST CHEKI", "brand": "DIAMOND EDUCATION", "lines": [{"label": "Printer", "value": "Local agent ready"}], "totals": []}
-        print(f"Test sent to: {send_to_printer(build_escpos_document(sample), args.printer)}")
+        diagnostic = ESC_INIT + ESC_ALIGN_CENTER + b"DIAMOND PRINTER TEST\n" + ESC_ALIGN_LEFT + b"\n" + ESC_CUT
+        print(f"Test sent to: {send_to_printer(diagnostic, args.printer)}")
         return 0
     httpd = ThreadingHTTPServer((HOST, args.port), AgentHandler)
     httpd.printer = args.printer.strip()
     httpd.settings_path = default_settings_path()
     httpd.settings = load_settings(httpd.settings_path)
+    httpd.heartbeat_stop = threading.Event()
+    printer_name, _ = detected_printer_name(httpd.printer)
+    report_agent_heartbeat(httpd.settings, printer_name)
+    threading.Thread(target=agent_heartbeat_loop, args=(httpd,), name="agent heartbeat", daemon=True).start()
     print(f"Diamond Print Agent ready on http://{HOST}:{args.port} (printer: {httpd.printer or 'default'})")
     try:
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
     finally:
+        httpd.heartbeat_stop.set()
         httpd.server_close()
     return 0
 

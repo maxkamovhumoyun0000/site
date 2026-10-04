@@ -22,6 +22,7 @@ import { SubjectCoursesGrid } from "./ui/subject-courses-grid";
 import { getCourseGroups, toAssetUrl, type PublicCourse } from "./public-data";
 import { AssetIcon, GIFT_CHEST_ICON_SRC, LogoMark, SectionTitle, StatCard } from "./ui/primitives";
 import { LanguageIconButton, ThemeToggleButton } from "./ui/theme-provider";
+import { DeveloperWorkspace } from "./ui/developer-workspace";
 import { resolveLocale, sectionLabelByLocale, t, useWebT, useWebLocale, type Locale, WebLocaleProvider } from "./ui/web-i18n";
 import {
   StudentArena,
@@ -70,8 +71,7 @@ import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
-import { localPrintAgentHealth, printLocalAgentTestReceipt, printReceiptWithLocalAgent, saveLocalPrintAgentSettings, type LocalPrintAgentSettings } from "./ui/local-print-agent";
-import { DeveloperWorkspace as FullDeveloperWorkspace } from "./ui/developer-workspace";
+import { localPrintAgentHealth, printReceiptWithLocalAgent, type ServerPrintDocument } from "./ui/local-print-agent";
 function Settings3DToggle() {
   const tt = useWebT();
   const [isOff, setIsOff] = useState(false);
@@ -132,32 +132,6 @@ function escapeReceiptHtml(value: unknown): string {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
   }[char] || char));
-}
-
-function receiptPrintHtml(receipt: GenericRow): string {
-  const snapshot = (receipt.snapshot || {}) as GenericRow;
-  const isRefund = snapshot.receipt_kind === "refund";
-  const amount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0));
-  const totalPaidAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0));
-  const remainingAmount = new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0));
-  const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
-  const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
-  const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
-  const documentTitle = isRefund ? "QAYTARISH CHEKI" : "TO'LOV CHEKI";
-  const amountLabel = isRefund ? "Qaytarildi" : "Joriy to'lov";
-  const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
-  const branch = String(snapshot.branch_name || "").trim();
-  const branchLabel = branch && branch.toLocaleLowerCase() !== brand.toLocaleLowerCase() && branch.toLocaleLowerCase() !== "diamond education" ? branch : "";
-  const rows: Array<[string, unknown]> = [
-    ["O'quvchi", snapshot.student_name], ["Guruh", snapshot.group_name], ["Fan", snapshot.subject_name],
-    ["O'qituvchi", teachers], ["To'lov turi", paymentType], ["To'lov usuli", method],
-    ["Tasdiqladi", snapshot.confirmed_by_name], ["Sana", snapshot.confirmed_at],
-    ["Chek ID", receipt.receipt_id],
-    ...(isRefund && snapshot.refund_note ? [["Izoh", snapshot.refund_note] as [string, unknown]] : []),
-  ];
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeReceiptHtml(receipt.receipt_id)}</title><style>
-    @page{size:48mm auto;margin:0}html,body{width:48mm;min-height:0;margin:0;padding:0}body{font:9.5px/1.16 Arial,sans-serif;color:#111}.receipt{box-sizing:border-box;width:48mm;margin:0;padding:0 1.5mm}.center{text-align:center}.brand{font-weight:800;font-size:10px;letter-spacing:.1px;word-break:break-word}.rule{border:0;border-top:1px dashed #222;margin:2px 0}.title{font-size:8.5px;font-weight:800}.amount{font-weight:800;font-size:9.5px;display:flex;justify-content:space-between;gap:1mm}.row{margin:2px 0;word-break:break-word}.label{display:block;color:#444;font-size:7px;line-height:1.1;margin-bottom:.2mm}@media screen{body{background:#f3f4f6;padding:12px}.receipt{background:#fff;padding:2mm;box-shadow:0 2px 16px #0002}}
-  </style></head><body><main class="receipt"><div class="center brand">${escapeReceiptHtml(brand)}</div>${branchLabel ? `<div class="center">${escapeReceiptHtml(branchLabel)}</div>` : ""}<hr class="rule"><div class="center title">${escapeReceiptHtml(documentTitle)}</div><hr class="rule">${rows.slice(0,4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}<hr class="rule"><div class="amount"><span>${escapeReceiptHtml(amountLabel)}</span><span>${escapeReceiptHtml(amount)} SO'M</span></div><div class="amount"><span>Jami to'langan</span><span>${escapeReceiptHtml(totalPaidAmount)} SO'M</span></div><div class="amount"><span>Qoldiq</span><span>${escapeReceiptHtml(remainingAmount)} SO'M</span></div><hr class="rule">${rows.slice(4).map(([label,value]) => `<div class="row"><span class="label">${escapeReceiptHtml(label)}</span>${escapeReceiptHtml(value || "-")}</div>`).join("")}</main></body></html>`;
 }
 
 type ApiUser = {
@@ -391,7 +365,21 @@ const RETIRED_ARENA_NOTIFICATION_TYPES = new Set([
   "daily_arena_prestart",
   "group_arena_started",
   "group_arena_questions_ready",
+  "arena_scheduled_soon",
+  "arena_scheduled_started",
+  "arena_daily_join_soon_t10",
+  "arena_prestart",
+  "daily_arena",
 ]);
+
+function isRetiredArenaNotification(type: unknown): boolean {
+  const t = String(type || "").trim().toLowerCase();
+  if (RETIRED_ARENA_NOTIFICATION_TYPES.has(t)) return true;
+  if (t.includes("arena") && (t.includes("daily") || t.includes("scheduled") || t.includes("prestart"))) {
+    return true;
+  }
+  return false;
+}
 type GeneratorJobKind = "vocabulary" | "daily-tests" | "arena" | "bulk";
 type GeneratorJobSnapshot = {
   job_id: string;
@@ -8982,7 +8970,7 @@ function StudentNotifications({ data }: { data: GenericRow }) {
   const tt = useWebT();
   const [notifications, setNotifications] = useState<GenericRow[]>(() =>
     ((data.notifications || []) as GenericRow[]).filter(
-      (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+      (item) => !isRetiredArenaNotification(item.type),
     ),
   );
   const [loading, setLoading] = useState(false);
@@ -8995,7 +8983,7 @@ function StudentNotifications({ data }: { data: GenericRow }) {
     setLoading(true);
     setError("");
     try {
-      const payload = await requestJson<{ items: GenericRow[] }>("/notifications?limit=60", {
+      const payload = await requestJson<{ items: GenericRow[]; unread_count?: number }>("/notifications?limit=60", {
         token,
         signal: controller.signal,
         timeoutMs: 30000,
@@ -9003,7 +8991,7 @@ function StudentNotifications({ data }: { data: GenericRow }) {
       });
       setNotifications(
         (payload.items || []).filter(
-          (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+          (item) => !isRetiredArenaNotification(item.type),
         ),
       );
     } catch (err) {
@@ -9018,37 +9006,83 @@ function StudentNotifications({ data }: { data: GenericRow }) {
     loadNotifications().catch(() => null);
   }, [loadNotifications]);
 
+  const markNotificationRead = async (id: string) => {
+    if (!id) return;
+    try {
+      const token = localStorage.getItem("diamond_token") || "";
+      if (!token) return;
+      await requestJson(`/notifications/${encodeURIComponent(id)}/read`, { method: "POST", token });
+      setNotifications((prev) => prev.map((n) => (String(n.id || "") === id ? { ...n, read: true } : n)));
+    } catch {}
+  };
+
+  const markAllNotificationsRead = async () => {
+    try {
+      const token = localStorage.getItem("diamond_token") || "";
+      if (!token) return;
+      await requestJson("/notifications/read-all", { method: "POST", token });
+      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    } catch {}
+  };
+
   const normalizeNotificationUrl = (url: unknown) => {
     const raw = String(url || "").trim();
     if (raw === "/student/payments") return "/?role=student&section=payments";
     return raw;
   };
 
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
   return (
     <div className="page-stack">
       <section className="panel-card">
         <div className="row-between mb-3 gap-3">
-          {loading ? <span className="chip">{tt("common.loading", "Yuklanmoqda...")}</span> : <span className="chip">{notifications.length}</span>}
-          <button className="btn btn-soft small" type="button" disabled={loading} onClick={() => loadNotifications().catch(() => null)}>
-            {tt("common.refresh", "Yangilash")}
-          </button>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            {loading ? <span className="chip">{tt("common.loading", "Yuklanmoqda...")}</span> : <span className="chip">{notifications.length}</span>}
+            {unreadCount > 0 ? <span className="chip alert">{unreadCount} {tt("notifications.unread", "o'qilmagan")}</span> : null}
+          </div>
+          <div style={{ display: "flex", gap: "8px" }}>
+            {unreadCount > 0 ? (
+              <button className="btn btn-soft small" type="button" onClick={() => markAllNotificationsRead().catch(() => null)}>
+                {tt("common.markAllRead", "Barchasini o‘qilgan deb belgilash")}
+              </button>
+            ) : null}
+            <button className="btn btn-soft small" type="button" disabled={loading} onClick={() => loadNotifications().catch(() => null)}>
+              {tt("common.refresh", "Yangilash")}
+            </button>
+          </div>
         </div>
         {error ? <p className="error-box">{error}</p> : null}
         {notifications.length ? (
-          notifications.slice(0, 20).map((note: GenericRow, idx: number) => (
-            <div className="row-between bordered" key={`${note.id || "n"}-${idx}`}>
-              <div>
-                <strong>{note.title || tt("section.notifications", "Bildirishnomalar")}</strong>
-                <p>{note.message || "-"}</p>
-                {String(note.button_url || "").trim() ? (
-                  <a className="btn btn-soft small" href={normalizeNotificationUrl(note.button_url)}>
-                    {String(note.button_text || tt("common.open", "Ochish"))}
-                  </a>
-                ) : null}
+          notifications.slice(0, 30).map((note: GenericRow, idx: number) => {
+            const noteId = String(note.id || "");
+            return (
+              <div
+                className={`row-between bordered ${note.read ? "read" : "unread"}`}
+                key={`${note.id || "n"}-${idx}`}
+                onClick={() => { if (!note.read && noteId) markNotificationRead(noteId).catch(() => null); }}
+                style={{ cursor: "pointer", opacity: note.read ? 0.75 : 1.0 }}
+              >
+                <div>
+                  <strong>{note.title || tt("section.notifications", "Bildirishnomalar")}</strong>
+                  <p>{note.message || "-"}</p>
+                  {String(note.button_url || "").trim() ? (
+                    <a
+                      className="btn btn-soft small"
+                      href={normalizeNotificationUrl(note.button_url)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (!note.read && noteId) markNotificationRead(noteId).catch(() => null);
+                      }}
+                    >
+                      {String(note.button_text || tt("common.open", "Ochish"))}
+                    </a>
+                  ) : null}
+                </div>
+                <small>{formatWhen(note.created_at)}</small>
               </div>
-              <small>{formatWhen(note.created_at)}</small>
-            </div>
-          ))
+            );
+          })
         ) : (
           <p>{tt("notifications.empty", "Hozircha bildirishnoma yo'q.")}</p>
         )}
@@ -16144,6 +16178,7 @@ function AdminSection({
   const paymentsTransactionsReqRef = useRef(0);
   const paymentsStatsAbortRef = useRef<AbortController | null>(null);
   const paymentsStatsReqRef = useRef(0);
+  const paymentConfirmRequestRef = useRef<{ signature: string; key: string } | null>(null);
   const adminUsersAbortRef = useRef<AbortController | null>(null);
   const adminUsersReqRef = useRef(0);
   const groupRosterAbortRef = useRef<AbortController | null>(null);
@@ -16186,11 +16221,6 @@ function AdminSection({
   const deferredPaymentsTeacherFilter = useDeferredValue(paymentsTeacherFilter);
   const deferredPaymentsGroupQuery = useDeferredValue(paymentsGroupQuery);
   const deferredPaymentsStatsSearch = useDeferredValue(paymentsStatsSearch);
-  // The student grid is server-backed.  Debouncing text inputs prevents an
-  // expensive aggregate query for every keypress while keeping the explicit
-  // Search button and Enter key immediate.
-  const debouncedPaymentsStudentSearch = useDebouncedValue(paymentsStudentSearch, 360);
-  const debouncedPaymentsStudentTeacher = useDebouncedValue(paymentsTeacherFilter, 360);
   const debouncedDpointHistorySearch = useDebouncedValue(dpointHistorySearch, 350);
 
   async function onAdminCall(
@@ -16836,7 +16866,36 @@ function AdminSection({
     }
   }
 
-  async function printReceipt(receipt: GenericRow, targetWindow?: Window | null) {
+  async function openServerReceiptPdfForPrint(receipt: GenericRow, token: string, fallbackPopup: Window | null) {
+    const receiptId = String(receipt.receipt_id || "").trim();
+    const refundId = Number(receipt.refund_id || 0);
+    const pdfPath = refundId > 0
+      ? `/admin/payments/refunds/${refundId}/receipt/pdf`
+      : `/admin/receipts/${encodeURIComponent(receiptId)}/pdf`;
+    const response = await fetch(`${API_BASE}${pdfPath}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error("Server chek PDFini tayyorlay olmadi");
+    const objectUrl = URL.createObjectURL(await response.blob());
+    const popup = fallbackPopup || window.open("", "_blank");
+    if (!popup) {
+      URL.revokeObjectURL(objectUrl);
+      throw new Error("Print oynasi bloklangan");
+    }
+    popup.opener = null;
+    popup.document.open();
+    popup.document.write(`<!doctype html><html><head><title>${escapeReceiptHtml(receiptId)}</title><style>html,body,iframe{width:100%;height:100%;margin:0;border:0;overflow:hidden}</style></head><body><iframe title="Chek" src="${objectUrl}"></iframe></body></html>`);
+    popup.document.close();
+    const frame = popup.document.querySelector("iframe");
+    frame?.addEventListener("load", () => {
+      popup.focus();
+      window.setTimeout(() => {
+        frame.contentWindow?.focus();
+        frame.contentWindow?.print();
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+      }, 150);
+    }, { once: true });
+  }
+
+  async function printReceipt(receipt: GenericRow, fallbackPopup: Window | null = null) {
     const token = localStorage.getItem("diamond_token");
     const receiptId = String(receipt.receipt_id || "").trim();
     if (!token || !receiptId) return;
@@ -16845,20 +16904,20 @@ function AdminSection({
       ? `/admin/payments/refunds/${refundId}/receipt/print`
       : `/admin/receipts/${encodeURIComponent(receiptId)}/print`;
     try {
-      await requestJson(printPath, { method: "POST", token, timeoutMs: 15000 });
-      const localPrint = await printReceiptWithLocalAgent(receipt);
-      if (localPrint.printed) {
-        targetWindow?.close();
+      const localAgent = await localPrintAgentHealth();
+      const lineWidth = Number(localAgent.settings?.line_width || 35);
+      const serverDocument = await requestJson<ServerPrintDocument>(printPath, {
+        method: "POST",
+        token,
+        timeoutMs: 15000,
+        body: { line_width: lineWidth },
+      });
+      const localResult = await printReceiptWithLocalAgent(serverDocument);
+      if (localResult.printed) {
+        fallbackPopup?.close();
         return;
       }
-      const popup = targetWindow || window.open("", "_blank");
-      if (!popup) throw new Error("Print oynasi bloklangan");
-      popup.opener = null;
-      popup.document.open();
-      popup.document.write(receiptPrintHtml(receipt));
-      popup.document.close();
-      popup.focus();
-      window.setTimeout(() => popup.print(), 150);
+      await openServerReceiptPdfForPrint(receipt, token, fallbackPopup);
     } catch (error) {
       const normalized = normalizeNetworkError(error);
       setPaymentsGeneralError(String(normalized.message || "Chekni chop etib bo'lmadi"));
@@ -16986,10 +17045,7 @@ function AdminSection({
     }
   }
 
-  const loadPaymentsStudentsList = useCallback(async (
-    pageOverride?: number,
-    immediateFilters?: { search?: string; teacher?: string },
-  ) => {
+  const loadPaymentsStudentsList = useCallback(async (pageOverride?: number) => {
     const token = localStorage.getItem("diamond_token");
     if (!token) return;
     
@@ -17014,10 +17070,8 @@ function AdminSection({
     params.set("limit", String(limit));
     params.set("offset", String(offset));
     
-    const studentSearch = String(immediateFilters?.search ?? debouncedPaymentsStudentSearch).trim();
-    const teacherSearch = String(immediateFilters?.teacher ?? debouncedPaymentsStudentTeacher).trim();
-    if (studentSearch) {
-      params.set("q", studentSearch);
+    if (paymentsStudentSearch.trim()) {
+      params.set("q", paymentsStudentSearch.trim());
     }
     if (paymentsStatusFilter !== "all") {
       params.set("status", paymentsStatusFilter);
@@ -17025,8 +17079,8 @@ function AdminSection({
     if (paymentsSubjectFilter !== "all") {
       params.set("subject", paymentsSubjectFilter);
     }
-    if (teacherSearch) {
-      params.set("teacher_name", teacherSearch);
+    if (paymentsTeacherFilter.trim()) {
+      params.set("teacher_name", paymentsTeacherFilter.trim());
     }
     
     try {
@@ -17056,10 +17110,10 @@ function AdminSection({
   }, [
     paymentsMonthFilter,
     paymentsStudentPage,
-    debouncedPaymentsStudentSearch,
+    paymentsStudentSearch,
     paymentsStatusFilter,
     paymentsSubjectFilter,
-    debouncedPaymentsStudentTeacher,
+    paymentsTeacherFilter,
   ]);
 
   async function loadPaymentsStats() {
@@ -17271,20 +17325,6 @@ function AdminSection({
     }) || null;
   }
 
-  function getAttendanceRefundableAmount() {
-    const transaction = getRefundablePaymentTransaction();
-    if (!transaction) return 0;
-    const selectedGroup = Number(paymentsConfirmDraft.groupId || paymentsSelectedGroupId || 0);
-    const selectedYm = String(paymentsConfirmDraft.ym || paymentsMonthFilter || "").trim();
-    const months = ((paymentsDetail?.overview?.months || []) as GenericRow[]);
-    const month = months.find((row) => String(row.ym || "") === selectedYm) || ((paymentsDetail?.overview?.current_month || {}) as GenericRow);
-    const group = ((month?.items || []) as GenericRow[]).find((row) => Number(row.group_id || 0) === selectedGroup) || null;
-    const excusedLessons = Number(group?.sababli_lessons || group?.excused_lessons || 0);
-    const attendanceCredit = Math.max(0, Number(group?.overpayment_amount || 0));
-    const transactionBalance = Math.max(0, Number(transaction.payment_dcoin_amount || transaction.paid_amount || 0) - Number(transaction.refunded_amount || 0));
-    return excusedLessons > 0 ? Math.min(attendanceCredit, transactionBalance) : 0;
-  }
-
   async function openPaymentCalculation(studentIdArg?: number) {
     const token = localStorage.getItem("diamond_token");
     const selectedStudentId = Number(studentIdArg || paymentsSelectedStudentId || 0);
@@ -17320,10 +17360,25 @@ function AdminSection({
     if (!userId || !groupId || !monthKey) return;
     const amountNumber = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) return;
-    // Opening synchronously from the click keeps browser popup protection from
-    // blocking the receipt.  The document is populated only after the server
-    // has issued the immutable receipt.
-    const autoPrintWindow = window.open("", "_blank");
+    const requestSignature = JSON.stringify({
+      userId,
+      groupId,
+      monthKey,
+      amount: Number(amountNumber.toFixed(2)),
+      method: paymentsConfirmDraft.paymentMethod,
+      cardId: Number(paymentsConfirmDraft.cardId || 0),
+      note: String(paymentsConfirmDraft.note || "").trim(),
+      isAdvance: Boolean(paymentsConfirmDraft.isAdvance),
+    });
+    const requestKey = paymentConfirmRequestRef.current?.signature === requestSignature
+      ? paymentConfirmRequestRef.current.key
+      : (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `payment-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    paymentConfirmRequestRef.current = { signature: requestSignature, key: requestKey };
+    // Reserve the fallback window while this is still a direct click. Browsers
+    // otherwise block a print window opened after the confirmation request.
+    const printPopup = window.open("", "_blank");
     setPaymentsConfirmBusy(true);
     try {
       const result = await onAdminCall(
@@ -17336,13 +17391,22 @@ function AdminSection({
           card_id: paymentsConfirmDraft.paymentMethod === "card" && Number(paymentsConfirmDraft.cardId || 0) > 0 ? Number(paymentsConfirmDraft.cardId) : null,
           note: String(paymentsConfirmDraft.note || "").trim() || null,
           is_advance: Boolean(paymentsConfirmDraft.isAdvance),
+          idempotency_key: requestKey,
         },
         "POST",
         "Payment confirmed",
       );
       if (!result) {
-        autoPrintWindow?.close();
+        printPopup?.close();
         return;
+      }
+      paymentConfirmRequestRef.current = null;
+      const receipt = (result.receipt || null) as GenericRow | null;
+      if (receipt?.receipt_id) {
+        setReceiptPreview(receipt);
+        await printReceipt(receipt, printPopup);
+      } else {
+        printPopup?.close();
       }
       const returnedDebt = Number(result.debt_amount || 0);
       setPaymentsConfirmDraft((prev) => ({
@@ -17350,13 +17414,6 @@ function AdminSection({
         amount: returnedDebt > 0 ? returnedDebt.toFixed(2) : "",
         note: "",
       }));
-      const receipt = (result.receipt || null) as GenericRow | null;
-      if (receipt?.receipt_id) {
-        setReceiptPreview(receipt);
-        await printReceipt(receipt, autoPrintWindow);
-      } else {
-        autoPrintWindow?.close();
-      }
       void Promise.allSettled([
         loadPaymentsTransactions(paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined),
         loadPaymentsStats(),
@@ -17375,20 +17432,16 @@ function AdminSection({
       return;
     }
     const transactionId = Number(transaction.id || 0);
-    const refundableAmount = getAttendanceRefundableAmount();
+    const refundableAmount = Math.max(0, Number(transaction.payment_dcoin_amount || transaction.paid_amount || 0) - Number(transaction.refunded_amount || 0));
     const draftAmount = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
-    const amount = Number.isFinite(draftAmount) && draftAmount > 0 ? draftAmount : refundableAmount;
+    const amount = Number.isFinite(draftAmount) && draftAmount > 0 ? Math.min(draftAmount, refundableAmount) : refundableAmount;
     const note = String(paymentsConfirmDraft.note || "").trim();
     if (!note) {
       emitUiToast("Refund uchun izoh majburiy.", "error");
       return;
     }
-    if (amount - refundableAmount > 1e-9) {
-      emitUiToast("Qaytarish summasi sababli davomatdan hosil bo'lgan summadan oshmasligi kerak.", "error");
-      return;
-    }
     if (!transactionId || amount <= 0) return;
-    const autoPrintWindow = window.open("", "_blank");
+    const printPopup = window.open("", "_blank");
     setPaymentsRefundBusy(true);
     try {
       const result = await onAdminCall(
@@ -17398,16 +17451,16 @@ function AdminSection({
         "Refund completed",
       );
       if (!result) {
-        autoPrintWindow?.close();
+        printPopup?.close();
         return;
       }
       setPaymentsConfirmDraft((prev) => ({ ...prev, amount: "", note: "" }));
       const refundId = Number(result.refund_id || 0);
       const receipt = refundId > 0 ? await openRefundReceipt(refundId) : null;
       if (receipt?.receipt_id) {
-        await printReceipt(receipt, autoPrintWindow);
+        await printReceipt(receipt, printPopup);
       } else {
-        autoPrintWindow?.close();
+        printPopup?.close();
       }
       await Promise.allSettled([
         loadPaymentsTransactions(paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined),
@@ -17666,7 +17719,7 @@ function AdminSection({
     if (section !== "payments") return;
     const timer = window.setTimeout(() => {
       loadPaymentsStudentsList().catch(() => null);
-    }, 360);
+    }, 100);
     return () => window.clearTimeout(timer);
   }, [section, loadPaymentsStudentsList]);
 
@@ -19163,7 +19216,9 @@ function AdminSection({
     const paymentAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     const canConfirmPayment = Number.isFinite(paymentAmountForConfirm) && paymentAmountForConfirm > 0;
     const refundableTxForConfirm = getRefundablePaymentTransaction();
-    const refundableAmountForConfirm = getAttendanceRefundableAmount();
+    const refundableAmountForConfirm = refundableTxForConfirm
+      ? Math.max(0, Number(refundableTxForConfirm.payment_dcoin_amount || refundableTxForConfirm.paid_amount || 0) - Number(refundableTxForConfirm.refunded_amount || 0))
+      : 0;
     const maxChartValue = Math.max(1, ...normalizedChartSeries.map((row) => Math.max(Number(row.paid_amount || 0), Number(row.debt_amount || 0))));
     const piePaid = Math.max(0, Number(chartPie.paid_amount || 0));
     const pieDebt = Math.max(0, Number(chartPie.debt_amount || 0));
@@ -19278,7 +19333,7 @@ function AdminSection({
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   setPaymentsStudentPage(1);
-                  loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
+                  loadPaymentsStudentsList(1).catch(() => null);
                 }
               }}
               placeholder={pt("searchPlaceholder", "Student ismi yoki telefon...")}
@@ -19315,7 +19370,7 @@ function AdminSection({
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   setPaymentsStudentPage(1);
-                  loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
+                  loadPaymentsStudentsList(1).catch(() => null);
                 }
               }}
               placeholder={pt("teacherName", "O'qituvchi ismi")}
@@ -19326,10 +19381,7 @@ function AdminSection({
             <button
               type="button"
               className="btn btn-primary"
-              onClick={() => {
-                setPaymentsStudentPage(1);
-                loadPaymentsStudentsList(1, { search: paymentsStudentSearch, teacher: paymentsTeacherFilter }).catch(() => null);
-              }}
+              onClick={() => { setPaymentsStudentPage(1); loadPaymentsStudentsList(1).catch(() => null); }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
               {tt("common.search", "Qidirish")}
@@ -19344,7 +19396,7 @@ function AdminSection({
                   setPaymentsSubjectFilter("all");
                   setPaymentsTeacherFilter("");
                   setPaymentsStudentPage(1);
-                  setTimeout(() => { loadPaymentsStudentsList(1, { search: "", teacher: "" }).catch(() => null); }, 0);
+                  setTimeout(() => { loadPaymentsStudentsList(1).catch(() => null); }, 0);
                 }}
               >
                 {tt("common.clear", "Tozalash")}
@@ -19988,7 +20040,6 @@ function AdminSection({
                       const activeLessons = Number(row.membership_lessons || row.student_active_lesson_count || row.active_lessons || 0);
                       const excusedLessons = Number(row.sababli_lessons || row.excused_lessons || 0);
                       const pricePerLesson = Number(row.price_per_lesson || 0);
-                      const attendanceRefundable = excusedLessons > 0 ? Math.min(overpayAmount, paidAmount) : 0;
                       const isSelected = Number(paymentsConfirmDraft.groupId || 0) === groupId;
                       const statusClass = debtAmount > 0 ? "pmc-group-debt" : overpayAmount > 0 ? "pmc-group-overpay" : "pmc-group-paid";
                       return (
@@ -20070,12 +20121,6 @@ function AdminSection({
                               <span className="pmc-stat-label">{pt("groupCard.paid", "To'langan")}</span>
                               <span className="pmc-stat-value pmc-stat-paid">{paidAmount.toFixed(2)}</span>
                             </div>
-                            {attendanceRefundable > 0 && (
-                              <div className="pmc-stat">
-                                <span className="pmc-stat-label">Qaytarilishi mumkin (sababli davomat)</span>
-                                <span className="pmc-stat-value pmc-stat-excused">{attendanceRefundable.toFixed(2)}</span>
-                              </div>
-                            )}
                           </div>
 
                           {isSelected && (
@@ -20163,7 +20208,7 @@ function AdminSection({
                     <div className="pmc-debt-chips">
                       <span className="pmc-chip pmc-chip-debt">{pt("remainingDebt", "Qolgan qarz")}: <strong>{remainingForConfirm.toFixed(2)}</strong></span>
                       {refundableAmountForConfirm > 0 && (
-                        <span className="pmc-chip pmc-chip-refund">Qaytarilishi mumkin (sababli davomat): <strong>{refundableAmountForConfirm.toFixed(2)}</strong><small> Qaytarilmasa, keyingi oyga o'tadi.</small></span>
+                        <span className="pmc-chip pmc-chip-refund">{pt("refundable", "Qaytarilishi mumkin")}: <strong>{refundableAmountForConfirm.toFixed(2)}</strong></span>
                       )}
                     </div>
                     <div className="pmc-action-buttons">
@@ -20215,11 +20260,10 @@ function AdminSection({
                   <hr />
                   <p><b>O&apos;quvchi:</b> {snapshot.student_name || "-"}</p>
                   <p><b>Guruh:</b> {snapshot.group_name || "-"}</p>
-                  <p><b>Fan:</b> {snapshot.subject_name || "-"}</p>
+                  <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
                   <p><b>O&apos;qituvchi:</b> {teachers}</p>
-                  <p className="text-base font-black"><b>{isRefund ? "Qaytarildi" : "Joriy to'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
-                  <p className="text-base font-black"><b>Jami to&apos;langan:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.total_paid_amount ?? snapshot.amount ?? 0))} so&apos;m</p>
-                  <p className="text-base font-black"><b>Qoldiq:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>{isRefund ? "Qaytarilgan summa" : "To'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  <p className="text-base font-black"><b>Qolgan qarz:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
                   <p><b>To&apos;lov turi:</b> {paymentType}</p>
                   <p><b>To&apos;lov usuli:</b> {method}</p>
                   <p><b>Tasdiqladi:</b> {snapshot.confirmed_by_name || "-"}</p>
@@ -20282,15 +20326,28 @@ function AdminSection({
                         const refundId = Number(row.refund_id || 0);
                         const isRefundRow = String(row.record_type || "") === "refund" && refundId > 0;
                         const paymentId = Number(row.id || 0);
-                        return (isRefundRow || paymentId > 0) ? (
+                        return <div className="button-grid inline">
                           <button
                             className="btn btn-soft small"
-                            disabled={receiptBusy}
-                            onClick={() => (isRefundRow ? openRefundReceipt(refundId) : openPaymentReceipt(paymentId)).catch(() => null)}
+                            onClick={() => {
+                              const txUserId = Number(row.user_id || 0);
+                              if (!txUserId) return;
+                              setPaymentsSelectedStudentId(txUserId);
+                              openPaymentCalculation(txUserId).catch(() => null);
+                            }}
                           >
-                            {receiptBusy ? "..." : isRefundRow ? "Qaytarish cheki" : "Chek"}
+                            {pt("openDetail", "Batafsil")}
                           </button>
-                        ) : <span>-</span>;
+                          {(isRefundRow || paymentId > 0) ? (
+                            <button
+                              className="btn btn-soft small"
+                              disabled={receiptBusy}
+                              onClick={() => (isRefundRow ? openRefundReceipt(refundId) : openPaymentReceipt(paymentId)).catch(() => null)}
+                            >
+                              {receiptBusy ? "..." : isRefundRow ? "Qaytarish cheki" : "Chek"}
+                            </button>
+                          ) : null}
+                        </div>;
                       })()}
                     </td>
                   </tr>
@@ -21458,24 +21515,14 @@ function systemBytes(value: unknown) {
   return `${(bytes / (1024 ** (index + 1))).toFixed(index >= 2 ? 1 : 0)} ${units[index]}`;
 }
 
-function systemUptime(value: unknown, tt: (key: string, fallback?: string) => string) {
+function systemUptime(value: unknown) {
   const seconds = Math.max(0, Math.floor(Number(value || 0)));
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
-  return days
-    ? tt("developer.metrics.uptimeDays", "{days} kun {hours} soat").replace("{days}", String(days)).replace("{hours}", String(hours))
-    : tt("developer.metrics.uptimeHours", "{hours} soat {minutes} daqiqa").replace("{hours}", String(hours)).replace("{minutes}", String(Math.floor((seconds % 3600) / 60)));
-}
-
-function systemAdviceText(tt: (key: string, fallback?: string) => string, code: unknown, fallback: unknown) {
-  const known = ["healthy", "disk", "memory", "cpu", "swap"];
-  const safeCode = known.includes(String(code)) ? String(code) : "healthy";
-  return tt(`developer.metrics.advice.${safeCode}`, String(fallback || ""));
+  return days ? `${days} kun ${hours} soat` : `${hours} soat ${Math.floor((seconds % 3600) / 60)} daqiqa`;
 }
 
 function ServerStatusDashboard() {
-  const tt = useWebT();
-  const locale = useWebLocale();
   const [payload, setPayload] = useState<GenericRow | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -21492,11 +21539,11 @@ function ServerStatusDashboard() {
       setPayload(result || null);
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : tt("developer.metrics.loadError", "Server holati yuklanmadi."));
+      setError(loadError instanceof Error ? loadError.message : "Server holati yuklanmadi.");
     } finally {
       setLoading(false);
     }
-  }, [tt]);
+  }, []);
 
   useEffect(() => {
     load();
@@ -21506,26 +21553,25 @@ function ServerStatusDashboard() {
 
   const metrics = (payload?.metrics || {}) as GenericRow;
   const cards = [
-    { label: "CPU", value: `${Number(metrics.cpu_percent || 0).toFixed(1)}%`, detail: `${metrics.cpu_cores || 0} ${tt("developer.metrics.cores", "yadro")} · load ${Number(metrics.load_1 || 0).toFixed(2)}`, tone: "asc-indigo" },
-    { label: "RAM", value: `${Number(metrics.memory_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.memory_available_bytes)} ${tt("developer.metrics.free", "bo'sh")}`, tone: "asc-cyan" },
-    { label: "Disk", value: `${Number(metrics.disk_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.disk_free_bytes)} ${tt("developer.metrics.free", "bo'sh")}`, tone: "asc-emerald" },
-    { label: "Swap", value: `${Number(metrics.swap_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.swap_used_bytes)} ${tt("developer.metrics.used", "ishlatilgan")}`, tone: "asc-amber" },
+    { label: "CPU", value: `${Number(metrics.cpu_percent || 0).toFixed(1)}%`, detail: `${metrics.cpu_cores || 0} yadro · load ${Number(metrics.load_1 || 0).toFixed(2)}`, tone: "asc-indigo" },
+    { label: "RAM", value: `${Number(metrics.memory_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.memory_available_bytes)} bo'sh`, tone: "asc-cyan" },
+    { label: "Disk", value: `${Number(metrics.disk_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.disk_free_bytes)} bo'sh`, tone: "asc-emerald" },
+    { label: "Swap", value: `${Number(metrics.swap_percent || 0).toFixed(1)}%`, detail: `${systemBytes(metrics.swap_used_bytes)} ishlatilgan`, tone: "asc-amber" },
   ];
   const lastPressure = payload?.last_pressure as GenericRow | null | undefined;
   const pressureAt = lastPressure?.captured_at
-    ? new Intl.DateTimeFormat(locale === "ru" ? "ru-RU" : locale === "en" ? "en-US" : "uz-UZ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(lastPressure.captured_at)))
-    : tt("developer.metrics.noPressure", "Hozircha yuqori yuklama qayd etilmadi");
-  const history = ((payload?.history || []) as GenericRow[]).slice(0, 48).reverse();
+    ? new Intl.DateTimeFormat("uz-UZ", { dateStyle: "medium", timeStyle: "short" }).format(new Date(String(lastPressure.captured_at)))
+    : "Hozircha yuqori yuklama qayd etilmadi";
 
   return (
     <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">{tt("developer.metrics.kicker", "Live monitoring")}</p>
-          <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.metrics.title", "Server holati")}</h2>
-          <p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.")}</p>
+          <p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Live monitoring</p>
+          <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Server holati</h2>
+          <p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.</p>
         </div>
-        <button type="button" className="btn btn-soft small" onClick={() => load()} disabled={loading}>{loading ? tt("developer.metrics.refreshing", "Yangilanmoqda…") : tt("developer.metrics.refresh", "Yangilash")}</button>
+        <button type="button" className="btn btn-soft small" onClick={() => load()} disabled={loading}>{loading ? "Yangilanmoqda…" : "Yangilash"}</button>
       </div>
       {error ? <p className="rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
       {payload ? <>
@@ -21536,25 +21582,24 @@ function ServerStatusDashboard() {
         </div>
         <div className="grid gap-3 lg:grid-cols-3">
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.loadAndUptime", "Yuklama va ishlash vaqti")}</strong>
-            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{tt("developer.metrics.load", "1 / 5 / 15 min")}: <b>{Number(metrics.load_1 || 0).toFixed(2)} / {Number(metrics.load_5 || 0).toFixed(2)} / {Number(metrics.load_15 || 0).toFixed(2)}</b></p>
-            <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">{tt("developer.metrics.uptime", "Uptime")}: <b>{systemUptime(metrics.uptime_seconds, tt)}</b></p>
+            <strong className="text-sm text-navy-900 dark:text-white">Yuklama va ishlash vaqti</strong>
+            <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">1 / 5 / 15 min: <b>{Number(metrics.load_1 || 0).toFixed(2)} / {Number(metrics.load_5 || 0).toFixed(2)} / {Number(metrics.load_15 || 0).toFixed(2)}</b></p>
+            <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Uptime: <b>{systemUptime(metrics.uptime_seconds)}</b></p>
           </div>
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.lastPressure", "Oxirgi yuqori yuklama")}</strong>
+            <strong className="text-sm text-navy-900 dark:text-white">Oxirgi yuqori yuklama</strong>
             <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{pressureAt}</p>
-            {lastPressure?.causes?.length ? <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">{tt("developer.metrics.cause", "Sabab")}: {lastPressure.causes.join(", ").toUpperCase()}</p> : null}
+            {lastPressure?.causes?.length ? <p className="mt-1 text-xs font-bold text-amber-700 dark:text-amber-300">Sabab: {lastPressure.causes.join(", ").toUpperCase()}</p> : null}
           </div>
           <div className="rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]">
-            <strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.recommendation", "Tavsiya")}</strong>
+            <strong className="text-sm text-navy-900 dark:text-white">Tavsiya</strong>
             <ul className="mt-2 space-y-1 text-sm text-ink-600 dark:text-slate-300">
-              {((payload.recommendations || []) as GenericRow[]).map((item, index) => <li key={`${item.code}-${index}`}>• {systemAdviceText(tt, item.code, item.action)}</li>)}
+              {((payload.recommendations || []) as GenericRow[]).map((item, index) => <li key={`${item.code}-${index}`}>• {item.action}</li>)}
             </ul>
           </div>
         </div>
-        <div className="mt-3 rounded-2xl border border-line bg-surface-soft p-3 dark:border-white/10 dark:bg-white/[0.04]"><div className="flex items-center justify-between gap-2"><strong className="text-sm text-navy-900 dark:text-white">{tt("developer.metrics.history", "So‘nggi yuklama tarixi")}</strong><span className="text-[11px] font-medium text-ink-500 dark:text-slate-400">{tt("developer.metrics.historyHint", "CPU / RAM / Disk")}</span></div>{history.length ? <div className="mt-3 flex h-20 items-end gap-1" aria-label={tt("developer.metrics.history", "So‘nggi yuklama tarixi")}>{history.map((sample, index) => { const level = Math.max(Number(sample.cpu_percent || 0), Number(sample.memory_percent || 0), Number(sample.disk_percent || 0)); return <span key={`${sample.captured_at}-${index}`} title={`${formatWhen(sample.captured_at)} · ${level.toFixed(1)}%`} className="min-w-[3px] flex-1 rounded-t bg-cyan-500/70 dark:bg-cyan-300/70" style={{ height: `${Math.max(4, Math.min(100, level))}%` }} />; })}</div> : <p className="mt-2 text-sm text-ink-500 dark:text-slate-400">{tt("developer.metrics.historyEmpty", "Tarix uchun namuna yig‘ilmoqda.")}</p>}</div>
-        <p className="mt-3 text-[11px] font-medium text-ink-500 dark:text-slate-400">{tt("developer.metrics.samplingNote", "Ko‘rsatkichlar har 5 daqiqada avtomatik saqlanadi; tarix faqat agregat resurs ko‘rsatkichlaridan iborat.")}</p>
-      </> : !loading && !error ? <p className="text-sm text-ink-500 dark:text-slate-400">{tt("developer.metrics.empty", "Ma’lumot topilmadi.")}</p> : null}
+        <p className="mt-3 text-[11px] font-medium text-ink-500 dark:text-slate-400">{payload.sampling_note} Tarix faqat agregat resurs ko‘rsatkichlarini saqlaydi; foydalanuvchi yoki log ma’lumoti saqlanmaydi.</p>
+      </> : !loading && !error ? <p className="text-sm text-ink-500">Ma’lumot topilmadi.</p> : null}
     </section>
   );
 }
@@ -21567,7 +21612,6 @@ function datetimeLocalValue(value: unknown) {
 }
 
 function DeveloperMaintenancePanel() {
-  const tt = useWebT();
   const [settings, setSettings] = useState<GenericRow>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -21580,11 +21624,11 @@ function DeveloperMaintenancePanel() {
       setSettings(result || {});
       setError("");
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : tt("developer.maintenance.loadError", "Maintenance sozlamalari yuklanmadi."));
+      setError(loadError instanceof Error ? loadError.message : "Maintenance sozlamalari yuklanmadi.");
     } finally {
       setLoading(false);
     }
-  }, [tt]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
   const update = (role: "student" | "teacher", key: string, value: unknown) => {
@@ -21602,14 +21646,12 @@ function DeveloperMaintenancePanel() {
           maintenance_starts_at: item.starts_at ? new Date(String(item.starts_at)).toISOString() : "",
           maintenance_ends_at: item.ends_at ? new Date(String(item.ends_at)).toISOString() : "",
           maintenance_message_uz: String(item.message_uz || ""),
-          maintenance_message_ru: String(item.message_ru || ""),
-          maintenance_message_en: String(item.message_en || ""),
         };
       }
       const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
       setSettings(result || {});
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : tt("developer.maintenance.saveError", "Saqlashda xatolik."));
+      setError(saveError instanceof Error ? saveError.message : "Saqlashda xatolik.");
     } finally {
       setSaving(false);
     }
@@ -21617,190 +21659,23 @@ function DeveloperMaintenancePanel() {
 
   return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
     <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">{tt("developer.maintenance.kicker", "Mobile control")}</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.maintenance.title", "Rejali maintenance")}</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.maintenance.subtitle", "Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.")}</p></div>
-      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button>
+      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-cyan-600 dark:text-cyan-300">Mobile control</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">Rejali maintenance</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">Boshlanish/tugash vaqtini qurilmangizdagi local vaqt bilan belgilang (Toshkent uchun UTC+5). Toggle o‘chiq bo‘lsa ilova to‘xtamaydi.</p></div>
+      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? "Saqlanmoqda…" : "Saqlash"}</button>
     </div>
-    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
+    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
     <div className="grid gap-4 lg:grid-cols-2">
       {(["student", "teacher"] as const).map((role) => {
         const item = (settings[role] || {}) as GenericRow;
-        const title = role === "student" ? `🎓 ${tt("developer.studentApp", "Student App")}` : `👨‍🏫 ${tt("developer.teacherApp", "Teacher App")}`;
+        const title = role === "student" ? "🎓 Student App" : "👨‍🏫 Teacher App";
         return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold text-ink-700 dark:text-slate-200"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> {tt("developer.maintenance.enabled", "Yoqilgan")}</label></div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.starts", "Boshlanish")}<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.ends", "Tugash")}<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label></div>
-          <div className="mt-3 grid gap-3"><p className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.maintenance.messages", "Ilovadagi xabarlar")}</p>{(["uz", "ru", "en"] as const).map((language) => <label key={language} className="block text-xs font-bold text-ink-600 dark:text-slate-300">{tt(`developer.maintenance.language.${language}`, language.toUpperCase())}<textarea value={String(item[`message_${language}`] || "")} onChange={(event) => update(role, `message_${language}`, event.target.value)} maxLength={500} rows={2} placeholder={tt("developer.maintenance.messagePlaceholder", "Rejali texnik ishlar olib borilmoqda.")} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>)}</div>
-          <p className="mt-2 text-xs font-medium text-ink-500 dark:text-slate-400">{tt("developer.status", "Holat")}: {item.active ? tt("developer.maintenance.active", "hozir foydalanuvchilarga ko‘rsatilmoqda") : item.enabled ? tt("developer.maintenance.scheduled", "vaqt kelganda avtomatik yoqiladi") : tt("developer.maintenance.off", "o‘chiq")}</p>
+          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> Yoqilgan</label></div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Boshlanish<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Tugash<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label></div>
+          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">Ilovadagi xabar<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder="Rejali texnik ishlar olib borilmoqda." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label>
+          <p className="mt-2 text-xs font-medium text-ink-500">Holat: {item.active ? "hozir foydalanuvchilarga ko‘rsatilmoqda" : item.enabled ? "vaqt kelganda avtomatik yoqiladi" : "o‘chiq"}</p>
         </div>;
       })}
     </div>
   </section>;
-}
-
-function DeveloperReleasePanel() {
-  const tt = useWebT();
-  const [settings, setSettings] = useState<GenericRow>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await requestJson<GenericRow>("/developer/mobile-release", { token: localStorage.getItem("diamond_token") || "", timeoutMs: 15000 });
-      setSettings(result || {});
-      setError("");
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : tt("developer.release.loadError", "Release sozlamalari yuklanmadi."));
-    } finally {
-      setLoading(false);
-    }
-  }, [tt]);
-
-  useEffect(() => { load(); }, [load]);
-  const update = (role: "student" | "teacher", key: string, value: unknown) => {
-    setSettings((previous) => ({ ...previous, [role]: { ...(previous[role] || {}), [key]: value } }));
-  };
-  const save = async () => {
-    setSaving(true);
-    setError("");
-    try {
-      const payload: GenericRow = {};
-      for (const role of ["student", "teacher"] as const) {
-        const item = (settings[role] || {}) as GenericRow;
-        payload[role] = {
-          min_version: String(item.min_version || "").trim(),
-          min_build: Math.max(0, Number(item.min_build || 0)),
-          store_url: String(item.store_url || "").trim(),
-          ios_store_url: String(item.ios_store_url || "").trim(),
-        };
-      }
-      const result = await requestJson<GenericRow>("/developer/mobile-release", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
-      setSettings(result || {});
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : tt("developer.release.saveError", "Release sozlamalari saqlanmadi."));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
-    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-      <div><p className="text-xs font-black uppercase tracking-[0.16em] text-violet-600 dark:text-violet-300">{tt("developer.release.kicker", "Release control")}</p><h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.release.title", "Mobil ilova relizi")}</h2><p className="mt-1 text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.release.subtitle", "Minimal versiya va store manzillarini boshqaring. Store manzilisiz ilova majburan yangilanmaydi.")}</p></div>
-      <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button>
-    </div>
-    {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200">{error}</p> : null}
-    <div className="grid gap-4 lg:grid-cols-2">
-      {(["student", "teacher"] as const).map((role) => {
-        const item = (settings[role] || {}) as GenericRow;
-        const title = role === "student" ? `🎓 ${tt("developer.studentApp", "Student App")}` : `👨‍🏫 ${tt("developer.teacherApp", "Teacher App")}`;
-        return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-          <strong className="text-base text-navy-900 dark:text-white">{title}</strong>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.minVersion", "Minimal versiya")}<input value={String(item.min_version || "")} onChange={(event) => update(role, "min_version", event.target.value)} placeholder="4.0.1" className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.minBuild", "Minimal build")}<input value={String(item.min_build || "")} onChange={(event) => update(role, "min_build", event.target.value)} type="number" min="0" className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label></div>
-          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.android", "Google Play URL")}<input value={String(item.store_url || "")} onChange={(event) => update(role, "store_url", event.target.value)} type="url" placeholder="https://play.google.com/..." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
-          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.release.ios", "App Store URL")}<input value={String(item.ios_store_url || "")} onChange={(event) => update(role, "ios_store_url", event.target.value)} type="url" placeholder="https://apps.apple.com/..." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
-        </div>;
-      })}
-    </div>
-  </section>;
-}
-
-function LocalPrintAgentPanel() {
-  const tt = useWebT();
-  const [checking, setChecking] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [status, setStatus] = useState<{ online: boolean; printer?: string; settings?: LocalPrintAgentSettings } | null>(null);
-  const [settings, setSettings] = useState<LocalPrintAgentSettings>({ paper_width_mm: 57.5, side_padding_mm: 1.5, line_width: 32 });
-
-  const check = useCallback(async () => {
-    setChecking(true);
-    const result = await localPrintAgentHealth();
-    setStatus(result);
-    if (result.settings) setSettings(result.settings);
-    setChecking(false);
-  }, []);
-
-  async function testPrint() {
-    setTesting(true);
-    setNotice("");
-    const result = await printLocalAgentTestReceipt();
-    setNotice(result.printed ? tt("developer.print.testSent", "Test chek printerga yuborildi.") : tt("developer.print.testFailed", "Test chek yuborilmadi. Agent va printerni tekshiring."));
-    setTesting(false);
-  }
-
-  async function saveSettings() {
-    setSaving(true);
-    setNotice("");
-    const result = await saveLocalPrintAgentSettings(settings);
-    if (result.saved) {
-      setSettings(result.settings || settings);
-      setNotice(tt("developer.print.saved", "O‘lchamlar shu kompyuterga doimiy saqlandi."));
-      await check();
-    } else {
-      setNotice(tt("developer.print.saveFailed", "O‘lcham saqlanmadi. Agent ishlayotganini tekshiring."));
-    }
-    setSaving(false);
-  }
-
-  useEffect(() => { void check(); }, [check]);
-
-  return <section className="rounded-3xl border border-line bg-surface p-4 shadow-premium dark:border-white/10 dark:bg-white/[0.03] sm:p-5">
-    <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <p className="text-xs font-black uppercase tracking-[0.16em] text-emerald-600 dark:text-emerald-300">{tt("developer.print.kicker", "Local print")}</p>
-        <h2 className="mt-1 text-xl font-black text-navy-900 dark:text-white">{tt("developer.print.title", "Lokal chek printeri")}</h2>
-        <p className="mt-1 max-w-2xl text-sm font-medium text-ink-500 dark:text-slate-300">{tt("developer.print.subtitle", "To‘lov yoki qaytarish tasdiqlansa, agent chekni shu kompyuterdagi termal printerga avtomatik yuboradi.")}</p>
-      </div>
-      <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? tt("developer.print.checking", "Tekshirilmoqda…") : tt("developer.print.check", "Holatni tekshirish")}</button>
-    </div>
-    <div className={`mb-5 rounded-2xl border p-3 text-sm font-bold ${status?.online ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200" : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
-      {status?.online ? `${tt("developer.print.online", "Agent tayyor")}: ${status.printer || tt("developer.print.defaultPrinter", "standart printer")}` : tt("developer.print.offline", "Agent topilmadi. Avtomatik chop etish uchun uni shu kompyuterda ishga tushiring; sayt brauzer-print usuliga qaytadi.")}
-    </div>
-    <article className="mb-5 rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-base font-black text-navy-900 dark:text-white">{tt("developer.print.sizeTitle", "Chek o‘lchami")}</h3><p className="mt-1 text-sm text-ink-600 dark:text-slate-300">{tt("developer.print.sizeHint", "Bu qiymatlar faqat hozirgi printer ulangan kompyuterda saqlanadi.")}</p></div><button type="button" className="btn btn-primary small" disabled={!status?.online || saving} onClick={() => void saveSettings()}>{saving ? tt("developer.saving", "Saqlanmoqda…") : tt("developer.save", "Saqlash")}</button></div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.paperWidth", "Qog‘oz eni (mm)")}<input type="number" min="48" max="58" step="0.1" value={settings.paper_width_mm} onChange={(event) => setSettings((prev) => ({ ...prev, paper_width_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
-        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.sidePadding", "Ikki chet bo‘shlig‘i (mm)")}<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((prev) => ({ ...prev, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
-        <label className="text-xs font-bold text-ink-600 dark:text-slate-300">{tt("developer.print.characters", "Satr belgilari")}<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((prev) => ({ ...prev, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm text-navy-900 dark:border-white/15 dark:text-white" /></label>
-      </div>
-      <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" className="btn btn-soft small" disabled={!status?.online || testing} onClick={() => void testPrint()}>{testing ? tt("developer.print.testing", "Yuborilmoqda…") : tt("developer.print.test", "Test chek chiqarish")}</button>{notice ? <span className="text-sm font-bold text-ink-600 dark:text-slate-300">{notice}</span> : null}</div>
-    </article>
-    <div className="grid gap-4 lg:grid-cols-2">
-      <article className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-        <h3 className="text-base font-black text-navy-900 dark:text-white">Windows</h3>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-ink-600 dark:text-slate-300">
-          <li>{tt("developer.print.windowsStep1", "Termal printerni Windows Default printer sifatida belgilang.")}</li>
-          <li>{tt("developer.print.windowsStep2", "Quyidagi 3 faylni bitta papkaga yuklab oling.")}</li>
-          <li>{tt("developer.print.windowsStep3", "PowerShell orqali installer faylini ishga tushiring.")}</li>
-        </ol>
-        <div className="mt-4 flex flex-wrap gap-2">
-          <a className="btn btn-primary small" href="/downloads/install-diamond-print-agent-windows.ps1" download>{tt("developer.print.downloadInstaller", "Installer (.ps1)")}</a>
-          <a className="btn btn-soft small" href="/downloads/diamond-print-agent.py" download>{tt("developer.print.downloadAgent", "Agent (.py)")}</a>
-          <a className="btn btn-soft small" href="/downloads/run-diamond-print-agent-windows.bat" download>{tt("developer.print.downloadStarter", "Starter (.bat)")}</a>
-        </div>
-      </article>
-      <article className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-        <h3 className="text-base font-black text-navy-900 dark:text-white">{tt("developer.print.guide", "Qo‘llanma va Linux")}</h3>
-        <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">{tt("developer.print.guideText", "Windows, XP-58IIL/Linux sozlash, test chop etish va xavfsizlik bo‘yicha to‘liq yo‘riqnoma.")}</p>
-        <div className="mt-4 flex flex-wrap gap-2"><a className="btn btn-soft small" href="/downloads/LOCAL_PRINT_AGENT_README.md" download>{tt("developer.print.downloadGuide", "Qo‘llanmani yuklash")}</a></div>
-        <code className="mt-4 block overflow-x-auto rounded-xl bg-navy-950 p-3 text-xs text-emerald-200">powershell -ExecutionPolicy Bypass -File .\install-diamond-print-agent-windows.ps1 -Start</code>
-      </article>
-    </div>
-  </section>;
-}
-
-function DeveloperToolsWorkspace({ section, onNavigate }: { section: string; onNavigate: (section: string) => void }) {
-  const tt = useWebT();
-  const pages = [
-    { id: "system-status", icon: "◉", title: tt("section.system-status", "Server holati"), description: tt("developer.metrics.subtitle", "CPU, RAM, disk va yuklama har 60 soniyada yangilanadi.") },
-    { id: "mobile-release", icon: "↑", title: tt("section.mobile-release", "Mobil relizlar"), description: tt("developer.release.subtitle", "Minimal versiya va store manzillarini boshqaring.") },
-    { id: "mobile-maintenance", icon: "⚙", title: tt("section.mobile-maintenance", "Maintenance"), description: tt("developer.maintenance.subtitle", "Student va teacher ilovalari uchun rejali maintenance boshqaruvi.") },
-    { id: "local-print-agent", icon: "▣", title: tt("section.local-print-agent", "Lokal chek printeri"), description: tt("developer.print.subtitle", "Tasdiqlangan cheklarni termal printerga avtomatik yuboring.") },
-  ];
-  const panel = section === "system-status" ? <ServerStatusDashboard /> : section === "mobile-release" ? <DeveloperReleasePanel /> : section === "mobile-maintenance" ? <DeveloperMaintenancePanel /> : section === "local-print-agent" ? <LocalPrintAgentPanel /> : null;
-  if (panel) return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={pages.find((page) => page.id === section)?.title || tt("developer.title", "Tizim boshqaruvi")} subtitle={pages.find((page) => page.id === section)?.description || ""} />{panel}</div>;
-  return <div className="flex flex-col gap-5 pb-10 animate-fade-in"><SectionTitle kicker={tt("developer.kicker", "Developer workspace")} title={tt("developer.title", "Tizim boshqaruvi")} subtitle={tt("developer.subtitle", "Server resurslari, mobil relizlar va rejali maintenance boshqaruvi.")} /><div className="grid gap-4 lg:grid-cols-3">{pages.map((page, index) => <button key={page.id} type="button" onClick={() => onNavigate(page.id)} className={`admin-stat-card ${["asc-cyan", "asc-indigo", "asc-amber", "asc-emerald"][index]} text-left transition-transform hover:-translate-y-0.5`}><div className="asc-bg-blob" /><div className="asc-icon">{page.icon}</div><div className="asc-label mt-3 text-base">{page.title}</div><p className="mt-2 text-sm font-medium text-ink-500 dark:text-white/65">{page.description}</p></button>)}</div></div>;
 }
 
 function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => void }) {
@@ -23818,14 +23693,33 @@ function DashboardShell({
   // telefonning pastki navigatsiyasi. Shu elementlar drawer/sidebar ichida
   // qaytarilmaydi.
   const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
+  const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
-    ? primaryAdminSections.filter((item) => item !== "chats")
+    ? primaryAdminSections
+    : activeRole === "developer"
+    ? primaryDeveloperSections
     : orderedSections.slice(0, 5);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
   const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
     ? "home"
     : normalizedSection;
   const [isMobileLayout, setIsMobileLayout] = useState(false);
+  const [isNarrowDesktop, setIsNarrowDesktop] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 900px)");
+    setIsNarrowDesktop(media.matches);
+    const listener = (e: MediaQueryListEvent) => setIsNarrowDesktop(e.matches);
+    if (media.addEventListener) {
+      media.addEventListener("change", listener);
+    } else {
+      media.addListener(listener);
+    }
+    return () => {
+      if (media.removeEventListener) media.removeEventListener("change", listener);
+      else media.removeListener(listener);
+    };
+  }, []);
 
   // Tablet recovery for stuck loading page (user-reported issue on tablet)
   const [showTabletRecovery, setShowTabletRecovery] = useState(false);
@@ -23925,7 +23819,7 @@ function DashboardShell({
       const payload = await requestJson<{ items: GenericRow[]; unread_count: number }>("/notifications?limit=30", { token });
       setTopNotifications(
         (payload.items || []).filter(
-          (item) => !RETIRED_ARENA_NOTIFICATION_TYPES.has(String(item.type || "").trim().toLowerCase()),
+          (item) => !isRetiredArenaNotification(item.type),
         ),
       );
       setUnreadCount(Number(payload.unread_count || 0));
@@ -24076,7 +23970,7 @@ function DashboardShell({
   }
 
   function openNotificationTarget(note: GenericRow) {
-    if (RETIRED_ARENA_NOTIFICATION_TYPES.has(String(note?.type || "").trim().toLowerCase())) {
+    if (isRetiredArenaNotification(note?.type)) {
       return;
     }
     const url = String(note?.button_url || "").trim();
@@ -24194,6 +24088,7 @@ function DashboardShell({
         }
         const candidate = items.find((note) => {
           if (Boolean(note.read)) return false;
+          if (isRetiredArenaNotification(note.type)) return false;
           if (String(note.type || "").trim().toLowerCase() === "broadcast") return false;
           if (isPaymentNotification(note) && !canShowPaymentReminderToast(note)) return false;
           return true;
@@ -24325,7 +24220,7 @@ function DashboardShell({
 
   useEffect(() => {
     const webApp = window.Telegram?.WebApp;
-    const isChats = currentSection === "chats" || currentSection === "feedback" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
+    const isChats = currentSection === "chats" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
     if (isChats) {
       document.documentElement.classList.add("chats-fullscreen-root");
       document.body.classList.add("chats-fullscreen-body");
@@ -24350,7 +24245,7 @@ function DashboardShell({
   const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
     if (item === "chats" || item === "notifications" || item === "profile") return false;
-    if (desktopHeaderSections.has(item)) return false;
+    if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
     return true;
   });
 
@@ -24369,9 +24264,7 @@ function DashboardShell({
 
   let content: React.ReactNode = null;
   if (currentSection === "chats" || currentSection === "diamondvoy") {
-    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} onOpenFeedback={() => handleNavigate("feedback")} />;
-  } else if (currentSection === "feedback") {
-    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} feedbackOnly onExitFeedback={() => handleNavigate("chats")} />;
+    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
   } else if (currentSection === "study-room") {
     content = <StudyRoomChat apiFetch={authedApiFetch} role={activeRole} userId={Number(user?.id || 0)} />;
   } else if (activeRole === "student") {
@@ -24431,10 +24324,8 @@ function DashboardShell({
   } else if (activeRole === "developer") {
     if (currentSection === "profile") {
       content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="admin" />;
-    } else if (["system-status", "mobile-release", "mobile-maintenance", "local-print-agent"].includes(currentSection)) {
-      content = <DeveloperToolsWorkspace section={currentSection} onNavigate={handleNavigate} />;
     } else {
-      content = <FullDeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
+      content = <DeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
     }
   } else {
     if (currentSection === "profile") {
@@ -24465,7 +24356,7 @@ function DashboardShell({
     }
   }
 
-  const isChatsFullscreen = currentSection === "chats" || currentSection === "feedback" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
+  const isChatsFullscreen = currentSection === "chats" || currentSection === "diamondvoy" || currentSection === "voice-rooms";
   const shellClass = [
     "app-shell",
     "app-native-shell",
@@ -24491,7 +24382,13 @@ function DashboardShell({
           onLogout={onLogout}
           sectionLabel={(sectionId) => labelFor(sectionId, locale)}
           notificationCount={unreadCount}
-          primaryNavSections={activeRole === "admin" ? primaryAdminSections : undefined}
+          primaryNavSections={
+            activeRole === "admin"
+              ? primaryAdminSections
+              : activeRole === "developer"
+              ? primaryDeveloperSections
+              : undefined
+          }
         />
       ) : null}
 
@@ -24897,7 +24794,47 @@ export default function DiamondEducationApp() {
 
   useEffect(() => {
     userRef.current = user;
+    if (typeof window === "undefined") return;
+    if (user) {
+      try {
+        localStorage.setItem("diamond_user", JSON.stringify(user));
+      } catch {}
+    }
   }, [user]);
+
+  // Instant Stale-While-Revalidate Session Hydration (0ms App Boot)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const token = localStorage.getItem("diamond_token");
+    if (!token) {
+      setAuthResolved(true);
+      setInitialStateReady(true);
+      return;
+    }
+    try {
+      const cachedUserStr = localStorage.getItem("diamond_user");
+      if (cachedUserStr) {
+        const parsedUser = JSON.parse(cachedUserStr) as ApiUser;
+        if (parsedUser && parsedUser.id) {
+          userRef.current = parsedUser;
+          setUser(parsedUser);
+          const cachedRole = roleFromUser(parsedUser);
+          setActiveRole(cachedRole);
+          const appStateCacheKey = `diamond_app_state_cache_${String(parsedUser.id)}`;
+          const cachedAppStateStr = localStorage.getItem(appStateCacheKey);
+          if (cachedAppStateStr) {
+            const parsedAppState = JSON.parse(cachedAppStateStr) as GenericRow;
+            if (parsedAppState) {
+              setAppState(parsedAppState);
+            }
+          }
+          setAuthStatus("authenticated");
+          setInitialStateReady(true);
+          setAuthResolved(true);
+        }
+      }
+    } catch {}
+  }, []);
 
   // A stored browser token must not leave a person permanently "online".
   // Keep the server presence fresh only while this tab is visible; hidden,
@@ -25239,16 +25176,22 @@ export default function DiamondEducationApp() {
     async function initAuth() {
       if (disposed || authAttemptInFlight) return;
       authAttemptInFlight = true;
+      const webApp = typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
+      const telegramId = webApp?.initDataUnsafe?.user?.id;
+      setIsTelegramMode(Boolean(telegramId));
       if (userRef.current) {
         setAuthResolved(true);
         setInitialStateReady(true);
       } else {
-        setAuthResolved(false);
-        setInitialStateReady(false);
+        const hasSavedToken = typeof window !== "undefined" && Boolean(localStorage.getItem("diamond_token"));
+        if (!hasSavedToken && !telegramId) {
+          setAuthResolved(true);
+          setInitialStateReady(true);
+        } else {
+          setAuthResolved(false);
+          setInitialStateReady(false);
+        }
       }
-      const webApp = window.Telegram?.WebApp;
-      const telegramId = webApp?.initDataUnsafe?.user?.id;
-      setIsTelegramMode(Boolean(telegramId));
       const manualTelegramLogoutKey = telegramId ? `${TELEGRAM_MANUAL_LOGOUT_PREFIX}${telegramId}` : "";
       const telegramAutoLoginSuppressed = Boolean(
         manualTelegramLogoutKey && sessionStorage.getItem(manualTelegramLogoutKey) === "1",
@@ -25508,6 +25451,7 @@ export default function DiamondEducationApp() {
           && (String(cached?.state_scope || "full") !== "boot" || String(cached?.effective_role) !== "student")
         ) {
           setAppState((prev) => prev || cached);
+          setInitialStateReady(true);
           const cachedRole = cached?.effective_role as Role | undefined;
           if (!(["media", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
@@ -25997,6 +25941,7 @@ export default function DiamondEducationApp() {
       refreshTimerRef.current = null;
     }
     localStorage.removeItem("diamond_token");
+    localStorage.removeItem("diamond_user");
     setUser(null);
     setAppState(null);
     setAuthResolved(true);
@@ -26307,12 +26252,12 @@ export default function DiamondEducationApp() {
     typeof window !== "undefined" &&
     TELEGRAM_AUTO_AUTH_ENABLED &&
     Boolean(window.Telegram?.WebApp?.initDataUnsafe?.user?.id && window.Telegram?.WebApp?.initData);
+  const hasPendingSession = hasStoredSession || hasTelegramSession;
   const isStudentPaymentsSection =
     Boolean(user && roleFromUser(user) === "student" && String(section || "").toLowerCase() === "payments");
   const showSplash = Boolean(
-    !authResolved ||
-    (user && !initialStateReady && !isStudentPaymentsSection) ||
-    (!user && !authResolved && (hasStoredSession || hasTelegramSession)),
+    (hasPendingSession && !authResolved) ||
+    (user && !initialStateReady && !isStudentPaymentsSection),
   );
 
   return (

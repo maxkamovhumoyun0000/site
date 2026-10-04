@@ -630,7 +630,8 @@ p {
   justify-content: center;
   padding: 24px;
   position: fixed;
-  transition: opacity 0.42s ease, visibility 0.42s ease;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+  will-change: opacity, visibility;
   z-index: 99999 !important;
 }
 

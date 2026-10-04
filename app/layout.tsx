@@ -67,6 +67,8 @@ export default function RootLayout({
         <link rel="icon" href="/logo.jpg" type="image/jpeg" />
         <link rel="shortcut icon" href="/logo.jpg" type="image/jpeg" />
         <link rel="apple-touch-icon" href="/logo.jpg" />
+        <link rel="preconnect" href="https://telegram.org" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="https://telegram.org" />
         <meta name="keywords" content="Diamond Education, Diamond Education uz, O'quv markazi, Yangiyo'l o'quv markazi, Ingliz tili kurslari, Rus tili kurslari" />
         <script
           type="application/ld+json"

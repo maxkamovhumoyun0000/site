@@ -29,6 +29,20 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
             self.assertNotIn(forbidden, receipt_preview)
             self.assertNotIn(forbidden, pdf_receipt)
 
+    def test_payment_confirmation_retries_use_an_idempotency_key(self) -> None:
+        """A retry must replay one payment, while a later equal payment remains valid."""
+        self.assertIn("idempotency_key: str | None", BACKEND)
+        self.assertIn("ux_payment_tx_idempotency_key", BACKEND)
+        self.assertIn("if not idempotency_key:", BACKEND)
+        self.assertIn("paymentConfirmRequestRef", SOURCE)
+        self.assertIn("idempotency_key: requestKey", SOURCE)
+
+    def test_developer_printer_guide_has_copy_paste_commands_for_the_new_agent(self) -> None:
+        self.assertIn("Windows buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
+        self.assertIn("Linux buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
+        self.assertIn("Driver buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
+        self.assertIn("Server chekni yaratadi", DEVELOPER_WORKSPACE)
+
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
