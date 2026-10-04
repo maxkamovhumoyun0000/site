@@ -16192,7 +16192,7 @@ function AdminSection({
     note: string;
     isAdvance: boolean;
   }>({
-    ym: new Date().toISOString().slice(0, 7),
+    ym: "",
     groupId: 0,
     amount: "",
     paymentMethod: "cash",
@@ -17295,23 +17295,12 @@ function AdminSection({
     }
   }
 
-  function _derivePaymentConfirmDraft(detailPayload: GenericRow | null, monthKey: string, preferredGroupId?: number) {
-    const months = ((detailPayload?.overview?.months || []) as GenericRow[]);
-    const monthItem =
-      months.find((row) => String(row.ym || "") === String(monthKey || "")) ||
-      ((detailPayload?.overview?.current_month || null) as GenericRow | null);
-    const monthRows = ((monthItem?.items || []) as GenericRow[]);
-    const chosenGroupId =
-      Number(preferredGroupId || 0) > 0
-        ? Number(preferredGroupId || 0)
-        : Number(monthRows[0]?.group_id || 0);
-    const chosen = monthRows.find((row) => Number(row.group_id || 0) === chosenGroupId) || monthRows[0] || null;
-    const debtAmount = Number(chosen?.debt_amount || 0);
+  function _derivePaymentConfirmDraft() {
     setPaymentsConfirmDraft((prev) => ({
       ...prev,
-      ym: String(monthKey || prev.ym || new Date().toISOString().slice(0, 7)),
-      groupId: Number(chosenGroupId || 0),
-      amount: debtAmount > 0 ? debtAmount.toFixed(2) : "",
+      ym: "",
+      groupId: 0,
+      amount: "",
     }));
   }
 
@@ -17352,7 +17341,7 @@ function AdminSection({
       ]);
       setPaymentsCalcModal(calcPayload || null);
       setPaymentsDetail(detailPayload || null);
-      _derivePaymentConfirmDraft(detailPayload || null, String(detailPayload?.default_ym || paymentsMonthFilter), paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined);
+      _derivePaymentConfirmDraft();
       setPaymentsCalcPopupOpen(true);
     } finally {
       setPaymentsCalcLoading(false);
@@ -17708,7 +17697,6 @@ function AdminSection({
   }, [section, paymentsSelectorIsMobile, paymentsSelectedGroupId]);
   useEffect(() => {
     if (section !== "payments") return;
-    setPaymentsConfirmDraft((prev) => ({ ...prev, ym: paymentsMonthFilter }));
     const selectedGroupId = paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined;
     const selectedStudentId = Number(paymentsSelectedStudentId || 0);
     const timer = window.setTimeout(() => {
@@ -20172,11 +20160,10 @@ function AdminSection({
                         value={paymentsConfirmDraft.groupId || 0}
                         onChange={(event) => {
                           const gid = Number(event.target.value || 0);
-                          const groupItem = detailRows.find((row) => Number(row.group_id || 0) === gid) || null;
                           setPaymentsConfirmDraft((prev) => ({
                             ...prev,
                             groupId: gid,
-                            amount: Number(groupItem?.debt_amount || 0) > 0 ? Number(groupItem?.debt_amount || 0).toFixed(2) : "",
+                            amount: "",
                           }));
                         }}
                       >

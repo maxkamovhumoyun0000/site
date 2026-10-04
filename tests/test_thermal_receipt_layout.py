@@ -185,10 +185,9 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn('(\"Oy uchun\", f\"{_receipt_month_label(snapshot.get(\'payment_month\'))} uchun\")', thermal)
         self.assertIn('f"Oy uchun: {_receipt_month_label(snapshot.get(\'payment_month\'))} uchun"', pdf)
 
-    def test_payment_modal_defaults_to_the_oldest_unpaid_month(self) -> None:
-        """Selecting a student next month must pay their earlier unpaid obligation first."""
+    def test_payment_modal_loads_month_history_for_manual_selection(self) -> None:
+        """Staff can deliberately choose an older unpaid obligation without an automatic field value."""
         self.assertIn("&include_history=true", SOURCE)
-        self.assertIn("detailPayload?.default_ym", SOURCE)
 
     def test_payment_confirmation_fields_open_blank_for_manual_entry(self) -> None:
         """The admin must choose month/group and enter amount; no saved debt is silently prefilled."""
