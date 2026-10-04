@@ -3,6 +3,7 @@ import unittest
 
 
 SOURCE = (Path(__file__).resolve().parents[1] / "app" / "page.tsx").read_text(encoding="utf-8")
+BACKEND = (Path(__file__).resolve().parents[1] / "backend" / "main.py").read_text(encoding="utf-8")
 
 
 class ThermalReceiptLayoutTests(unittest.TestCase):
@@ -19,6 +20,13 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertFalse('["Payment ID", snapshot.payment_id]' in SOURCE)
         self.assertFalse('"TO\'LOV TASDIQLANDI"' in SOURCE)
         self.assertFalse('"QAYTARISH TASDIQLANDI"' in SOURCE)
+
+    def test_every_receipt_output_is_uzbek_only(self) -> None:
+        receipt_preview = SOURCE.split("receiptPreview", 1)[1].split("<section className=\"panel-card", 1)[0]
+        pdf_receipt = BACKEND.split("def _receipt_pdf", 1)[1].split("@app", 1)[0]
+        for forbidden in ("ЧЕК", "Ученик", "Группа", "Курс", "Преподаватель", "ТЕКУЩИЙ", "ВОЗВРАТ", "ОСТАТОК", "ID чека"):
+            self.assertNotIn(forbidden, receipt_preview)
+            self.assertNotIn(forbidden, pdf_receipt)
 
 
 if __name__ == "__main__":
