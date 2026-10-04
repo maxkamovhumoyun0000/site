@@ -80,9 +80,10 @@ rsync -az --prune-empty-dirs \
   --exclude='public/uploads/***' --exclude='public/media/***' \
   --include='*/' \
   --include='*.py' --include='*.ts' --include='*.tsx' \
+  --include='*.sh' --include='*.ps1' --include='*.cmd' --include='*.bat' \
   --include='*.js' --include='*.mjs' --include='*.cjs' \
   --include='*.css' --include='*.json' --include='*.lock' \
-  --include='*.html' \
+  --include='*.html' --include='*.md' \
   --include='*.ini' --include='*.yml' --include='*.yaml' \
   --include='requirements.txt' --include='deploy.md' \
   --exclude='*' \

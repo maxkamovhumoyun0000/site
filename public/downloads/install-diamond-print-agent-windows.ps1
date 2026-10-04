@@ -31,6 +31,6 @@ Write-Host "O'rnatildi: $appDir" -ForegroundColor Green
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'diamond-print-agent\.py' } | ForEach-Object {
   try { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null } catch { }
 }
-Write-Host 'Agent Windows bilan avtomatik ishga tushadi. Eski agent yangisiga almashtirildi; default printer shart emas.'
+Write-Host 'Agent Windows bilan avtomatik ishga tushadi. Eski agent yangisiga almashtirildi; default printer shart emas. Test va haqiqiy chek kesilishidan oldin 8 mm tashqariga chiqariladi.'
 Write-Host 'Brauzer fallbacki uchun configure-xprinter-56mm-windows.ps1 ni ishga tushirib, driverda 56 mm ni tanlang.'
 Start-Process (Join-Path $appDir 'run-diamond-print-agent-windows.bat')

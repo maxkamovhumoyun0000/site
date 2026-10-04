@@ -14,6 +14,7 @@ Bu agent chek tasdiqlangach uni lokal termal printerga dialogsiz yuboradi. U faq
    ```
 
 5. Developer → **Lokal chek printeri** sahifasidan holatni tekshiring. Shu sahifada **Test chek chiqarish** tugmasi va qog‘oz eni, ikki chet bo‘shlig‘i, satr eni sozlamalari bor. Saqlangan sozlamalar aynan shu Windows kompyuterida doimiy qoladi.
+   Agent chek kesilishidan avval oxirgi qatorlar printer ichida qolmasligi uchun uni 8 mm tashqariga chiqaradi.
 
 ## Linux (XPrinter XP-58IIL)
 
@@ -33,3 +34,4 @@ python3 diamond-print-agent.py --printer XP58IIL --test
 - Chek yoki o‘quvchi ma’lumotlari diskka yozilmaydi.
 - Holat `offline` bo‘lsa agentni qayta ishga tushiring, printer drayveri/USB kabeli va Default printer sozlamasini tekshiring.
 - Agent ishlamasa sayt chekni avvalgi brauzer-print oynasi orqali chiqarishga qaytadi.
+- Yangi installer har safar shu 8 mm chiqarish sozlamasi bor eng yangi agentni yuklaydi.

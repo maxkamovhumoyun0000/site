@@ -97,7 +97,7 @@ function LocalPrintAgentPanel() {
   const [enrolling, setEnrolling] = useState(false);
   const [branchName, setBranchName] = useState("");
   const [stationName, setStationName] = useState("");
-  const windowsInstallCommand = `powershell -ExecutionPolicy Bypass -Command "iwr 'https://diamond-education.uz/downloads/install-diamond-print-agent-windows.ps1' -OutFile \"$env:TEMP\\diamond-print-agent.ps1\"; & \"$env:TEMP\\diamond-print-agent.ps1\""`;
+  const windowsInstallCommand = "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force; $file = Join-Path $env:TEMP 'diamond-print-agent.ps1'; Invoke-WebRequest -Uri 'https://diamond-education.uz/downloads/install-diamond-print-agent-windows.ps1' -OutFile $file; & $file";
   const linuxInstallCommand = "curl -fsSL https://diamond-education.uz/downloads/install-diamond-print-agent-linux.sh -o /tmp/diamond-print-agent-install.sh && bash /tmp/diamond-print-agent-install.sh";
   const windowsDriverCommand = `powershell -ExecutionPolicy Bypass -Command "iwr 'https://diamond-education.uz/downloads/configure-xprinter-56mm-windows.ps1' -OutFile \"$env:TEMP\\xprinter-56mm.ps1\"; & \"$env:TEMP\\xprinter-56mm.ps1\""`;
 
@@ -215,7 +215,7 @@ function LocalPrintAgentPanel() {
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Ikki chet bo‘shlig‘i (mm)<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((previous) => ({ ...previous, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Satr belgilari<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((previous) => ({ ...previous, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
       </div>
-      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Agent chekning mazmunini hisoblamaydi; server tayyorlagan hujjatni printerga yuboradi.</p>
+      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Agent chekning mazmunini hisoblamaydi; server tayyorlagan hujjatni printerga yuboradi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval 8 mm tashqariga chiqariladi.</p>
       <div className="mt-5 flex flex-wrap gap-3">
         <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? "Tekshirilmoqda…" : "Holatni tekshirish"}</button>
         <button type="button" className="btn btn-primary small" onClick={() => void save()} disabled={!status?.online || saving}>{saving ? "Saqlanmoqda…" : "O‘lchamni saqlash"}</button>
@@ -224,40 +224,35 @@ function LocalPrintAgentPanel() {
       {notice ? <p className="mt-4 text-sm font-bold text-ink-600 dark:text-slate-300">{notice}</p> : null}
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">Yangi agentni o‘rnatish — copy/paste qo‘llanma</h3>
-      <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-ink-600 dark:text-slate-300">
-        <li>Printer USB orqali ulangan va tizimda <strong>XP58IIL</strong> sifatida ko‘rinayotganini tekshiring.</li>
-        <li>Quyidagi bitta buyruqni aynan o‘sha printer ulangan kompyuterda ishga tushiring.</li>
-        <li>So‘ng bu sahifada <strong>Holatni tekshirish</strong> → <strong>O‘lchamni saqlash</strong> → <strong>Test chek chiqarish</strong> qadamlarini bajaring.</li>
-        <li>Filial uchun <strong>Filial nomi</strong> va <strong>Kompyuter nomi</strong>ni yozib, <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing.</li>
-      </ol>
-      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+      <h3 className="text-base font-black text-navy-900 dark:text-white">1-qadam: o‘rnatish — Printer agentini o‘rnatish</h3>
+      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Bu dastur chekni yaratmaydi: server tayyor chekni yuboradi, agent esa uni shu kompyuterdagi XP-58IIL printerida chiqaradi. Har bir filial kompyuteriga alohida o‘rnating.</p>
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <article className="rounded-2xl border border-line p-4 dark:border-white/10">
           <h4 className="font-black text-navy-900 dark:text-white">Windows 10/11</h4>
-          <p className="mt-1 text-xs text-ink-500 dark:text-slate-400">PowerShell oynasini oching va buyruqni qo‘ying. U eski agentni yangisiga almashtirib, Windows ochilganda avtomatik ishga tushiradi.</p>
+          <p className="mt-2 text-sm text-ink-600 dark:text-slate-300"><strong>1.</strong> Printerni USB orqali ulang. <strong>2.</strong> PowerShell oynasini oching. <strong>3.</strong> Quyidagi tugmani bosing, buyruqni qo‘ying va Enter bosing.</p>
           <code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-200">{windowsInstallCommand}</code>
-          <button type="button" className="btn btn-primary small mt-3" onClick={() => void copyCommand(windowsInstallCommand)}>Windows buyrug‘ini nusxalash</button>
+          <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(windowsInstallCommand)}>Windows buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-windows.cmd" download>Installer faylini yuklash</a></div>
         </article>
         <article className="rounded-2xl border border-line p-4 dark:border-white/10">
           <h4 className="font-black text-navy-900 dark:text-white">Linux</h4>
-          <p className="mt-1 text-xs text-ink-500 dark:text-slate-400">Terminalni oching va buyruqni qo‘ying. U agentni user-service sifatida ishga tushiradi; default printer bo‘lmasa XP-58/XPrinter turini qidiradi.</p>
+          <p className="mt-2 text-sm text-ink-600 dark:text-slate-300"><strong>1.</strong> Printerni USB orqali ulang. <strong>2.</strong> Terminalni oching. <strong>3.</strong> Quyidagi tugmani bosing, buyruqni qo‘ying va Enter bosing.</p>
           <code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-200">{linuxInstallCommand}</code>
-          <button type="button" className="btn btn-primary small mt-3" onClick={() => void copyCommand(linuxInstallCommand)}>Linux buyrug‘ini nusxalash</button>
+          <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(linuxInstallCommand)}>Linux buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-linux.sh" download>Installer faylini yuklash</a></div>
         </article>
       </div>
-      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">Buyruqlar faqat Diamond Education rasmiy domenidan agentni yuklaydi. Har bir filial kompyuteriga alohida o‘rnating.</p>
+      <p className="mt-4 text-xs text-ink-500 dark:text-slate-400">Agent Windows ochilganda yoki Linux tizimi ishga tushganda avtomatik yoqiladi. Default printer bo‘lmasa ham XP-58/XPrinter/Thermal/Receipt nomli printerni qidiradi.</p>
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">Driver sozlash — 56 mm</h3>
-      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Windows print oynasi chiqib qolsa, quyidagi yordamchi XP-58/XPrinter driver sozlamasini ochadi. Paper Size — Custom/Receipt, eni 56 mm, uzunligi Auto yoki 80 mm, Margin — 0 ni tanlang. Bu 210 mm bo‘sh qog‘ozni oldini oladi.</p>
+      <h3 className="text-base font-black text-navy-900 dark:text-white">2-qadam: sozlash — 56 mm</h3>
+      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">Avval yuqoridagi <strong>Holatni tekshirish</strong> tugmasini bosing. Keyin 56 mm, 1.5 mm va 35 belgi sozlamasini <strong>O‘lchamni saqlash</strong> orqali saqlang. Windowsda printer qog‘ozini sozlash kerak bo‘lsa, yordamchi oynani oching: Paper Size — Custom/Receipt, eni 56 mm, uzunligi Auto yoki 80 mm, Margin — 0.</p>
       <code className="mt-3 block break-all rounded-xl bg-slate-950 p-3 text-xs leading-5 text-emerald-200">{windowsDriverCommand}</code>
       <div className="mt-4 flex flex-wrap gap-2"><button type="button" className="btn btn-primary small" onClick={() => void copyCommand(windowsDriverCommand)}>Driver buyrug‘ini nusxalash</button><a className="btn btn-soft small" href="/downloads/configure-xprinter-56mm-windows.ps1" download>Yordamchi faylni yuklash</a></div>
     </section>
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-base font-black text-navy-900 dark:text-white">Filial printerlari</h3>
-          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Har bir filialdagi kompyuter alohida agent bo‘ladi. To‘lov yoki refund qaysi kompyuterda tasdiqlansa, chek o‘sha kompyuterning printeridan chiqadi.</p>
+          <h3 className="text-base font-black text-navy-900 dark:text-white">3-qadam: filialga ulash</h3>
+          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Pastda Filial nomi va Kompyuter nomini yozing, so‘ng <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing. Oxirida <strong>Test chek chiqarish</strong> orqali tekshiring. Chek kesilishidan oldin 8 mm tashqariga chiqadi.</p>
         </div>
         <button type="button" className="btn btn-soft small" onClick={() => void loadAgents()} disabled={agentsLoading}>{agentsLoading ? "Yangilanmoqda…" : "Ro‘yxatni yangilash"}</button>
       </div>
@@ -272,25 +267,6 @@ function LocalPrintAgentPanel() {
           <div className="flex items-center gap-2"><span className={`rounded-full px-2 py-1 text-xs font-black ${agent.revoked ? "bg-slate-200 text-slate-600" : agent.online ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{agent.revoked ? "O‘chirilgan" : agent.online ? "Online" : "Offline"}</span>{!agent.revoked ? <button type="button" className="btn btn-soft small" onClick={() => void revokeAgent(String(agent.id))}>O‘chirish</button> : null}</div>
         </div>)}
       </div>
-    </section>
-    <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">1. Windows o‘rnatish — bir marta</h3>
-      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">“Windows installer” faylini yuklab, ustiga ikki marta bosing. U agentni o‘rnatadi, oldingi versiyasini yangisiga almashtiradi va Windows ochilganda avtomatik ishga tushiradi. Default printer shart emas: agent XP-58, XPrinter, Thermal yoki Receipt nomli printerni o‘zi tanlaydi.</p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <a className="btn btn-primary small" href="/downloads/install-diamond-print-agent-windows.cmd" download>Windows installer</a>
-        <a className="btn btn-soft small" href="/downloads/install-diamond-print-agent-windows.ps1" download>PowerShell installer</a>
-        <a className="btn btn-soft small" href="/downloads/diamond-print-agent.py" download>Print agent (.py)</a>
-        <a className="btn btn-soft small" href="/downloads/run-diamond-print-agent-windows.bat" download>Starter (.bat)</a>
-      </div>
-    </section>
-    <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <h3 className="text-base font-black text-navy-900 dark:text-white">2. Linux o‘rnatish — bir marta</h3>
-      <p className="mt-2 text-sm text-ink-600 dark:text-slate-300">“Linux installer”ni yuklab, Terminal’da <code>chmod +x install-diamond-print-agent-linux.sh && ./install-diamond-print-agent-linux.sh</code> buyrug‘ini bering. Script CUPS clientini kerak bo‘lsa o‘rnatadi, agentni user service qiladi va ishga tushiradi. Default queue bo‘lmasa ham XP-58/XPrinter/Thermal/Receipt nomli printerni o‘zi qidiradi.</p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <a className="btn btn-primary small" href="/downloads/install-diamond-print-agent-linux.sh" download>Linux installer</a>
-        <a className="btn btn-soft small" href="/downloads/diamond-print-agent.py" download>Print agent (.py)</a>
-      </div>
-      <p className="mt-3 text-xs text-ink-500 dark:text-slate-400">Bir nechta noma’lum printer bo‘lsa, chek noto‘g‘ri A4 printerga ketmasligi uchun agent yubormaydi. Bunda queue nomini <code>DIAMOND_PRINTER</code> orqali belgilang yoki printer nomini XP-58/XPrinter/Thermal qilib qo‘ying.</p>
     </section>
   </div>;
 }

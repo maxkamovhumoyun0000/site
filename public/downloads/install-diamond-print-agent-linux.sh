@@ -58,7 +58,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now diamond-print-agent.service
 sleep 1
 if curl --fail --silent http://127.0.0.1:18765/health >/dev/null; then
-  echo "Tayyor. Agent ishga tushdi. Developer sahifasidan 'Test chek chiqarish' tugmasini bosing."
+  echo "Tayyor. Agent ishga tushdi. Test va haqiqiy chek kesilishidan oldin 8 mm tashqariga chiqariladi. Developer sahifasidan 'Test chek chiqarish' tugmasini bosing."
 else
   echo "Agent ishga tushmadi. Tekshirish: systemctl --user status diamond-print-agent.service" >&2
   exit 1
