@@ -56,6 +56,16 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertNotIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON", receipt_source)
         self.assertNotIn("b\"-\" * width", receipt_source)
 
+    def test_payment_receipt_omits_title_and_keeps_identity_rows_compact(self) -> None:
+        """Payment cheks stay short: no payment title and no large identity section."""
+        receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        self.assertIn('title = "QAYTARISH CHEKI" if is_refund else ""', receipt_source)
+        self.assertIn("if title:", receipt_source)
+        self.assertNotIn("TO'LOV CHEKI", receipt_source)
+        self.assertEqual(receipt_source.count("_RECEIPT_ESC_FONT_NORMAL"), 1)
+        self.assertIn('_RECEIPT_ESC_CUT = b"\\x1dV\\x42\\x04"', BACKEND)
+        self.assertNotIn('b"\\n" + _RECEIPT_ESC_CUT', receipt_source)
+
     def test_receipt_shows_applied_discount_amount_on_thermal_and_pdf_outputs(self) -> None:
         """A non-zero saved monthly discount must be visible on both printable formats."""
         receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
