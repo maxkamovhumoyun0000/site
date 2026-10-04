@@ -202,25 +202,26 @@ def decode_print_document(raw: object) -> bytes:
 
 
 def legacy_plain_text_document(document: bytes) -> bytes:
-    """Keep safe formatting controls, but remove cut/feed controls from legacy output.
+    """Keep formatting and eject controls, but remove unsupported cutter bytes.
 
     Some USB receipt mechanisms visibly print the cutter bytes from ``GS V B
     04`` as ``42 04``.  They can still understand the common compact-font and
     alignment controls, which must be retained so this receipt matches the
-    primary XP-58IIL.  The server remains responsible for rendering; blank
-    lines provide a safe manual-tear margin instead of a raw feed/cut command.
+    primary XP-58IIL.  The server remains responsible for rendering and its
+    ESC J eject distance is retained, so the footer margin matches the primary
+    printer.  Only the unsupported raw cutter command is removed.
     """
     rendered = bytearray()
     cursor = 0
     while cursor < len(document):
         current = document[cursor]
-        if current == 0x1B:  # ESC: retain formatting; remove only feed/unknown controls.
+        if current == 0x1B:  # ESC: retain formatting and the standard eject feed.
             command = document[cursor + 1] if cursor + 1 < len(document) else None
             if command == ord("@"):
                 rendered.extend(document[cursor:cursor + 2])
                 cursor += 2
                 continue
-            if command in (ord("t"), ord("a"), ord("E"), ord("M")) and cursor + 2 < len(document):
+            if command in (ord("t"), ord("a"), ord("E"), ord("M"), ord("J")) and cursor + 2 < len(document):
                 rendered.extend(document[cursor:cursor + 3])
                 cursor += 3
                 continue
@@ -232,7 +233,7 @@ def legacy_plain_text_document(document: bytes) -> bytes:
         if current in (0x0A, 0x0D, 0x09) or current >= 0x20:
             rendered.append(current)
         cursor += 1
-    return bytes(rendered).rstrip(b"\r\n") + b"\n\n\n\n\n"
+    return bytes(rendered).rstrip(b"\r\n")
 
 
 def sanitized_settings(settings: dict[str, float | int | str]) -> dict[str, float | int | str | bool]:
