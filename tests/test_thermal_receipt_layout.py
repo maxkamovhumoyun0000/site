@@ -65,6 +65,23 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
         self.assertIn("diamond-print-agent.py", installer)
 
+    def test_agent_reports_paper_out_to_the_web_application(self) -> None:
+        """The browser must be able to stop a receipt and warn staff before an empty-roll print."""
+        agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
+        spec = importlib.util.spec_from_file_location("diamond_print_agent_paper", agent_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.paper_status_from_text("media-empty-error"), "paper_out")
+        self.assertEqual(module.paper_status_from_text("printer XP58 is idle"), "ready")
+        self.assertEqual(module.paper_status_from_text("printer disabled"), "unavailable")
+
+        client = (Path(__file__).resolve().parents[1] / "app" / "ui" / "local-print-agent.ts").read_text(encoding="utf-8")
+        self.assertIn("paper_status", client)
+        self.assertIn("alertLocalPrinterPaperOut", client)
+
 
 if __name__ == "__main__":
     unittest.main()
