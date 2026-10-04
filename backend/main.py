@@ -40731,6 +40731,7 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
         **_receipt_discount_snapshot(tx),
         "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
         "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
+        "payment_month": str(tx.get("ym") or ""),
         "branch_name": branch_name,
         "confirmed_by_name": str(tx.get("confirmed_by_admin_name") or "Diamond Admin").strip() or "Diamond Admin",
         "confirmed_at": str(tx.get("created_at") or ""),
@@ -40773,6 +40774,7 @@ def _refund_receipt_snapshot_from_rows(refund: dict[str, Any], transaction: dict
         "payment_status": str(refund.get("status_after") or PAYMENT_STATUS_UNPAID),
         "payment_method": str(transaction.get("payment_method") or "cash").strip().lower(),
         "payment_type": "refund_full" if refund_type == "full" else "refund_partial",
+        "payment_month": str(transaction.get("ym") or transaction.get("payment_month") or ""),
         "branch_name": branch_name,
         "confirmed_by_name": str(refund.get("refunded_by_admin_name") or "Diamond Admin").strip() or "Diamond Admin",
         "confirmed_at": str(refund.get("created_at") or ""),
@@ -40792,12 +40794,12 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
     columns; no current obligation data is used.
     """
     snapshot = _safe_json_object(receipt.get("snapshot_json"))
-    required = {"amount", "total_paid_amount", "remaining_amount", "overpayment_amount", "payment_status", "discount_amount", "discount_percent"}
+    required = {"amount", "total_paid_amount", "remaining_amount", "overpayment_amount", "payment_status", "discount_amount", "discount_percent", "payment_month"}
     if required.issubset(snapshot):
         receipt["snapshot"] = snapshot
         return receipt
     cur.execute(
-        "SELECT tx.id, tx.obligation_id, tx.amount, tx.remaining_after, tx.overpayment_after, tx.status_after, tx.created_at, "
+        "SELECT tx.id, tx.obligation_id, tx.ym, tx.amount, tx.remaining_after, tx.overpayment_after, tx.status_after, tx.created_at, "
         "o.discount_amount, o.discount_percent "
         "FROM payment_transactions tx LEFT JOIN payment_monthly_obligations o ON o.id=tx.obligation_id "
         "WHERE tx.id=? LIMIT 1",
@@ -40817,6 +40819,7 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
         ),
     )
     fields.update(_receipt_discount_snapshot(transaction))
+    fields["payment_month"] = str(transaction.get("ym") or "")
     missing = {key: value for key, value in fields.items() if key not in snapshot}
     if missing:
         snapshot.update(missing)
@@ -44877,7 +44880,7 @@ def _load_refund_receipt_for_admin(refund_id: int, user: dict[str, Any]) -> tupl
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """SELECT r.*, tx.payment_method, tx.is_advance,
+        """SELECT r.*, tx.payment_method, tx.is_advance, tx.ym AS payment_month,
            TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
            g.name AS group_name, g.subject AS subject_name, g.course_title, g.owner_admin_id,
            TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
@@ -45042,6 +45045,21 @@ def _receipt_money(value: Any) -> str:
     return rendered[:-3] if rendered.endswith(".00") else rendered
 
 
+def _receipt_month_label(value: Any) -> str:
+    """Render the persisted payment-obligation month in Uzbek for a receipt."""
+    matched = re.fullmatch(r"(\d{4})-(\d{2})", str(value or "").strip())
+    if not matched:
+        return "-"
+    month_number = int(matched.group(2))
+    month_names = (
+        "Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun",
+        "Iyul", "Avgust", "Sentyabr", "Oktyabr", "Noyabr", "Dekabr",
+    )
+    if not 1 <= month_number <= len(month_names):
+        return "-"
+    return f"{month_names[month_number - 1]} {matched.group(1)}"
+
+
 def _receipt_wrap_line(value: Any, width: int) -> list[str]:
     text = " ".join(str(value or "-").replace("\r", " ").replace("\n", " ").split()) or "-"
     result: list[str] = []
@@ -45086,6 +45104,7 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     ]
     details = [
         ("O'quvchi", snapshot.get("student_name")), ("Guruh", snapshot.get("group_name")),
+        ("Oy uchun", f"{_receipt_month_label(snapshot.get('payment_month'))} uchun"),
         ("Fan", snapshot.get("subject_name")), ("O'qituvchi", teachers), ("To'lov usuli", method),
         ("Tasdiqladi", snapshot.get("confirmed_by_name")), ("Sana", _receipt_timestamp_tashkent(snapshot.get("confirmed_at"))),
         *([("Izoh", snapshot.get("refund_note"))] if is_refund and snapshot.get("refund_note") else []),
@@ -45146,7 +45165,7 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         brand, *([branch_line] if branch_line else []), "",
         document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
         f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
-        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
+        f"Oy uchun: {_receipt_month_label(snapshot.get('payment_month'))} uchun", f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
         f"JAMI TO'LANGAN: {float(snapshot.get('total_paid_amount') or 0):,.2f} so'm",
         f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
         f"To'lov usuli: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",

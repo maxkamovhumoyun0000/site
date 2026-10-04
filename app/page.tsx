@@ -17346,13 +17346,13 @@ function AdminSection({
           { token },
         ),
         requestJson<GenericRow>(
-          `/admin/payments/students/${selectedStudentId}/detail?ym=${encodeURIComponent(paymentsMonthFilter)}&include_history=false`,
+          `/admin/payments/students/${selectedStudentId}/detail?ym=${encodeURIComponent(paymentsMonthFilter)}&include_history=true`,
           { token },
         ),
       ]);
       setPaymentsCalcModal(calcPayload || null);
       setPaymentsDetail(detailPayload || null);
-      _derivePaymentConfirmDraft(detailPayload || null, paymentsMonthFilter, paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined);
+      _derivePaymentConfirmDraft(detailPayload || null, String(detailPayload?.default_ym || paymentsMonthFilter), paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined);
       setPaymentsCalcPopupOpen(true);
     } finally {
       setPaymentsCalcLoading(false);
