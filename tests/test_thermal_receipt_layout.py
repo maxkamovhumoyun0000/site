@@ -66,6 +66,13 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn('_RECEIPT_ESC_CUT = b"\\x1dV\\x42\\x04"', BACKEND)
         self.assertNotIn('b"\\n" + _RECEIPT_ESC_CUT', receipt_source)
 
+    def test_receipt_ejects_the_footer_outside_the_printer_before_cutting(self) -> None:
+        """The final confirmation/date/ID rows must not remain behind the XP-58IIL mouth."""
+        receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        self.assertIn('_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\\x1bJ\\x40"', BACKEND)
+        self.assertIn("job.extend(_RECEIPT_ESC_EJECT_BEFORE_CUT)", receipt_source)
+        self.assertLess(receipt_source.index("job.extend(_RECEIPT_ESC_EJECT_BEFORE_CUT)"), receipt_source.index("job.extend(_RECEIPT_ESC_CUT)"))
+
     def test_receipt_shows_applied_discount_amount_on_thermal_and_pdf_outputs(self) -> None:
         """A non-zero saved monthly discount must be visible on both printable formats."""
         receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
