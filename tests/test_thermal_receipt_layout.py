@@ -48,6 +48,18 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("O‘rnatishdan keyin tekshirish", DEVELOPER_WORKSPACE)
         self.assertIn("taxminan 18 mm", DEVELOPER_WORKSPACE)
 
+    def test_downloaded_agents_start_with_the_primary_xp58iil_profile(self) -> None:
+        """Every newly downloaded agent must begin with the working primary-printer dimensions."""
+        root = Path(__file__).resolve().parents[1]
+        agent = (root / "public" / "downloads" / "diamond-print-agent.py").read_text(encoding="utf-8")
+        guide = (root / "app" / "ui" / "developer-workspace.tsx").read_text(encoding="utf-8")
+        readme = (root / "public" / "downloads" / "LOCAL_PRINT_AGENT_README.md").read_text(encoding="utf-8")
+        self.assertIn('"paper_width_mm": 56.0', agent)
+        self.assertIn('"side_padding_mm": 1.5', agent)
+        self.assertIn('"line_width": LINE_WIDTH', agent)
+        self.assertIn("Yuklab olinadigan yangi agent ham aynan shu standart profil", guide)
+        self.assertIn("56 mm / 1.5 mm / 35 belgi", readme)
+
     def test_developer_printer_guide_is_one_clear_installation_flow(self) -> None:
         """The developer sees one installation guide, not duplicate download instructions."""
         self.assertIn("Agent + drayverni o‘rnatish", DEVELOPER_WORKSPACE)
