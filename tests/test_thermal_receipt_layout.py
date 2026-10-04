@@ -56,6 +56,16 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertNotIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON", receipt_source)
         self.assertNotIn("b\"-\" * width", receipt_source)
 
+    def test_receipt_shows_applied_discount_amount_on_thermal_and_pdf_outputs(self) -> None:
+        """A non-zero saved monthly discount must be visible on both printable formats."""
+        receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf_source = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
+        snapshot_source = BACKEND.split("def _receipt_snapshot_from_transaction", 1)[1].split("def _refund_receipt_snapshot_from_rows", 1)[0]
+        self.assertIn('("Chegirma", f"{_receipt_money(snapshot.get(\'discount_amount\'))} SO\'M")', receipt_source)
+        self.assertIn('f"CHEGIRMA: {float(snapshot.get(\'discount_amount\') or 0):,.2f} so\'m"', pdf_source)
+        self.assertIn("o.discount_amount", snapshot_source)
+        self.assertIn('"discount_amount":', snapshot_source)
+
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
