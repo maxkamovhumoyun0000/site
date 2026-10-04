@@ -204,6 +204,13 @@ def decode_print_document(raw: object) -> bytes:
     return document
 
 
+def force_compact_font_document(document: bytes) -> bytes:
+    """Force Font B for every job before it reaches either XP-58 printer."""
+    return document.replace(ESC_FONT_COMPACT, ESC_FONT_COMPACT_FOR_LEGACY).replace(
+        ESC_FONT_NORMAL, ESC_FONT_COMPACT_FOR_LEGACY
+    )
+
+
 def legacy_plain_text_document(document: bytes) -> bytes:
     """Keep formatting and eject controls, but remove unsupported cutter bytes.
 
@@ -231,7 +238,7 @@ def legacy_plain_text_document(document: bytes) -> bytes:
                 rendered.extend(ESC_FONT_COMPACT_FOR_LEGACY)
                 cursor += 3
                 continue
-            if command in (ord("t"), ord("a"), ord("E"), ord("J")) and cursor + 2 < len(document):
+            if command in (ord("t"), ord("a"), ord("E"), ord("!"), ord("J")) and cursor + 2 < len(document):
                 rendered.extend(document[cursor:cursor + 3])
                 cursor += 3
                 continue
@@ -375,6 +382,8 @@ def send_to_printer(document: bytes, printer: str, *, plain_text: bool = False) 
     selected = printer.strip() or default_printer()
     if plain_text:
         document = legacy_plain_text_document(document)
+    else:
+        document = force_compact_font_document(document)
     if os.name == "nt":
         if not selected:
             raise RuntimeError("Windows default printer is not configured")
