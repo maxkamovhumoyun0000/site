@@ -45063,7 +45063,10 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     brand = _RECEIPT_BRAND
     branch = str(snapshot.get("branch_name") or "").strip()
     branch = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
-    title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
+    # A payment is clear from its financial rows, so omit its redundant title.
+    # Keep the refund title because it prevents a refund from being mistaken
+    # for an ordinary payment on a compact receipt.
+    title = "QAYTARISH CHEKI" if is_refund else ""
     # Font B is narrower than the title/student font, so it can use a few
     # more columns without overflowing the physical 56 mm print area.
     compact_width = min(42, max(width, width + 7))
@@ -45091,14 +45094,15 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
         for line in _receipt_wrap_line(branch, compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
     job.extend(_RECEIPT_ESC_ALIGN_LEFT + separator + b"\n")
-    job.extend(_RECEIPT_ESC_ALIGN_CENTER)
-    for line in _receipt_wrap_line(title, compact_width):
-        job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend(_RECEIPT_ESC_ALIGN_LEFT + separator + b"\n" + _RECEIPT_ESC_FONT_NORMAL)
-    for label, value in details[:4]:
-        for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
+    if title:
+        job.extend(_RECEIPT_ESC_ALIGN_CENTER)
+        for line in _receipt_wrap_line(title, compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend(_RECEIPT_ESC_FONT_COMPACT + separator + b"\n")
+        job.extend(_RECEIPT_ESC_ALIGN_LEFT + separator + b"\n")
+    for label, value in details[:4]:
+        for line in _receipt_wrap_line(f"{label}: {value or '-'}", compact_width):
+            job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(separator + b"\n")
     for label, value in totals:
         for line in _receipt_wrap_line(f"{label}: {value}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
