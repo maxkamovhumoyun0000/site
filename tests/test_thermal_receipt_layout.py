@@ -161,6 +161,21 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("o.discount_amount", snapshot_source)
         self.assertIn("_receipt_discount_snapshot(tx)", snapshot_source)
 
+    def test_receipt_names_the_month_the_payment_actually_closes(self) -> None:
+        """Late payments must print their unpaid target month, not the calendar day they were received."""
+        thermal = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
+        transaction_snapshot = BACKEND.split("def _receipt_snapshot_from_transaction", 1)[1].split("def _refund_receipt_snapshot_from_rows", 1)[0]
+        self.assertIn('"payment_month": str(tx.get("ym") or "")', transaction_snapshot)
+        self.assertIn("def _receipt_month_label", BACKEND)
+        self.assertIn('(\"Oy uchun\", f\"{_receipt_month_label(snapshot.get(\'payment_month\'))} uchun\")', thermal)
+        self.assertIn('f"Oy uchun: {_receipt_month_label(snapshot.get(\'payment_month\'))} uchun"', pdf)
+
+    def test_payment_modal_defaults_to_the_oldest_unpaid_month(self) -> None:
+        """Selecting a student next month must pay their earlier unpaid obligation first."""
+        self.assertIn("&include_history=true", SOURCE)
+        self.assertIn("detailPayload?.default_ym", SOURCE)
+
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
