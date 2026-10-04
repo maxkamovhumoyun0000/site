@@ -217,8 +217,8 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
         self.assertIn("diamond-print-agent.py", installer)
 
-    def test_legacy_second_printer_matches_primary_footer_eject_without_cut_bytes(self) -> None:
-        """The second printer keeps the primary 18 mm footer margin, but never prints `42 04`."""
+    def test_legacy_second_printer_forces_compact_font_and_keeps_primary_footer_eject(self) -> None:
+        """The legacy printer stays compact and keeps the primary 18 mm footer without `42 04`."""
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
         spec = importlib.util.spec_from_file_location("diamond_print_agent_legacy", agent_path)
         self.assertIsNotNone(spec)
@@ -226,11 +226,12 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         assert spec and spec.loader
         spec.loader.exec_module(module)
 
-        source = module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
+        source = module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_FONT_NORMAL + b"Chek ID: TEST\n" + module.ESC_EJECT_BEFORE_CUT + module.ESC_CUT
         rendered = module.legacy_plain_text_document(source)
-        self.assertEqual(rendered, module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT + b"TEST\n" + module.ESC_EJECT_BEFORE_CUT)
+        self.assertEqual(rendered, module.ESC_INIT + module.ESC_ALIGN_CENTER + module.ESC_FONT_COMPACT_FOR_LEGACY + b"TEST\n" + module.ESC_FONT_COMPACT_FOR_LEGACY + b"Chek ID: TEST\n" + module.ESC_EJECT_BEFORE_CUT)
         self.assertNotIn(module.ESC_CUT, rendered)
         self.assertIn(module.ESC_EJECT_BEFORE_CUT, rendered)
+        self.assertNotIn(module.ESC_FONT_NORMAL, rendered)
         self.assertFalse(rendered.endswith(b"\n\n\n\n\n"))
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
