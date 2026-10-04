@@ -46,7 +46,7 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("Agent + drayverni o‘rnatish", DEVELOPER_WORKSPACE)
         self.assertIn("Administrator tasdiqlash oynasi", DEVELOPER_WORKSPACE)
         self.assertIn("O‘rnatishdan keyin tekshirish", DEVELOPER_WORKSPACE)
-        self.assertIn("taxminan 15 mm", DEVELOPER_WORKSPACE)
+        self.assertIn("taxminan 18 mm", DEVELOPER_WORKSPACE)
 
     def test_developer_printer_guide_is_one_clear_installation_flow(self) -> None:
         """The developer sees one installation guide, not duplicate download instructions."""
@@ -87,23 +87,23 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
     def test_receipt_ejects_the_footer_outside_the_printer_before_cutting(self) -> None:
         """The final confirmation/date/ID rows must not remain behind the XP-58IIL mouth."""
         receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
-        self.assertIn('_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\\x1bJ\\x78"', BACKEND)
+        self.assertIn('_RECEIPT_ESC_EJECT_BEFORE_CUT = b"\\x1bJ\\x90"', BACKEND)
         self.assertIn("job.extend(_RECEIPT_ESC_EJECT_BEFORE_CUT)", receipt_source)
         self.assertLess(receipt_source.index("job.extend(_RECEIPT_ESC_EJECT_BEFORE_CUT)"), receipt_source.index("job.extend(_RECEIPT_ESC_CUT)"))
 
     def test_downloaded_worker_and_developer_guide_explain_footer_eject(self) -> None:
-        """Newly installed workers must retain the 15 mm eject behavior and document it."""
+        """Newly installed workers must retain the 18 mm eject behavior and document it."""
         root = Path(__file__).resolve().parents[1]
         agent = (root / "public" / "downloads" / "diamond-print-agent.py").read_text(encoding="utf-8")
         guide = (root / "app" / "ui" / "developer-workspace.tsx").read_text(encoding="utf-8")
         linux_installer = (root / "public" / "downloads" / "install-diamond-print-agent-linux.sh").read_text(encoding="utf-8")
         windows_installer = (root / "public" / "downloads" / "install-diamond-print-agent-windows.ps1").read_text(encoding="utf-8")
 
-        self.assertIn('ESC_EJECT_BEFORE_CUT = b"\\x1bJ\\x78"', agent)
+        self.assertIn('ESC_EJECT_BEFORE_CUT = b"\\x1bJ\\x90"', agent)
         self.assertIn("ESC_EJECT_BEFORE_CUT + ESC_CUT", agent)
-        self.assertIn("15 mm", guide)
-        self.assertIn("15 mm", linux_installer)
-        self.assertIn("15 mm", windows_installer)
+        self.assertIn("18 mm", guide)
+        self.assertIn("18 mm", linux_installer)
+        self.assertIn("18 mm", windows_installer)
 
     def test_agent_installers_prepare_a_safe_raw_thermal_driver(self) -> None:
         """Installing the agent must also prepare a local printer queue without targeting A4 queues."""
@@ -130,6 +130,14 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         agent = (Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py").read_text(encoding="utf-8")
         self.assertIn('b"DIAMOND EDUCATION\\n"', agent)
         self.assertIn("ESC_FONT_COMPACT", agent)
+
+    def test_refund_receipt_keeps_thermal_and_browser_fallback_text_compact(self) -> None:
+        """Refund titles, rows and notes must not grow larger than a payment receipt."""
+        thermal = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
+        self.assertIn("_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_FONT_COMPACT", thermal)
+        self.assertIn("refund_font_size = 7", pdf)
+        self.assertIn("fontsize=refund_font_size if is_refund else 8", pdf)
 
     def test_receipt_shows_applied_discount_amount_on_thermal_and_pdf_outputs(self) -> None:
         """A non-zero saved monthly discount must be visible on both printable formats."""
