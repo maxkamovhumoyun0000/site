@@ -2,6 +2,12 @@
 
 Bu agent chek tasdiqlangach uni lokal termal printerga dialogsiz yuboradi. U faqat shu kompyuterning `127.0.0.1:18765` manzilida ishlaydi; internetga yoki serverga printer ochilmaydi.
 
+## Standart XP-58IIL profili
+
+Developer sahifasidan yuklab olingan barcha yangi agentlar birinchi ishlayotgan
+printer bilan bir xil boshlang‘ich o‘lchamdan foydalanadi: **56 mm / 1.5 mm / 35 belgi**. Developer → **Lokal chek printeri** sahifasida o‘lchamni o‘zgartirib
+saqlasangiz, u faqat o‘sha kompyuter agentida doimiy saqlanadi.
+
 ## Windows o‘rnatish
 
 1. Printerni USB orqali ulang. Installer administrator oynasi orqali XP-58IIL uchun Generic/Text raw drayveri va `Diamond_XP58IIL` queue’ni avtomatik tayyorlaydi. Default printer qilish shart emas.

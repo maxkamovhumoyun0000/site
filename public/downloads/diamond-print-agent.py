@@ -202,20 +202,29 @@ def decode_print_document(raw: object) -> bytes:
 
 
 def legacy_plain_text_document(document: bytes) -> bytes:
-    """Remove ESC/POS controls for legacy printers that render commands as text.
+    """Keep safe formatting controls, but remove cut/feed controls from legacy output.
 
-    Some USB receipt mechanisms do not implement ESC/POS.  In particular they
-    visibly print the bytes from ``GS V B 04`` as ``42 04``.  The server remains
-    responsible for rendering the receipt; this compatibility path keeps only
-    its printable content and uses blank lines for a safe manual-tear margin.
+    Some USB receipt mechanisms visibly print the cutter bytes from ``GS V B
+    04`` as ``42 04``.  They can still understand the common compact-font and
+    alignment controls, which must be retained so this receipt matches the
+    primary XP-58IIL.  The server remains responsible for rendering; blank
+    lines provide a safe manual-tear margin instead of a raw feed/cut command.
     """
     rendered = bytearray()
     cursor = 0
     while cursor < len(document):
         current = document[cursor]
-        if current == 0x1B:  # ESC: initialise, code page, align, font, feed.
+        if current == 0x1B:  # ESC: retain formatting; remove only feed/unknown controls.
             command = document[cursor + 1] if cursor + 1 < len(document) else None
-            cursor += 2 if command == ord("@") else 3
+            if command == ord("@"):
+                rendered.extend(document[cursor:cursor + 2])
+                cursor += 2
+                continue
+            if command in (ord("t"), ord("a"), ord("E"), ord("M")) and cursor + 2 < len(document):
+                rendered.extend(document[cursor:cursor + 3])
+                cursor += 3
+                continue
+            cursor += 3 if cursor + 2 < len(document) else 2
             continue
         if current == 0x1D and document[cursor + 1:cursor + 3] == b"VB":  # GS V B n cut.
             cursor += 4
