@@ -4,8 +4,8 @@ Source: foydalanuvchining XP-58IIL chek qirqilishidan oldin oxirgi satrlar print
 
 | # | Kafolat | Test / buyruq | Natija |
 |---|---|---|---|
-| 1 | Server chekni qirqishdan oldin 8 mm chiqaradi | `python3 -m unittest tests/test_thermal_receipt_layout.py` | PASS |
-| 2 | Yuklab olinadigan agent test cheki uchun ham 8 mm chiqaradi, installerlar va Developer qo‘llanmasi buni tushuntiradi | `python3 -m unittest tests/test_thermal_receipt_layout.py` | PASS |
+| 1 | Server chekni qirqishdan oldin taxminan 13 mm chiqaradi | `python3 -m unittest tests/test_thermal_receipt_layout.py` | PASS |
+| 2 | Yuklab olinadigan agent test cheki uchun ham taxminan 13 mm chiqaradi, installerlar va Developer qo‘llanmasi buni tushuntiradi | `python3 -m unittest tests/test_thermal_receipt_layout.py` | PASS |
 | 3 | Developer sahifasida Windows/Linux uchun bitta qo‘llanma va 1–3 qadamli oqim bor; eski takroriy bloklar yo‘q | `python3 -m unittest tests/test_thermal_receipt_layout.py` | PASS |
 | 4 | Yuklab olinadigan agent Python sintaksisi to‘g‘ri va frontend lintdan o‘tadi | `python3 -m py_compile public/downloads/diamond-print-agent.py` ; `npm run lint` | PASS |
 

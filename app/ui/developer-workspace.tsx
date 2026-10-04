@@ -215,7 +215,7 @@ function LocalPrintAgentPanel() {
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Ikki chet bo‘shlig‘i (mm)<input type="number" min="0" max="4" step="0.1" value={settings.side_padding_mm} onChange={(event) => setSettings((previous) => ({ ...previous, side_padding_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Satr belgilari<input type="number" min="24" max="42" step="1" value={settings.line_width} onChange={(event) => setSettings((previous) => ({ ...previous, line_width: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>
       </div>
-      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Agent chekning mazmunini hisoblamaydi; server tayyorlagan hujjatni printerga yuboradi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval 8 mm tashqariga chiqariladi.</p>
+      <p className="mt-3 text-sm text-ink-500 dark:text-slate-400">XP-58IIL uchun tavsiya: 56 mm, 1.5 mm va 35 belgi. Agent chekning mazmunini hisoblamaydi; server tayyorlagan hujjatni printerga yuboradi. Oxirgi qatorlar printer ichida qolmasligi uchun chek kesilishidan avval taxminan 13 mm tashqariga chiqariladi.</p>
       <div className="mt-5 flex flex-wrap gap-3">
         <button type="button" className="btn btn-soft small" onClick={() => void check()} disabled={checking}>{checking ? "Tekshirilmoqda…" : "Holatni tekshirish"}</button>
         <button type="button" className="btn btn-primary small" onClick={() => void save()} disabled={!status?.online || saving}>{saving ? "Saqlanmoqda…" : "O‘lchamni saqlash"}</button>
@@ -252,7 +252,7 @@ function LocalPrintAgentPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-base font-black text-navy-900 dark:text-white">3-qadam: filialga ulash</h3>
-          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Pastda Filial nomi va Kompyuter nomini yozing, so‘ng <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing. Oxirida <strong>Test chek chiqarish</strong> orqali tekshiring. Chek kesilishidan oldin 8 mm tashqariga chiqadi.</p>
+          <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Pastda Filial nomi va Kompyuter nomini yozing, so‘ng <strong>Ushbu kompyuterni ulash</strong> tugmasini bosing. Oxirida <strong>Test chek chiqarish</strong> orqali tekshiring. Chek kesilishidan oldin taxminan 13 mm tashqariga chiqadi.</p>
         </div>
         <button type="button" className="btn btn-soft small" onClick={() => void loadAgents()} disabled={agentsLoading}>{agentsLoading ? "Yangilanmoqda…" : "Ro‘yxatni yangilash"}</button>
       </div>
