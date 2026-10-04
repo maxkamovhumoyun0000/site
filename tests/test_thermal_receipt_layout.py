@@ -39,6 +39,15 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("Driver buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
         self.assertIn("Server chekni yaratadi", DEVELOPER_WORKSPACE)
 
+    def test_developer_printer_guide_is_one_clear_installation_flow(self) -> None:
+        """The developer sees one installation guide, not duplicate download instructions."""
+        self.assertIn("Printer agentini o‘rnatish", DEVELOPER_WORKSPACE)
+        self.assertIn("1-qadam: o‘rnatish", DEVELOPER_WORKSPACE)
+        self.assertIn("2-qadam: sozlash", DEVELOPER_WORKSPACE)
+        self.assertIn("3-qadam: filialga ulash", DEVELOPER_WORKSPACE)
+        self.assertNotIn("1. Windows o‘rnatish — bir marta", DEVELOPER_WORKSPACE)
+        self.assertNotIn("2. Linux o‘rnatish — bir marta", DEVELOPER_WORKSPACE)
+
     def test_thermal_receipt_uses_compact_font_for_totals_note_and_receipt_id(self) -> None:
         """Long totals and refund notes must stay inside the 56mm print width."""
         receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
