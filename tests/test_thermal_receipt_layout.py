@@ -5,26 +5,22 @@ import unittest
 
 SOURCE = (Path(__file__).resolve().parents[1] / "app" / "page.tsx").read_text(encoding="utf-8")
 BACKEND = (Path(__file__).resolve().parents[1] / "backend" / "main.py").read_text(encoding="utf-8")
+DEVELOPER_WORKSPACE = (Path(__file__).resolve().parents[1] / "app" / "ui" / "developer-workspace.tsx").read_text(encoding="utf-8")
 
 
 class ThermalReceiptLayoutTests(unittest.TestCase):
-    def test_xprinter_receipt_is_compact_uzbek_only_with_a_small_side_inset(self) -> None:
-        """The 58mm roll has no application margin, only a compact content inset."""
-        receipt_source = SOURCE.split("function receiptPrintHtml", 1)[1].split("type ApiUser", 1)[0]
-        self.assertTrue("@page{size:48mm auto;margin:0}" in SOURCE)
-        self.assertTrue("body{width:48mm" in SOURCE)
-        self.assertTrue(".receipt{box-sizing:border-box;width:48mm" in SOURCE)
-        self.assertIn("padding:0 1.5mm", receipt_source)
-        self.assertIn("font:9.5px/1.16", receipt_source)
-        self.assertNotIn("Ученик", receipt_source)
-        self.assertNotIn("ТЕКУЩИЙ", receipt_source)
-        self.assertFalse('["Payment ID", snapshot.payment_id]' in SOURCE)
-        self.assertFalse('"TO\'LOV TASDIQLANDI"' in SOURCE)
-        self.assertFalse('"QAYTARISH TASDIQLANDI"' in SOURCE)
+    def test_xprinter_receipt_is_server_generated_and_compact(self) -> None:
+        """The 56mm printer gets a server-created raw document, not browser HTML."""
+        self.assertIn("page = doc.new_page(width=158.74", BACKEND)
+        self.assertIn("def _receipt_escpos_document", BACKEND)
+        self.assertNotIn("function receiptPrintHtml", SOURCE)
+        self.assertIn("printReceiptWithLocalAgent", SOURCE)
+        self.assertNotIn('"TO\'LOV TASDIQLANDI"', BACKEND)
+        self.assertNotIn('"QAYTARISH TASDIQLANDI"', BACKEND)
 
     def test_every_receipt_output_is_uzbek_only(self) -> None:
-        receipt_preview = SOURCE.split("receiptPreview", 1)[1].split("<section className=\"panel-card", 1)[0]
-        pdf_receipt = BACKEND.split("def _receipt_pdf", 1)[1].split("@app", 1)[0]
+        receipt_preview = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf_receipt = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
         for forbidden in ("ЧЕК", "Ученик", "Группа", "Курс", "Преподаватель", "ТЕКУЩИЙ", "ВОЗВРАТ", "ОСТАТОК", "ID чека"):
             self.assertNotIn(forbidden, receipt_preview)
             self.assertNotIn(forbidden, pdf_receipt)
@@ -42,6 +38,15 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn("Linux buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
         self.assertIn("Driver buyrug‘ini nusxalash", DEVELOPER_WORKSPACE)
         self.assertIn("Server chekni yaratadi", DEVELOPER_WORKSPACE)
+
+    def test_thermal_receipt_uses_compact_font_for_totals_note_and_receipt_id(self) -> None:
+        """Long totals and refund notes must stay inside the 56mm print width."""
+        receipt_source = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        self.assertIn("_RECEIPT_ESC_FONT_COMPACT", BACKEND)
+        self.assertIn("_RECEIPT_ESC_FONT_NORMAL", BACKEND)
+        self.assertIn("compact_width", receipt_source)
+        self.assertIn("details[4:]", receipt_source)
+        self.assertIn("job.extend(_RECEIPT_ESC_CUT)", receipt_source)
 
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"

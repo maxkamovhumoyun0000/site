@@ -45003,6 +45003,10 @@ _RECEIPT_ESC_ALIGN_LEFT = b"\x1ba\x00"
 _RECEIPT_ESC_ALIGN_CENTER = b"\x1ba\x01"
 _RECEIPT_ESC_BOLD_ON = b"\x1bE\x01"
 _RECEIPT_ESC_BOLD_OFF = b"\x1bE\x00"
+# Font B keeps long totals, refund notes and the receipt ID inside XP-58IIL's
+# 56 mm printable width. Restore Font A before the next printer job.
+_RECEIPT_ESC_FONT_COMPACT = b"\x1bM\x01"
+_RECEIPT_ESC_FONT_NORMAL = b"\x1bM\x00"
 _RECEIPT_BRAND = "DIAMOND EDUCATION"
 # Feed four default vertical-motion units (4 × 0.125 mm) before cutting so the
 # cutter has a clean 0.5 mm tail without reviving the driver's 210 mm page.
@@ -45051,6 +45055,9 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     branch = str(snapshot.get("branch_name") or "").strip()
     branch = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
     title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
+    # Font B is narrower than the title/student font, so it can use a few
+    # more columns without overflowing the physical 56 mm print area.
+    compact_width = min(42, max(width, width + 7))
     totals = [
         ("Qaytarildi" if is_refund else "Joriy to'lov", f"{_receipt_money(snapshot.get('amount'))} SO'M"),
         ("Jami to'langan", f"{_receipt_money(snapshot.get('total_paid_amount'))} SO'M"),
@@ -45077,13 +45084,15 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
         for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
     job.extend((b"-" * width) + b"\n")
+    job.extend(_RECEIPT_ESC_FONT_COMPACT)
     for label, value in totals:
-        for line in _receipt_wrap_line(f"{label}: {value}", width):
+        for line in _receipt_wrap_line(f"{label}: {value}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
     job.extend((b"-" * width) + b"\n")
     for label, value in details[4:]:
-        for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
+        for line in _receipt_wrap_line(f"{label}: {value or '-'}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(_RECEIPT_ESC_FONT_NORMAL)
     job.extend(_RECEIPT_ESC_CUT)
     return bytes(job)
 
