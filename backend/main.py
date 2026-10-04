@@ -40683,13 +40683,30 @@ def _receipt_financial_snapshot(transaction: dict[str, Any], *, total_paid_amoun
     }
 
 
+def _receipt_discount_snapshot(transaction: dict[str, Any]) -> dict[str, float]:
+    """Keep the applied monthly discount in a payment receipt's immutable snapshot."""
+    def _money(value: Any) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return round(max(0.0, numeric), 2) if math.isfinite(numeric) else 0.0
+
+    return {
+        "discount_amount": _money(transaction.get("discount_amount")),
+        "discount_percent": _money(transaction.get("discount_percent")),
+    }
+
+
 def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[dict[str, Any], dict[str, Any]] | tuple[None, None]:
     cur.execute(
         """SELECT tx.*, TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
            g.name AS group_name, g.subject AS subject_name, g.course_title, g.owner_admin_id AS branch_admin_id,
+           o.discount_amount, o.discount_percent,
            TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
            FROM payment_transactions tx JOIN users u ON u.id=tx.user_id
            LEFT JOIN groups g ON g.id=tx.group_id LEFT JOIN users t ON t.id=g.teacher_id
+           LEFT JOIN payment_monthly_obligations o ON o.id=tx.obligation_id
            WHERE tx.id=? LIMIT 1""",
         (int(transaction_id),),
     )
@@ -40710,6 +40727,7 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
         "subject_name": str(tx.get("subject_name") or tx.get("course_title") or "-").strip() or "-",
         "teachers": [str(tx.get("teacher_name") or "-").strip() or "-"],
         **_receipt_financial_snapshot(tx, total_paid_amount=total_paid_amount),
+        **_receipt_discount_snapshot(tx),
         "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
         "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
         "branch_name": branch_name,
@@ -40773,13 +40791,15 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
     columns; no current obligation data is used.
     """
     snapshot = _safe_json_object(receipt.get("snapshot_json"))
-    required = {"amount", "total_paid_amount", "remaining_amount", "overpayment_amount", "payment_status"}
+    required = {"amount", "total_paid_amount", "remaining_amount", "overpayment_amount", "payment_status", "discount_amount", "discount_percent"}
     if required.issubset(snapshot):
         receipt["snapshot"] = snapshot
         return receipt
     cur.execute(
-        "SELECT id, obligation_id, amount, remaining_after, overpayment_after, status_after, created_at "
-        "FROM payment_transactions WHERE id=? LIMIT 1",
+        "SELECT tx.id, tx.obligation_id, tx.amount, tx.remaining_after, tx.overpayment_after, tx.status_after, tx.created_at, "
+        "o.discount_amount, o.discount_percent "
+        "FROM payment_transactions tx LEFT JOIN payment_monthly_obligations o ON o.id=tx.obligation_id "
+        "WHERE tx.id=? LIMIT 1",
         (int(receipt.get("payment_transaction_id") or 0),),
     )
     transaction = dict(cur.fetchone() or {})
@@ -40795,6 +40815,7 @@ def _backfill_receipt_financial_snapshot(cur: Any, receipt: dict[str, Any], *, a
             payment_transaction_id=int(transaction.get("id") or 0),
         ),
     )
+    fields.update(_receipt_discount_snapshot(transaction))
     missing = {key: value for key, value in fields.items() if key not in snapshot}
     if missing:
         snapshot.update(missing)
@@ -45046,8 +45067,13 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     # Font B is narrower than the title/student font, so it can use a few
     # more columns without overflowing the physical 56 mm print area.
     compact_width = min(42, max(width, width + 7))
+    # Rules must use the same narrow font as payment method/date.  The normal
+    # Font A rule was visibly too wide on XP-58IIL and wrapped below itself.
+    separator = b"-" * compact_width
+    discount_amount = max(0.0, float(snapshot.get("discount_amount") or 0.0))
     totals = [
         ("Qaytarildi" if is_refund else "Joriy to'lov", f"{_receipt_money(snapshot.get('amount'))} SO'M"),
+        *([("Chegirma", f"{_receipt_money(snapshot.get('discount_amount'))} SO'M")] if discount_amount > 0 and not is_refund else []),
         ("Jami to'langan", f"{_receipt_money(snapshot.get('total_paid_amount'))} SO'M"),
         ("Qoldiq", f"{_receipt_money(snapshot.get('remaining_amount'))} SO'M"),
     ]
@@ -45058,25 +45084,25 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
         *([("Izoh", snapshot.get("refund_note"))] if is_refund and snapshot.get("refund_note") else []),
         ("Chek ID", receipt.get("receipt_id")),
     ]
-    job = bytearray(_RECEIPT_ESC_INIT + _RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON)
-    for line in _receipt_wrap_line(brand.upper(), width):
+    job = bytearray(_RECEIPT_ESC_INIT + _RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_FONT_COMPACT)
+    for line in _receipt_wrap_line(brand.upper(), compact_width):
         job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend(_RECEIPT_ESC_BOLD_OFF)
     if branch:
-        for line in _receipt_wrap_line(branch, width):
+        for line in _receipt_wrap_line(branch, compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend(_RECEIPT_ESC_ALIGN_LEFT + (b"-" * width) + b"\n")
-    job.extend(_RECEIPT_ESC_ALIGN_CENTER + _RECEIPT_ESC_BOLD_ON + title.encode("cp866", errors="replace") + b"\n" + _RECEIPT_ESC_BOLD_OFF)
-    job.extend(_RECEIPT_ESC_ALIGN_LEFT + (b"-" * width) + b"\n")
+    job.extend(_RECEIPT_ESC_ALIGN_LEFT + separator + b"\n")
+    job.extend(_RECEIPT_ESC_ALIGN_CENTER)
+    for line in _receipt_wrap_line(title, compact_width):
+        job.extend(line.encode("cp866", errors="replace") + b"\n")
+    job.extend(_RECEIPT_ESC_ALIGN_LEFT + separator + b"\n" + _RECEIPT_ESC_FONT_NORMAL)
     for label, value in details[:4]:
         for line in _receipt_wrap_line(f"{label}: {value or '-'}", width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend((b"-" * width) + b"\n")
-    job.extend(_RECEIPT_ESC_FONT_COMPACT)
+    job.extend(_RECEIPT_ESC_FONT_COMPACT + separator + b"\n")
     for label, value in totals:
         for line in _receipt_wrap_line(f"{label}: {value}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
-    job.extend((b"-" * width) + b"\n")
+    job.extend(separator + b"\n")
     for label, value in details[4:]:
         for line in _receipt_wrap_line(f"{label}: {value or '-'}", compact_width):
             job.extend(line.encode("cp866", errors="replace") + b"\n")
@@ -45105,11 +45131,13 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     brand = _RECEIPT_BRAND
     branch = str(snapshot.get("branch_name") or "").strip()
     branch_line = branch if branch.casefold() not in {"", brand.casefold(), "diamond education"} else ""
+    discount_amount = max(0.0, float(snapshot.get("discount_amount") or 0.0))
+    discount_line = [f"CHEGIRMA: {float(snapshot.get('discount_amount') or 0):,.2f} so'm"] if discount_amount > 0 and not is_refund else []
     lines = [
         brand, *([branch_line] if branch_line else []), "",
         document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
         f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
-        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm",
+        f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
         f"JAMI TO'LANGAN: {float(snapshot.get('total_paid_amount') or 0):,.2f} so'm",
         f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
         f"To'lov usuli: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",

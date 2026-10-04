@@ -64,7 +64,7 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn('("Chegirma", f"{_receipt_money(snapshot.get(\'discount_amount\'))} SO\'M")', receipt_source)
         self.assertIn('f"CHEGIRMA: {float(snapshot.get(\'discount_amount\') or 0):,.2f} so\'m"', pdf_source)
         self.assertIn("o.discount_amount", snapshot_source)
-        self.assertIn('"discount_amount":', snapshot_source)
+        self.assertIn("_receipt_discount_snapshot(tx)", snapshot_source)
 
     def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
