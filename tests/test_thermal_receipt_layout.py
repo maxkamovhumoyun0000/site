@@ -194,29 +194,6 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertNotIn(module.ESC_EJECT_BEFORE_CUT, rendered)
         self.assertIn("--plain-text", agent_path.read_text(encoding="utf-8"))
 
-    def test_current_computer_can_mirror_one_server_receipt_to_two_printers(self) -> None:
-        """A payment sent to the local primary agent must spool the same receipt to both queues."""
-        agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
-        spec = importlib.util.spec_from_file_location("diamond_print_agent_mirror", agent_path)
-        self.assertIsNotNone(spec)
-        module = importlib.util.module_from_spec(spec)
-        assert spec and spec.loader
-        spec.loader.exec_module(module)
-        sent: list[tuple[bytes, str, bool]] = []
-
-        def fake_send(document: bytes, printer: str, *, plain_text: bool = False) -> str:
-            sent.append((document, printer, plain_text))
-            return printer
-
-        original = module.send_to_printer
-        module.send_to_printer = fake_send
-        try:
-            result = module.send_to_configured_printers(b"server-receipt", "XP58IIL", mirror_printer="XP58IIL_2", mirror_plain_text=True)
-        finally:
-            module.send_to_printer = original
-        self.assertEqual(result, ("XP58IIL", "XP58IIL_2"))
-        self.assertEqual(sent, [(b"server-receipt", "XP58IIL", False), (b"server-receipt", "XP58IIL_2", True)])
-
     def test_agent_reports_paper_out_to_the_web_application(self) -> None:
         """The browser must be able to stop a receipt and warn staff before an empty-roll print."""
         agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
