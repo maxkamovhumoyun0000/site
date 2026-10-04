@@ -53,6 +53,9 @@ ESC_BOLD_ON = b"\x1bE\x01"
 ESC_BOLD_OFF = b"\x1bE\x00"
 ESC_FONT_COMPACT = b"\x1bM\x01"
 ESC_FONT_NORMAL = b"\x1bM\x00"
+# A few XP-58-compatible mechanisms ignore ESC M alone in raw mode.  ESC ! 1
+# explicitly selects Font B as well, matching the compact first-printer text.
+ESC_FONT_COMPACT_FOR_LEGACY = ESC_FONT_COMPACT + b"\x1b!\x01"
 # ESC J 144 feeds about 18 mm so a test receipt also exits the XP-58IIL mouth.
 ESC_EJECT_BEFORE_CUT = b"\x1bJ\x90"
 # GS V B n asks compatible cutters to cut after exactly n additional lines.
@@ -221,7 +224,14 @@ def legacy_plain_text_document(document: bytes) -> bytes:
                 rendered.extend(document[cursor:cursor + 2])
                 cursor += 2
                 continue
-            if command in (ord("t"), ord("a"), ord("E"), ord("M"), ord("J")) and cursor + 2 < len(document):
+            if command == ord("M") and cursor + 2 < len(document):
+                # Keep every legacy receipt line in Font B.  The server's
+                # terminal reset has no printable text after it, and allowing
+                # Font A here made the second XP-58 visibly larger.
+                rendered.extend(ESC_FONT_COMPACT_FOR_LEGACY)
+                cursor += 3
+                continue
+            if command in (ord("t"), ord("a"), ord("E"), ord("J")) and cursor + 2 < len(document):
                 rendered.extend(document[cursor:cursor + 3])
                 cursor += 3
                 continue
