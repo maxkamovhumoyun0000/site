@@ -1,4 +1,5 @@
 export type ServerPrintDocument = { receipt_id?: unknown; document_base64?: unknown };
+export type LocalPrinterPaperStatus = "ready" | "paper_out" | "unavailable" | "unknown";
 
 export const LOCAL_PRINT_AGENT_URL = "http://127.0.0.1:18765";
 export type LocalPrintAgentSettings = {
@@ -23,17 +24,42 @@ async function agentFetch(path: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-export async function localPrintAgentHealth(): Promise<{ online: boolean; printer?: string; printer_error?: string; settings?: LocalPrintAgentSettings }> {
+export async function localPrintAgentHealth(): Promise<{ online: boolean; printer?: string; printer_error?: string; paper_status?: LocalPrinterPaperStatus; paper_message?: string; settings?: LocalPrintAgentSettings }> {
   try {
     const response = await agentFetch("/health");
-    const payload = await response.json() as { ok?: boolean; printer?: string; printer_error?: string; settings?: LocalPrintAgentSettings };
-    return { online: response.ok && payload.ok === true, printer: payload.printer, printer_error: payload.printer_error, settings: payload.settings };
+    const payload = await response.json() as { ok?: boolean; printer?: string; printer_error?: string; paper_status?: LocalPrinterPaperStatus; paper_message?: string; settings?: LocalPrintAgentSettings };
+    return { online: response.ok && payload.ok === true, printer: payload.printer, printer_error: payload.printer_error, paper_status: payload.paper_status, paper_message: payload.paper_message, settings: payload.settings };
   } catch {
     return { online: false };
   }
 }
 
-export async function printReceiptWithLocalAgent(document: ServerPrintDocument): Promise<{ printed: boolean; error?: string }> {
+export function alertLocalPrinterPaperOut(message?: string): string {
+  const warning = message || "Printerda qog‘oz tugagan. Rulonni almashtiring va chekni qayta chiqaring.";
+  try {
+    const AudioContextConstructor = window.AudioContext;
+    if (!AudioContextConstructor) return warning;
+    const context = new AudioContextConstructor();
+    [0, 0.22, 0.44].forEach((offset) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.value = 880;
+      gain.gain.setValueAtTime(0.0001, context.currentTime + offset);
+      gain.gain.exponentialRampToValueAtTime(0.12, context.currentTime + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + offset + 0.16);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(context.currentTime + offset);
+      oscillator.stop(context.currentTime + offset + 0.17);
+    });
+    window.setTimeout(() => { void context.close(); }, 800);
+  } catch {
+    // A browser may block sound without a user gesture; the visible warning still remains.
+  }
+  return warning;
+}
+
+export async function printReceiptWithLocalAgent(document: ServerPrintDocument): Promise<{ printed: boolean; error?: string; paper_status?: LocalPrinterPaperStatus; paper_message?: string }> {
   const documentBase64 = String(document.document_base64 || "").trim();
   if (!documentBase64) return { printed: false, error: "server print document is missing" };
   try {
@@ -42,8 +68,8 @@ export async function printReceiptWithLocalAgent(document: ServerPrintDocument):
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ receipt_id: String(document.receipt_id || ""), document_base64: documentBase64 }),
     });
-    const result = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
-    return { printed: response.ok && result.ok === true, error: result.error };
+    const result = await response.json().catch(() => ({})) as { ok?: boolean; error?: string; paper_status?: LocalPrinterPaperStatus; paper_message?: string };
+    return { printed: response.ok && result.ok === true, error: result.error, paper_status: result.paper_status, paper_message: result.paper_message };
   } catch {
     return { printed: false, error: "local agent is unavailable" };
   }

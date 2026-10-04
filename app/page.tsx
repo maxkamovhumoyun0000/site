@@ -71,7 +71,7 @@ import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
 import { RESULT_TYPES, ResultCard } from "./ui/result-card";
-import { localPrintAgentHealth, printReceiptWithLocalAgent, type ServerPrintDocument } from "./ui/local-print-agent";
+import { alertLocalPrinterPaperOut, localPrintAgentHealth, printReceiptWithLocalAgent, type ServerPrintDocument } from "./ui/local-print-agent";
 function Settings3DToggle() {
   const tt = useWebT();
   const [isOff, setIsOff] = useState(false);
@@ -16905,6 +16905,9 @@ function AdminSection({
       : `/admin/receipts/${encodeURIComponent(receiptId)}/print`;
     try {
       const localAgent = await localPrintAgentHealth();
+      if (localAgent.paper_status === "paper_out") {
+        throw new Error(alertLocalPrinterPaperOut(localAgent.paper_message));
+      }
       const lineWidth = Number(localAgent.settings?.line_width || 35);
       const serverDocument = await requestJson<ServerPrintDocument>(printPath, {
         method: "POST",
@@ -16916,6 +16919,9 @@ function AdminSection({
       if (localResult.printed) {
         fallbackPopup?.close();
         return;
+      }
+      if (localResult.paper_status === "paper_out") {
+        throw new Error(alertLocalPrinterPaperOut(localResult.paper_message || localResult.error));
       }
       await openServerReceiptPdfForPrint(receipt, token, fallbackPopup);
     } catch (error) {

@@ -5,6 +5,7 @@ import { API_BASE } from "../public-data";
 import { SectionTitle } from "./primitives";
 import { useWebT } from "./web-i18n";
 import {
+  alertLocalPrinterPaperOut,
   localPrintAgentHealth,
   printReceiptWithLocalAgent,
   saveLocalPrintAgentSettings,
@@ -89,7 +90,7 @@ function LocalPrintAgentPanel() {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
-  const [status, setStatus] = useState<{ online: boolean; printer?: string; printer_error?: string; settings?: LocalPrintAgentSettings } | null>(null);
+  const [status, setStatus] = useState<{ online: boolean; printer?: string; printer_error?: string; paper_status?: "ready" | "paper_out" | "unavailable" | "unknown"; paper_message?: string; settings?: LocalPrintAgentSettings } | null>(null);
   const [settings, setSettings] = useState<LocalPrintAgentSettings>({ paper_width_mm: 56, side_padding_mm: 1.5, line_width: 35 });
   const [agents, setAgents] = useState<GenericRow[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
@@ -148,7 +149,11 @@ function LocalPrintAgentPanel() {
       const token = localStorage.getItem("diamond_token") || "";
       const document = await requestJson<ServerPrintDocument>("/developer/print-agents/test-document", { method: "POST", token });
       const result = await printReceiptWithLocalAgent(document);
-      setNotice(result.printed ? "Server yaratgan ixcham test cheki printerga yuborildi." : "Test yuborilmadi: agent yoki printerni tekshiring.");
+      setNotice(result.printed
+        ? "Server yaratgan ixcham test cheki printerga yuborildi."
+        : result.paper_status === "paper_out"
+          ? alertLocalPrinterPaperOut(result.paper_message || result.error)
+          : "Test yuborilmadi: agent yoki printerni tekshiring.");
     } catch {
       setNotice("Test hujjati serverdan olinmadi.");
     } finally {
@@ -200,8 +205,10 @@ function LocalPrintAgentPanel() {
   return <div className="flex flex-col gap-5 pb-12 animate-fade-in">
     <SectionTitle kicker="Developer Workspace" title="Lokal chek printeri" subtitle="Server chekni yaratadi, agent esa uni faqat shu kompyuterdagi XP-58IIL printeriga yuboradi." />
     <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
-      <div className={`rounded-2xl border p-4 text-sm font-bold ${status?.online && !status?.printer_error ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200" : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
-        {status?.online && !status?.printer_error ? `Agent tayyor: ${status.printer || "termal printer"}` : status?.online ? `Agent ishlayapti, lekin printer topilmadi: ${status.printer_error}` : "Agent topilmadi. Quyidagi bir bosqichli installer orqali shu kompyuterga o‘rnating."}
+      <div className={`rounded-2xl border p-4 text-sm font-bold ${status?.paper_status === "paper_out" ? "border-red-300 bg-red-50 text-red-800 dark:border-red-400/30 dark:bg-red-500/10 dark:text-red-200" : status?.online && !status?.printer_error ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-400/30 dark:bg-emerald-500/10 dark:text-emerald-200" : "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200"}`}>
+        {status?.paper_status === "paper_out"
+          ? status.paper_message || "Printerda qog‘oz tugagan. Rulonni almashtiring."
+          : status?.online && !status?.printer_error ? `Agent tayyor: ${status.printer || "termal printer"}` : status?.online ? `Agent ishlayapti, lekin printer topilmadi: ${status.printer_error}` : "Agent topilmadi. Quyidagi bir bosqichli installer orqali shu kompyuterga o‘rnating."}
       </div>
       <div className="mt-5 grid gap-4 sm:grid-cols-3">
         <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Qog‘oz eni (mm)<input type="number" min="48" max="58" step="0.1" value={settings.paper_width_mm} onChange={(event) => setSettings((previous) => ({ ...previous, paper_width_mm: Number(event.target.value) }))} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-navy-900 dark:border-white/15 dark:text-white" /></label>

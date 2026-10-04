@@ -56,6 +56,11 @@ ESC_BOLD_OFF = b"\x1bE\x00"
 # (4 × 0.125 mm = 0.5 mm) before cutting, without a driver-sized page tail.
 ESC_CUT = b"\x1dV\x42\x04"
 THERMAL_PRINTER_PATTERN = re.compile(r"(?:xp[-_ ]?58|xprinter|thermal|receipt|pos[-_ ]?58|58mm|tm[-_ ]?t)", re.IGNORECASE)
+PAPER_OUT_MARKERS = (
+    "media-empty", "media empty", "out of paper", "paper out", "paper-empty", "paper empty", "no paper",
+)
+UNAVAILABLE_MARKERS = ("disabled", "stopped", "offline", "unavailable", "not accepting")
+PAPER_OUT_MESSAGE = "Printerda qog'oz tugagan. Rulonni almashtiring va qayta urinib ko'ring."
 
 
 def default_settings_path() -> Path:
@@ -335,6 +340,47 @@ def detected_printer_name(configured: str) -> tuple[str, str]:
         return "", str(exc)
 
 
+def paper_status_from_text(value: object) -> str:
+    """Classify only explicit driver/CUPS state; unknown never pretends the roll is present."""
+    text = " ".join(str(value or "").lower().replace("_", "-").split())
+    if any(marker in text for marker in PAPER_OUT_MARKERS):
+        return "paper_out"
+    if any(marker in text for marker in UNAVAILABLE_MARKERS):
+        return "unavailable"
+    if any(marker in text for marker in (" is idle", " ready", " enabled", "printing")):
+        return "ready"
+    return "unknown"
+
+
+def printer_paper_status(printer: str) -> tuple[str, str]:
+    """Return a conservative paper state without sending or retaining a receipt.
+
+    CUPS exposes media-empty for drivers that implement it. Many Windows USB
+    drivers do not expose a consumable state to raw spooler clients, so the
+    caller keeps that result as unknown and also classifies print errors.
+    """
+    if not printer:
+        return "unavailable", "Termal printer topilmadi."
+    if os.name == "nt":
+        return "unknown", "Windows drayveri qog'oz holatini bermadi; chop etish xatosi kuzatiladi."
+    if not shutil.which("lpstat"):
+        return "unknown", "CUPS qog'oz holatini o'qib bo'lmadi."
+    completed = subprocess.run(["lpstat", "-l", "-p", printer], check=False, capture_output=True, text=True)
+    details = f"{completed.stdout}\n{completed.stderr}"
+    state = paper_status_from_text(details)
+    if state == "paper_out":
+        return state, PAPER_OUT_MESSAGE
+    if completed.returncode != 0 or state == "unavailable":
+        return "unavailable", (completed.stderr.strip() or "Printer tayyor emas.")
+    if state == "ready":
+        return state, ""
+    return "unknown", "Printer drayveri qog'oz holatini aniq bermadi."
+
+
+class PrinterPaperOutError(RuntimeError):
+    """A distinct error lets the website avoid opening an incorrect PDF fallback."""
+
+
 def report_agent_heartbeat(settings: dict[str, float | int | str], printer_name: str) -> bool:
     """Send an agent heartbeat containing only station health, never receipt data."""
     agent_id = str(settings.get("agent_id") or "").strip()
@@ -413,10 +459,16 @@ class AgentHandler(BaseHTTPRequestHandler):
             self.reply(HTTPStatus.FORBIDDEN, {"ok": False, "error": "origin is not allowed"})
             return
         printer, printer_error = detected_printer_name(self.server.printer)
+        paper_status, paper_message = (
+            ("unavailable", printer_error or "Termal printer topilmadi.")
+            if printer_error else printer_paper_status(printer)
+        )
         self.reply(HTTPStatus.OK, {
             "ok": True,
             "printer": printer,
             "printer_error": printer_error,
+            "paper_status": paper_status,
+            "paper_message": paper_message,
             "settings": sanitized_settings(self.server.settings),
         })
 
@@ -438,13 +490,28 @@ class AgentHandler(BaseHTTPRequestHandler):
                 threading.Thread(target=report_agent_heartbeat, args=(self.server.settings, printer_name), daemon=True).start()
                 self.reply(HTTPStatus.OK, {"ok": True, "settings": sanitized_settings(self.server.settings)})
                 return
+            printer, printer_error = detected_printer_name(self.server.printer)
+            if printer_error:
+                raise RuntimeError(printer_error)
+            paper_status, paper_message = printer_paper_status(printer)
+            if paper_status == "paper_out":
+                raise PrinterPaperOutError(paper_message)
             document = decode_print_document(payload)
-            printer = send_to_printer(document, self.server.printer)
-            self.reply(HTTPStatus.OK, {"ok": True, "printer": printer})
+            printer = send_to_printer(document, printer)
+            self.reply(HTTPStatus.OK, {"ok": True, "printer": printer, "paper_status": paper_status, "paper_message": paper_message})
         except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
             self.reply(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+        except PrinterPaperOutError as exc:
+            self.reply(HTTPStatus.CONFLICT, {"ok": False, "error": str(exc), "paper_status": "paper_out", "paper_message": str(exc)})
         except Exception as exc:  # Printer errors must reach the website, not logs with receipt data.
-            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+            paper_status = paper_status_from_text(exc)
+            paper_message = PAPER_OUT_MESSAGE if paper_status == "paper_out" else ""
+            self.reply(HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False,
+                "error": paper_message or str(exc),
+                "paper_status": paper_status,
+                "paper_message": paper_message,
+            })
 
 
 def main() -> int:
