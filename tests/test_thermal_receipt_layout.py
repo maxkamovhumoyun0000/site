@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib.util
 import unittest
 
 
@@ -27,6 +28,23 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         for forbidden in ("ЧЕК", "Ученик", "Группа", "Курс", "Преподаватель", "ТЕКУЩИЙ", "ВОЗВРАТ", "ОСТАТОК", "ID чека"):
             self.assertNotIn(forbidden, receipt_preview)
             self.assertNotIn(forbidden, pdf_receipt)
+
+    def test_linux_agent_selects_thermal_printer_without_a_default_queue(self) -> None:
+        agent_path = Path(__file__).resolve().parents[1] / "public" / "downloads" / "diamond-print-agent.py"
+        spec = importlib.util.spec_from_file_location("diamond_print_agent", agent_path)
+        self.assertIsNotNone(spec)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+
+        self.assertEqual(module.choose_linux_printer(["Office_A4", "XP-58IIL"], "Office_A4"), "XP-58IIL")
+        self.assertEqual(module.choose_linux_printer(["Receipt_USB"], ""), "Receipt_USB")
+        with self.assertRaisesRegex(RuntimeError, "DIAMOND_PRINTER"):
+            module.choose_linux_printer(["Office_A4", "Warehouse_A4"], "")
+
+        installer = (agent_path.parent / "install-diamond-print-agent-linux.sh").read_text(encoding="utf-8")
+        self.assertIn("systemctl --user enable --now diamond-print-agent.service", installer)
+        self.assertIn("diamond-print-agent.py", installer)
 
 
 if __name__ == "__main__":
