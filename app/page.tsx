@@ -18642,7 +18642,7 @@ function AdminSection({
               </span>
               <div>
                 <p className="font-bold text-sm text-navy-900 dark:text-white">Faolsiz o'quvchilar tozalash</p>
-                <p className="text-xs text-ink-500 dark:text-navy-400">60+ kun kirmagan, guruhi va to'lovi yo'q o'quvchilar</p>
+                <p className="text-xs text-ink-500 dark:text-navy-400">Barcha adminlardagi 60+ kun aktiv guruhga qo'shilmagan bloklangan o'quvchilar</p>
               </div>
             </div>
             <svg

@@ -49204,23 +49204,27 @@ async def admin_delete_user(user_id: int, authorization: str | None = Header(def
 
 
 
-def _find_inactive_students(admin_ref: int, months: int = 2) -> list[dict]:
-    """2 oydan ortiq hech qanday aktiv guruhda bo'lmagan o'quvchilarni qaytaradi."""
+def _find_inactive_students(months: int = 2) -> list[dict]:
+    """Return inactive, blocked student records across every admin scope.
+
+    This is intentionally global: the Admin desktop app needs one central
+    cleanup queue rather than a per-owner list.  The route is still protected
+    by the admin role and the irreversible purge requires an explicit client
+    confirmation.
+    """
     from datetime import datetime, timezone, timedelta
     cutoff = (datetime.now(tz=timezone.utc) - timedelta(days=30 * months)).strftime("%Y-%m-%d")
     conn = get_conn()
     cur = conn.cursor()
-    # O'quvchilar ro'yxati shu adminga tegishli
+    # Global queue: do not constrain rows by owner_admin_id.
     cur.execute(
         """
         SELECT u.id, u.first_name, u.last_name, u.phone, u.login_type, u.owner_admin_id,
                u.created_at
         FROM users u
-        WHERE u.owner_admin_id = ?
-          AND u.login_type IN (1, 6)
+        WHERE u.login_type IN (1, 6)
           AND (u.blocked IS NULL OR u.blocked != 0)
-        """,
-        (admin_ref,),
+        """
     )
     all_students = [dict(r) for r in (cur.fetchall() or [])]
     # Guruh memberligi
@@ -49229,9 +49233,8 @@ def _find_inactive_students(admin_ref: int, months: int = 2) -> list[dict]:
         SELECT gm.user_id, g.active, COALESCE(gm.joined_at, g.created_at, ?) as last_active
         FROM group_members gm
         JOIN groups g ON g.id = gm.group_id
-        WHERE g.owner_admin_id = ?
         """,
-        (cutoff, admin_ref),
+        (cutoff,),
     )
     member_rows = cur.fetchall() or []
     conn.close()
@@ -49257,6 +49260,9 @@ def _find_inactive_students(admin_ref: int, months: int = 2) -> list[dict]:
                 "phone": str(s.get("phone") or ""),
                 "login_type": int(s.get("login_type") or 0),
                 "last_active_group": last_active or None,
+                # Kept as an alias for existing web/mobile clients that label
+                # the column as "last active" rather than "last active group".
+                "last_active": last_active or None,
                 "created_at": str(s.get("created_at") or ""),
             })
     return inactive
@@ -49267,13 +49273,12 @@ async def admin_inactive_students_preview(
     months: int = 2,
     authorization: str | None = Header(default=None),
 ):
-    """2 oydan ortiq (default) hech qanday aktiv guruhda bo'lmagan o'quvchilar ro'yxati."""
+    """Global inactive queue across all admin-owned student records."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
-    admin_ref = _admin_ref_id(user)
     if months < 1 or months > 24:
         raise HTTPException(status_code=400, detail="months must be between 1 and 24")
-    students = _find_inactive_students(admin_ref, months=months)
+    students = _find_inactive_students(months=months)
     return {"inactive_count": len(students), "months": months, "students": students}
 
 
@@ -49283,14 +49288,14 @@ async def admin_inactive_students_purge(
     dry_run: bool = False,
     authorization: str | None = Header(default=None),
 ):
-    """2 oydan ortiq hech qanday aktiv guruhda bo'lmagan o'quvchilarni o'chiradi.
+    """Globally purge inactive student records across every admin scope.
     dry_run=true bo'lsa faqat preview, o'chirish amalga oshirilmaydi."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
     if months < 1 or months > 24:
         raise HTTPException(status_code=400, detail="months must be between 1 and 24")
-    students = _find_inactive_students(admin_ref, months=months)
+    students = _find_inactive_students(months=months)
     if dry_run:
         return {
             "dry_run": True,
