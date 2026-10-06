@@ -1448,6 +1448,12 @@ class LoginRequest(BaseModel):
     client_app: str | None = None
 
 
+class PasswordReauthenticationRequest(BaseModel):
+    """A short-lived, in-session password proof for sensitive app sections."""
+
+    password: str = Field(min_length=1, max_length=256)
+
+
 class TelegramLoginRequest(BaseModel):
     telegram_id: int
     init_data: str | None = None
@@ -19669,6 +19675,47 @@ async def login(request: LoginRequest, req: Request):
     session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="login", device_model=request.device_model)
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+
+
+@app.post("/auth/reauthenticate")
+async def reauthenticate_password(
+    payload: PasswordReauthenticationRequest,
+    req: Request,
+    authorization: str | None = Header(default=None),
+):
+    """Verify the current signed-in user's normal password without a new login.
+
+    This is intentionally a proof-only endpoint: it never issues a token,
+    returns no password-derived data, and applies the existing throttle to
+    failed attempts. Clients use it before exposing payment controls.
+    """
+    user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0:
+        raise HTTPException(status_code=401, detail="Password confirmation failed")
+    client_ip = _client_ip(req)
+    user_key = f"reauth:user:{user_id}"
+    ip_key = f"reauth:ip:{client_ip}" if client_ip else ""
+    if is_login_throttled(user_key) or (
+        ip_key and is_login_throttled(ip_key, max_failures=LOGIN_IP_THROTTLE_MAX_FAILURES)
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many password attempts. Please try again later.",
+            headers={"Retry-After": str(LOGIN_THROTTLE_WINDOW_SEC)},
+        )
+    # Passwords are opaque values: preserve whitespace exactly as at login.
+    incoming = str(payload.password or "")
+    stored = str(user.get("password") or "")
+    if not incoming or not stored or not verify_password(incoming, stored):
+        record_login_failure(user_key)
+        if ip_key:
+            record_login_failure(ip_key)
+        raise HTTPException(status_code=401, detail="Password confirmation failed")
+    clear_login_throttle(user_key)
+    if ip_key:
+        clear_login_throttle(ip_key)
+    return {"verified": True}
 
 
 def _validate_mobile_telegram_login_token(value: str) -> str:
