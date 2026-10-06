@@ -5,6 +5,10 @@ import { createPortal } from "react-dom";
 import { resolveLocale, useWebT } from "./web-i18n";
 import { SharedTestEditor } from "./shared-test-editor";
 import { TestCompletionActions, diamondvoyTestContextKey, type TestReviewItem } from "./test-completion-actions";
+import {
+  diamondvoyAdminCommandForInput,
+  shouldShowDiamondvoyAdminCommands,
+} from "./diamondvoy-admin-commands";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const DIAMONDVOY_AVATAR = "/diamondvoy-avatar.jpg";
@@ -1738,6 +1742,7 @@ export function UniversalChat({
   const [chatActionId, setChatActionId] = useState<number | null>(null);
   const [visibleTimeId, setVisibleTimeId] = useState<string | null>(null);
   const [testReviewContext, setTestReviewContext] = useState<TestReviewContext | null>(null);
+  const [addStudentsWizardOpen, setAddStudentsWizardOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const aiFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2257,6 +2262,17 @@ export function UniversalChat({
       ? retryImages.map((url, index) => ({ url, preview: apiUrl(url), name: `image-${index + 1}` }))
       : images;
     if (!text && imageUrls.length === 0) return;
+    const command = isAdmin ? diamondvoyAdminCommandForInput(text) : null;
+    if (command === "add_students") {
+      if (!chatId) {
+        setError(tt("chat.admin.openExistingChat", "O‘quvchi qo‘shish uchun mavjud Diamondvoy chatini oching."));
+        return;
+      }
+      setInput("");
+      clearComposerImages();
+      setAddStudentsWizardOpen(true);
+      return;
+    }
     setSending(true);
     setError("");
     try {
@@ -2875,6 +2891,23 @@ export function UniversalChat({
         className="border-t-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-950/95 backdrop-blur-md px-4 sm:px-6 py-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]"
       >
         {ComposerImages}
+        {isAdmin && activeChatId && shouldShowDiamondvoyAdminCommands(input) && (
+          <div className="mb-2 rounded-2xl border border-cyan-200 bg-cyan-50 p-1 dark:border-cyan-400/25 dark:bg-cyan-500/10">
+            <button
+              type="button"
+              onClick={() => {
+                setInput("");
+                clearComposerImages();
+                setAddStudentsWizardOpen(true);
+              }}
+              className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm font-bold text-cyan-800 transition hover:bg-cyan-100 dark:text-cyan-100 dark:hover:bg-cyan-500/15"
+            >
+              <span className="text-lg">👥</span>
+              <span className="min-w-0 flex-1">{tt("chat.admin.addStudents", "O‘quvchi qo‘shish")}</span>
+              <code className="text-[11px] font-semibold opacity-75">/oquvchi-qoshish</code>
+            </button>
+          </div>
+        )}
         <div className="flex items-end gap-2.5">
           <input ref={aiFileInputRef} type="file" accept="image/jpeg,image/png,image/webp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" multiple className="hidden" onChange={(event) => handleFiles(event.target.files).catch(() => null)} />
           <button type="button" onClick={() => aiFileInputRef.current?.click()} disabled={uploading || images.length >= MAX_ATTACHMENTS} className="w-12 h-12 rounded-2xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-ink-700 dark:text-white disabled:opacity-50 active:translate-y-0.5 active:border-b-2 shadow-sm text-lg" title="Rasm yoki o‘qiladigan fayl biriktirish">
@@ -3249,6 +3282,38 @@ export function UniversalChat({
               )}
             </div>
           </div>
+        </div>
+      )}
+      {addStudentsWizardOpen && activeChatId && isAdmin && (
+        <div
+          className="fixed inset-0 z-[95] flex items-center justify-center bg-navy-950/65 p-3 backdrop-blur-sm"
+          onClick={() => setAddStudentsWizardOpen(false)}
+        >
+          <section
+            className="max-h-[92dvh] w-full max-w-2xl overflow-y-auto rounded-2xl shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+            aria-label={tt("chat.admin.addStudents", "O‘quvchi qo‘shish")}
+          >
+            <div className="flex justify-end bg-white px-2 pt-2 dark:bg-[#1A2332]">
+              <button
+                type="button"
+                onClick={() => setAddStudentsWizardOpen(false)}
+                className="grid h-9 w-9 place-items-center rounded-lg text-lg text-ink-500 hover:bg-surface-soft dark:text-navy-300 dark:hover:bg-white/10"
+                aria-label={tt("common.close", "Yopish")}
+              >
+                ×
+              </button>
+            </div>
+            <DiamondVoyAddStudentsWizard
+              chatId={activeChatId}
+              apiFetch={apiFetch}
+              onSuccess={() => {
+                setAddStudentsWizardOpen(false);
+                loadAiMessages(activeChatId).catch(() => null);
+                loadDiamondvoyChats().catch(() => null);
+              }}
+            />
+          </section>
         </div>
       )}
       {error && (
