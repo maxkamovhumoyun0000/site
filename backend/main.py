@@ -49493,6 +49493,7 @@ async def teacher_delete_group(group_id: int, authorization: str | None = Header
 
 @app.delete("/admin/groups/{group_id}/members/{student_id}")
 async def admin_remove_group_member(group_id: int, student_id: int, removed_at: str | None = Query(default=None), is_mistake: bool = Query(default=False), authorization: str | None = Header(default=None)):
+    started_at = time.perf_counter()
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
@@ -49503,11 +49504,20 @@ async def admin_remove_group_member(group_id: int, student_id: int, removed_at: 
     if not _can_manage_group(admin_ref, group) or not _can_manage_user_globally(admin_ref, student):
         raise HTTPException(status_code=403, detail="Permission denied")
     remove_user_from_group(int(student_id), int(group_id), removed_at=removed_at, is_mistake=is_mistake)
-    _clear_user_media_caches(int(student_id))
-    try:
-        _payment_prewarm_user_month_obligations(user_id=int(student_id), ym=_payment_ym_now())
-    except Exception:
-        pass
+    # Membership is already committed above.  Recalculation may touch several
+    # historical obligations, so never make the admin modal wait for it.
+    _clear_group_and_student_caches(int(group_id), [int(student_id)])
+    _payment_prewarm_users_month_async(
+        user_ids={int(student_id)},
+        reason="admin_remove_group_member",
+    )
+    logger.info(
+        "admin_group_member_removed group_id=%s student_id=%s mistake=%s response_ms=%.2f",
+        int(group_id),
+        int(student_id),
+        bool(is_mistake),
+        (time.perf_counter() - started_at) * 1000.0,
+    )
     return _group_membership_change_payload(int(group_id), int(student_id), "Student removed from group")
 
 
