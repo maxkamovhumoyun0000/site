@@ -6,7 +6,6 @@ export default [
     ignores: [
       ".next/**",
       "node_modules/**",
-      "frontend/**",
       "data/**",
       "**/*.d.ts",
     ],
