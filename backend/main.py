@@ -57,6 +57,7 @@ from userbot_manager import (
     start_userbot_queue_worker,
 )
 from passwords import generate_password, hash_password, verify_password
+from name_standardization import name_search_terms, normalize_new_latin_name
 from config import (
     ADMIN_CHAT_IDS,
     DATABASE_URL,
@@ -1582,6 +1583,11 @@ class GroupMemberAddRequest(BaseModel):
     joined_at: str | None = None
 
 
+class MiniGroupResolutionRequest(BaseModel):
+    action: Literal["convert_standard", "move_student"]
+    target_group_id: int | None = Field(default=None, gt=0)
+
+
 class ArticleCreateRequest(BaseModel):
     title: str
     content: str
@@ -1621,6 +1627,9 @@ class CourseCreateRequest(BaseModel):
     description_en: str | None = None
     price_text: str | None = None
     individual_price_text: str | None = None
+    mini_group_2_price_text: str | None = None
+    mini_group_3_price_text: str | None = None
+    mini_group_4_price_text: str | None = None
     cover_image_url: str | None = None
     status: Literal["draft", "published"] = "published"
     subject: str | None = None
@@ -1637,6 +1646,9 @@ class CourseUpdateRequest(BaseModel):
     description_en: str | None = None
     price_text: str | None = None
     individual_price_text: str | None = None
+    mini_group_2_price_text: str | None = None
+    mini_group_3_price_text: str | None = None
+    mini_group_4_price_text: str | None = None
     cover_image_url: str | None = None
     status: Literal["draft", "published"] | None = None
     subject: str | None = None
@@ -1810,6 +1822,13 @@ class AdminUserUpdateRequest(BaseModel):
     free_access: bool | None = None
 
 
+class StudentGroupPricingOverrideRequest(BaseModel):
+    """A negotiated monthly price or discount for one student in one group."""
+    mode: Literal["none", "fixed_price", "discount_percent"] = "none"
+    price_amount: float | None = Field(default=None, ge=0, le=100_000_000)
+    discount_percent: float | None = Field(default=None, ge=0, le=100)
+
+
 class AdminPasswordResetRequest(BaseModel):
     password: str | None = None
 
@@ -1939,8 +1958,8 @@ class PaymentExportRequest(BaseModel):
     date_to: str | None = None
 
 class TeacherStudentCreateRequest(BaseModel):
-    """Teacher tomonidan o'quvchi yaratish so'rovi. account_type MAJBURIY."""
-    account_type: Literal["student", "accountless"]
+    """Teacher tomonidan loginli o'quvchi yaratish so'rovi."""
+    account_type: Literal["student"] = "student"
     first_name: str
     last_name: str
     phone: str
@@ -2311,11 +2330,6 @@ class ReviewCreateRequest(BaseModel):
 
 class ReviewStatusRequest(BaseModel):
     status: Literal["approved", "rejected"] = "approved"
-
-
-class SmsSendRequest(BaseModel):
-    phone_number: str
-    message: str
 
 
 class VideoCreateRequest(BaseModel):
@@ -3224,7 +3238,7 @@ def _scope_staff_for_admin(users: list[dict], login_type_filter: tuple[int, ...]
     Teachers/support visibility is shared across admins (not owner-scoped).
     """
     if login_type_filter is None:
-        return [u for u in users if int(u.get("login_type") or 0) not in (1, 2, 6)]
+        return [u for u in users if int(u.get("login_type") or 0) not in (1, 2)]
     return [u for u in users if int(u.get("login_type") or 0) in login_type_filter]
 
 
@@ -3243,7 +3257,7 @@ def _can_manage_user(admin_ref_id: int, user_row: dict | None) -> bool:
         return False
     if _is_general_admin_scope(admin_ref_id):
         return True
-    if int(user_row.get("login_type") or 0) in (1, 2, 6):
+    if int(user_row.get("login_type") or 0) in (1, 2):
         return _limited_admin_owner_visible(int(admin_ref_id), user_row.get("owner_admin_id"))
     return True
 
@@ -6431,8 +6445,10 @@ def _role_from_login_type(login_type: int | None, login_id: str | None = None) -
         return "developer"
     if lt in (1, 2):
         return "student"
+    # Login type 6 was retired. A legacy row is handled as a student until the
+    # one-time migration converts it to the normal existing-student type.
     if lt == 6:
-        return "accountless"
+        return "student"
     if lt == 3:
         if lid.startswith("SUP"):
             return "support"
@@ -10708,6 +10724,9 @@ def _ensure_web_tables_inner() -> None:
                 description_en TEXT,
                 price_text TEXT,
                 individual_price_text TEXT,
+                mini_group_2_price_text TEXT,
+                mini_group_3_price_text TEXT,
+                mini_group_4_price_text TEXT,
                 cover_image_url TEXT,
                 status TEXT DEFAULT 'draft',
                 subject TEXT,
@@ -10729,6 +10748,9 @@ def _ensure_web_tables_inner() -> None:
                 description_en TEXT,
                 price_text TEXT,
                 individual_price_text TEXT,
+                mini_group_2_price_text TEXT,
+                mini_group_3_price_text TEXT,
+                mini_group_4_price_text TEXT,
                 cover_image_url TEXT,
                 status TEXT DEFAULT 'draft',
                 subject TEXT,
@@ -10969,6 +10991,9 @@ def _ensure_web_tables_inner() -> None:
         "ALTER TABLE web_payment_notifications ADD COLUMN IF NOT EXISTS source_key TEXT",
         "ALTER TABLE web_payment_notifications ADD COLUMN IF NOT EXISTS meta_json TEXT",
         "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS individual_price_text TEXT",
+        "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS mini_group_2_price_text TEXT",
+        "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS mini_group_3_price_text TEXT",
+        "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS mini_group_4_price_text TEXT",
         "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS subject TEXT",
         "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS title_uz TEXT",
         "ALTER TABLE web_courses ADD COLUMN IF NOT EXISTS title_ru TEXT",
@@ -14210,6 +14235,9 @@ def _serialize_course(row: dict, lang: str | None = None) -> dict:
         "description_en": str(row.get("description_en") or "").strip(),
         "price_text": str(row.get("price_text") or "").strip(),
         "individual_price_text": str(row.get("individual_price_text") or "").strip(),
+        "mini_group_2_price_text": str(row.get("mini_group_2_price_text") or "").strip(),
+        "mini_group_3_price_text": str(row.get("mini_group_3_price_text") or "").strip(),
+        "mini_group_4_price_text": str(row.get("mini_group_4_price_text") or "").strip(),
         "cover_image_url": _normalize_image_asset_url(str(row.get("cover_image_url") or "").strip() or None),
         "status": str(row.get("status") or "draft"),
         "subject": str(row.get("subject") or "").strip() or None,
@@ -15325,9 +15353,11 @@ def _serialize_group_row(row: dict) -> dict:
     linked_course = _safe_call(lambda: _get_course_by_id(int(course_id or 0)), None) if course_id else None
     course_title = str(row.get("course_title") or "").strip() or (str(linked_course.get("title") or "").strip() if linked_course else "")
     pricing_type = str(row.get("pricing_type") or "group").strip()
-    monthly_fee_text = str(row.get("monthly_fee_text") or "").strip() or (
-        (str(linked_course.get("individual_price_text") or "").strip() if pricing_type == "individual" else str(linked_course.get("price_text") or "").strip()) if linked_course else ""
+    dynamic_price, price_source = _course_price_text_for_group(linked_course, pricing_type, group_id)
+    mini_group_is_paused = pricing_type == "mini_group" and (
+        bool(row.get("mini_group_action_required")) or price_source == "mini_group_waiting_for_second_student"
     )
+    monthly_fee_text = None if mini_group_is_paused else (dynamic_price or str(row.get("monthly_fee_text") or "").strip())
     return {
         "id": group_id,
         "name": str(row.get("name") or ""),
@@ -15342,6 +15372,10 @@ def _serialize_group_row(row: dict) -> dict:
         "course_id": course_id,
         "course_title": course_title or None,
         "monthly_fee_text": monthly_fee_text or None,
+        "pricing_type": pricing_type,
+        "mini_group_action_required": bool(int(row.get("mini_group_action_required") or 0)),
+        "mini_group_frozen_at": row.get("mini_group_frozen_at"),
+        "mini_group_frozen_reason": str(row.get("mini_group_frozen_reason") or "").strip() or None,
         "lesson_date": row.get("lesson_date"),
         "lesson_start": row.get("lesson_start"),
         "lesson_end": row.get("lesson_end"),
@@ -15394,12 +15428,14 @@ def _serialize_group_rows_bulk(rows: list[dict]) -> list[dict]:
             placeholders = ", ".join(["?"] * len(course_ids))
             course_sql_variants = (
                 f"""
-                SELECT id, title, price_text, individual_price_text
+                SELECT id, title, price_text, individual_price_text,
+                       mini_group_2_price_text, mini_group_3_price_text, mini_group_4_price_text
                 FROM web_courses
                 WHERE id IN ({placeholders})
                 """,
                 f"""
-                SELECT id, title, price_text, price_text as individual_price_text
+                SELECT id, title, price_text, price_text as individual_price_text,
+                       NULL as mini_group_2_price_text, NULL as mini_group_3_price_text, NULL as mini_group_4_price_text
                 FROM courses
                 WHERE id IN ({placeholders})
                 """,
@@ -15494,9 +15530,11 @@ def _serialize_group_rows_bulk(rows: list[dict]) -> list[dict]:
         linked_course = courses_map.get(int(course_id or 0)) if course_id else None
         course_title = str(row.get("course_title") or "").strip() or (str((linked_course or {}).get("title") or "").strip())
         pricing_type = str(row.get("pricing_type") or "group").strip()
-        monthly_fee_text = str(row.get("monthly_fee_text") or "").strip() or (
-            str((linked_course or {}).get("individual_price_text") or "").strip() if pricing_type == "individual" else str((linked_course or {}).get("price_text") or "").strip()
+        dynamic_price, price_source = _course_price_text_for_group(linked_course, pricing_type, group_id)
+        mini_group_is_paused = pricing_type == "mini_group" and (
+            bool(row.get("mini_group_action_required")) or price_source == "mini_group_waiting_for_second_student"
         )
+        monthly_fee_text = None if mini_group_is_paused else (dynamic_price or str(row.get("monthly_fee_text") or "").strip())
         out.append(
             {
                 "id": group_id,
@@ -15512,6 +15550,10 @@ def _serialize_group_rows_bulk(rows: list[dict]) -> list[dict]:
                 "course_id": course_id,
                 "course_title": course_title or None,
                 "monthly_fee_text": monthly_fee_text or None,
+                "pricing_type": pricing_type,
+                "mini_group_action_required": bool(int(row.get("mini_group_action_required") or 0)),
+                "mini_group_frozen_at": row.get("mini_group_frozen_at"),
+                "mini_group_frozen_reason": str(row.get("mini_group_frozen_reason") or "").strip() or None,
                 "lesson_date": row.get("lesson_date"),
                 "lesson_start": row.get("lesson_start"),
                 "lesson_end": row.get("lesson_end"),
@@ -24298,8 +24340,7 @@ async def diamondvoy_add_students_start(
         "ok": True,
         "state": state,
         "options": [
-            {"value": "student",     "label": "Mavjud student (hisob bilan)"},
-            {"value": "accountless", "label": "Hisob raqamsiz student"},
+            {"value": "student", "label": "Mavjud student"},
         ],
     }
 
@@ -24315,8 +24356,8 @@ async def diamondvoy_add_students_select_type(
     _require_role(user, {"admin"})
     user_id = int(user.get("id") or 0)
     account_type = str(payload.get("account_type") or "").strip().lower()
-    if account_type not in ("student", "accountless"):
-        raise HTTPException(status_code=400, detail="account_type must be 'student' or 'accountless'")
+    if account_type != "student":
+        raise HTTPException(status_code=400, detail="account_type must be 'student'")
 
     # Common fields applied to every row in the batch
     parent_phone  = str(payload.get("parent_phone") or "").strip() or None
@@ -24324,16 +24365,6 @@ async def diamondvoy_add_students_select_type(
     subject       = _normalize_subject_label(str(payload.get("subject") or "").strip()) or "English"
     group_id      = int(payload.get("group_id") or 0)
     joined_at     = str(payload.get("joined_at") or "").strip() or None
-
-    if account_type == "accountless":
-        # Validate the group if provided
-        if group_id:
-            group = _safe_call(lambda: get_group(group_id), None)
-            if not group:
-                raise HTTPException(status_code=404, detail=f"Guruh topilmadi: {group_id}")
-            # Auto-detect subject from group if not explicitly provided
-            if not payload.get("subject"):
-                subject = _normalize_subject_label(str(group.get("subject") or "")) or "English"
 
     state = _get_add_students_wizard_state(chat_id, user_id)
     state["account_type"] = account_type
@@ -34502,11 +34533,13 @@ async def teacher_add_group_member(group_id: int, student_id: int, authorization
         raise HTTPException(status_code=400, detail="Only students can be added to groups")
     if not _teacher_can_manage_group(user, group):
         raise HTTPException(status_code=403, detail="Teacher can only manage own or temporary groups")
+    _require_mini_group_can_accept_member(group)
     _require_student_group_subject_match(student, group)
     add_user_to_group(int(student_id), int(group_id))
     _clear_user_media_caches(int(student_id))
     _payment_prewarm_users_month_async(
-        user_ids={int(student_id)},
+        user_ids=_payment_group_member_user_ids(int(group_id)) | {int(student_id)},
+        limit_group_ids={int(group_id)},
         reason="teacher_add_group_member",
     )
 
@@ -34523,11 +34556,13 @@ async def teacher_remove_group_member(group_id: int, student_id: int, removed_at
     if not _teacher_can_manage_group(user, group):
         raise HTTPException(status_code=403, detail="Teacher can only manage own or temporary groups")
     remove_user_from_group(int(student_id), int(group_id), removed_at=removed_at)
+    remaining_member_ids = _freeze_mini_group_if_one_student_remains(int(group_id))
     _clear_user_media_caches(int(student_id))
-    try:
-        _payment_prewarm_user_month_obligations(user_id=int(student_id), ym=_payment_ym_now())
-    except Exception:
-        pass
+    _payment_prewarm_users_month_async(
+        user_ids=remaining_member_ids | {int(student_id)},
+        limit_group_ids={int(group_id)},
+        reason="teacher_remove_group_member",
+    )
     return _group_membership_change_payload(int(group_id), int(student_id), "Student removed from group")
 
 
@@ -35706,7 +35741,7 @@ async def teacher_create_student(
     payload: TeacherStudentCreateRequest,
     authorization: str | None = Header(default=None),
 ):
-    """Teacher o'zi o'quvchi yaratadi — akountli yoki akountsiz. account_type MAJBURIY."""
+    """Teacher o'zi loginli o'quvchi yaratadi."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     teacher_id = int(user.get("id") or 0)
@@ -35724,8 +35759,8 @@ async def teacher_create_student(
         raise HTTPException(status_code=400, detail="phone is required")
 
     account_type = str(payload.account_type or "").strip().lower()
-    if account_type not in ("student", "accountless"):
-        raise HTTPException(status_code=400, detail="account_type must be 'student' or 'accountless'")
+    if account_type != "student":
+        raise HTTPException(status_code=400, detail="account_type must be 'student'")
 
     subjects = _normalize_subjects(payload.subjects, fallback=["English"])
     subject = subjects[0] if subjects else "English"
@@ -35743,6 +35778,7 @@ async def teacher_create_student(
             raise HTTPException(status_code=404, detail=f"Group not found: {gid}")
         if not _teacher_can_manage_group(user, group):
             raise HTTPException(status_code=403, detail="You can only add students to your own groups")
+        _require_mini_group_can_accept_member(group)
 
     _ensure_user_web_columns()
     if account_type == "accountless":
@@ -35851,6 +35887,9 @@ async def teacher_create_group(
     linked_course = _get_course_by_id(int(payload.course_id))
     if not linked_course:
         raise HTTPException(status_code=404, detail="Course not found")
+    pricing_type = _normalized_group_pricing_type(payload.pricing_type)
+    if pricing_type == "mini_group":
+        _require_mini_group_prices(linked_course)
     lesson_days = _normalize_lesson_days(payload.lesson_date) or "MWF"
     if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
         raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
@@ -35868,13 +35907,9 @@ async def teacher_create_group(
             owner_admin_id=int(owner_admin_id),
             course_id=int(linked_course["id"]),
             course_title=str(linked_course.get("title") or "").strip(),
-            monthly_fee_text=(
-                str(linked_course.get("individual_price_text") or "").strip()
-                if payload.pricing_type == "individual"
-                else str(linked_course.get("price_text") or "").strip()
-            ),
+            monthly_fee_text=_course_price_text_for_group(linked_course, pricing_type)[0],
             telegram_group_url=payload.telegram_group_url,
-            pricing_type=payload.pricing_type,
+            pricing_type=pricing_type,
             lang=payload.lang,
         )
     except Exception as exc:
@@ -35910,13 +35945,14 @@ async def teacher_create_and_add_student(
     if not phone:
         raise HTTPException(status_code=400, detail="phone is required")
     account_type = str(payload.account_type or "").strip().lower()
-    if account_type not in ("student", "accountless"):
-        raise HTTPException(status_code=400, detail="account_type must be 'student' or 'accountless'")
+    if account_type != "student":
+        raise HTTPException(status_code=400, detail="account_type must be 'student'")
     group = _safe_call(lambda: get_group(int(group_id)), None)
     if not group:
         raise HTTPException(status_code=404, detail=f"Group not found: {group_id}")
     if not _teacher_can_manage_group(user, group):
         raise HTTPException(status_code=403, detail="You can only add students to your own groups")
+    _require_mini_group_can_accept_member(group)
     group_subject = str(group.get("subject") or "").strip() or "English"
     group_level = str(group.get("level") or "").strip() or "PRE-INTERMEDIATE"
     subject = group_subject
@@ -38538,10 +38574,12 @@ async def admin_create_course(payload: CourseCreateRequest, authorization: str |
         (
             title, title_uz, title_ru, title_en,
             description, description_uz, description_ru, description_en,
-            price_text, individual_price_text, cover_image_url,
+            price_text, individual_price_text,
+            mini_group_2_price_text, mini_group_3_price_text, mini_group_4_price_text,
+            cover_image_url,
             status, subject, created_by, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         RETURNING id
         """,
         (
@@ -38555,6 +38593,9 @@ async def admin_create_course(payload: CourseCreateRequest, authorization: str |
             (payload.description_en or "").strip() or None,
             (payload.price_text or "").strip() or None,
             (payload.individual_price_text or "").strip() or None,
+            (payload.mini_group_2_price_text or "").strip() or None,
+            (payload.mini_group_3_price_text or "").strip() or None,
+            (payload.mini_group_4_price_text or "").strip() or None,
             (payload.cover_image_url or "").strip() or None,
             str(payload.status or "draft"),
             (payload.subject or "").strip() or None,
@@ -38601,6 +38642,9 @@ async def admin_patch_course(course_id: int, payload: CourseUpdateRequest, autho
             description_en=?,
             price_text=?,
             individual_price_text=?,
+            mini_group_2_price_text=?,
+            mini_group_3_price_text=?,
+            mini_group_4_price_text=?,
             cover_image_url=?,
             status=?,
             subject=?,
@@ -38618,6 +38662,9 @@ async def admin_patch_course(course_id: int, payload: CourseUpdateRequest, autho
             (payload.description_en or "").strip() if payload.description_en is not None else current.get("description_en"),
             (payload.price_text or "").strip() if payload.price_text is not None else current.get("price_text"),
             (payload.individual_price_text or "").strip() if payload.individual_price_text is not None else current.get("individual_price_text"),
+            (payload.mini_group_2_price_text or "").strip() if payload.mini_group_2_price_text is not None else current.get("mini_group_2_price_text"),
+            (payload.mini_group_3_price_text or "").strip() if payload.mini_group_3_price_text is not None else current.get("mini_group_3_price_text"),
+            (payload.mini_group_4_price_text or "").strip() if payload.mini_group_4_price_text is not None else current.get("mini_group_4_price_text"),
             (payload.cover_image_url or "").strip() if payload.cover_image_url is not None else current.get("cover_image_url"),
             str(payload.status or current.get("status") or "draft"),
             (payload.subject or "").strip() if payload.subject is not None else current.get("subject"),
@@ -39152,10 +39199,10 @@ async def admin_users(
     params: list[Any] = []
 
     if query:
-        where_clauses.append(
-            "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,'')) LIKE ?"
-        )
-        params.append(f"%{query}%")
+        search_terms = name_search_terms(query) or [query.upper()]
+        search_blob = "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,''))"
+        where_clauses.append("(" + " OR ".join(f"{search_blob} LIKE ?" for _ in search_terms) + ")")
+        params.extend(f"%{term.lower()}%" for term in search_terms)
 
     if role_filter and role_filter != "all":
         if role_filter == "student":
@@ -39341,6 +39388,11 @@ async def admin_create_user(payload: AdminUserCreateRequest, authorization: str 
     _require_role(user, {"admin"})
     from auth import create_user_sync
     admin_ref = _admin_ref_id(user)
+    try:
+        first_name = normalize_new_latin_name(payload.first_name, "first_name")
+        last_name = normalize_new_latin_name(payload.last_name, "last_name")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     normalized_type = (payload.user_type or "").strip().lower()
     is_new_student_with_test = normalized_type in {"new_student_with_test", "new_student", "student_test"}
@@ -39404,8 +39456,8 @@ async def admin_create_user(payload: AdminUserCreateRequest, authorization: str 
 
     subject_csv = ",".join(subjects) or placement_subject or "English"
     created = create_user_sync(
-        payload.first_name.strip(),
-        payload.last_name.strip(),
+        first_name,
+        last_name,
         payload.phone.strip(),
         subject_csv,
         login_type,
@@ -39511,7 +39563,7 @@ async def admin_create_user(payload: AdminUserCreateRequest, authorization: str 
 
     return AdminUserCreateResponse(
         id=int(created["id"]),
-        full_name=f"{payload.first_name.strip()} {payload.last_name.strip()}",
+        full_name=f"{first_name} {last_name}",
         role=role,
         login_id=str(created["login_id"]),
         password=str(created["password"]),
@@ -39623,6 +39675,9 @@ async def create_admin_group(payload: GroupCreateRequest, authorization: str | N
     linked_course = _get_course_by_id(int(payload.course_id))
     if not linked_course:
         raise HTTPException(status_code=404, detail="Course not found")
+    pricing_type = _normalized_group_pricing_type(payload.pricing_type)
+    if pricing_type == "mini_group":
+        _require_mini_group_prices(linked_course)
     lesson_days = _normalize_lesson_days(payload.lesson_date) or "MWF"
     if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
         raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
@@ -39640,11 +39695,9 @@ async def create_admin_group(payload: GroupCreateRequest, authorization: str | N
             owner_admin_id=int(admin_ref),
             course_id=int(linked_course["id"]) if linked_course else None,
             course_title=str(linked_course.get("title") or "").strip() if linked_course else None,
-            monthly_fee_text=(
-                str(linked_course.get("individual_price_text") or "").strip() if payload.pricing_type == "individual" else str(linked_course.get("price_text") or "").strip()
-            ) if linked_course else None,
+            monthly_fee_text=_course_price_text_for_group(linked_course, pricing_type)[0] if linked_course else None,
             telegram_group_url=payload.telegram_group_url,
-            pricing_type=payload.pricing_type,
+            pricing_type=pricing_type,
             lang=payload.lang,
         )
     except Exception as exc:
@@ -39692,13 +39745,15 @@ async def add_student_member(
         if not _can_manage_user_globally(admin_ref, student_row):
             raise HTTPException(status_code=403, detail="You cannot manage this student")
     _require_student_group_subject_match(student_row, group_row)
+    _require_mini_group_can_accept_member(group_row)
     joined_at = payload.joined_at if payload else None
     if not joined_at:
         raise HTTPException(status_code=400, detail="Qo'shilgan sana kiritilishi majburiy")
     add_user_to_group(int(student_id), int(group_id), joined_at=joined_at)
     _clear_user_media_caches(int(student_id))
     _payment_prewarm_users_month_async(
-        user_ids={int(student_id)},
+        user_ids=_payment_group_member_user_ids(int(group_id)) | {int(student_id)},
+        limit_group_ids={int(group_id)},
         reason="admin_add_group_member_existing" if joined_at else "admin_add_group_member_new",
     )
 
@@ -39757,10 +39812,10 @@ async def admin_search_users(q: str = Query(default=""), authorization: str | No
     ]
     params: list[Any] = []
     if query:
-        where_sql.append(
-            "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,'')) LIKE ?"
-        )
-        params.append(f"%{query}%")
+        search_terms = name_search_terms(query) or [query.upper()]
+        search_blob = "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,''))"
+        where_sql.append("(" + " OR ".join(f"{search_blob} LIKE ?" for _ in search_terms) + ")")
+        params.extend(f"%{term.lower()}%" for term in search_terms)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -39804,10 +39859,10 @@ async def admin_search_teachers(
     ]
     params: list[Any] = []
     if query:
-        where_sql.append(
-            "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.login_id,'') || ' ' || COALESCE(CAST(u.telegram_id AS TEXT),'')) LIKE ?"
-        )
-        params.append(f"%{query}%")
+        search_terms = name_search_terms(query) or [query.upper()]
+        search_blob = "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.login_id,'') || ' ' || COALESCE(CAST(u.telegram_id AS TEXT),''))"
+        where_sql.append("(" + " OR ".join(f"{search_blob} LIKE ?" for _ in search_terms) + ")")
+        params.extend(f"%{term.lower()}%" for term in search_terms)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -39918,6 +39973,10 @@ async def admin_user_detail(user_id: int, authorization: str | None = Header(def
     return {
         "user": _serialize_user_row(target),
         "groups": [_serialize_group_row(g) for g in groups],
+        "pricing_overrides": [
+            item for item in _list_student_group_pricing_overrides(int(user_id))
+            if int(item.get("group_id") or 0) in {int(group.get("id") or 0) for group in groups if _can_manage_group(admin_ref, group)}
+        ],
         "subject_levels": _student_subject_levels_from_groups(int(user_id)),
         "teachers": [_serialize_user_row(t) for t in teachers],
         "daily_test_history": test_history,
@@ -39959,6 +40018,120 @@ def _parse_price_text_value(raw_value: str | None) -> float:
         return max(0.0, float(cleaned))
     except Exception:
         return 0.0
+
+
+_STUDENT_GROUP_PRICING_SCHEMA_LOCK = threading.Lock()
+_STUDENT_GROUP_PRICING_SCHEMA_READY = False
+
+
+def _ensure_student_group_pricing_schema() -> bool:
+    """Create the narrowly-scoped negotiated-pricing store once per process."""
+    global _STUDENT_GROUP_PRICING_SCHEMA_READY
+    if _STUDENT_GROUP_PRICING_SCHEMA_READY:
+        return True
+    with _STUDENT_GROUP_PRICING_SCHEMA_LOCK:
+        if _STUDENT_GROUP_PRICING_SCHEMA_READY:
+            return True
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS student_group_pricing_overrides (
+                    user_id BIGINT NOT NULL,
+                    group_id BIGINT NOT NULL,
+                    mode TEXT NOT NULL,
+                    price_amount DOUBLE PRECISION,
+                    discount_percent DOUBLE PRECISION,
+                    created_by_admin_id BIGINT,
+                    updated_by_admin_id BIGINT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, group_id),
+                    CHECK (mode IN ('fixed_price', 'discount_percent')),
+                    CHECK (price_amount IS NULL OR price_amount >= 0),
+                    CHECK (discount_percent IS NULL OR (discount_percent >= 0 AND discount_percent <= 100))
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_student_group_pricing_overrides_user ON student_group_pricing_overrides(user_id)"
+            )
+            conn.commit()
+            _STUDENT_GROUP_PRICING_SCHEMA_READY = True
+            return True
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.exception("student_group_pricing_schema_failed")
+            return False
+        finally:
+            conn.close()
+
+
+def _get_student_group_pricing_override(user_id: int, group_id: int) -> dict[str, Any] | None:
+    if int(user_id) <= 0 or int(group_id) <= 0 or not _ensure_student_group_pricing_schema():
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT user_id, group_id, mode, price_amount, discount_percent, updated_at
+            FROM student_group_pricing_overrides
+            WHERE user_id=? AND group_id=?
+            LIMIT 1
+            """,
+            (int(user_id), int(group_id)),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        mode = str(result.get("mode") or "").strip().lower()
+        if mode == "fixed_price":
+            result["price_amount"] = max(0.0, float(result.get("price_amount") or 0.0))
+        elif mode == "discount_percent":
+            result["discount_percent"] = max(0.0, min(100.0, float(result.get("discount_percent") or 0.0)))
+        else:
+            return None
+        return result
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        conn.close()
+
+
+def _list_student_group_pricing_overrides(user_id: int) -> list[dict[str, Any]]:
+    if int(user_id) <= 0 or not _ensure_student_group_pricing_schema():
+        return []
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT user_id, group_id, mode, price_amount, discount_percent, updated_at
+            FROM student_group_pricing_overrides
+            WHERE user_id=?
+            ORDER BY group_id
+            """,
+            (int(user_id),),
+        )
+        return [dict(row) for row in (cur.fetchall() or [])]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    finally:
+        conn.close()
 
 
 def _month_start_end(ym: str) -> tuple[datetime, datetime]:
@@ -40127,6 +40300,95 @@ def _resolve_student_discount_info(student_row: dict) -> dict:
     }
 
 
+_GROUP_PRICING_TYPES = {"group", "individual", "mini_group"}
+_MINI_GROUP_SIZES = (2, 3, 4)
+
+
+def _normalized_group_pricing_type(value: Any) -> str:
+    pricing_type = str(value or "group").strip().lower()
+    if pricing_type not in _GROUP_PRICING_TYPES:
+        raise HTTPException(status_code=422, detail="pricing_type must be group, individual, or mini_group")
+    return pricing_type
+
+
+def _mini_group_student_count(group_id: int) -> int:
+    rows = _safe_call(lambda: get_group_users(int(group_id)), []) or []
+    return sum(1 for row in rows if int(row.get("login_type") or 0) in (1, 2))
+
+
+def _mini_group_price_text(course: dict | None, group_id: int) -> tuple[str, int]:
+    """Return the per-student mini-group fee for its current active roster size."""
+    enrolled = _mini_group_student_count(int(group_id))
+    size = int(enrolled) if enrolled < 2 else min(4, enrolled)
+    if size < 2:
+        return "", size
+    raw = str((course or {}).get(f"mini_group_{size}_price_text") or "").strip()
+    return raw, size
+
+
+def _course_price_text_for_group(course: dict | None, pricing_type: Any, group_id: int = 0) -> tuple[str, str]:
+    normalized = _normalized_group_pricing_type(pricing_type)
+    if normalized == "individual":
+        return str((course or {}).get("individual_price_text") or "").strip(), "course_individual"
+    if normalized == "mini_group":
+        raw, size = _mini_group_price_text(course, int(group_id))
+        if raw:
+            return raw, f"mini_group_{size}"
+        if size < 2:
+            return "", "mini_group_waiting_for_second_student"
+        # Legacy safety: a partially configured course remains billable at the
+        # standard fee instead of silently becoming free.
+        return str((course or {}).get("price_text") or "").strip(), "mini_group_missing_price"
+    return str((course or {}).get("price_text") or "").strip(), "course"
+
+
+def _require_mini_group_prices(course: dict) -> None:
+    missing = [str(size) for size in _MINI_GROUP_SIZES if _parse_price_text_value(str(course.get(f"mini_group_{size}_price_text") or "")) <= 0]
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Mini group prices are required for {', '.join(missing)} students")
+
+
+def _freeze_mini_group_if_one_student_remains(group_id: int) -> set[int]:
+    """Pause a shrinking mini group until its responsible admin resolves it."""
+    ensure_group_extra_subjects_schema()
+    group = _safe_call(lambda: get_group(int(group_id)), None) or {}
+    if str(group.get("pricing_type") or "").strip().lower() != "mini_group":
+        return set()
+    member_ids = _payment_group_member_user_ids(int(group_id))
+    if len(member_ids) != 1:
+        return member_ids
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE groups
+            SET mini_group_action_required=1,
+                mini_group_frozen_at=COALESCE(mini_group_frozen_at, CURRENT_TIMESTAMP),
+                mini_group_frozen_reason='one_student_remaining'
+            WHERE id=? AND COALESCE(mini_group_action_required, 0)=0
+            """,
+            (int(group_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return member_ids
+
+
+def _require_mini_group_can_accept_member(group: dict) -> None:
+    """Keep a frozen mini-group actionable only through the admin resolution flow."""
+    if str(group.get("pricing_type") or "").strip().lower() != "mini_group":
+        return
+    if bool(group.get("mini_group_action_required")):
+        raise HTTPException(
+            status_code=409,
+            detail="This mini group is frozen because one student remains. Resolve it from the Groups page first.",
+        )
+    if len(_payment_group_member_user_ids(int(group.get("id") or 0))) >= 4:
+        raise HTTPException(status_code=422, detail="A mini group can contain at most four students")
+
+
 def _calculate_monthly_payment_for_student_group(
     user_id: int,
     group_id: int,
@@ -40167,19 +40429,34 @@ def _calculate_monthly_payment_for_student_group(
     course_id = int(group.get("course_id") or 0)
     if course_id > 0:
         linked_course = _safe_call(lambda: _get_course_by_id(course_id), None)
-    linked_course_price = str((linked_course or {}).get("price_text") or "").strip()
-    linked_course_individual_price = str((linked_course or {}).get("individual_price_text") or "").strip()
-    
-    pricing_type = str(group.get("pricing_type") or "group").strip().lower()
-    if pricing_type == "individual" and linked_course_individual_price:
-        course_price_value = linked_course_individual_price
-    else:
-        course_price_value = linked_course_price
+    pricing_type = _normalized_group_pricing_type(group.get("pricing_type") or "group")
+    course_price_value, course_price_source = _course_price_text_for_group(linked_course, pricing_type, int(group_id))
+    mini_group_is_frozen = pricing_type == "mini_group" and int(group.get("mini_group_action_required") or 0) == 1
+    if mini_group_is_frozen:
+        course_price_value = ""
+        course_price_source = "mini_group_frozen"
 
     legacy_group_price = str(group.get("monthly_fee_text") or "").strip()
-    raw_price = course_price_value or legacy_group_price
-    course_price_source = "course" if course_price_value else ("legacy_group_fee" if legacy_group_price else "none")
+    # Mini groups never fall back to a persisted group fee: it may be the
+    # former two-student amount. One student remains free until resolution.
+    raw_price = course_price_value if pricing_type == "mini_group" else (course_price_value or legacy_group_price)
+    if not course_price_value and pricing_type != "mini_group":
+        course_price_source = "legacy_group_fee" if legacy_group_price else "none"
     course_price = _parse_price_text_value(raw_price)
+    mini_group_billing_paused = pricing_type == "mini_group" and (
+        mini_group_is_frozen or course_price_source == "mini_group_waiting_for_second_student"
+    )
+    pricing_override = _get_student_group_pricing_override(int(user_id), int(group_id))
+    pricing_override_mode = str((pricing_override or {}).get("mode") or "").strip().lower()
+    if mini_group_billing_paused:
+        # A personal agreement cannot re-enable a group the admin has not
+        # resolved. The frozen state is a billing safety boundary.
+        pricing_override_mode = ""
+    elif pricing_override_mode == "fixed_price":
+        # A negotiated amount is the student's monthly fee for this group only.
+        # It replaces the group's price before lesson-based proration is calculated.
+        course_price = max(0.0, float((pricing_override or {}).get("price_amount") or 0.0))
+        course_price_source = "student_group_fixed_price"
     effective_lesson_dates = lesson_dates if lesson_dates is not None else _payment_lesson_dates_for_group_month(group, ym)
     planned_lessons = len(effective_lesson_dates)
     active_lesson_dates = _payment_active_lesson_dates(int(user_id), int(group_id), ym, effective_lesson_dates)
@@ -40195,6 +40472,20 @@ def _calculate_monthly_payment_for_student_group(
     # Part-2 model: group amount is lesson-count based only (no extra deductions here).
     discounted_before = max(0.0, base_active_amount)
     resolved_discount_info = discount_info or _payment_discount_info_for_student(student, ym=ym)
+    if pricing_override_mode == "fixed_price":
+        # A negotiated price is already final pricing input; do not stack broad
+        # family/free-access/multi-group discounts on top of it.
+        resolved_discount_info = {
+            "discount_type": "student_group_fixed_price",
+            "discount_percent": 0.0,
+            "discount_reason": "student_group_fixed_price",
+        }
+    elif pricing_override_mode == "discount_percent":
+        resolved_discount_info = {
+            "discount_type": "student_group_override",
+            "discount_percent": max(0.0, min(100.0, float((pricing_override or {}).get("discount_percent") or 0.0))),
+            "discount_reason": "student_group_discount_percent",
+        }
     discount_percent = float(resolved_discount_info.get("discount_percent") or 0.0)
     discount_amount = max(0.0, discounted_before * (discount_percent / 100.0))
     before_round_amount = max(0.0, discounted_before - discount_amount)
@@ -40216,6 +40507,15 @@ def _calculate_monthly_payment_for_student_group(
         "original_price": round(course_price, 2),
         "course_price": round(course_price, 2),
         "course_monthly_price": round(course_price, 2),
+        "pricing_override_mode": pricing_override_mode or None,
+        "pricing_override_price_amount": (
+            round(float((pricing_override or {}).get("price_amount") or 0.0), 2)
+            if pricing_override_mode == "fixed_price" else None
+        ),
+        "pricing_override_discount_percent": (
+            float((pricing_override or {}).get("discount_percent") or 0.0)
+            if pricing_override_mode == "discount_percent" else None
+        ),
         "subject_name": subject_name,
         "teacher_name": _display_name(teacher) if teacher else None,
         "active_ratio": round(active_ratio, 6),
@@ -40268,38 +40568,36 @@ def _calculate_monthly_payment_summary_for_student(user_id: int, ym: str, admin_
     discount_info = _payment_discount_info_for_student(student_row, ym=ym)
     discount_type = str(discount_info.get("discount_type") or "none")
     discount_percent = float(discount_info.get("discount_percent") or 0.0)
-    discount_amount_total = round(max(0.0, float(original_total) * (discount_percent / 100.0)), 2)
-    before_round_total = round(max(0.0, float(original_total) - float(discount_amount_total)), 2)
-    final_total = _round_payment_amount(before_round_total, discount_percent > 0)
-    # Keep per-group discount fields aligned with current consumers while discount is student-level.
-    if original_total > 0:
-        for item in items:
-            group_amount = float(item.get("calculated_group_amount") or 0.0)
-            share = group_amount / original_total if original_total > 0 else 0.0
-            group_discount = round(discount_amount_total * share, 2)
-            item["discount_type"] = discount_type
-            item["discount_percent"] = discount_percent
-            item["discount_amount"] = group_discount
-            item_before_round = max(0.0, group_amount - group_discount)
-            item["final_payable_amount"] = round(_round_payment_amount(item_before_round, discount_percent > 0), 2)
-            item["base_amount_before_discount"] = round(group_amount, 2)
-            item["final_amount_after_discount"] = item["final_payable_amount"]
-            item["rounding_delta"] = round(float(item["final_payable_amount"]) - item_before_round, 2)
-            item["calculated_amount"] = item["final_payable_amount"]
-        final_total = round(sum(float(item.get("final_payable_amount") or 0.0) for item in items), 2)
-    if discount_type == "none":
-        for item in items:
-            group_amount = float(item.get("calculated_group_amount") or 0.0)
-            item["discount_type"] = "none"
-            item["discount_percent"] = 0.0
-            item["discount_amount"] = 0.0
-            item["final_payable_amount"] = round(_round_up_to_nearest_1000_uzs(group_amount), 2)
-            item["base_amount_before_discount"] = round(group_amount, 2)
-            item["final_amount_after_discount"] = item["final_payable_amount"]
-            item["rounding_delta"] = round(float(item["final_payable_amount"]) - group_amount, 2)
-            item["calculated_amount"] = item["final_payable_amount"]
-        final_total = round(sum(float(item.get("final_payable_amount") or 0.0) for item in items), 2)
-        discount_amount_total = 0.0
+    override_items = [item for item in items if item.get("pricing_override_mode")]
+    standard_items = [item for item in items if not item.get("pricing_override_mode")]
+    standard_total = round(sum(float(item.get("calculated_group_amount") or 0.0) for item in standard_items), 2)
+    standard_discount_total = round(max(0.0, float(standard_total) * (discount_percent / 100.0)), 2)
+
+    # Student/group agreements are intentionally isolated: only groups without
+    # an agreement participate in broad family, multi-group or legacy discounts.
+    for item in standard_items:
+        group_amount = float(item.get("calculated_group_amount") or 0.0)
+        share = group_amount / standard_total if standard_total > 0 else 0.0
+        group_discount = round(standard_discount_total * share, 2)
+        item["discount_type"] = discount_type
+        item["discount_percent"] = discount_percent
+        item["discount_amount"] = group_discount
+        item_before_round = max(0.0, group_amount - group_discount)
+        item["final_payable_amount"] = round(_round_payment_amount(item_before_round, discount_percent > 0), 2)
+        item["base_amount_before_discount"] = round(group_amount, 2)
+        item["final_amount_after_discount"] = item["final_payable_amount"]
+        item["rounding_delta"] = round(float(item["final_payable_amount"]) - item_before_round, 2)
+        item["calculated_amount"] = item["final_payable_amount"]
+
+    final_total = round(sum(float(item.get("final_payable_amount") or 0.0) for item in items), 2)
+    discount_amount_total = round(sum(float(item.get("discount_amount") or 0.0) for item in items), 2)
+    if override_items and standard_items:
+        discount_type = "mixed"
+        discount_percent = 0.0
+    elif override_items and not standard_items:
+        override_types = {str(item.get("discount_type") or "none") for item in override_items}
+        discount_type = override_types.pop() if len(override_types) == 1 else "mixed"
+        discount_percent = float(override_items[0].get("discount_percent") or 0.0) if len(override_items) == 1 else 0.0
     selected_item = None
     if selected_group_id is not None and int(selected_group_id) > 0:
         selected_item = next((item for item in items if int(item.get("group_id") or 0) == int(selected_group_id)), None)
@@ -48209,7 +48507,6 @@ async def admin_family_groups_remove_member(
     return {"message": "Family member removed"}
 
 
-@app.post("/admin/students/accountless")
 async def admin_create_accountless_student(
     payload: AccountlessStudentCreateRequest,
     authorization: str | None = Header(default=None),
@@ -48334,7 +48631,6 @@ async def admin_create_accountless_student(
     return {"message": "Accountless student created", "user": _serialize_user_row(created_user)}
 
 
-@app.post("/admin/students/accountless/{user_id}/convert")
 async def admin_convert_accountless_student(
     user_id: int,
     payload: AccountlessStudentConvertRequest,
@@ -48456,7 +48752,6 @@ async def admin_convert_accountless_student(
     }
 
 
-@app.post("/admin/users/{user_id}/convert-to-accountless")
 async def admin_convert_student_to_accountless(
     user_id: int,
     payload: NormalStudentToAccountlessRequest,
@@ -48952,11 +49247,19 @@ async def admin_update_user(user_id: int, payload: AdminUserUpdateRequest, autho
     updates_sql: list[str] = []
     params: list[Any] = []
     if payload.first_name is not None:
+        try:
+            normalized_first_name = normalize_new_latin_name(payload.first_name, "first_name")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         updates_sql.append("first_name=?")
-        params.append(payload.first_name.strip())
+        params.append(normalized_first_name)
     if payload.last_name is not None:
+        try:
+            normalized_last_name = normalize_new_latin_name(payload.last_name, "last_name")
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         updates_sql.append("last_name=?")
-        params.append(payload.last_name.strip())
+        params.append(normalized_last_name)
     if payload.phone is not None:
         updates_sql.append("phone=?")
         params.append(payload.phone.strip())
@@ -49067,6 +49370,107 @@ async def admin_update_user(user_id: int, payload: AdminUserUpdateRequest, autho
     if not refreshed:
         raise HTTPException(status_code=404, detail="User not found after update")
     return {"message": "User updated", "user": _serialize_user_row(refreshed)}
+
+
+@app.patch("/admin/users/{user_id}/group-pricing/{group_id}")
+async def admin_update_student_group_pricing(
+    user_id: int,
+    group_id: int,
+    payload: StudentGroupPricingOverrideRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Set or clear a negotiated price for one student's active group."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Student not found")
+    if int(target.get("login_type") or 0) not in (1, 2):
+        raise HTTPException(status_code=400, detail="Pricing overrides are available only for students")
+    if not _can_manage_user_globally(admin_ref, target):
+        raise HTTPException(status_code=403, detail="You cannot manage this user")
+    group = _safe_call(lambda: get_group(int(group_id)), None)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if not _can_manage_group(admin_ref, group):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    active_group_ids = {int(item.get("id") or 0) for item in (_safe_call(lambda: get_user_groups(int(user_id)), []) or [])}
+    if int(group_id) not in active_group_ids:
+        raise HTTPException(status_code=400, detail="Student is not an active member of this group")
+    if not _ensure_student_group_pricing_schema():
+        raise HTTPException(status_code=500, detail="Pricing override storage is unavailable")
+
+    mode = str(payload.mode or "none").strip().lower()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if mode == "none":
+            cur.execute(
+                "DELETE FROM student_group_pricing_overrides WHERE user_id=? AND group_id=?",
+                (int(user_id), int(group_id)),
+            )
+            override = None
+        elif mode == "fixed_price":
+            if payload.price_amount is None:
+                raise HTTPException(status_code=422, detail="price_amount is required for fixed_price")
+            amount = max(0.0, float(payload.price_amount))
+            cur.execute(
+                """
+                INSERT INTO student_group_pricing_overrides
+                    (user_id, group_id, mode, price_amount, discount_percent, created_by_admin_id, updated_by_admin_id, created_at, updated_at)
+                VALUES (?, ?, 'fixed_price', ?, NULL, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, group_id) DO UPDATE SET
+                    mode=excluded.mode,
+                    price_amount=excluded.price_amount,
+                    discount_percent=NULL,
+                    updated_by_admin_id=excluded.updated_by_admin_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(user_id), int(group_id), amount, int(admin_ref), int(admin_ref)),
+            )
+            override = {"user_id": int(user_id), "group_id": int(group_id), "mode": mode, "price_amount": amount, "discount_percent": None}
+        elif mode == "discount_percent":
+            if payload.discount_percent is None:
+                raise HTTPException(status_code=422, detail="discount_percent is required for discount_percent")
+            percent = max(0.0, min(100.0, float(payload.discount_percent)))
+            cur.execute(
+                """
+                INSERT INTO student_group_pricing_overrides
+                    (user_id, group_id, mode, price_amount, discount_percent, created_by_admin_id, updated_by_admin_id, created_at, updated_at)
+                VALUES (?, ?, 'discount_percent', NULL, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id, group_id) DO UPDATE SET
+                    mode=excluded.mode,
+                    price_amount=NULL,
+                    discount_percent=excluded.discount_percent,
+                    updated_by_admin_id=excluded.updated_by_admin_id,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(user_id), int(group_id), percent, int(admin_ref), int(admin_ref)),
+            )
+            override = {"user_id": int(user_id), "group_id": int(group_id), "mode": mode, "price_amount": None, "discount_percent": percent}
+        else:
+            raise HTTPException(status_code=422, detail="mode must be none, fixed_price, or discount_percent")
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        logger.exception("student_group_pricing_override_update_failed user_id=%s group_id=%s", user_id, group_id)
+        raise HTTPException(status_code=500, detail="Pricing override could not be saved")
+    finally:
+        conn.close()
+
+    for cache_key in list(_STUDENT_PAYMENT_ME_CACHE):
+        if int(cache_key[0] or 0) == int(user_id):
+            _STUDENT_PAYMENT_ME_CACHE.pop(cache_key, None)
+    _payment_prewarm_users_month_async(
+        user_ids={int(user_id)},
+        limit_group_ids={int(group_id)},
+        reason="admin_student_group_pricing_override",
+    )
+    return {"message": "Student group pricing updated", "override": override}
 
 
 @app.post("/admin/users/{user_id}/reset-password", response_model=AdminPasswordResetResponse)
@@ -49424,12 +49828,16 @@ async def admin_update_group(group_id: int, payload: GroupUpdateRequest, authori
     linked_course = _get_course_by_id(int(effective_course_id))
     if not linked_course:
         raise HTTPException(status_code=404, detail="Course not found")
-    effective_pricing_type = payload.pricing_type if payload.pricing_type is not None else group.get("pricing_type")
+    effective_pricing_type = _normalized_group_pricing_type(
+        payload.pricing_type if payload.pricing_type is not None else group.get("pricing_type")
+    )
+    if effective_pricing_type == "mini_group":
+        _require_mini_group_prices(linked_course)
     update_group_course_details(
         int(group_id),
         course_id=int(linked_course["id"]),
         course_title=str(linked_course.get("title") or "").strip(),
-        monthly_fee_text=str(linked_course.get("individual_price_text") or "").strip() if effective_pricing_type == "individual" else str(linked_course.get("price_text") or "").strip(),
+        monthly_fee_text=_course_price_text_for_group(linked_course, effective_pricing_type, int(group_id))[0],
         telegram_group_url=payload.telegram_group_url,
         pricing_type=effective_pricing_type,
     )
@@ -49457,6 +49865,96 @@ async def admin_update_group(group_id: int, payload: GroupUpdateRequest, authori
             reason="admin_update_group",
         )
     return {"message": "Group updated", "group": _serialize_group_row(refreshed or group)}
+
+
+@app.post("/admin/groups/{group_id}/resolve-mini-group")
+async def admin_resolve_mini_group(
+    group_id: int,
+    payload: MiniGroupResolutionRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Resolve a frozen mini group by converting it or moving its last student."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    source = _safe_call(lambda: get_group(int(group_id)), None)
+    if not source:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if not _can_manage_group(admin_ref, source):
+        raise HTTPException(status_code=403, detail="You cannot manage this group")
+    if str(source.get("pricing_type") or "").strip().lower() != "mini_group" or not bool(source.get("mini_group_action_required")):
+        raise HTTPException(status_code=409, detail="This mini group does not require resolution")
+
+    member_ids = _payment_group_member_user_ids(int(group_id))
+    if len(member_ids) != 1:
+        raise HTTPException(status_code=409, detail="A frozen mini group must have exactly one active student")
+    student_id = next(iter(member_ids))
+
+    if payload.action == "convert_standard":
+        course = _get_course_by_id(int(source.get("course_id") or 0))
+        if not course:
+            raise HTTPException(status_code=404, detail="Course not found")
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE groups
+                SET pricing_type='group',
+                    monthly_fee_text=?,
+                    mini_group_action_required=0,
+                    mini_group_frozen_at=NULL,
+                    mini_group_frozen_reason=NULL
+                WHERE id=?
+                """,
+                (str(course.get("price_text") or "").strip() or None, int(group_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        affected_user_ids = {int(student_id)}
+        message = "Mini group converted to standard pricing"
+    else:
+        target_group_id = int(payload.target_group_id or 0)
+        target = _safe_call(lambda: get_group(target_group_id), None)
+        if not target:
+            raise HTTPException(status_code=404, detail="Target mini group not found")
+        if not _can_manage_group(admin_ref, target):
+            raise HTTPException(status_code=403, detail="You cannot manage the target group")
+        if str(target.get("pricing_type") or "").strip().lower() != "mini_group" or bool(target.get("mini_group_action_required")):
+            raise HTTPException(status_code=422, detail="Target must be an active mini group")
+        if _normalize_subject_label(str(target.get("subject") or "")) != _normalize_subject_label(str(source.get("subject") or "")):
+            raise HTTPException(status_code=422, detail="Target mini group must have the same subject")
+        if len(_payment_group_member_user_ids(target_group_id)) >= 4:
+            raise HTTPException(status_code=422, detail="Target mini group already has four students")
+        remove_user_from_group(int(student_id), int(group_id))
+        add_user_to_group(int(student_id), target_group_id)
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                UPDATE groups
+                SET active=0, mini_group_action_required=0,
+                    mini_group_frozen_at=NULL, mini_group_frozen_reason=NULL
+                WHERE id=?
+                """,
+                (int(group_id),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        affected_user_ids = _payment_group_member_user_ids(target_group_id) | {int(student_id)}
+        _clear_group_and_student_caches(int(group_id), [int(student_id)])
+        message = "Student moved to another mini group"
+
+    _payment_prewarm_users_month_async(
+        user_ids=affected_user_ids,
+        limit_group_ids={int(group_id), int(payload.target_group_id or 0)} - {0},
+        reason="admin_resolve_mini_group",
+    )
+    refreshed = _safe_call(lambda: get_group(int(group_id)), None) or source
+    return {"message": message, "group": _serialize_group_row(refreshed), "student_id": int(student_id)}
 
 
 @app.delete("/admin/groups/{group_id}")
@@ -49504,11 +50002,13 @@ async def admin_remove_group_member(group_id: int, student_id: int, removed_at: 
     if not _can_manage_group(admin_ref, group) or not _can_manage_user_globally(admin_ref, student):
         raise HTTPException(status_code=403, detail="Permission denied")
     remove_user_from_group(int(student_id), int(group_id), removed_at=removed_at, is_mistake=is_mistake)
+    remaining_member_ids = _freeze_mini_group_if_one_student_remains(int(group_id))
     # Membership is already committed above.  Recalculation may touch several
     # historical obligations, so never make the admin modal wait for it.
     _clear_group_and_student_caches(int(group_id), [int(student_id)])
     _payment_prewarm_users_month_async(
-        user_ids={int(student_id)},
+        user_ids=remaining_member_ids | {int(student_id)},
+        limit_group_ids={int(group_id)},
         reason="admin_remove_group_member",
     )
     logger.info(
@@ -50190,35 +50690,6 @@ async def admin_set_article_permission(user_id: int, payload: ArticlePermissionR
     conn.commit()
     conn.close()
     return {"message": "Article permission updated", "user_id": int(user_id), "can_create": bool(payload.can_create)}
-@app.post("/admin/sms/send")
-async def admin_sms_send(req: SmsSendRequest, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
-    
-    token = os.environ.get("ESKIZ_TOKEN")
-    if not token:
-        raise HTTPException(status_code=500, detail="ESKIZ_TOKEN is not configured in .env")
-    
-    url = "https://notify.eskiz.uz/api/message/sms/send"
-    headers = {
-        "Authorization": f"Bearer {token}"
-    }
-    
-    data = aiohttp.FormData()
-    clean_phone = req.phone_number.replace("+", "").replace(" ", "").strip()
-    data.add_field("mobile_phone", clean_phone)
-    data.add_field("message", req.message)
-    data.add_field("from", "4546")
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, data=data) as response:
-            if response.status != 200:
-                text = await response.text()
-                raise HTTPException(status_code=400, detail=f"Eskiz API Error: {text}")
-            return {"success": True, "message": "SMS sent successfully"}
-
-
-
 @app.get("/admin/broadcasts")
 async def admin_broadcasts(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
@@ -52615,6 +53086,9 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
     linked_course = _get_course_by_id(int(payload.course_id))
     if not linked_course:
         raise HTTPException(status_code=404, detail="Course not found")
+    pricing_type = _normalized_group_pricing_type(payload.pricing_type)
+    if pricing_type == "mini_group":
+        _require_mini_group_prices(linked_course)
     lesson_days = _normalize_lesson_days(payload.lesson_date) or "MWF"
     if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
         raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
@@ -52638,11 +53112,9 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
             owner_admin_id=int(effective_owner_admin_id),
             course_id=int(linked_course["id"]) if linked_course else None,
             course_title=str(linked_course.get("title") or "").strip() if linked_course else None,
-            monthly_fee_text=(
-                str(linked_course.get("individual_price_text") or "").strip() if payload.pricing_type == "individual" else str(linked_course.get("price_text") or "").strip()
-            ) if linked_course else None,
+            monthly_fee_text=_course_price_text_for_group(linked_course, pricing_type)[0] if linked_course else None,
             telegram_group_url=payload.telegram_group_url,
-            pricing_type=payload.pricing_type,
+            pricing_type=pricing_type,
             lang=payload.lang,
         )
     except Exception as exc:
@@ -52681,13 +53153,15 @@ async def add_group_member(
         if not _can_manage_user_globally(admin_ref, student_row):
             raise HTTPException(status_code=403, detail="You cannot manage this student")
     _require_student_group_subject_match(student_row, group_row)
+    _require_mini_group_can_accept_member(group_row)
     joined_at = payload.joined_at if payload else None
     if not joined_at:
         raise HTTPException(status_code=400, detail="Qo'shilgan sana kiritilishi majburiy")
     add_user_to_group(int(student_id), int(group_id), joined_at=joined_at)
     _clear_user_media_caches(int(student_id))
     _payment_prewarm_users_month_async(
-        user_ids={int(student_id)},
+        user_ids=_payment_group_member_user_ids(int(group_id)) | {int(student_id)},
+        limit_group_ids={int(group_id)},
         reason="admin_add_group_member_new",
     )
     return _group_membership_change_payload(

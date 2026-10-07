@@ -1178,7 +1178,7 @@ function DiamondVoyHomeworkWizard({
 // ─── Admin: Add Students from XLSX Wizard ────────────────────────────────────
 type AddStudentsWizardState = {
   step: "select_type" | "upload" | "preview" | "done";
-  account_type: "student" | "accountless" | null;
+  account_type: "student" | null;
   parent_phone?: string | null;
   free_access?: boolean;
   subject?: string;
@@ -1271,13 +1271,9 @@ function DiamondVoyAddStudentsWizard({
   if (loading && !state) return <div className="p-4 text-center text-sm text-ink-500">Yuklanmoqda...</div>;
   if (!state)            return <div className="p-4 text-center text-sm text-red-500">{error || "Wizard yuklanmadi"}</div>;
 
-  const typeLabel = state.account_type === "accountless" ? "Hisob raqamsiz" : "Hisob bilan";
-  const createActionText = state.account_type === "accountless"
-    ? `✅ ${state.students.length} ta student qo'shish`
-    : `✅ ${state.students.length} ta hisob yaratish`;
-  const doneText = state.account_type === "accountless"
-    ? `${result?.created.length || 0} ta student ro'yxatga olindi!`
-    : `${result?.created.length || 0} ta hisob yaratildi!`;
+  const typeLabel = "Hisob bilan";
+  const createActionText = `✅ ${state.students.length} ta hisob yaratish`;
+  const doneText = `${result?.created.length || 0} ta hisob yaratildi!`;
 
   return (
     <div className="w-full border border-emerald-200 dark:border-emerald-800/50 rounded-2xl bg-white dark:bg-[#1A2332] shadow-lg overflow-hidden flex flex-col">
@@ -1456,7 +1452,7 @@ function WizardTypeStep({
   setLoading: (v: boolean) => void;
   setError: (v: string) => void;
 }) {
-  async function selectType(type: "student" | "accountless", extra?: { parent_phone?: string; free_access?: boolean; subject?: string }) {
+  async function selectType(type: "student", extra?: { parent_phone?: string; free_access?: boolean; subject?: string }) {
     setLoading(true); setError("");
     try {
       const res = await apiFetch(`/chats/diamondvoy/${chatId}/add-students/select-type`, {
@@ -1470,7 +1466,7 @@ function WizardTypeStep({
 
   return (
     <div className="space-y-3">
-      <p className="text-ink-600 dark:text-slate-300">Qo'shmoqchi bo'lgan o'quvchilar turi:</p>
+      <p className="text-ink-600 dark:text-slate-300">Yangi o'quvchilar uchun hisob yaratiladi:</p>
       <div className="flex flex-col gap-2">
         <button disabled={loading} onClick={() => selectType("student")}
           className="w-full px-4 py-3 rounded-xl border-2 border-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 font-bold hover:bg-emerald-100 dark:hover:bg-emerald-800/30 transition-colors text-left flex items-center gap-3">
@@ -1478,14 +1474,6 @@ function WizardTypeStep({
           <div>
             <div className="font-bold">Mavjud student (hisob bilan)</div>
             <div className="text-xs font-normal opacity-70">Login va parol yaratiladi</div>
-          </div>
-        </button>
-        <button disabled={loading} onClick={() => selectType("accountless")}
-          className="w-full px-4 py-3 rounded-xl border-2 border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/30 text-slate-700 dark:text-slate-300 font-bold hover:bg-slate-100 dark:hover:bg-slate-700/30 transition-colors text-left flex items-center gap-3">
-          <span className="text-xl">👤</span>
-          <div>
-            <div className="font-bold">Hisob raqamsiz student</div>
-            <div className="text-xs font-normal opacity-70">Faqat ro'yxatga olish, kirish yo'q</div>
           </div>
         </button>
       </div>
@@ -2681,7 +2669,7 @@ export function UniversalChat({
   );
 
   const DiamondvoyPane = (
-    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/50 dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : activePane === null ? "hidden lg:flex" : "hidden")}>
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/50 dark:bg-navy-950", activePane === "diamondvoy" ? "flex" : "hidden")}>
       <div className="px-4 sm:px-6 py-3.5 border-b-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-900/95 backdrop-blur-md flex items-center justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-xl border-2 border-b-4 border-slate-200 dark:border-navy-700 bg-white dark:bg-navy-800 text-ink-700 dark:text-white active:translate-y-0.5 active:border-b-2">‹</button>
@@ -3233,7 +3221,14 @@ export function UniversalChat({
       {CommunityPane}
       {UserFeedbackPane}
       {AdminFeedbackPane}
-      {!activePane && <div className="hidden sm:grid flex-1 place-items-center text-center text-ink-500 dark:text-navy-300">Diamondvoy, umumiy chat yoki Taklif & Shikoyatni tanlang</div>}
+      {!activePane && (
+        <div className="hidden sm:grid flex-1 place-items-center px-6 text-center text-ink-500 dark:text-navy-300">
+          <div>
+            <h2 className="text-lg font-black text-navy-900 dark:text-white">{tt("chat.selectChat", "Chatni tanlang")}</h2>
+            <p className="mt-2 text-sm">{tt("chat.selectChatHint", "Barcha xabarlar shu yerda jamlangan.")}</p>
+          </div>
+        </div>
+      )}
       {communityProfile && (() => {
         const avatar = String(communityProfile.avatar_url || communityProfile.profile_image_url || "");
         return (

@@ -19,67 +19,16 @@ type DashboardSidebarProps = {
   primaryNavSections?: string[];
 };
 
-/// Compact, language-independent navigation glyphs.  The old first-letter
-/// approach was ambiguous after switching the interface language and made
-/// the desktop site look different from the mobile apps.
+/// Navigation uses clear uppercase initials instead of decorative icons.
+/// One or two initials remain readable in every language and compact layout.
 export function sectionIconGlyph(section: string) {
-  const glyphs: Record<string, string> = {
-    home: "⌂",
-    users: "♙",
-    groups: "◉",
-    "family-groups": "♧",
-    payments: "₴",
-    purchases: "▣",
-    homework: "✓",
-    attendance: "◷",
-    holidays: "☀",
-    "admin-callbacks": "↗",
-    videos: "▶",
-    books: "▤",
-    grammar: "Aa",
-    vocabulary: "⌁",
-    "vocabulary-bank": "⌁",
-    courses: "▱",
-    gifts: "✦",
-    reviews: "★",
-    leaderboard: "♛",
-    generator: "✧",
-    results: "◫",
-    "competitions-history": "◴",
-    broadcasts: "⌁",
-    surveys: "☷",
-    "domain-email": "✉",
-    "dpoint-settings": "D",
-    sms: "▰",
-    chats: "◌",
-    notifications: "!",
-    profile: "●",
-    "daily-test": "✓",
-    gamified: "✦",
-    arena: "◈",
-    dcoin: "D",
-    support: "?",
-    notes: "✎",
-    bookings: "◷",
-    calendar: "□",
-    schedule: "≡",
-    hours: "◔",
-    filial: "⌖",
-    bonus: "+",
-    settings: "⚙",
-    performance: "↗",
-    developer: "⌘",
-    "developer-deploy": "▲",
-    "developer-server": "⌘",
-    "developer-maintenance": "⏸",
-    "developer-flags": "⚑",
-    "developer-audit": "🛡",
-    "developer-jobs": "⚡",
-    "developer-database": "🗄",
-    "developer-api-metrics": "📈",
-    tests: "✓",
-  };
-  return glyphs[section] || "•";
+  const initials = String(section || "")
+    .split(/[^a-z0-9]+/i)
+    .filter(Boolean)
+    .map((part) => part.charAt(0))
+    .join("")
+    .slice(0, 2);
+  return (initials || "M").toUpperCase();
 }
 
 function SidebarDiamondWordmark({
@@ -120,7 +69,7 @@ export function orderSections(sections: string[]) {
           "attendance", "holidays", "admin-callbacks",
           "videos", "books", "grammar", "courses", "gifts", "reviews", "leaderboard",
           "generator", "results", "competitions-history", "broadcasts", "surveys",
-          "domain-email", "dpoint-settings", "sms", "chats", "notifications", "profile",
+          "domain-email", "dpoint-settings", "chats", "notifications", "profile",
         ]
       : sectionSet.has("performance") && sectionSet.has("homework")
         ? [

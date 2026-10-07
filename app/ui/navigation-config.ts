@@ -65,7 +65,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "profile",
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "sms", "admin-callbacks", "voice-rooms", "profile"],
+  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   developer: [
     "home",
@@ -121,7 +121,6 @@ export const SECTION_ALIAS: Record<string, string> = {
   chats: "chats",
   holiday: "holidays",
   holidays: "holidays",
-  sms: "sms",
   userbot: "userbot",
   competitions: "competitions-history",
 };
@@ -184,7 +183,6 @@ export const SECTION_LABELS: Record<string, string> = {
   filial: "Filial",
   settings: "Sozlamalar",
   bonus: "Bonus",
-  sms: "SMS Yuborish",
   "competitions-history": "Musobaqalar Tarixi",
   "admin-callbacks": "Arizalar",
   substitutions: "Vaqtinchalik O'qituvchi",

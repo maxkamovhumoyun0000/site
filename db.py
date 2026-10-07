@@ -18016,6 +18016,9 @@ def ensure_group_extra_subjects_schema() -> bool:
                 ("monthly_fee_text", "TEXT"),
                 ("telegram_group_url", "TEXT"),
                 ("pricing_type", "TEXT DEFAULT 'group'"),
+                ("mini_group_action_required", "INTEGER NOT NULL DEFAULT 0"),
+                ("mini_group_frozen_at", "TIMESTAMP"),
+                ("mini_group_frozen_reason", "TEXT"),
                 ("lang", "TEXT DEFAULT 'uz'"),
             ],
         )

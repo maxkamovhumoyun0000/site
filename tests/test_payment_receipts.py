@@ -141,6 +141,149 @@ def test_web_sessions_default_to_thirty_days_to_prevent_daily_logout() -> None:
     assert api.WEB_SESSION_TOKEN_TTL_HOURS == api.MOBILE_SESSION_TOKEN_TTL_HOURS
 
 
+def test_group_specific_pricing_override_replaces_only_that_students_group_price(monkeypatch) -> None:
+    """A student's negotiated group fee must not become a global group fee."""
+    monkeypatch.setattr(
+        api,
+        "_get_student_group_pricing_override",
+        lambda _user_id, _group_id: {"mode": "fixed_price", "price_amount": 450_000},
+        raising=False,
+    )
+    monkeypatch.setattr(api, "_payment_lesson_dates_for_group_month", lambda _group, _ym: [object()] * 12)
+    monkeypatch.setattr(api, "_payment_active_lesson_dates", lambda *_args: [object()] * 12)
+    monkeypatch.setattr(api, "_attendance_excused_lesson_dates", lambda *_args: set())
+
+    result = api._calculate_monthly_payment_for_student_group(
+        17,
+        23,
+        "2026-10",
+        student_row={"id": 17, "free_access": 0},
+        group_row={"id": 23, "name": "IELTS", "monthly_fee_text": "600000"},
+        discount_info={"discount_type": "none", "discount_percent": 0},
+    )
+
+    assert result["original_price"] == 450_000
+    assert result["final_payable_amount"] == 450_000
+    assert result["pricing_override_mode"] == "fixed_price"
+
+
+def test_group_specific_percent_discount_is_applied_to_one_students_group(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api,
+        "_get_student_group_pricing_override",
+        lambda _user_id, _group_id: {"mode": "discount_percent", "discount_percent": 100},
+        raising=False,
+    )
+    monkeypatch.setattr(api, "_payment_lesson_dates_for_group_month", lambda _group, _ym: [object()] * 12)
+    monkeypatch.setattr(api, "_payment_active_lesson_dates", lambda *_args: [object()] * 12)
+    monkeypatch.setattr(api, "_attendance_excused_lesson_dates", lambda *_args: set())
+
+    result = api._calculate_monthly_payment_for_student_group(
+        17,
+        23,
+        "2026-10",
+        student_row={"id": 17, "free_access": 0},
+        group_row={"id": 23, "name": "IELTS", "monthly_fee_text": "600000"},
+        discount_info={"discount_type": "none", "discount_percent": 0},
+    )
+
+    assert result["discount_type"] == "student_group_override"
+    assert result["discount_percent"] == 100
+    assert result["final_payable_amount"] == 0
+
+
+def test_mini_group_freezes_payment_when_only_one_student_remains(monkeypatch) -> None:
+    """A one-student mini group must never fall back to the 2-person price."""
+    monkeypatch.setattr(
+        api,
+        "_get_course_by_id",
+        lambda _course_id: {
+            "id": 71,
+            "price_text": "1000000",
+            "mini_group_2_price_text": "700000",
+            "mini_group_3_price_text": "600000",
+            "mini_group_4_price_text": "500000",
+        },
+    )
+    monkeypatch.setattr(api, "get_group_users", lambda _group_id: [{"id": 17, "login_type": 2}])
+    monkeypatch.setattr(api, "_get_student_group_pricing_override", lambda *_args: None)
+    monkeypatch.setattr(api, "_payment_lesson_dates_for_group_month", lambda _group, _ym: [object()] * 12)
+    monkeypatch.setattr(api, "_payment_active_lesson_dates", lambda *_args: [object()] * 12)
+    monkeypatch.setattr(api, "_attendance_excused_lesson_dates", lambda *_args: set())
+
+    result = api._calculate_monthly_payment_for_student_group(
+        17,
+        23,
+        "2026-10",
+        student_row={"id": 17, "free_access": 0},
+        group_row={"id": 23, "course_id": 71, "pricing_type": "mini_group", "mini_group_action_required": 1},
+        discount_info={"discount_type": "none", "discount_percent": 0},
+    )
+
+    assert result["course_price"] == 0
+    assert result["course_price_source"] == "mini_group_frozen"
+
+
+def test_frozen_mini_group_ignores_student_specific_price_override(monkeypatch) -> None:
+    """A negotiated price must not bypass the mandatory mini-group freeze."""
+    monkeypatch.setattr(api, "_get_course_by_id", lambda _course_id: {"id": 71, "mini_group_2_price_text": "700000"})
+    monkeypatch.setattr(api, "get_group_users", lambda _group_id: [{"id": 17, "login_type": 2}])
+    monkeypatch.setattr(api, "_get_student_group_pricing_override", lambda *_args: {"mode": "fixed_price", "price_amount": 900_000})
+    monkeypatch.setattr(api, "_payment_lesson_dates_for_group_month", lambda _group, _ym: [object()] * 12)
+    monkeypatch.setattr(api, "_payment_active_lesson_dates", lambda *_args: [object()] * 12)
+    monkeypatch.setattr(api, "_attendance_excused_lesson_dates", lambda *_args: set())
+
+    result = api._calculate_monthly_payment_for_student_group(
+        17, 23, "2026-10",
+        student_row={"id": 17, "free_access": 0},
+        group_row={"id": 23, "course_id": 71, "pricing_type": "mini_group", "mini_group_action_required": 1},
+        discount_info={"discount_type": "none", "discount_percent": 0},
+    )
+
+    assert result["course_price"] == 0
+    assert result["final_payable_amount"] == 0
+    assert result["pricing_override_mode"] is None
+
+
+def test_mini_group_uses_current_three_student_price(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api,
+        "_get_course_by_id",
+        lambda _course_id: {
+            "id": 71,
+            "price_text": "1000000",
+            "mini_group_2_price_text": "700000",
+            "mini_group_3_price_text": "600000",
+            "mini_group_4_price_text": "500000",
+        },
+    )
+    monkeypatch.setattr(
+        api,
+        "get_group_users",
+        lambda _group_id: [
+            {"id": 17, "login_type": 2},
+            {"id": 18, "login_type": 2},
+            {"id": 19, "login_type": 2},
+        ],
+    )
+    monkeypatch.setattr(api, "_get_student_group_pricing_override", lambda *_args: None)
+    monkeypatch.setattr(api, "_payment_lesson_dates_for_group_month", lambda _group, _ym: [object()] * 12)
+    monkeypatch.setattr(api, "_payment_active_lesson_dates", lambda *_args: [object()] * 12)
+    monkeypatch.setattr(api, "_attendance_excused_lesson_dates", lambda *_args: set())
+
+    result = api._calculate_monthly_payment_for_student_group(
+        17,
+        23,
+        "2026-10",
+        student_row={"id": 17, "free_access": 0},
+        group_row={"id": 23, "course_id": 71, "pricing_type": "mini_group"},
+        discount_info={"discount_type": "none", "discount_percent": 0},
+    )
+
+    assert result["course_price"] == 600_000
+    assert result["course_price_source"] == "mini_group_3"
+
+
 def test_receipt_pdf_is_rendered_from_server_snapshot() -> None:
     pdf = api._receipt_pdf_bytes(
         {

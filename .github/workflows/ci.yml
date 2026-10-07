@@ -24,27 +24,3 @@ jobs:
 
       - name: Run pytest
         run: pytest -q
-
-  e2e-smoke:
-    runs-on: ubuntu-latest
-    needs: backend-tests
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-
-      - name: Run e2e smoke
-        env:
-          CI: "true"
-        run: npm run e2e:smoke

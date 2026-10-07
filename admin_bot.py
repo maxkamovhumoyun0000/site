@@ -2638,7 +2638,7 @@ async def show_group_student_list(callback: CallbackQuery, group_id: int, remove
     
     for i, student in enumerate(chunk, start=1):
         in_group_indicator = " ✅" if student['in_group'] else ""
-        accountless_badge = " • Akountsiz" if int(student.get("login_type") or 0) == 6 else ""
+        accountless_badge = ""
         full_name = f"{student.get('first_name', '').strip()} {student.get('last_name', '').strip()}".strip()
         full_name = full_name or "—"
         text += (
@@ -6365,7 +6365,7 @@ async def show_students_list(message: Message, page: int = 0, search_query: str 
         group_str = "\n   ".join(group_info) if group_info else "—"
 
         # Chiroyli blok
-        accountless_badge = " (Akountsiz)" if int(student.get("login_type") or 0) == 6 else ""
+        accountless_badge = ""
         text += (
             f"<b>{start + i}.</b> {student['first_name']} {student['last_name']}{accountless_badge}\n"
             f"   📚 {t(lang, 'admin_student_list_label_subject')}: {', '.join(subjects)}\n"
@@ -6601,7 +6601,7 @@ async def show_group_student_list_by_message(message: Message, group_id: int, re
     
     for i, student in enumerate(chunk, start=1):
         in_group_indicator = " ✅" if student['in_group'] else ""
-        accountless_badge = " • Akountsiz" if int(student.get("login_type") or 0) == 6 else ""
+        accountless_badge = ""
         full_name = f"{student.get('first_name', '').strip()} {student.get('last_name', '').strip()}".strip()
         full_name = full_name or "—"
         text += (

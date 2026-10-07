@@ -43,7 +43,6 @@ import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
-import { AdminSms } from "./ui/admin-sms";
 import AdminUserbot from "./ui/admin-userbot";
 import { AdminCallbacksPanel } from "./ui/admin-callbacks";
 import { AdminHomeworkPanel } from "./ui/admin-homework";
@@ -514,6 +513,16 @@ function localizedStatus(tt: ReturnType<typeof useWebT>, status?: string | null)
   if (normalized === "open") return tt("common.open", "Ochish");
   if (normalized === "close" || normalized === "closed") return tt("common.close", "Yopish");
   return tt(`status.${normalized}`, status || "-");
+}
+
+function normalizePaymentStatusFilter(value: unknown): "all" | "to'langan" | "qisman to'langan" | "to'lanmagan" | "kechikkan" | "ortiqcha to'lov" {
+  const normalized = String(value || "").trim().toLowerCase().replaceAll("’", "'");
+  if (["to'langan", "paid", "оплачено"].includes(normalized)) return "to'langan";
+  if (["qisman to'langan", "partial", "частично оплачено"].includes(normalized)) return "qisman to'langan";
+  if (["to'lanmagan", "unpaid", "не оплачено"].includes(normalized)) return "to'lanmagan";
+  if (["kechikkan", "overdue", "просрочено"].includes(normalized)) return "kechikkan";
+  if (["ortiqcha to'lov", "overpayment", "переплата"].includes(normalized)) return "ortiqcha to'lov";
+  return "all";
 }
 
 function localizedAttendanceStatus(tt: ReturnType<typeof useWebT>, status?: string | null) {
@@ -9396,6 +9405,8 @@ function StudentProfile({
   onSubmitReview,
   onLogout,
   locale,
+  profileRoleLabel,
+  onOpenFeedback,
 }: {
   user: ApiUser;
   data: GenericRow;
@@ -9403,6 +9414,8 @@ function StudentProfile({
   onSubmitReview: (payload: { rating: number; review_text: string }) => Promise<GenericRow | null> | void;
   onLogout: () => void;
   locale: Locale;
+  profileRoleLabel?: string;
+  onOpenFeedback?: () => void;
 }) {
   const [language, setLanguage] = useState<"uz" | "ru" | "en">((String(user.language || "uz").toLowerCase() as "uz" | "ru" | "en") || "uz");
   const [langMenuOpen, setLangMenuOpen] = useState(false);
@@ -9749,7 +9762,7 @@ function StudentProfile({
 
         <div className="mt-2.5">
           <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-cyan-500/10 dark:bg-cyan-400/10 border border-cyan-500/20 text-[11px] font-extrabold text-cyan-700 dark:text-cyan-300 tracking-wide uppercase">
-            ✨ {t(locale, "common.student", "TALABA")}
+            ✨ {profileRoleLabel || t(locale, "common.student", "TALABA")}
           </span>
         </div>
       </div>
@@ -9778,7 +9791,10 @@ function StudentProfile({
         {/* Item 2: Feedback */}
         <button
           type="button"
-          onClick={() => { window.location.href = "/?role=student&section=chats"; }}
+          onClick={() => {
+            if (onOpenFeedback) onOpenFeedback();
+            else window.location.href = "/?role=student&section=chats";
+          }}
           className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
         >
           <div className="w-8 h-8 rounded-xl bg-sky-500/10 dark:bg-sky-500/20 flex items-center justify-center text-sky-600 dark:text-sky-400 flex-shrink-0">
@@ -11736,7 +11752,7 @@ function TeacherSection({
   const [teacherCreateStudentLoading, setTeacherCreateStudentLoading] = useState(false);
   const [teacherCreateStudentError, setTeacherCreateStudentError] = useState("");
   const [teacherCreateStudentDraft, setTeacherCreateStudentDraft] = useState({
-    account_type: "student" as "student" | "accountless",
+    account_type: "student" as const,
     first_name: "",
     last_name: "",
     phone: "",
@@ -12527,6 +12543,18 @@ function TeacherSection({
 
                 <form onSubmit={handleTeacherCreateGroup} className="space-y-4">
                   <div className="admin-form-grid-2">
+                    <label className="admin-form-label">
+                      {tt("admin.groups.pricingType", "To'lov turi")}
+                      <select
+                        value={teacherCreateGroupDraft.pricing_type}
+                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, pricing_type: e.target.value }))}
+                      >
+                        <option value="group">{tt("admin.groups.standardGroup", "Standart guruh")}</option>
+                        <option value="individual">{tt("admin.groups.individual", "Individual")}</option>
+                        <option value="mini_group">{tt("admin.groups.miniGroup", "Mini guruh (2–4 o'quvchi)")}</option>
+                      </select>
+                    </label>
+
                     <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
                       Guruh Nomi *
                       <input
@@ -13021,36 +13049,6 @@ function TeacherSection({
                         {teacherCreateStudentError}
                       </div>
                     )}
-
-                    <div>
-                      <label className="text-xs font-bold text-ink-500 dark:text-navy-300 block mb-1">Akkaunt Turi *</label>
-                      <div className="grid grid-cols-2 gap-3">
-                        <button
-                          type="button"
-                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-left flex flex-col gap-1 ${
-                            teacherCreateStudentDraft.account_type === "student"
-                              ? "bg-cyan-500/10 border-cyan-500 text-cyan-600 dark:text-cyan-400"
-                              : "border-line dark:border-white/10 text-ink-600 dark:text-navy-300"
-                          }`}
-                          onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "student" }))}
-                        >
-                          <span>👤 Akkauntli O'quvchi</span>
-                          <span className="text-[10px] opacity-75 font-normal">Login ID va Parol beriladi</span>
-                        </button>
-                        <button
-                          type="button"
-                          className={`p-3 rounded-xl border text-xs font-bold transition-all text-left flex flex-col gap-1 ${
-                            teacherCreateStudentDraft.account_type === "accountless"
-                              ? "bg-cyan-500/10 border-cyan-500 text-cyan-600 dark:text-cyan-400"
-                              : "border-line dark:border-white/10 text-ink-600 dark:text-navy-300"
-                          }`}
-                          onClick={() => setTeacherCreateStudentDraft((prev) => ({ ...prev, account_type: "accountless" }))}
-                        >
-                          <span>📋 Akkauntsiz O'quvchi</span>
-                          <span className="text-[10px] opacity-75 font-normal">Faqat davomad/to'lov uchun</span>
-                        </button>
-                      </div>
-                    </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                       <div>
@@ -14967,6 +14965,9 @@ function AdminCoursesPanel({
   const [courseDescriptions, setCourseDescriptions] = useState<Record<"uz" | "ru" | "en", string>>({ uz: "", ru: "", en: "" });
   const [priceText, setPriceText] = useState("");
   const [individualPriceText, setIndividualPriceText] = useState("");
+  const [miniGroup2PriceText, setMiniGroup2PriceText] = useState("");
+  const [miniGroup3PriceText, setMiniGroup3PriceText] = useState("");
+  const [miniGroup4PriceText, setMiniGroup4PriceText] = useState("");
   const [coverImageUrl, setCoverImageUrl] = useState("");
   const [status, setStatus] = useState("published");
   const [subjectText, setSubjectText] = useState(ADMIN_COURSE_SUBJECTS[1]);
@@ -15043,6 +15044,9 @@ function AdminCoursesPanel({
     });
     setPriceText(String(item.price_text || ""));
     setIndividualPriceText(String(item.individual_price_text || ""));
+    setMiniGroup2PriceText(String(item.mini_group_2_price_text || ""));
+    setMiniGroup3PriceText(String(item.mini_group_3_price_text || ""));
+    setMiniGroup4PriceText(String(item.mini_group_4_price_text || ""));
     setCoverImageUrl(String(item.cover_image_url || ""));
     setStatus(String(item.status || "draft"));
     setSubjectText(String(item.subject || ADMIN_COURSE_SUBJECTS[1]));
@@ -15055,6 +15059,9 @@ function AdminCoursesPanel({
     setCourseDescriptions({ uz: "", ru: "", en: "" });
     setPriceText("");
     setIndividualPriceText("");
+    setMiniGroup2PriceText("");
+    setMiniGroup3PriceText("");
+    setMiniGroup4PriceText("");
     setCoverImageUrl("");
     setStatus("published");
     setSubjectText(ADMIN_COURSE_SUBJECTS[1]);
@@ -15067,6 +15074,9 @@ function AdminCoursesPanel({
     setCourseDescriptions({ uz: "", ru: "", en: "" });
     setPriceText("");
     setIndividualPriceText("");
+    setMiniGroup2PriceText("");
+    setMiniGroup3PriceText("");
+    setMiniGroup4PriceText("");
     setCoverImageUrl("");
     setStatus("published");
     setSubjectText(ADMIN_COURSE_SUBJECTS[1]);
@@ -15095,6 +15105,9 @@ function AdminCoursesPanel({
       description_en: descriptionEn,
       price_text: String(priceText || "").trim(),
       individual_price_text: String(individualPriceText || "").trim(),
+      mini_group_2_price_text: String(miniGroup2PriceText || "").trim(),
+      mini_group_3_price_text: String(miniGroup3PriceText || "").trim(),
+      mini_group_4_price_text: String(miniGroup4PriceText || "").trim(),
       cover_image_url: String(coverImageUrl || "").trim(),
       status: "published",
       subject: String(subjectText || "").trim(),
@@ -15208,6 +15221,28 @@ function AdminCoursesPanel({
                   </select>
                 </label>
               </div>
+              <section className="admin-modal-section">
+                <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">
+                  {tt("admin.courses.miniGroupPrices", "Mini guruh narxlari (har bir o'quvchi uchun)")}
+                </p>
+                <p className="text-xs text-ink-500 dark:text-navy-300 mb-3">
+                  {tt("admin.courses.miniGroupHint", "Mini guruhda bitta o'quvchi qolsa to'lov avtomatik muzlatiladi.")}
+                </p>
+                <div className="grid grid-3">
+                  <label>
+                    {tt("admin.courses.miniGroup2Price", "2 kishilik narx")}
+                    <input value={miniGroup2PriceText} onChange={(event) => setMiniGroup2PriceText(event.target.value)} placeholder="700 000 UZS / oy" />
+                  </label>
+                  <label>
+                    {tt("admin.courses.miniGroup3Price", "3 kishilik narx")}
+                    <input value={miniGroup3PriceText} onChange={(event) => setMiniGroup3PriceText(event.target.value)} placeholder="600 000 UZS / oy" />
+                  </label>
+                  <label>
+                    {tt("admin.courses.miniGroup4Price", "4 kishilik narx")}
+                    <input value={miniGroup4PriceText} onChange={(event) => setMiniGroup4PriceText(event.target.value)} placeholder="500 000 UZS / oy" />
+                  </label>
+                </div>
+              </section>
               <div className="grid grid-3">
                 {courseLanguages.map((lang) => (
                   <label key={`course-description-${lang.key}`}>
@@ -16001,7 +16036,10 @@ function AdminSection({
   const [adminAvatarPreviewUrl, setAdminAvatarPreviewUrl] = useState("");
   const [adminAvatarPreviewName, setAdminAvatarPreviewName] = useState("");
   const [adminUserCreateOpen, setAdminUserCreateOpen] = useState(false);
-  const [adminUserEditTarget, setAdminUserEditTarget] = useState<GenericRow | null>(null);
+  const [placementPrepTarget, setPlacementPrepTarget] = useState<GenericRow | null>(null);
+  const [placementPrepSubject, setPlacementPrepSubject] = useState("English");
+  const [placementPrepRequired, setPlacementPrepRequired] = useState(true);
+  const [placementPrepSaving, setPlacementPrepSaving] = useState(false);
   const [adminGroupCreateOpen, setAdminGroupCreateOpen] = useState(false);
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
   // Keep the management modal stable while the background list is refreshed.
@@ -16046,6 +16084,8 @@ function AdminSection({
   const [groupStudentToRemove, setGroupStudentToRemove] = useState<GenericRow | null>(null);
   const [groupRemoveLeavingAt, setGroupRemoveLeavingAt] = useState<string>("");
   const [groupRemoveMistake, setGroupRemoveMistake] = useState<boolean>(false);
+  const [miniGroupResolutionTargetId, setMiniGroupResolutionTargetId] = useState<number>(0);
+  const [miniGroupResolutionBusy, setMiniGroupResolutionBusy] = useState(false);
   const [tempTeacherQuery, setTempTeacherQuery] = useState("");
   const [tempTeacherRows, setTempTeacherRows] = useState<GenericRow[]>([]);
   const [selectedTempTeacher, setSelectedTempTeacher] = useState<GenericRow | null>(null);
@@ -16218,6 +16258,10 @@ function AdminSection({
   const [familyMemberPickerGroupId, setFamilyMemberPickerGroupId] = useState<number | null>(null);
   const [familyMemberSearch, setFamilyMemberSearch] = useState("");
   const [familyCandidates, setFamilyCandidates] = useState<GenericRow[]>([]);
+  const [familyDetailCandidateQuery, setFamilyDetailCandidateQuery] = useState("");
+  const [familyDetailCandidates, setFamilyDetailCandidates] = useState<GenericRow[]>([]);
+  const [familyDetailCandidatesLoading, setFamilyDetailCandidatesLoading] = useState(false);
+  const [familyDetailLinkBusyId, setFamilyDetailLinkBusyId] = useState(0);
   const deferredPaymentsTeacherFilter = useDeferredValue(paymentsTeacherFilter);
   const deferredPaymentsGroupQuery = useDeferredValue(paymentsGroupQuery);
   const deferredPaymentsStatsSearch = useDeferredValue(paymentsStatsSearch);
@@ -16365,10 +16409,18 @@ function AdminSection({
   }, [subjectCatalog, userDetail?.user?.subjects]);
   const detailRole = String(userDetail?.user?.role || "");
   const detailIsStudent = detailRole === "student";
-  const detailIsAccountless = Number(userDetail?.user?.login_type || 0) === 6;
   const detailIsTeacherLike = detailRole === "teacher" || detailRole === "support";
   const selectedDetailUserRow = (userDetail?.user || {}) as GenericRow;
   const selectedDetailBlocked = Boolean(selectedDetailUserRow.blocked);
+  const detailFamilyGroups = useMemo(() => {
+    const userId = Number(selectedUserId || 0);
+    if (!userId) return [];
+    return familyGroups.filter((group) => (group.members || []).some((member: GenericRow) => Number(member.user_id || member.id || 0) === userId));
+  }, [familyGroups, selectedUserId]);
+  const detailFamilyMemberIds = useMemo(
+    () => new Set(detailFamilyGroups.flatMap((group) => (group.members || []).map((member: GenericRow) => Number(member.user_id || member.id || 0))).filter(Boolean)),
+    [detailFamilyGroups],
+  );
   const attendanceGroupRows = useMemo(() => {
     return buildUpcomingLessonCards((groups || []) as GenericRow[], Math.max(80, (groups || []).length || 0)) as AttendanceLessonCell[];
   }, [groups]);
@@ -16446,6 +16498,53 @@ function AdminSection({
     }, 250);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [familyMemberPickerGroupId, familyMemberSearch]);
+
+  useEffect(() => {
+    if (!selectedUserId || String(userDetail?.user?.role || "") !== "student") {
+      setFamilyDetailCandidateQuery("");
+      setFamilyDetailCandidates([]);
+      return;
+    }
+    setFamilyDetailCandidateQuery(String(userDetail?.user?.last_name || "").trim());
+    loadFamilyGroups(true).catch(() => null);
+  }, [selectedUserId, userDetail?.user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedUserId || String(userDetail?.user?.role || "") !== "student") return;
+    const query = familyDetailCandidateQuery.trim();
+    if (!query) {
+      setFamilyDetailCandidates([]);
+      return;
+    }
+    const token = localStorage.getItem("diamond_token");
+    if (!token) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setFamilyDetailCandidatesLoading(true);
+      const params = new URLSearchParams({ role: "student", limit: "100", q: query });
+      requestJson<{ items: GenericRow[] }>(`/admin/users?${params.toString()}`, { token, signal: controller.signal })
+        .then((result) => {
+          const currentLastName = String(userDetail?.user?.last_name || "").trim().toUpperCase();
+          const candidates = (result.items || []).filter((row) => Number(row.id || 0) !== Number(selectedUserId));
+          candidates.sort((left, right) => {
+            const leftRecommended = String(left.last_name || "").trim().toUpperCase() === currentLastName ? 1 : 0;
+            const rightRecommended = String(right.last_name || "").trim().toUpperCase() === currentLastName ? 1 : 0;
+            return rightRecommended - leftRecommended || String(left.full_name || "").localeCompare(String(right.full_name || ""));
+          });
+          setFamilyDetailCandidates(candidates);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) setFamilyDetailCandidates([]);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setFamilyDetailCandidatesLoading(false);
+        });
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [selectedUserId, userDetail?.user?.id, userDetail?.user?.last_name, familyDetailCandidateQuery]);
 
   useEffect(() => {
     if (section !== "users") return;
@@ -17143,7 +17242,8 @@ function AdminSection({
     if (paymentsDateTo) params.set("date_to", paymentsDateTo);
     if (deferredPaymentsTeacherFilter.trim()) params.set("teacher_name", deferredPaymentsTeacherFilter.trim());
     if (paymentsSubjectFilter !== "all") params.set("subject", paymentsSubjectFilter);
-    if (paymentsStatusFilter !== "all") params.set("payment_status", paymentsStatusFilter);
+    // Keep every status-pill total visible. The selected status is used only
+    // by the student-list request below, not by the aggregate statistics.
     if (paymentsMethodFilter !== "all") params.set("payment_method", paymentsMethodFilter);
     const canUseFastDashboard =
       !paymentsDateFrom &&
@@ -17153,13 +17253,11 @@ function AdminSection({
       !deferredPaymentsTeacherFilter.trim() &&
       !deferredPaymentsGroupQuery.trim() &&
       paymentsSubjectFilter === "all" &&
-      paymentsStatusFilter === "all" &&
       paymentsMethodFilter === "all";
     try {
       if (canUseFastDashboard) {
         const dashboardParams = new URLSearchParams();
         dashboardParams.set("ym", paymentsMonthFilter);
-        if (paymentsStatusFilter !== "all") dashboardParams.set("status", paymentsStatusFilter);
         const dashboard = await requestJson<GenericRow>(`/admin/payments/dashboard?${dashboardParams.toString()}`, {
           token,
           signal: controller.signal,
@@ -17621,7 +17719,9 @@ function AdminSection({
 
   function openFamilyMemberPicker(groupId: number) {
     setFamilyMemberPickerGroupId(Number(groupId));
-    setFamilyMemberSearch("");
+    const family = familyGroups.find((group) => Number(group.id || 0) === Number(groupId));
+    const suggestedLastName = String((family?.members || [])[0]?.last_name || "").trim();
+    setFamilyMemberSearch(suggestedLastName);
   }
 
   async function addFamilyGroupMember(groupId: number, studentId: number) {
@@ -17660,6 +17760,60 @@ function AdminSection({
     }
   }
 
+  async function linkFamilyCandidate(candidateId: number) {
+    const selectedStudentId = Number(selectedUserId || 0);
+    if (!selectedStudentId || !candidateId || selectedStudentId === candidateId || familyDetailLinkBusyId) return;
+    setFamilyDetailLinkBusyId(candidateId);
+    try {
+      const existingFamily = detailFamilyGroups[0] || null;
+      let result: GenericRow | null;
+      if (existingFamily) {
+        result = await onAdminCall(
+          `/admin/family-groups/${Number(existingFamily.id || 0)}/members`,
+          { user_id: candidateId },
+          "POST",
+          "Oila a'zosi qo'shildi",
+        );
+      } else {
+        const surname = String(selectedDetailUserRow.last_name || "").trim();
+        result = await onAdminCall(
+          "/admin/family-groups",
+          {
+            name: surname ? `${surname} oilasi` : "Yangi oila guruhi",
+            active: true,
+            member_user_ids: [selectedStudentId, candidateId],
+          },
+          "POST",
+          "Oila guruhi yaratildi",
+        );
+      }
+      if (result) {
+        await Promise.all([loadFamilyGroups(true), loadUserDetail(selectedStudentId)]);
+      }
+    } finally {
+      setFamilyDetailLinkBusyId(0);
+    }
+  }
+
+  async function unlinkFamilyCandidate(groupId: number, candidateId: number) {
+    if (!groupId || !candidateId || familyDetailLinkBusyId) return;
+    if (!window.confirm("Bu oila a'zosini ajratasizmi?")) return;
+    setFamilyDetailLinkBusyId(candidateId);
+    try {
+      const result = await onAdminCall(
+        `/admin/family-groups/${groupId}/members/${candidateId}`,
+        {},
+        "DELETE",
+        "Oila a'zosi ajratildi",
+      );
+      if (result && selectedUserId) {
+        await Promise.all([loadFamilyGroups(true), loadUserDetail(Number(selectedUserId))]);
+      }
+    } finally {
+      setFamilyDetailLinkBusyId(0);
+    }
+  }
+
   useEffect(() => {
     if (section !== "family-groups") return;
     loadFamilyGroups().catch(() => null);
@@ -17669,9 +17823,10 @@ function AdminSection({
     if (section !== "payments") return;
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      const statusFromUrl = String(params.get("payment_status") || "").trim().toLowerCase();
-      if (statusFromUrl) {
+      const statusFromUrl = normalizePaymentStatusFilter(params.get("payment_status"));
+      if (statusFromUrl !== "all") {
         setPaymentsStatusFilter(statusFromUrl);
+        setPaymentsStudentPage(1);
       }
     }
     if (paymentsSelectedGroupId > 0) {
@@ -17917,6 +18072,8 @@ function AdminSection({
     if (!uid) return;
     const pendingApproval = Boolean(targetUser.pending_approval) && !Boolean(targetUser.access_enabled);
     const nextBlocked = !Boolean(targetUser.blocked);
+    const actionText = nextBlocked ? "bloklaysizmi" : "blokdan chiqarasizmi";
+    if (!window.confirm(`${String(targetUser.full_name || "Bu foydalanuvchi")}ni ${actionText}?`)) return;
     const nextAccessEnabled = pendingApproval ? false : !nextBlocked;
     const result = await onAdminCall(
       `/admin/users/${uid}`,
@@ -17939,6 +18096,13 @@ function AdminSection({
     if (Number(selectedUserId || 0) === uid) {
       loadUserDetail(uid);
     }
+  }
+
+  async function deleteManagedUser(targetUser: GenericRow) {
+    const uid = Number(targetUser.id || 0);
+    if (!uid) return;
+    if (!window.confirm(`${String(targetUser.full_name || "Bu foydalanuvchi")}ni butunlay o'chirasizmi? Bu amalni qaytarib bo'lmaydi.`)) return;
+    await onAdminCall(`/admin/users/${uid}`, {}, "DELETE", "User deleted");
   }
 
   async function approvePublicRegistration(targetUser: GenericRow) {
@@ -17999,10 +18163,6 @@ function AdminSection({
 
   if (section === "homework") {
     return <AdminHomeworkPanel data={data} onApiCall={onAdminCallRaw} />;
-  }
-
-  if (section === "sms") {
-    return <AdminSms apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
   }
 
   if (section === "userbot") {
@@ -18137,42 +18297,9 @@ function AdminSection({
                     }
                     return res;
                   }}
-                  students={users.filter((row) => [1, 2, 6].includes(Number(row.login_type || 0)) || String(row.role || "") === "student")}
+                  students={users.filter((row) => [1, 2].includes(Number(row.login_type || 0)) || String(row.role || "") === "student")}
                   groups={groups}
                 />
-              </div>
-            </article>
-          </div>
-        </ModalPortal>
-
-        {/* ── Edit User Modal ── */}
-        <ModalPortal open={!!adminUserEditTarget}>
-          <div className="overlay-modal-backdrop admin-user-modal-backdrop" onClick={() => setAdminUserEditTarget(null)}>
-            <article className="overlay-modal-card admin-wide-modal admin-user-modal-card" onClick={(event) => event.stopPropagation()}>
-              <div className="row-between gap-3 admin-user-modal-header">
-                <div>
-                  <h3>{tt("admin.users.editUser", "Foydalanuvchini tahrirlash")}</h3>
-                  <p className="text-sm text-ink-500 dark:text-navy-300">{tt("admin.users.editUserDesc", "Ma'lumotlarni tahrirlang")}</p>
-                </div>
-                <button className="admin-modal-close" type="button" aria-label={tt("common.close", "Yopish")} onClick={() => setAdminUserEditTarget(null)}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-              </div>
-              <div className="admin-user-modal-scroll">
-                {adminUserEditTarget && (
-                  <AdminUserEditPanel
-                    user={adminUserEditTarget}
-                    onUpdate={async (payload) => {
-                      await onAdminCall(`/admin/users/${adminUserEditTarget.id}`, payload, "PATCH", "Foydalanuvchi tahrirlandi");
-                      if (Number(adminUserEditTarget.id) === Number(selectedUserId || 0)) {
-                        loadUserDetail(Number(adminUserEditTarget.id));
-                      }
-                      setAdminUsersFallback((prev) => (prev !== null ? prev : (data.users || [])).map((u: any) => Number(u.id) === Number(adminUserEditTarget.id) ? { ...u, ...payload } : u));
-                      setAdminUserEditTarget(null);
-                    }}
-                    onClose={() => setAdminUserEditTarget(null)}
-                  />
-                )}
               </div>
             </article>
           </div>
@@ -18246,94 +18373,121 @@ function AdminSection({
             <div className="overlay-modal-backdrop admin-user-modal-backdrop" onClick={() => { setSelectedUserId(null); setUserDetail(null); }}>
               <article className="overlay-modal-card admin-wide-modal admin-user-modal-card" onClick={(event) => event.stopPropagation()}>
                 <div className="row-between gap-3 admin-user-modal-header">
-                  <div>
-                    <h3>{tt("common.details", "Batafsil")}: {selectedDetailUserRow.full_name || "-"}</h3>
-                    <p className="text-sm text-ink-500 dark:text-navy-300">{selectedDetailUserRow.login_id || "-"} · {localizedRole(tt, String(selectedDetailUserRow.role || ""))}</p>
-                  </div>
+                  <h3>{tt("common.details", "Foydalanuvchi ma'lumotlari")}</h3>
                   <button className="admin-modal-close" type="button" onClick={() => { setSelectedUserId(null); setUserDetail(null); }}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                   </button>
                 </div>
                 <div className="admin-user-modal-scroll">
-                {/* Quick Stats */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="flex flex-col gap-1 p-3 bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl">
-                    <span className="text-[10px] font-bold text-ink-400 uppercase tracking-wider">{tt("common.loginId", "Login ID")}</span>
-                    <strong className="font-mono text-sm text-navy-900 dark:text-white">{selectedDetailUserRow.login_id || "-"}</strong>
-                  </div>
-                  <div className="flex flex-col gap-1 p-3 bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl">
-                    <span className="text-[10px] font-bold text-ink-400 uppercase tracking-wider">{tt("common.phone", "Telefon")}</span>
-                    <strong className="text-sm text-navy-900 dark:text-white">{selectedDetailUserRow.phone || "-"}</strong>
-                  </div>
-                  <div className="flex flex-col gap-1 p-3 bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl">
-                    <span className="text-[10px] font-bold text-ink-400 uppercase tracking-wider">{tt("common.status", "Holat")}</span>
-                    <strong className={`text-sm font-bold ${selectedDetailBlocked ? "text-red-500" : "text-green-600 dark:text-green-400"}`}>{selectedDetailBlocked ? "🔴 " + tt("admin.users.blocked", "Bloklangan") : "🟢 " + tt("common.active", "Faol")}</strong>
-                  </div>
-                  <div className="flex flex-col gap-1 p-3 bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 rounded-xl">
-                    <span className="text-[10px] font-bold text-ink-400 uppercase tracking-wider">D&apos;Coin</span>
-                    <strong className="text-sm text-navy-900 dark:text-white">{Number(userDetail.dcoin_total || 0).toFixed(1)}</strong>
-                  </div>
-                </div>
                 {/* Actions */}
                 {!detailProtectedAdmin ? (
                   <div className="admin-action-btns">
-                    <button className="admin-btn-edit" onClick={() => { setAdminUserEditTarget(selectedDetailUserRow); }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      {tt("common.edit", "Tahrirlash")}
+                    <button className="admin-btn-reset" disabled={Boolean(resetPasswordPending[Number(selectedUserId || 0)])} onClick={() => triggerPasswordReset(selectedDetailUserRow)}>
+                      {Boolean(resetPasswordPending[Number(selectedUserId || 0)]) ? "..." : tt("admin.users.action.resetPass", "Reset Pass")}
                     </button>
-                    {Number(selectedDetailUserRow.login_type || 0) !== 6 ? (
-                      <button className="admin-btn-reset" disabled={Boolean(resetPasswordPending[Number(selectedUserId || 0)])} onClick={() => triggerPasswordReset(selectedDetailUserRow)}>
-                        {Boolean(resetPasswordPending[Number(selectedUserId || 0)]) ? "..." : tt("admin.users.action.resetPass", "Reset Pass")}
-                      </button>
-                    ) : null}
                     <button className={selectedDetailBlocked ? "admin-btn-unblock" : "admin-btn-block"} onClick={() => toggleUserBlocked(selectedDetailUserRow)}>
                       {!selectedDetailBlocked ? tt("admin.users.action.block", "Bloklash") : tt("admin.users.action.unblock", "Blokdan chiqarish")}
                     </button>
                     {detailIsStudent ? (
                       <button className="admin-btn-prep" onClick={() => {
-                        const subject = String(selectedDetailUserRow.placement_subject || (selectedDetailUserRow.subjects as string[] | undefined)?.[0] || "English");
-                        onAdminCall(`/admin/users/${selectedUserId}/prepare-placement?subject=${encodeURIComponent(subject)}`, {}, "POST", "Placement prepared");
+                        setPlacementPrepTarget(selectedDetailUserRow);
+                        setPlacementPrepSubject(String(selectedDetailUserRow.placement_subject || detailPlacementOptions[0] || "English"));
+                        setPlacementPrepRequired(Boolean(selectedDetailUserRow.placement_required));
                       }}>
                         {tt("admin.users.prepTest", "Test tayyorlash")}
                       </button>
                     ) : null}
-                    <button className="admin-btn-delete" onClick={() => onAdminCall(`/admin/users/${selectedUserId}`, {}, "DELETE", "User deleted")}>
+                    <button className="admin-btn-delete" onClick={() => deleteManagedUser(selectedDetailUserRow)}>
                       {tt("common.delete", "O'chirish")}
                     </button>
                   </div>
                 ) : (
                   <p className="chip">{tt("admin.users.protected", "Himoyalangan admin akkaunti")}</p>
                 )}
+                {!detailProtectedAdmin ? (
+                  <AdminUserEditPanel
+                    user={selectedDetailUserRow}
+                    groups={Array.isArray(userDetail.groups) ? userDetail.groups : []}
+                    pricingOverrides={Array.isArray(userDetail.pricing_overrides) ? userDetail.pricing_overrides : []}
+                    onUpdate={async (payload) => {
+                      const result = await onAdminCall(`/admin/users/${selectedUserId}`, payload, "PATCH", "Foydalanuvchi tahrirlandi");
+                      if (result) {
+                        setAdminUsersFallback((prev) => (prev !== null ? prev : (data.users || [])).map((row: any) => Number(row.id) === Number(selectedUserId) ? { ...row, ...payload } : row));
+                        await loadUserDetail(Number(selectedUserId));
+                      }
+                    }}
+                    onUpdateGroupPricing={async (groupId, payload) => {
+                      const result = await onAdminCall(`/admin/users/${selectedUserId}/group-pricing/${groupId}`, payload, "PATCH", "Guruh uchun maxsus narx saqlandi");
+                      if (result) await loadUserDetail(Number(selectedUserId));
+                    }}
+                  />
+                ) : null}
                 {/* Student-specific */}
                 {detailIsStudent ? (
                   <>
-                    {!detailIsAccountless ? (
-                      <div className="admin-form-grid-2">
-                        <label className="admin-form-label">
-                          Placement Subject
-                          <select defaultValue={String(selectedDetailUserRow.placement_subject || detailPlacementOptions[0] || "English")} onChange={(event) => onAdminCall(`/admin/users/${selectedUserId}`, { placement_subject: event.target.value }, "PATCH", "Placement subject updated")}>
-                            {detailPlacementOptions.map((subject) => (
-                              <option key={subject} value={subject}>{subject}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="admin-form-label">
-                          Placement Required
-                          <select defaultValue={selectedDetailUserRow.placement_required ? "yes" : "no"} onChange={(event) => onAdminCall(`/admin/users/${selectedUserId}`, { placement_required: event.target.value === "yes" }, "PATCH", "Placement flag updated")}>
-                            <option value="yes">Yes</option>
-                            <option value="no">No</option>
-                          </select>
-                        </label>
+                    <section className="admin-modal-section">
+                      <div className="mb-3">
+                        <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">👨‍👩‍👧 Oila guruhi</p>
+                        <p className="mt-1 text-sm text-ink-500 dark:text-navy-300">Bu yerdagi ulash Family groups sahifasida ham darhol ko&apos;rinadi.</p>
                       </div>
-                    ) : (
-                      <p className="chip">Akountsiz o&apos;quvchi: login/parol va placement amallari mavjud emas.</p>
-                    )}
-                    <div className="flex items-center gap-3 p-4 bg-surface-soft border border-line rounded-2xl">
-                      <label className="flex items-center gap-2 cursor-pointer m-0">
-                        <input type="checkbox" defaultChecked={Boolean(selectedDetailUserRow.free_access)} onChange={(e) => onAdminCall(`/admin/users/${selectedUserId}`, { free_access: e.target.checked }, "PATCH", "Free access updated")} className="w-5 h-5" />
-                        <span className="font-bold text-ink-900 dark:text-white">100% Chegirma — To&apos;lov 0 so&apos;m</span>
-                      </label>
-                    </div>
+                      {detailFamilyGroups.length ? (
+                        <div className="flex flex-col gap-3">
+                          {detailFamilyGroups.map((familyGroup) => (
+                            <div key={`detail-family-${familyGroup.id}`} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/5">
+                              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <strong className="text-sm text-ink-900 dark:text-white">{String(familyGroup.name || "Oila guruhi")}</strong>
+                                <span className="chip">{Number(familyGroup.active_member_count || (familyGroup.members || []).length || 0)} a&apos;zo</span>
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                {(familyGroup.members || []).map((member: GenericRow) => {
+                                  const memberId = Number(member.user_id || member.id || 0);
+                                  const isSelectedStudent = memberId === Number(selectedUserId);
+                                  return (
+                                    <span key={`detail-family-member-${familyGroup.id}-${memberId}`} className="inline-flex items-center gap-2 rounded-full border border-line bg-white px-3 py-1.5 text-xs font-semibold text-ink-700 dark:border-white/10 dark:bg-navy-900 dark:text-navy-100">
+                                      {String(member.full_name || `${member.first_name || ""} ${member.last_name || ""}` || `Student #${memberId}`)}
+                                      {!isSelectedStudent ? (
+                                        <button type="button" className="text-red-500 hover:text-red-700" disabled={familyDetailLinkBusyId === memberId} onClick={() => unlinkFamilyCandidate(Number(familyGroup.id || 0), memberId)} aria-label="Oila a'zosini ajratish">×</button>
+                                      ) : null}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : <p className="chip">Hali oila guruhiga ulanmagan. Pastdagi o&apos;quvchini tanlasangiz, yangi oila guruhi avtomatik yaratiladi.</p>}
+                      {!detailProtectedAdmin ? (
+                        <div className="mt-4">
+                          <label className="admin-form-label">
+                            Oila a&apos;zosini qidirish
+                            <input value={familyDetailCandidateQuery} onChange={(event) => setFamilyDetailCandidateQuery(event.target.value)} placeholder="Familiya, ism yoki telefon" />
+                          </label>
+                          <div className="mt-3 flex flex-col gap-2">
+                            {familyDetailCandidatesLoading ? <p className="text-xs text-ink-500 dark:text-navy-300">Qidirilmoqda...</p> : null}
+                            {familyDetailCandidates.map((candidate) => {
+                              const candidateId = Number(candidate.id || 0);
+                              const sameSurname = String(candidate.last_name || "").trim().toUpperCase() === String(selectedDetailUserRow.last_name || "").trim().toUpperCase();
+                              const alreadyLinked = detailFamilyMemberIds.has(candidateId);
+                              return (
+                                <div key={`detail-family-candidate-${candidateId}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-white px-3 py-2.5 dark:border-white/10 dark:bg-navy-900/60">
+                                  <div>
+                                    <strong className="text-sm text-ink-900 dark:text-white">{String(candidate.full_name || `${candidate.first_name || ""} ${candidate.last_name || ""}` || `Student #${candidateId}`)}</strong>
+                                    <p className="mt-0.5 text-xs text-ink-500 dark:text-navy-300">{String(candidate.phone || "-")}</p>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {sameSurname ? <span className="chip text-[10px]">Tavsiya</span> : null}
+                                    <button type="button" className="admin-btn-detail" disabled={alreadyLinked || familyDetailLinkBusyId === candidateId} onClick={() => linkFamilyCandidate(candidateId)}>
+                                      {alreadyLinked ? "Ulangan" : familyDetailLinkBusyId === candidateId ? "Ulanmoqda..." : "Oilaga ulash"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {!familyDetailCandidatesLoading && familyDetailCandidateQuery.trim() && !familyDetailCandidates.length ? <p className="text-xs text-ink-500 dark:text-navy-300">Talaba topilmadi.</p> : null}
+                          </div>
+                        </div>
+                      ) : null}
+                    </section>
                     {(userDetail.subject_levels || []).length ? (
                       <section className="panel-card">
                         <h3>Fan bo&apos;yicha level</h3>
@@ -18407,6 +18561,68 @@ function AdminSection({
                     </tbody>
                   </table>
                 </div>
+                </div>
+              </article>
+            </div>
+          ) : null}
+        </ModalPortal>
+
+        {/* ── Placement preparation modal ── */}
+        <ModalPortal open={Boolean(placementPrepTarget)}>
+          {placementPrepTarget ? (
+            <div className="overlay-modal-backdrop admin-user-modal-backdrop" onClick={() => !placementPrepSaving && setPlacementPrepTarget(null)}>
+              <article className="overlay-modal-card admin-wide-modal admin-user-modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="row-between gap-3 admin-user-modal-header">
+                  <div>
+                    <h3>{tt("admin.users.prepTest", "Test tayyorlash")}</h3>
+                    <p className="text-sm text-ink-500 dark:text-navy-300">Placement test uchun fan va talab holatini tanlang.</p>
+                  </div>
+                  <button className="admin-modal-close" type="button" disabled={placementPrepSaving} onClick={() => setPlacementPrepTarget(null)}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+                <div className="admin-user-modal-scroll">
+                  <div className="admin-form-grid-2">
+                    <label className="admin-form-label">
+                      Placement Subject
+                      <select value={placementPrepSubject} onChange={(event) => setPlacementPrepSubject(event.target.value)}>
+                        {normalizeSubjectList((placementPrepTarget.subjects || detailPlacementOptions) as string[], ["English"]).map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                      </select>
+                    </label>
+                    <label className="admin-form-label">
+                      Placement Required
+                      <select value={placementPrepRequired ? "yes" : "no"} onChange={(event) => setPlacementPrepRequired(event.target.value === "yes")}>
+                        <option value="yes">Yes</option>
+                        <option value="no">No</option>
+                      </select>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="admin-btn-prep mt-5"
+                    disabled={placementPrepSaving}
+                    onClick={async () => {
+                      const userId = Number(placementPrepTarget.id || 0);
+                      if (!userId) return;
+                      setPlacementPrepSaving(true);
+                      try {
+                        const updated = await onAdminCall(`/admin/users/${userId}`, {
+                          placement_subject: placementPrepSubject,
+                          placement_required: placementPrepRequired,
+                        }, "PATCH", "Placement sozlamalari saqlandi");
+                        if (!updated) return;
+                        const prepared = await onAdminCall(`/admin/users/${userId}/prepare-placement?subject=${encodeURIComponent(placementPrepSubject)}`, {}, "POST", "Placement prepared");
+                        if (prepared) {
+                          setPlacementPrepTarget(null);
+                          await loadUserDetail(userId);
+                        }
+                      } finally {
+                        setPlacementPrepSaving(false);
+                      }
+                    }}
+                  >
+                    {placementPrepSaving ? tt("common.saving", "Saqlanmoqda...") : tt("admin.users.prepTest", "Test tayyorlash")}
+                  </button>
                 </div>
               </article>
             </div>
@@ -18487,10 +18703,9 @@ function AdminSection({
                   const uid = Number(user.id || 0);
                   const isSelected = selectedDetailUserId === uid;
                   const isProtected = Number(user.login_type || 0) === 4;
-                  const isAccountlessRow = Number(user.login_type || 0) === 6;
                   const isStudentRow = String(user.role || "") === "student";
                   const isPendingApproval = Boolean(user.pending_approval) && !Boolean(user.access_enabled);
-                  const canOpenProfile = isStudentRow || isAccountlessRow;
+                  const canOpenProfile = isStudentRow;
                   return (
                     <Fragment key={user.id}>
                       <tr className={isPendingApproval ? "bg-amber-50/70 dark:bg-amber-500/10" : undefined}>
@@ -18521,7 +18736,6 @@ function AdminSection({
                                 {user.full_name || "-"}
                               </span>
                             )}
-                            {isAccountlessRow ? <span className="inline-block text-[10px] uppercase bg-orange-100 dark:bg-orange-500/15 text-orange-600 dark:text-orange-400 px-1.5 py-0.5 rounded font-bold w-fit">Akountsiz</span> : null}
                             {isPendingApproval ? <span className="inline-block text-[10px] uppercase bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 px-1.5 py-0.5 rounded font-bold w-fit">⏳ {tt("admin.users.pendingApproval", "Tasdiqlash kutilmoqda")}</span> : null}
                           </div>
                         </td>
@@ -18560,11 +18774,6 @@ function AdminSection({
                               <span className="inline-block px-2 py-1 text-[11px] font-bold bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded-lg border border-indigo-100 dark:border-indigo-500/20">
                                 {tt("admin.users.protected", "Himoyalangan")}
                               </span>
-                            ) : isAccountlessRow ? (
-                              /* ── Accountless: only Convert ── */
-                              <button className="admin-btn-convert" onClick={() => onAdminCall(`/admin/students/accountless/${user.id}/convert`, { subjects: [user.subject || "English"] }, "POST", "Converted")}>
-                                Convert
-                              </button>
                             ) : (
                               <>
                                 {/* ── Reset Pass ── */}
@@ -18583,20 +18792,15 @@ function AdminSection({
                                 {/* ── Prep Test — students only ── */}
                                 {isStudentRow ? (
                                   <button className="admin-btn-prep" onClick={() => {
-                                    const subject = String(user.placement_subject || user.subjects?.[0] || "English");
-                                    onAdminCall(`/admin/users/${user.id}/prepare-placement?subject=${encodeURIComponent(subject)}`, {}, "POST", "Placement prepared");
+                                    setPlacementPrepTarget(user);
+                                    setPlacementPrepSubject(String(user.placement_subject || user.subjects?.[0] || "English"));
+                                    setPlacementPrepRequired(Boolean(user.placement_required));
                                   }}>
                                     {tt("admin.users.prepTest", "Test tayyorlash")}
                                   </button>
                                 ) : null}
-                                {/* ── Convert to accountless — active students ── */}
-                                {isStudentRow && [1, 2].includes(Number(user.login_type || 0)) ? (
-                                  <button className="admin-btn-convert" onClick={() => onAdminCall(`/admin/users/${user.id}/convert-to-accountless`, {}, "POST", "Converted to accountless")}>
-                                    Accountless
-                                  </button>
-                                ) : null}
                                 {/* ── Delete ── */}
-                                <button className="admin-btn-delete" onClick={() => onAdminCall(`/admin/users/${user.id}`, {}, "DELETE", "User deleted")}>
+                                <button className="admin-btn-delete" onClick={() => deleteManagedUser(user)}>
                                   {tt("common.delete", "O'chirish")}
                                 </button>
                               </>
@@ -18774,9 +18978,14 @@ function AdminSection({
     const existingMemberIds = new Set<number>(
       ((pickerGroup?.members || []) as GenericRow[]).map((row) => Number(row.user_id || row.id || 0)).filter((id) => id > 0),
     );
+    const pickerFamilyLastNames = new Set(
+      ((pickerGroup?.members || []) as GenericRow[])
+        .map((row) => String(row.last_name || "").trim().toUpperCase())
+        .filter(Boolean),
+    );
     const normalizedFamilyMemberSearch = String(familyMemberSearch || "").trim().toLowerCase();
     const familyMemberCandidates = familyCandidates
-      .filter((row) => [1, 2, 6].includes(Number(row.login_type || 0)))
+      .filter((row) => [1, 2].includes(Number(row.login_type || 0)))
       .filter((row) => !existingMemberIds.has(Number(row.id || 0)))
       .filter((row) => {
         if (!normalizedFamilyMemberSearch) return true;
@@ -18788,6 +18997,11 @@ function AdminSection({
           || firstName.includes(normalizedFamilyMemberSearch)
           || lastName.includes(normalizedFamilyMemberSearch)
           || phone.includes(normalizedFamilyMemberSearch);
+      })
+      .sort((left, right) => {
+        const leftRecommended = pickerFamilyLastNames.has(String(left.last_name || "").trim().toUpperCase()) ? 1 : 0;
+        const rightRecommended = pickerFamilyLastNames.has(String(right.last_name || "").trim().toUpperCase()) ? 1 : 0;
+        return rightRecommended - leftRecommended || String(left.full_name || "").localeCompare(String(right.full_name || ""));
       })
       .slice(0, 80);
     return (
@@ -18926,9 +19140,14 @@ function AdminSection({
                     <tbody>
                       {familyMemberCandidates.map((row) => (
                         <tr key={`family-member-candidate-${row.id}`}>
-                          <td>{row.full_name || `User #${row.id}`}</td>
+                          <td>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span>{row.full_name || `User #${row.id}`}</span>
+                              {pickerFamilyLastNames.has(String(row.last_name || "").trim().toUpperCase()) ? <span className="chip text-[10px]">Tavsiya</span> : null}
+                            </div>
+                          </td>
                           <td>{row.phone || "-"}</td>
-                          <td>{Number(row.login_type || 0) === 6 ? tt("admin.familyGroups.accountless", "Akkauntsiz") : tt("common.student", "Talaba")}</td>
+                          <td>{tt("common.student", "Talaba")}</td>
                           <td>
                             <button
                               className="admin-btn-detail"
@@ -20590,6 +20809,17 @@ function AdminSection({
     // Use the snapshot opened by the user until they explicitly close the modal,
     // so a transient or filtered list response cannot throw them back to search.
     const selectedGroup = groups.find((g) => Number(g.id) === Number(selectedGroupId)) || selectedGroupSnapshot;
+    const frozenMiniGroups = groups.filter((group) => Boolean(group.mini_group_action_required));
+    const frozenMiniGroup = frozenMiniGroups[0] || null;
+    const miniGroupMoveTargets = frozenMiniGroup
+      ? groups.filter((group) => (
+        Number(group.id || 0) !== Number(frozenMiniGroup.id || 0)
+        && String(group.pricing_type || "") === "mini_group"
+        && !group.mini_group_action_required
+        && Number(group.student_count || 0) < 4
+        && normalizeSubjectLabel(String(group.subject || "")) === normalizeSubjectLabel(String(frozenMiniGroup.subject || ""))
+      ))
+      : [];
     const groupSubjects = Array.from(new Set(groups.map((g) => String(g.subject || "").trim()).filter(Boolean))) as string[];
     const groupTeachers = Array.from(new Set(groups.map((g) => String(g.teacher_name || "").trim()).filter(Boolean))).sort() as string[];
     const visibleGroups = groups.filter((group) => {
@@ -20664,6 +20894,77 @@ function AdminSection({
           </div>
         </ModalPortal>
 
+        {/* This dialog intentionally has no close action: billing is frozen until
+            the scoped admin chooses one of the two safe resolutions. */}
+        <ModalPortal open={Boolean(frozenMiniGroup)}>
+          {frozenMiniGroup ? (
+            <div className="overlay-modal-backdrop group-management-backdrop">
+              <article className="overlay-modal-card max-w-xl" role="alertdialog" aria-modal="true" aria-labelledby="mini-group-resolution-title">
+                <div className="flex items-start gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-xl dark:bg-amber-500/20">⚠️</span>
+                  <div>
+                    <h3 id="mini-group-resolution-title">{tt("admin.groups.miniResolutionTitle", "Mini guruh uchun yechim kerak")}</h3>
+                    <p className="mt-1 text-sm text-ink-600 dark:text-navy-300">
+                      {tt("admin.groups.miniResolutionDescription", "Bu guruhda faqat bitta o'quvchi qoldi. Guruh to'xtatildi va to'lov muzlatildi.")}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-400/20 dark:bg-amber-500/10">
+                  <strong>{String(frozenMiniGroup.name || `#${frozenMiniGroup.id}`)}</strong>
+                  <span className="ml-2 text-ink-600 dark:text-navy-300">· {String(frozenMiniGroup.subject || "-")} · {tt("admin.groups.miniPaymentFrozen", "To'lov muzlatilgan")}</span>
+                </div>
+                <div className="mt-5 grid gap-3">
+                  <button
+                    type="button"
+                    className="admin-btn-primary justify-center"
+                    disabled={miniGroupResolutionBusy}
+                    onClick={async () => {
+                      setMiniGroupResolutionBusy(true);
+                      try {
+                        const result = await onAdminCall(`/admin/groups/${frozenMiniGroup.id}/resolve-mini-group`, { action: "convert_standard" }, "POST", tt("admin.groups.miniConvertSuccess", "Guruh standart narxga o'tkazildi"));
+                        const updated = (result?.group || {}) as GenericRow;
+                        if (result) setAdminGroupsFallback((prev) => (prev !== null ? prev : groups).map((group) => Number(group.id || 0) === Number(frozenMiniGroup.id || 0) ? { ...group, ...updated } : group));
+                      } finally {
+                        setMiniGroupResolutionBusy(false);
+                      }
+                    }}
+                  >
+                    {tt("admin.groups.miniConvertStandard", "Guruhni standart narxga o'tkazish")}
+                  </button>
+                  <div className="rounded-xl border border-line p-3 dark:border-white/10">
+                    <label className="admin-form-label">
+                      {tt("admin.groups.miniMoveTo", "O'quvchini boshqa mini guruhga o'tkazish")}
+                      <select value={miniGroupResolutionTargetId || ""} onChange={(event) => setMiniGroupResolutionTargetId(Number(event.target.value || 0))} disabled={miniGroupResolutionBusy}>
+                        <option value="">{tt("admin.groups.miniChooseTarget", "Mini guruhni tanlang")}</option>
+                        {miniGroupMoveTargets.map((group) => <option key={`mini-target-${group.id}`} value={Number(group.id || 0)}>{String(group.name || `#${group.id}`)} ({Number(group.student_count || 0)}/4)</option>)}
+                      </select>
+                    </label>
+                    {!miniGroupMoveTargets.length ? <p className="mt-2 text-xs text-ink-500 dark:text-navy-300">{tt("admin.groups.miniNoTarget", "Shu fan bo'yicha bo'sh mini guruh topilmadi.")}</p> : null}
+                    <button
+                      type="button"
+                      className="admin-page-btn mt-3 w-full"
+                      disabled={!miniGroupResolutionTargetId || miniGroupResolutionBusy}
+                      onClick={async () => {
+                        setMiniGroupResolutionBusy(true);
+                        try {
+                          const result = await onAdminCall(`/admin/groups/${frozenMiniGroup.id}/resolve-mini-group`, { action: "move_student", target_group_id: miniGroupResolutionTargetId }, "POST", tt("admin.groups.miniMoveSuccess", "O'quvchi mini guruhga o'tkazildi"));
+                          const updated = (result?.group || {}) as GenericRow;
+                          if (result) setAdminGroupsFallback((prev) => (prev !== null ? prev : groups).map((group) => Number(group.id || 0) === Number(frozenMiniGroup.id || 0) ? { ...group, ...updated } : group));
+                          setMiniGroupResolutionTargetId(0);
+                        } finally {
+                          setMiniGroupResolutionBusy(false);
+                        }
+                      }}
+                    >
+                      {miniGroupResolutionBusy ? tt("common.saving", "Saqlanmoqda...") : tt("admin.groups.miniMove", "O'tkazish va guruhni to'xtatish")}
+                    </button>
+                  </div>
+                </div>
+              </article>
+            </div>
+          ) : null}
+        </ModalPortal>
+
         {/* ── Filters ── */}
         <div className="admin-filter-card">
           <div className="admin-form-grid-4">
@@ -20720,6 +21021,7 @@ function AdminSection({
                     <td className="text-xs font-mono text-ink-400 dark:text-navy-500 whitespace-nowrap">#{group.id}</td>
                     <td>
                       <span className="font-semibold text-sm text-navy-900 dark:text-white block min-w-[140px]">{group.name || "-"}</span>
+                      {group.mini_group_action_required ? <span className="mt-1 inline-block rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-800 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200">⚠️ {tt("admin.groups.miniActionRequired", "MINI GURUH: AMAL TALAB")}</span> : null}
                       {group.telegram_link ? (
                         <a href={String(group.telegram_link || "")} target="_blank" rel="noreferrer" className="text-[11px] text-blue-500 hover:underline">Telegram</a>
                       ) : null}
@@ -20909,9 +21211,16 @@ function AdminSection({
                             <select value={String(groupDraft.pricing_type || "group")} onChange={(event) => setGroupDraft((prev) => ({ ...prev, pricing_type: event.target.value }))}>
                               <option value="group">{selCourse?.price_text || groupDraft.monthly_fee_text_fb || "Standart narx (Belgilanmagan)"}</option>
                               <option value="individual">{selCourse?.individual_price_text || groupDraft.monthly_fee_text_fb || "Individual narx (Belgilanmagan)"}</option>
+                              <option value="mini_group">{tt("admin.groups.miniGroup", "Mini guruh (2–4 o'quvchi)")}</option>
                             </select>
                           </label>
-                          <p className="chip">{tt("admin.groups.monthlyFee", "Oylik to'lov")}: <strong>{groupDraft.pricing_type === "individual" ? (selCourse?.individual_price_text || groupDraft.monthly_fee_text_fb || tt("admin.groups.notSet", "Belgilanmagan")) : (selCourse?.price_text || groupDraft.monthly_fee_text_fb || tt("admin.groups.notSet", "Belgilanmagan"))}</strong></p>
+                          <p className="chip">{tt("admin.groups.monthlyFee", "Oylik to'lov")}: <strong>{groupDraft.pricing_type === "individual"
+                            ? (selCourse?.individual_price_text || groupDraft.monthly_fee_text_fb || tt("admin.groups.notSet", "Belgilanmagan"))
+                            : groupDraft.pricing_type === "mini_group"
+                              ? (selectedGroupSnapshot?.mini_group_action_required
+                                ? tt("admin.groups.miniFrozen", "Muzlatilgan — admin yechimi kerak")
+                                : (() => { const n = Math.min(4, Math.max(2, Number(selectedGroupSnapshot?.student_count || 0))); return Number(selectedGroupSnapshot?.student_count || 0) < 2 ? tt("admin.groups.miniWaiting", "2-o'quvchi kutilmoqda") : (selCourse?.[`mini_group_${n}_price_text`] || tt("admin.groups.notSet", "Belgilanmagan")); })())
+                              : (selCourse?.price_text || groupDraft.monthly_fee_text_fb || tt("admin.groups.notSet", "Belgilanmagan"))}</strong></p>
                         </div>
                       );
                     })()}
@@ -22955,23 +23264,24 @@ function AdminUserCreatePanel({
   const [parentPhone, setParentPhone] = useState("");
   const [instagramUrl, setInstagramUrl] = useState("");
   const [telegramUrl, setTelegramUrl] = useState("");
-  const [freeAccess, setFreeAccess] = useState(false);
   const [subject, setSubject] = useState("English");
   const [placementSubject, setPlacementSubject] = useState("English");
   const [level, setLevel] = useState("B1");
   const [referralStudentId, setReferralStudentId] = useState<number>(0);
   const [referralSearch, setReferralSearch] = useState("");
-  const [accountlessGroupId, setAccountlessGroupId] = useState<number>(0);
-  const [accountlessJoinedAt, setAccountlessJoinedAt] = useState<string>("");
   const [created, setCreated] = useState<GenericRow | null>(null);
   const [createdName, setCreatedName] = useState("");
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState("");
   const creatingRef = useRef(false);
 
+  const normalizeNameInput = (value: string) => value
+    .replace(/[ʻʼ‘’`´ʹ]/g, "'")
+    .toUpperCase();
+  const nameUsesCyrillic = /[\u0400-\u052F]/.test(`${firstName} ${lastName}`);
+
   const isNewStudentWithTest = userType === "new_student_with_test";
   const isExistingStudent = userType === "existing_student";
-  const isAccountless = userType === "accountless_student";
   const isTeacherRole = userType === "teacher" || userType === "support_teacher";
   const filteredReferralStudents = students.filter((student) => {
     if (!referralSearch.trim()) return true;
@@ -22989,6 +23299,10 @@ function AdminUserCreatePanel({
       setFormError(tt("admin.users.requiredName", "Ism va familiya kiritilishi shart."));
       return;
     }
+    if (nameUsesCyrillic) {
+      setFormError(tt("admin.users.latinOnlyError", "Ism va familiyani faqat lotin alifbosida yozing."));
+      return;
+    }
     if (!isTeacherRole && !parentPhone.trim()) {
       setFormError("Ota-onasi telefoni kiritilishi shart.");
       return;
@@ -22997,14 +23311,11 @@ function AdminUserCreatePanel({
 
     const payload: GenericRow = {
       user_type: userType,
-      first_name: firstName,
-      last_name: lastName,
+      first_name: normalizeNameInput(firstName).trim(),
+      last_name: normalizeNameInput(lastName).trim(),
       phone,
       parent_phone: parentPhone,
     };
-    if (!isTeacherRole) {
-      payload.free_access = freeAccess;
-    }
     if (isTeacherRole) {
       payload.subjects = [normalizedSubject];
       payload.instagram_url = instagramUrl || null;
@@ -23016,14 +23327,7 @@ function AdminUserCreatePanel({
     if (isExistingStudent) {
       // payload.level no longer required for existing_student from UI
     }
-    if (isAccountless) {
-      payload.subject = normalizedSubject;
-      payload.joined_at = accountlessJoinedAt || undefined;
-      if (accountlessGroupId > 0) {
-        payload.group_ids = [accountlessGroupId];
-      }
-    }
-    if (isNewStudentWithTest || isExistingStudent || isAccountless) {
+    if (isNewStudentWithTest || isExistingStudent) {
       payload.referral_student_id = referralStudentId > 0 ? referralStudentId : null;
     }
 
@@ -23041,14 +23345,11 @@ function AdminUserCreatePanel({
         setParentPhone("");
         setInstagramUrl("");
         setTelegramUrl("");
-        setFreeAccess(false);
         setSubject("English");
         setPlacementSubject("English");
         setLevel("B1");
         setReferralStudentId(0);
         setReferralSearch("");
-        setAccountlessGroupId(0);
-        setAccountlessJoinedAt("");
         setFormError("");
       }
     } finally {
@@ -23066,7 +23367,6 @@ function AdminUserCreatePanel({
           {[
             { value: "new_student_with_test", icon: "🎓", label: tt("admin.users.userType.newStudentTest", "Yangi talaba + test") },
             { value: "existing_student",      icon: "📋", label: tt("admin.users.userType.existingStudent", "Mavjud talaba") },
-            { value: "accountless_student",   icon: "👤", label: tt("admin.users.userType.accountless", "Akountsiz o'quvchi") },
             { value: "teacher",               icon: "👨‍🏫", label: tt("admin.users.role.teacher", "Teacher") },
             { value: "support_teacher",       icon: "🛟", label: tt("admin.users.userType.supportTeacher", "Support o'qituvchi") },
           ].map((opt) => (
@@ -23089,11 +23389,11 @@ function AdminUserCreatePanel({
         <div className="admin-form-grid-2">
           <label className="admin-form-label">
             {tt("admin.users.firstName", "Ism")}
-            <input value={firstName} onChange={(event) => setFirstName(event.target.value)} placeholder="Ism" />
+            <input value={firstName} onChange={(event) => setFirstName(normalizeNameInput(event.target.value))} placeholder="ISM" autoCapitalize="characters" />
           </label>
           <label className="admin-form-label">
             {tt("admin.users.lastName", "Familiya")}
-            <input value={lastName} onChange={(event) => setLastName(event.target.value)} placeholder="Familiya" />
+            <input value={lastName} onChange={(event) => setLastName(normalizeNameInput(event.target.value))} placeholder="FAMILIYA" autoCapitalize="characters" />
           </label>
           <label className="admin-form-label">
             {tt("admin.users.phone", "Telefon")}
@@ -23118,10 +23418,11 @@ function AdminUserCreatePanel({
             </>
           )}
         </div>
+        {nameUsesCyrillic ? <p className="mt-2 text-xs font-semibold text-red-600 dark:text-red-300">{tt("admin.users.latinOnlyError", "Ism va familiyani faqat lotin alifbosida yozing.")}</p> : <p className="mt-2 text-xs text-ink-500 dark:text-navy-300">{tt("admin.users.nameUppercaseHint", "Ism va familiya lotin alifbosida, avtomatik KATTA harflarda saqlanadi.")}</p>}
       </div>
 
       {/* Role-specific fields */}
-      {(isNewStudentWithTest || isExistingStudent || isAccountless) && (
+      {(isNewStudentWithTest || isExistingStudent) && (
         <div className="admin-modal-section">
           <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">⚙️ {tt("admin.users.additionalInfo", "Qo'shimcha ma'lumotlar")}</p>
           <div className="admin-form-grid-2">
@@ -23133,27 +23434,6 @@ function AdminUserCreatePanel({
                   <option value="Russian">Russian</option>
                 </select>
               </label>
-            ) : null}
-            {isAccountless ? (
-              <>
-                <label className="admin-form-label">
-                  {tt("admin.users.subject", "Fan")}
-                  <select value={subject} onChange={(event) => setSubject(event.target.value)}>
-                    {SUBJECT_OPTIONS.map((opt) => (<option key={opt} value={opt}>{opt}</option>))}
-                  </select>
-                </label>
-                <label className="admin-form-label">
-                  Qo&apos;shilgan sanasi
-                  <input type="date" value={accountlessJoinedAt} onChange={(e) => setAccountlessJoinedAt(e.target.value)} />
-                </label>
-                <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
-                  Guruh (ixtiyoriy)
-                  <select value={accountlessGroupId || 0} onChange={(event) => setAccountlessGroupId(Number(event.target.value || 0))}>
-                    <option value={0}>— Guruh tanlanmagan —</option>
-                    {groups.map((g) => (<option key={g.id} value={g.id}>{String(g.name || g.id)} ({String(g.subject || "-")})</option>))}
-                  </select>
-                </label>
-              </>
             ) : null}
             {isExistingStudent ? (
               <p className="chip col-span-2">{tt("admin.users.studentSubjectFromGroups", "Student fanlari guruhlardan avtomatik olinadi.")}</p>
@@ -23177,7 +23457,7 @@ function AdminUserCreatePanel({
       )}
 
       {/* Referral */}
-      {(isNewStudentWithTest || isExistingStudent || isAccountless) && (
+      {(isNewStudentWithTest || isExistingStudent) && (
         <div className="admin-modal-section">
           <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">🔗 Referal</p>
           <div className="admin-form-grid-2">
@@ -23197,16 +23477,6 @@ function AdminUserCreatePanel({
               </select>
             </label>
           </div>
-        </div>
-      )}
-
-      {/* Free Access */}
-      {!isTeacherRole && (
-        <div className="flex items-center gap-3 p-4 bg-surface-soft border border-line dark:border-white/10 rounded-2xl">
-          <label className="flex items-center gap-3 cursor-pointer m-0">
-            <input type="checkbox" checked={freeAccess} onChange={(e) => setFreeAccess(e.target.checked)} className="w-5 h-5 rounded border-line text-navy-600 cursor-pointer" />
-            <span className="font-bold text-ink-900 dark:text-white">100% Chegirma — Oylik to&apos;lov 0 so&apos;m</span>
-          </label>
         </div>
       )}
 
@@ -23272,24 +23542,109 @@ function AdminUserCreatePanel({
   );
 }
 
-function AdminUserEditPanel({ user, onUpdate, onClose }: { user: GenericRow; onUpdate: (payload: any) => Promise<void>; onClose: () => void }) {
+function AdminUserEditPanel({
+  user,
+  groups,
+  pricingOverrides,
+  onUpdate,
+  onUpdateGroupPricing,
+}: {
+  user: GenericRow;
+  groups: GenericRow[];
+  pricingOverrides: GenericRow[];
+  onUpdate: (payload: any) => Promise<void>;
+  onUpdateGroupPricing: (groupId: number, payload: GenericRow) => Promise<void>;
+}) {
   const tt = useWebT();
-  const [firstName, setFirstName] = useState(String(user.first_name || user.full_name?.split(" ")[0] || ""));
-  const [lastName, setLastName] = useState(String(user.last_name || user.full_name?.split(" ").slice(1).join(" ") || ""));
+  const [fullName, setFullName] = useState(() => [user.first_name, user.last_name].filter(Boolean).join(" ") || String(user.full_name || ""));
   const [phone, setPhone] = useState(String(user.phone || ""));
   const [parentPhone, setParentPhone] = useState(String(user.parent_phone || ""));
   const [telegramId, setTelegramId] = useState(user.telegram_id ? String(user.telegram_id) : "");
   const [instagramUrl, setInstagramUrl] = useState(user.instagram_url ? String(user.instagram_url) : "");
   const [telegramUrl, setTelegramUrl] = useState(user.telegram_url ? String(user.telegram_url) : "");
   const [saving, setSaving] = useState(false);
+  const [groupPricingDrafts, setGroupPricingDrafts] = useState<Record<number, { mode: "none" | "fixed_price" | "discount_percent"; priceAmount: string; discountPercent: string }>>(() => {
+    const drafts: Record<number, { mode: "none" | "fixed_price" | "discount_percent"; priceAmount: string; discountPercent: string }> = {};
+    for (const group of groups || []) {
+      const groupId = Number(group.id || 0);
+      const current = (pricingOverrides || []).find((item) => Number(item.group_id || 0) === groupId);
+      const mode = String(current?.mode || "none") as "none" | "fixed_price" | "discount_percent";
+      if (groupId > 0) {
+        drafts[groupId] = {
+          mode: ["fixed_price", "discount_percent"].includes(mode) ? mode : "none",
+          priceAmount: current?.price_amount !== undefined && current?.price_amount !== null ? String(current.price_amount) : "",
+          discountPercent: current?.discount_percent !== undefined && current?.discount_percent !== null ? String(current.discount_percent) : "",
+        };
+      }
+    }
+    return drafts;
+  });
+  const [groupPricingSavingId, setGroupPricingSavingId] = useState(0);
+  const [groupPricingError, setGroupPricingError] = useState("");
+  const [formError, setFormError] = useState("");
+  const isStudent = [1, 2].includes(Number(user.login_type || 0)) || String(user.role || "").toLowerCase() === "student";
+  const normalizeNameInput = (value: string) => value.replace(/[ʻʼ‘’`´ʹ]/g, "'").toUpperCase();
+
+  function pricingDraftFor(groupId: number) {
+    return groupPricingDrafts[groupId] || { mode: "none" as const, priceAmount: "", discountPercent: "" };
+  }
+
+  function updatePricingDraft(groupId: number, patch: Partial<{ mode: "none" | "fixed_price" | "discount_percent"; priceAmount: string; discountPercent: string }>) {
+    setGroupPricingDrafts((current) => ({ ...current, [groupId]: { ...pricingDraftFor(groupId), ...patch } }));
+  }
+
+  async function saveGroupPricing(groupId: number) {
+    if (groupPricingSavingId) return;
+    const draft = pricingDraftFor(groupId);
+    setGroupPricingError("");
+    const payload: GenericRow = { mode: draft.mode };
+    if (draft.mode === "fixed_price") {
+      if (!draft.priceAmount.trim()) {
+        setGroupPricingError("Maxsus oylik narxni kiriting.");
+        return;
+      }
+      const amount = Number(draft.priceAmount);
+      if (!Number.isFinite(amount) || amount < 0) {
+        setGroupPricingError("Maxsus narx 0 yoki undan katta son bo'lishi kerak.");
+        return;
+      }
+      payload.price_amount = amount;
+    }
+    if (draft.mode === "discount_percent") {
+      if (!draft.discountPercent.trim()) {
+        setGroupPricingError("Chegirma foizini kiriting.");
+        return;
+      }
+      const percent = Number(draft.discountPercent);
+      if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+        setGroupPricingError("Chegirma foizi 0 dan 100 gacha bo'lishi kerak.");
+        return;
+      }
+      payload.discount_percent = percent;
+    }
+    setGroupPricingSavingId(groupId);
+    try {
+      await onUpdateGroupPricing(groupId, payload);
+    } catch (error) {
+      setGroupPricingError(normalizeNetworkError(error).message || "Maxsus narxni saqlab bo'lmadi.");
+    } finally {
+      setGroupPricingSavingId(0);
+    }
+  }
 
   async function handleSave() {
     if (saving) return;
+    const nameParts = normalizeNameInput(fullName).trim().split(/\s+/).filter(Boolean);
+    if (nameParts.length < 2) {
+      setFormError("Ism va familiyani bitta maydonga to'liq kiriting.");
+      return;
+    }
+    setFormError("");
     setSaving(true);
     try {
       await onUpdate({
-        first_name: firstName,
-        last_name: lastName,
+        first_name: nameParts[0],
+        last_name: nameParts.slice(1).join(" "),
         phone,
         parent_phone: parentPhone,
         telegram_id: telegramId ? telegramId : null,
@@ -23306,13 +23661,9 @@ function AdminUserEditPanel({ user, onUpdate, onClose }: { user: GenericRow; onU
       <div className="admin-modal-section">
         <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">👤 Asosiy ma&apos;lumotlar</p>
         <div className="admin-form-grid-2">
-          <label className="admin-form-label">
-            {tt("admin.users.firstName", "Ism")}
-            <input value={firstName} onChange={(e) => setFirstName(e.target.value)} placeholder="Ism" />
-          </label>
-          <label className="admin-form-label">
-            {tt("admin.users.lastName", "Familiya")}
-            <input value={lastName} onChange={(e) => setLastName(e.target.value)} placeholder="Familiya" />
+          <label className="admin-form-label" style={{ gridColumn: "1/-1" }}>
+            F.I.SH
+            <input value={fullName} onChange={(e) => setFullName(normalizeNameInput(e.target.value))} placeholder="ISM FAMILIYA" autoCapitalize="characters" />
           </label>
           <label className="admin-form-label">
             {tt("common.phone", "Telefon raqam")}
@@ -23340,6 +23691,56 @@ function AdminUserEditPanel({ user, onUpdate, onClose }: { user: GenericRow; onU
           ) : null}
         </div>
       </div>
+      {isStudent ? (
+        <section className="admin-modal-section">
+          <div className="mb-3">
+            <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">💳 Guruh bo&apos;yicha maxsus narx</p>
+            <p className="mt-1 text-sm text-ink-500 dark:text-navy-300">Narx yoki chegirma faqat tanlangan guruh va shu o&apos;quvchi uchun ishlaydi. 100% foiz — to&apos;lov 0 so&apos;m.</p>
+          </div>
+          {groups.length ? (
+            <div className="flex flex-col gap-3">
+              {groups.map((group) => {
+                const groupId = Number(group.id || 0);
+                const draft = pricingDraftFor(groupId);
+                return (
+                  <div key={`student-group-price-${groupId}`} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/5">
+                    <div className="mb-3">
+                      <strong className="block text-sm text-ink-900 dark:text-white">{String(group.name || `Guruh #${groupId}`)}</strong>
+                      <span className="text-xs text-ink-500 dark:text-navy-300">{String(group.subject || "-")}</span>
+                    </div>
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+                      <label className="admin-form-label">
+                        Hisoblash turi
+                        <select value={draft.mode} onChange={(event) => updatePricingDraft(groupId, { mode: event.target.value as "none" | "fixed_price" | "discount_percent" })}>
+                          <option value="none">Standart guruh narxi</option>
+                          <option value="fixed_price">Maxsus oylik narx (so&apos;m)</option>
+                          <option value="discount_percent">Chegirma foizi</option>
+                        </select>
+                      </label>
+                      {draft.mode === "fixed_price" ? (
+                        <label className="admin-form-label">
+                          Oylik narx (so&apos;m)
+                          <input type="number" min="0" step="1000" value={draft.priceAmount} onChange={(event) => updatePricingDraft(groupId, { priceAmount: event.target.value })} placeholder="Masalan: 450000" />
+                        </label>
+                      ) : draft.mode === "discount_percent" ? (
+                        <label className="admin-form-label">
+                          Chegirma (%)
+                          <input type="number" min="0" max="100" step="1" value={draft.discountPercent} onChange={(event) => updatePricingDraft(groupId, { discountPercent: event.target.value })} placeholder="Masalan: 100" />
+                        </label>
+                      ) : <div />}
+                      <button type="button" className="admin-page-btn" disabled={Boolean(groupPricingSavingId)} onClick={() => saveGroupPricing(groupId)}>
+                        {groupPricingSavingId === groupId ? "Saqlanmoqda..." : draft.mode === "none" ? "Tozalash" : "Saqlash"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : <p className="chip">Talaba hozircha faol guruhga biriktirilmagan.</p>}
+          {groupPricingError ? <div className="error-box mt-3">{groupPricingError}</div> : null}
+        </section>
+      ) : null}
+      {formError ? <div className="error-box">{formError}</div> : null}
       <div className="flex gap-3">
         <button className="admin-btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? (
@@ -23347,9 +23748,6 @@ function AdminUserEditPanel({ user, onUpdate, onClose }: { user: GenericRow; onU
           ) : (
             <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg> {tt("common.save", "Saqlash")}</>
           )}
-        </button>
-        <button className="admin-page-btn" onClick={onClose} disabled={saving}>
-          {tt("common.cancel", "Bekor qilish")}
         </button>
       </div>
     </div>
@@ -23571,10 +23969,15 @@ function AdminGroupCreatePanel({
             <select value={pricingType} onChange={(e) => setPricingType(e.target.value)}>
               <option value="group">{selectedCourse?.price_text || "Standart narx (Belgilanmagan)"}</option>
               <option value="individual">{selectedCourse?.individual_price_text || "Individual narx (Belgilanmagan)"}</option>
+              <option value="mini_group">{tt("admin.groups.miniGroup", "Mini guruh (2–4 o'quvchi)")}</option>
             </select>
           </label>
         </div>
-        <p className="chip">{tt("admin.groups.monthlyFee", "Oylik to'lov")}: <strong>{pricingType === "individual" ? (selectedCourse?.individual_price_text || tt("admin.groups.notSet", "Belgilanmagan")) : (selectedCourse?.price_text || tt("admin.groups.notSet", "Belgilanmagan"))}</strong></p>
+        <p className="chip">{tt("admin.groups.monthlyFee", "Oylik to'lov")}: <strong>{pricingType === "individual"
+          ? (selectedCourse?.individual_price_text || tt("admin.groups.notSet", "Belgilanmagan"))
+          : pricingType === "mini_group"
+            ? tt("admin.groups.miniWaiting", "2-o'quvchi qo'shilganda narx hisoblanadi")
+            : (selectedCourse?.price_text || tt("admin.groups.notSet", "Belgilanmagan"))}</strong></p>
       </div>
 
       <div className="admin-modal-section">
@@ -24296,7 +24699,7 @@ function DashboardShell({
     } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="teacher" view={currentSection} />;
     } else if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="teacher" />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="O'QITUVCHI" onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="teacher" />;
     } else {
@@ -24308,7 +24711,7 @@ function DashboardShell({
     } else if (["student-insights", "pomodoro"].includes(currentSection)) {
       content = <PersonalLearningPanel apiFetch={authedApiFetch} role="support" view={currentSection} />;
     } else if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="support" />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="SUPPORT" onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="support" />;
     } else {
@@ -24316,19 +24719,13 @@ function DashboardShell({
     }
   } else if (activeRole === "developer") {
     if (currentSection === "profile") {
-      content = <RoleProfilePanel user={user} locale={locale} onSaveLanguage={onSaveLanguage} onLogout={onLogout} workspaceVariant="admin" />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="DEVELOPER" onOpenFeedback={() => handleNavigate("chats")} />;
     } else {
       content = <DeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
     }
   } else {
     if (currentSection === "profile") {
-      content = <RoleProfilePanel
-        user={user}
-        locale={locale}
-        onSaveLanguage={onSaveLanguage}
-        onLogout={onLogout}
-        workspaceVariant={activeRole === "media" ? "media" : "admin"}
-      />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
     } else {
@@ -25815,11 +26212,9 @@ export default function DiamondEducationApp() {
       if (shouldShowSuccessNotice) {
         setNotice(successText || result.message || "Yangilandi");
       }
-      if (method === "POST" && (path === "/admin/users" || path === "/admin/students/accountless")) {
+      if (method === "POST" && path === "/admin/users") {
         refreshAdminSliceFast("/admin/users", token).catch(() => null);
       } else if (path.startsWith("/admin/users/")) {
-        refreshAdminSliceFast("/admin/users", token).catch(() => null);
-      } else if (path.startsWith("/admin/students/accountless/")) {
         refreshAdminSliceFast("/admin/users", token).catch(() => null);
       } else if (method === "POST" && path === "/admin/groups") {
         refreshAdminSliceFast("/admin/groups", token).catch(() => null);
@@ -26203,13 +26598,7 @@ export default function DiamondEducationApp() {
         notice={notice}
         onNavigate={navigate}
         onLogout={logout}
-        onCreateUser={(payload) => {
-          if (payload.user_type === "accountless_student") {
-            return mutate("/admin/students/accountless", payload, "POST", "Accountless student created")
-              .then((result) => ((result?.user as GenericRow | undefined) || result || null));
-          }
-          return mutate("/admin/users", payload, "POST", "User created");
-        }}
+        onCreateUser={(payload) => mutate("/admin/users", payload, "POST", "User created")}
         onCreateGroup={(payload) => mutate("/admin/groups", payload, "POST", "Group created")}
         onSaveLanguage={(language) => {
           const nextLocale = resolveLocale(language);
