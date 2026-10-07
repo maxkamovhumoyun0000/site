@@ -23583,6 +23583,7 @@ function AdminUserEditPanel({
   const [groupPricingError, setGroupPricingError] = useState("");
   const [formError, setFormError] = useState("");
   const isStudent = [1, 2].includes(Number(user.login_type || 0)) || String(user.role || "").toLowerCase() === "student";
+  const isTeacherLike = ["teacher", "support"].includes(String(user.role || "").toLowerCase());
   const normalizeNameInput = (value: string) => value.replace(/[ʻʼ‘’`´ʹ]/g, "'").toUpperCase();
 
   function pricingDraftFor(groupId: number) {
@@ -23669,15 +23670,17 @@ function AdminUserEditPanel({
             {tt("common.phone", "Telefon raqam")}
             <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+998..." />
           </label>
-          <label className="admin-form-label">
-            {tt("admin.users.parentPhone", "Ota-ona telefon raqami")}
-            <input value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="+998..." />
-          </label>
+          {!isTeacherLike ? (
+            <label className="admin-form-label">
+              {tt("admin.users.parentPhone", "Ota-ona telefon raqami")}
+              <input value={parentPhone} onChange={(e) => setParentPhone(e.target.value)} placeholder="+998..." />
+            </label>
+          ) : null}
           <label className="admin-form-label">
             {tt("admin.users.telegramId", "Telegram ID")}
             <input value={telegramId} onChange={(e) => setTelegramId(e.target.value)} placeholder="Misol: 12345678" />
           </label>
-          {String(user.role || "") === "teacher" || String(user.role || "") === "support" ? (
+          {isTeacherLike ? (
             <>
               <label className="admin-form-label">
                 Instagram Akount Linki

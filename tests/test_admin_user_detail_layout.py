@@ -94,3 +94,12 @@ def test_navigation_icons_are_uppercase_letters():
 
     assert "toUpperCase()" in glyphs
     assert 'home: "⌂"' not in glyphs
+
+
+def test_teacher_editor_does_not_show_parent_phone_field():
+    source = PAGE.read_text(encoding="utf-8")
+    start = source.index("function AdminUserEditPanel(")
+    end = source.index("function AdminGroupCreatePanel(", start)
+    editor = source[start:end]
+
+    assert "!isTeacherLike" in editor
