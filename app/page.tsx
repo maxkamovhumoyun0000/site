@@ -9700,6 +9700,16 @@ function StudentProfile({
     },
   ];
 
+  const userRole = String(user.role || "").toLowerCase();
+  const isPrivilegedRole =
+    profileRoleLabel === "ADMIN" ||
+    profileRoleLabel === "MEDIA" ||
+    profileRoleLabel === "DEVELOPER" ||
+    userRole === "admin" ||
+    userRole === "media" ||
+    userRole === "media_admin" ||
+    userRole === "developer";
+
   return (
     <div className="max-w-md mx-auto space-y-6 px-4 py-4 sm:py-6 pb-20 select-none animate-fade-in">
       {/* ─── 1. CENTERED AVATAR & USER INFO HEADER ─── */}
@@ -9770,23 +9780,25 @@ function StudentProfile({
       {/* ─── 2. PREMIUM MENU CARD (10 LIST ITEMS) ─── */}
       <div className="rounded-3xl border border-gray-200/80 dark:border-white/10 bg-white dark:bg-[#0c143b] shadow-sm overflow-hidden divide-y divide-gray-100 dark:divide-white/5">
         {/* Item 1: FAQ */}
-        <button
-          type="button"
-          onClick={() => setFaqModalOpen(true)}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-blue-500/10 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => setFaqModalOpen(true)}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-blue-500/10 dark:bg-blue-500/20 flex items-center justify-center text-blue-600 dark:text-blue-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              {t(locale, "profile.faq", "Ko'p beriladigan savollar (FAQ)")}
+            </span>
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            {t(locale, "profile.faq", "Ko'p beriladigan savollar (FAQ)")}
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          </button>
+        )}
 
         {/* Item 2: Feedback */}
         <button
@@ -9811,129 +9823,140 @@ function StudentProfile({
         </button>
 
         {/* Item 3: Blocked Users */}
-        <button
-          type="button"
-          onClick={() => { setBlockedModalOpen(true); loadBlockedUsers(); }}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => { setBlockedModalOpen(true); loadBlockedUsers(); }}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 dark:bg-amber-500/20 flex items-center justify-center text-amber-600 dark:text-amber-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              {t(locale, "profile.blockedUsers", "Bloklangan foydalanuvchilar")}
+            </span>
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            {t(locale, "profile.blockedUsers", "Bloklangan foydalanuvchilar")}
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          </button>
+        )}
 
         {/* Item 4: Portfolio va badge'lar */}
-        <button
-          type="button"
-          onClick={() => setPortfolioModalOpen(true)}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-yellow-500/10 dark:bg-yellow-500/20 flex items-center justify-center text-yellow-600 dark:text-yellow-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138z" />
-            </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            Portfolio va badge’lar
-          </span>
-          {portfolio.certificates.length > 0 || portfolio.badges.some(b => b.unlocked) ? (
-            <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-700 dark:text-yellow-300">
-              🎓 {portfolio.certificates.length} · 🎖 {portfolio.badges.filter(b => b.unlocked).length}
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => setPortfolioModalOpen(true)}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-yellow-500/10 dark:bg-yellow-500/20 flex items-center justify-center text-yellow-600 dark:text-yellow-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138z" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              Portfolio va badge’lar
             </span>
-          ) : null}
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
-
+            {portfolio.certificates.length > 0 || portfolio.badges.some(b => b.unlocked) ? (
+              <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-yellow-500/10 text-yellow-700 dark:text-yellow-300">
+                🎓 {portfolio.certificates.length} · 🎖 {portfolio.badges.filter(b => b.unlocked).length}
+              </span>
+            ) : null}
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+        )}
 
         {/* Item 7: Sharh qoldirish */}
-        <button
-          type="button"
-          onClick={() => setReviewModalOpen(true)}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-emerald-500/10 dark:bg-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => setReviewModalOpen(true)}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/10 dark:bg-emerald-500/20 flex items-center justify-center text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              {t(locale, "profile.leaveReview", "Sharh qoldirish")}
+            </span>
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            {t(locale, "profile.leaveReview", "Sharh qoldirish")}
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          </button>
+        )}
 
         {/* Item 8: Ommaviy oferta */}
-        <button
-          type="button"
-          onClick={() => setPublicOfferModalOpen(true)}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-indigo-500/10 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => setPublicOfferModalOpen(true)}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-indigo-500/10 dark:bg-indigo-500/20 flex items-center justify-center text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              {t(locale, "auth.publicOfferTitle", "Ommaviy oferta")}
+            </span>
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            {t(locale, "auth.publicOfferTitle", "Ommaviy oferta")}
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          </button>
+        )}
 
         {/* Item 9: Maxfiylik siyosati */}
-        <a
-          href="/privacy"
-          target="_blank"
-          rel="noreferrer"
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-teal-500/10 dark:bg-teal-500/20 flex items-center justify-center text-teal-600 dark:text-teal-400 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+        {!isPrivilegedRole && (
+          <a
+            href="/privacy"
+            target="_blank"
+            rel="noreferrer"
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-gray-50 dark:hover:bg-white/5 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-teal-500/10 dark:bg-teal-500/20 flex items-center justify-center text-teal-600 dark:text-teal-400 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
+              {t(locale, "profile.privacyPolicy", "Maxfiylik siyosati")}
+            </span>
+            <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-navy-950 dark:text-slate-100 flex-1">
-            {t(locale, "profile.privacyPolicy", "Maxfiylik siyosati")}
-          </span>
-          <svg className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </a>
+          </a>
+        )}
 
         {/* Item 10: Hisobni o'chirish */}
-        <button
-          type="button"
-          onClick={() => setDeleteAccountModalOpen(true)}
-          className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors group"
-        >
-          <div className="w-8 h-8 rounded-xl bg-red-500/10 dark:bg-red-500/20 flex items-center justify-center text-red-500 flex-shrink-0">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+        {!isPrivilegedRole && (
+          <button
+            type="button"
+            onClick={() => setDeleteAccountModalOpen(true)}
+            className="w-full px-5 py-4 flex items-center gap-3.5 text-left hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors group"
+          >
+            <div className="w-8 h-8 rounded-xl bg-red-500/10 dark:bg-red-500/20 flex items-center justify-center text-red-500 flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </div>
+            <span className="text-sm font-bold text-red-600 dark:text-red-400 flex-1">
+              {t(locale, "profile.deleteAccount", "Hisobni o'chirish")}
+            </span>
+            <svg className="w-4 h-4 text-red-400 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-          </div>
-          <span className="text-sm font-bold text-red-600 dark:text-red-400 flex-1">
-            {t(locale, "profile.deleteAccount", "Hisobni o'chirish")}
-          </span>
-          <svg className="w-4 h-4 text-red-400 group-hover:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          </button>
+        )}
       </div>
 
       {/* ─── 3. PUBLIC OFFER AGREED BANNER ─── */}
-      {user.public_offer_agreed && (
+      {!isPrivilegedRole && user.public_offer_agreed && (
         <div className="p-3.5 rounded-2xl bg-emerald-500/10 border border-emerald-500/25 flex items-center gap-3">
           <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xs font-black">
             ✓
