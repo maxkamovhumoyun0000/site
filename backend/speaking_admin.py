@@ -247,6 +247,7 @@ class NotificationSendRequest(BaseModel):
 
 # --- PUBLIC API (FOR FLUTTER APP) ---
 @router.get("/api/speaking/content")
+@router.get("/speaking/content")
 async def get_speaking_content():
     """Returns all topics and questions for Diamond Speaking Questions app."""
     ensure_speaking_tables()
@@ -309,6 +310,7 @@ async def get_speaking_content():
 
 
 @router.post("/api/speaking/push-token")
+@router.post("/speaking/push-token")
 async def register_speaking_push_token(payload: PushTokenRegisterRequest):
     """Anonymous device registration for push notifications."""
     ensure_speaking_tables()
