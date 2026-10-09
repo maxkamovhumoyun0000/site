@@ -41,6 +41,8 @@ import { AdminVideos } from "./ui/admin-videos";
 import { AdminBooks } from "./ui/admin-books";
 import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
+import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
+import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import AdminUserbot from "./ui/admin-userbot";
@@ -18160,6 +18162,14 @@ function AdminSection({
     return <AdminVocabularyBank apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs })} />;
   }
 
+  if (section === "speaking-topics") {
+    return <AdminSpeakingTopics apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+  }
+
+  if (section === "speaking-notifications") {
+    return <AdminSpeakingNotifications apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+  }
+
   if (section === "competitions-history") {
     return <AdminCompetitions />;
   }
@@ -21828,7 +21838,7 @@ function AdminSection({
 }
 
 const MEDIA_WORKSPACE_SECTIONS = [
-  "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts",
+  "speaking-topics", "speaking-notifications", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts",
   "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot",
 ] as const;
 

@@ -56,11 +56,20 @@ _firebase_apps: dict[str, Any] = {}
 _firebase_lock = threading.Lock()
 _init_attempted = False
 
-_SLOTS = ("STUDENT_ANDROID", "STUDENT_IOS", "TEACHER_ANDROID", "TEACHER_IOS")
+_SLOTS = ("STUDENT_ANDROID", "STUDENT_IOS", "TEACHER_ANDROID", "TEACHER_IOS", "SPEAKING_ANDROID", "SPEAKING_IOS")
 
 
 def _slot_for(app: str, platform: str) -> str | None:
-    app_key = "STUDENT" if str(app or "").strip().lower() == "student" else "TEACHER" if str(app or "").strip().lower() == "teacher" else None
+    app_lower = str(app or "").strip().lower()
+    app_key = (
+        "STUDENT"
+        if app_lower == "student"
+        else "TEACHER"
+        if app_lower == "teacher"
+        else "SPEAKING"
+        if app_lower in ("speaking", "diamond_speaking", "diamondspeaking")
+        else None
+    )
     platform_key = "ANDROID" if str(platform or "").strip().lower() == "android" else "IOS" if str(platform or "").strip().lower() == "ios" else None
     if not app_key or not platform_key:
         return None
@@ -343,3 +352,99 @@ def unregister_device_token(token: str) -> None:
             pass
     finally:
         conn.close()
+
+
+def register_speaking_token(device_id: str, token: str, *, platform: str = "android") -> None:
+    """Registers an anonymous device token for Diamond Speaking Questions."""
+    from db import get_conn
+
+    dev_id = str(device_id or "").strip()[:80]
+    tok = str(token or "").strip()
+    plat = str(platform or "android").strip()[:20]
+    if not tok:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speaking_push_tokens (
+                id SERIAL PRIMARY KEY,
+                device_id TEXT NOT NULL UNIQUE,
+                token TEXT NOT NULL,
+                platform TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO speaking_push_tokens (device_id, token, platform, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(device_id) DO UPDATE SET
+                token=excluded.token,
+                platform=excluded.platform,
+                updated_at=CURRENT_TIMESTAMP
+            """,
+            (dev_id or f"dev_{hash(tok)}", tok, plat),
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("push_notifications: failed to register speaking token")
+    finally:
+        conn.close()
+
+
+def send_push_to_speaking_devices(
+    title: str,
+    body: str,
+    *,
+    data: dict[str, Any] | None = None,
+) -> int:
+    """Sends push notification to all speaking app devices (via direct token and topic speaking_all)."""
+    from db import get_conn
+
+    init_firebase()
+    conn = get_conn()
+    cur = conn.cursor()
+    token_rows: list[dict[str, str]] = []
+    try:
+        cur.execute("SELECT token, platform FROM speaking_push_tokens")
+        for row in (cur.fetchall() or []):
+            if row.get("token"):
+                token_rows.append({"token": str(row["token"]), "platform": str(row.get("platform") or "android"), "app": "speaking"})
+    except Exception:
+        logger.info("push_notifications: speaking_push_tokens table not yet present or query error")
+    finally:
+        conn.close()
+
+    if token_rows:
+        _send_to_token_rows(token_rows, title, body, data or {})
+
+    speaking_app = _firebase_apps.get("SPEAKING_ANDROID") or _firebase_apps.get("SPEAKING_IOS")
+    if not speaking_app and _firebase_apps:
+        speaking_app = next(iter(_firebase_apps.values()))
+
+    if speaking_app:
+        try:
+            from firebase_admin import messaging
+            str_data = {str(k): str(v) for k, v in (data or {}).items() if v is not None}
+            msg = messaging.Message(
+                notification=messaging.Notification(title=str(title or "")[:180], body=str(body or "")[:500]),
+                data=str_data,
+                topic="speaking_all",
+                android=messaging.AndroidConfig(priority="high"),
+                apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
+            )
+            messaging.send(msg, app=speaking_app)
+            logger.info("push_notifications: topic 'speaking_all' message broadcasted successfully")
+        except Exception as e:
+            logger.warning("push_notifications: topic broadcast failed: %s", e)
+
+    return max(len(token_rows), 1 if speaking_app else 0)
+

@@ -104,9 +104,12 @@ FIREBASE_SERVICE_ACCOUNT_JSON = (os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "
 FIREBASE_SERVICE_ACCOUNT_PATH = (os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH") or "").strip()
 
 FIREBASE_CREDENTIALS_BY_SLOT: dict[str, dict[str, str]] = {}
-for _slot in ("STUDENT_ANDROID", "STUDENT_IOS", "TEACHER_ANDROID", "TEACHER_IOS"):
+for _slot in ("STUDENT_ANDROID", "STUDENT_IOS", "TEACHER_ANDROID", "TEACHER_IOS", "SPEAKING_ANDROID", "SPEAKING_IOS"):
     _json_val = (os.getenv(f"FIREBASE_SERVICE_ACCOUNT_JSON_{_slot}") or "").strip()
     _path_val = (os.getenv(f"FIREBASE_SERVICE_ACCOUNT_PATH_{_slot}") or "").strip()
+    if not _json_val and not _path_val and _slot.startswith("SPEAKING_"):
+        _json_val = (os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON_SPEAKING") or "").strip()
+        _path_val = (os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH_SPEAKING") or "").strip()
     if _json_val or _path_val:
         FIREBASE_CREDENTIALS_BY_SLOT[_slot] = {"json": _json_val, "path": _path_val}
 

@@ -66,7 +66,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
-  media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
+  media: ["home", "speaking-topics", "speaking-notifications", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   developer: [
     "home",
     "developer-server",
@@ -136,6 +136,8 @@ export const SECTION_LABELS: Record<string, string> = {
   grammar: "Grammatika Darslari",
   vocabulary: "Lug'at",
   "vocabulary-bank": "Vocabulary Bank Editor",
+  "speaking-topics": "Speaking App Mavzular & Savollar",
+  "speaking-notifications": "Speaking App Notification",
   videos: "Video Darslar",
   books: "Kutubxona",
   "daily-test": "Kunlik Test",

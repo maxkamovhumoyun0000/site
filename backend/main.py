@@ -56578,6 +56578,9 @@ app.include_router(analytics_router)
 from backend.library_ai import router as library_ai_router
 app.include_router(library_ai_router)
 
+from backend.speaking_admin import router as speaking_admin_router
+app.include_router(speaking_admin_router)
+
 # Additive personal-learning routes.  The module receives the established
 # authentication/role helpers instead of reimplementing session policy.
 from backend import personalization as personalization_api
