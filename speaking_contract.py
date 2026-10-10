@@ -16,7 +16,7 @@ def question_insert_values_for_topic(payload: Any, topic: dict[str, Any]) -> dic
     bullets = [str(item).strip() for item in (payload.cue_card_bullet_points or []) if str(item).strip()]
     if subject == "russian" or part != 2:
         bullets = []
-    answer = str(payload.sample_answer or "").strip() or "Sample answer to be reviewed."
+    answer = "" if subject == "russian" else (str(payload.sample_answer or "").strip() or "Sample answer to be reviewed.")
     return {
         "part": part,
         "subject": subject,

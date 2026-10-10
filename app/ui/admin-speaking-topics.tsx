@@ -289,7 +289,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       const targetPart = activeSubject === "russian" ? 1 : (targetTopic?.part ?? aiPart);
       const questionsToSave = aiGeneratedResult.questions || [];
       for (const q of questionsToSave) {
-        const ans = (q.sample_answer || q.model_answer || q.answer || "Namuna javob").trim();
+        const ans = activeSubject === "russian" ? "" : (q.sample_answer || q.model_answer || q.answer || "Namuna javob").trim();
         const text = (q.question_text || q.question || q.prompt || "Savol").trim();
         await apiFetch(`/staff/speaking/topics/${finalTopicId}/questions`, {
           method: "POST",
@@ -298,7 +298,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             subject: activeSubject,
             question_text: text,
             cue_card_bullet_points: activeSubject === "russian" ? [] : (q.cue_card_bullet_points || []),
-            sample_answer: ans,
+            ...(ans ? { sample_answer: ans } : {}),
             vocabulary: q.vocabulary || [],
             sort_order: 0,
           },
@@ -738,6 +738,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           )}
 
                           {/* Band 8-9 Model Answer */}
+                          {q.sample_answer && (
                           <div className="bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-900/40 p-4 rounded-xl text-xs space-y-1.5">
                             <span className="font-bold text-blue-600 dark:text-blue-400 uppercase text-[10px] tracking-wider block">
                               Band 8.5–9.0 Model Answer:
@@ -746,6 +747,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                               {q.sample_answer}
                             </p>
                           </div>
+                          )}
 
                           {/* Vocabulary items */}
                           {q.vocabulary && q.vocabulary.length > 0 && (
@@ -1010,9 +1012,11 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           </div>
                         )}
 
+                        {q.sample_answer && (
                         <div className="p-3 bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-900/30 rounded-lg text-slate-800 dark:text-slate-200 italic leading-relaxed">
                           <strong>{activeSubject === "russian" ? "Namunaviy javob (B2–C1):" : "Band 8.5–9.0 Namuna:"}</strong> {q.sample_answer}
                         </div>
+                        )}
 
                         {q.vocabulary && q.vocabulary.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1073,6 +1077,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               </button>
             </div>
 
+            {activeSubject === "english" && (
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                 Mavzu Nomi (Topic Title):
@@ -1085,6 +1090,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               />
             </div>
+            )}
 
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
@@ -1149,7 +1155,11 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                   disabled={qAiAutoLoading}
                   className="text-xs font-bold text-cyan-600 dark:text-cyan-400 hover:underline flex items-center gap-1 disabled:opacity-50"
                 >
-                  {qAiAutoLoading ? "AI to'ldirmoqda..." : "✨ AI orqali namunaviy javob va lug'atni to'ldirish"}
+                  {qAiAutoLoading
+                    ? "AI to'ldirmoqda..."
+                    : activeSubject === "russian"
+                      ? "✨ AI orqali lug'atni to'ldirish"
+                      : "✨ AI orqali namunaviy javob va lug'atni to'ldirish"}
                 </button>
               </div>
               <input
@@ -1176,6 +1186,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               </div>
             )}
 
+            {activeSubject === "english" && (
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                 Band 8.5–9.0 Namunaviy Javob (Model Answer):
@@ -1188,6 +1199,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               />
             </div>
+            )}
 
             {/* Vocab sub-form */}
             <div className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">

@@ -522,7 +522,6 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"Создайте учебный материал для разговорной практики по русскому языку:\n"
                 f"Вопрос: \"{q_text}\"\n"
                 f"Требования:\n"
-                f"- Образец ответа ('sample_answer') должен быть естественным, грамотным, развёрнутым (3-5 предложений уровня B2-C1).\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
                 f"- Предоставьте 2-3 полезных русских слова, идиомы или устойчивых выражения ('vocabulary') с объяснением значения и живым примером.\n"
                 f"- Не добавляйте examiner tips.\n"
@@ -531,7 +530,6 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"{{\n"
                 f'  "question_text": "{q_text}",\n'
                 f'  "cue_card_bullet_points": [],\n'
-                f'  "sample_answer": "Естественный, богатый лексикой развёрнутый ответ на русском языке.",\n'
                 f'  "vocabulary": [\n'
                 f'    {{"word": "Полезное слово или идиома", "definition": "Краткое понятное объяснение значения", "example": "Живой пример употребления в речи"}}\n'
                 f"  ]\n"
@@ -547,7 +545,6 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"Количество вопросов: {payload.question_count}\n"
                 f"Требования:\n"
                 f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
-                f"- Для каждого вопроса составьте естественный, развёрнутый образец ответа ('sample_answer', 3-5 предложений уровня B2-C1).\n"
                 f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
                 f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}\n\n"
@@ -559,7 +556,6 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"    {{\n"
                 f'      "question_text": "Вопрос для беседы на русском языке",\n'
                 f'      "cue_card_bullet_points": [],\n'
-                f'      "sample_answer": "Грамотный, живой и развёрнутый ответ на русском языке.",\n'
                 f'      "vocabulary": [\n'
                 f'        {{"word": "Русское слово или выражение", "definition": "Объяснение значения", "example": "Пример употребления в предложении"}}\n'
                 f"      ]\n"
@@ -729,8 +725,10 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 q["question_text"] = q.get("question") or q.get("prompt") or q.get("text") or "Speaking Question"
             q["question_text"] = str(q["question_text"]).strip()
 
-            # Normalize sample answer
-            if not q.get("sample_answer"):
+            # Russian speaking questions intentionally do not use model answers.
+            if is_ru:
+                q["sample_answer"] = ""
+            elif not q.get("sample_answer"):
                 q["sample_answer"] = (
                     q.get("model_answer")
                     or q.get("answer")
