@@ -2737,7 +2737,7 @@ function TelegramUnregisteredScreen({ locale }: { locale: Locale }) {
         <p className="pill-label">Telegram Mini App</p>
         <h1>{t(locale, "auth.telegram.unregistered.title", "Botda ro'yxatdan o'tish kerak")}</h1>
         <p>{t(locale, "auth.telegram.unregistered.desc", "Siz hali Telegram botda ro'yxatdan o'tmagansiz. Avval botga kirib hisob oching, keyin Mini Appni qayta oching.")}</p>
-        <a className="btn btn-primary" href="https://t.me/DiamondEducationBot" target="_blank" rel="noreferrer">
+        <a className="btn btn-primary" href="https://t.me/Diamond_Edu_StudentBot" target="_blank" rel="noreferrer">
           {t(locale, "auth.telegram.openBot", "Telegram botni ochish")}
         </a>
       </section>
@@ -25602,7 +25602,37 @@ export default function DiamondEducationApp() {
     async function initAuth() {
       if (disposed || authAttemptInFlight) return;
       authAttemptInFlight = true;
-      const webApp = typeof window !== "undefined" ? window.Telegram?.WebApp : undefined;
+      // Detect and wait for Telegram WebApp SDK if loading inside Telegram
+      let webApp = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : undefined;
+      const isTgClient = typeof window !== "undefined" && Boolean(
+        webApp?.initData ||
+        (window as any).Telegram?.WebApp ||
+        /Telegram/i.test(navigator.userAgent) ||
+        window.location.hash.includes("tgWebAppData") ||
+        window.location.search.includes("tgWebAppPlatform")
+      );
+
+      if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
+        for (let i = 0; i < 20; i++) {
+          webApp = (window as any).Telegram?.WebApp;
+          if (webApp?.ready) {
+            try { webApp.ready(); } catch {}
+          }
+          if (webApp?.initData && webApp?.initDataUnsafe?.user?.id) {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+          if (disposed) return;
+        }
+      }
+
+      if (webApp?.ready) {
+        try { webApp.ready(); } catch {}
+      }
+      if (webApp?.expand) {
+        try { webApp.expand(); } catch {}
+      }
+
       const telegramId = webApp?.initDataUnsafe?.user?.id;
       setIsTelegramMode(Boolean(telegramId));
       if (userRef.current) {
@@ -25626,16 +25656,9 @@ export default function DiamondEducationApp() {
         if (!telegramId) return true;
         const prefKey = `${TELEGRAM_BOT_SYNC_PREF_PREFIX}${telegramId}`;
         const stored = localStorage.getItem(prefKey);
-        if (stored === "1") return true;
         if (stored === "0") return false;
-        let accepted = true;
-        try {
-          accepted = window.confirm("Telegram bot bilan ham sessiyani sinxron qilaylikmi?");
-        } catch {
-          accepted = true;
-        }
-        localStorage.setItem(prefKey, accepted ? "1" : "0");
-        return accepted;
+        localStorage.setItem(prefKey, "1");
+        return true;
       };
       const belongsToTelegramAccount = (payload: ApiUser | null | undefined): boolean => {
         if (!telegramId) return true;
@@ -25716,29 +25739,42 @@ export default function DiamondEducationApp() {
         }
 
         if (TELEGRAM_AUTO_AUTH_ENABLED && telegramId && webApp?.initData && !telegramAutoLoginSuppressed) {
-          webApp.ready();
-          const deviceId = getOrCreateDeviceId();
-          const syncBotSession = resolveTelegramBotSyncPreference();
-          const response = await requestJson<{ access_token: string; user: ApiUser }>("/auth/telegram", {
-            method: "POST",
-            body: { telegram_id: telegramId, init_data: webApp.initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
-            timeoutMs: 30000,
-            retries: 0,
-          });
-          localStorage.setItem("diamond_token", response.access_token);
-          setUser(response.user);
-          const userRole = roleFromUser(response.user);
-          const roleToUse = userRole;
-          setActiveRole(roleToUse);
-          if (maybeRedirectLegacyStudentRuntimeRoute(roleToUse, requestedSection, (target) => router.replace(target))) {
+          try {
+            webApp.ready();
+            const deviceId = getOrCreateDeviceId();
+            const syncBotSession = resolveTelegramBotSyncPreference();
+            const response = await requestJson<{ access_token: string; user: ApiUser }>("/auth/telegram", {
+              method: "POST",
+              body: { telegram_id: telegramId, init_data: webApp.initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
+              timeoutMs: 30000,
+              retries: 0,
+            });
+            localStorage.setItem("diamond_token", response.access_token);
+            setUser(response.user);
+            const userRole = roleFromUser(response.user);
+            const roleToUse = userRole;
+            setActiveRole(roleToUse);
+            if (maybeRedirectLegacyStudentRuntimeRoute(roleToUse, requestedSection, (target) => router.replace(target))) {
+              setAuthStatus("authenticated");
+              setAuthResolved(true);
+              return;
+            }
+            setSection(normalizeSection(requestedSection, roleToUse, resolveRoleSections(roleToUse, undefined, getUserSubjects(roleToUse, response.user, null))));
             setAuthStatus("authenticated");
             setAuthResolved(true);
             return;
+          } catch (tgErr: any) {
+            const msg = tgErr instanceof Error ? tgErr.message : String(tgErr || "");
+            if (msg.includes("royxatdan") || msg.includes("404")) {
+              setAuthStatus("telegram-unregistered");
+              setInitialStateReady(true);
+              setAuthResolved(true);
+              return;
+            }
+            setAuthStatus("checking");
+            scheduleRetry();
+            return;
           }
-          setSection(normalizeSection(requestedSection, roleToUse, resolveRoleSections(roleToUse, undefined, getUserSubjects(roleToUse, response.user, null))));
-          setAuthStatus("authenticated");
-          setAuthResolved(true);
-          return;
         }
 
         setAuthStatus("unauthenticated");

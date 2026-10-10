@@ -40,7 +40,7 @@ def ensure_speaking_tables() -> None:
                 id SERIAL PRIMARY KEY,
                 part INTEGER NOT NULL,
                 title TEXT NOT NULL,
-                status_badge TEXT DEFAULT '2026 PREDICTED',
+                status_badge TEXT DEFAULT 'PREDICTED',
                 sort_order INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -137,7 +137,7 @@ def _seed_initial_topics(cur, conn) -> None:
     # Seed 2: Part 2 - Travel (Journey)
     cur.execute(
         "INSERT INTO speaking_topics (part, title, status_badge, sort_order) VALUES (?, ?, ?, ?) RETURNING id",
-        (2, "Travel", "2026 PREDICTED", 2),
+        (2, "Travel", "PREDICTED", 2),
     )
     p2_id = cur.fetchone()["id"]
     cur.execute(
@@ -167,7 +167,7 @@ def _seed_initial_topics(cur, conn) -> None:
     # Seed 3: Part 3 - Modern Transport
     cur.execute(
         "INSERT INTO speaking_topics (part, title, status_badge, sort_order) VALUES (?, ?, ?, ?) RETURNING id",
-        (3, "Modern Transport", "2026 PREDICTED", 3),
+        (3, "Modern Transport", "PREDICTED", 3),
     )
     p3_id = cur.fetchone()["id"]
     cur.execute(
@@ -201,7 +201,7 @@ class PushTokenRegisterRequest(BaseModel):
 class TopicCreateRequest(BaseModel):
     part: int = Field(..., ge=1, le=3)
     title: str = Field(..., min_length=2, max_length=120)
-    status_badge: str = Field(default="2026 PREDICTED", max_length=50)
+    status_badge: str = Field(default="PREDICTED", max_length=50)
     sort_order: int = 0
 
 
@@ -298,7 +298,7 @@ async def get_speaking_content():
                 "part": d["part"],
                 "prompt": d["question_text"],
                 "bestAnswer": d.get("sample_answer") or "",
-                "tag": d.get("status_badge") or "2026 PREDICTED",
+                "tag": (d.get("status_badge") or "PREDICTED").replace("2026", "").strip(),
                 "prompts": bullet_points,
                 "examinerTip": d.get("examiner_tip"),
                 "vocabulary": vocab_items,
@@ -558,15 +558,15 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
 
     prompt = (
         f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
-        f"Create high-scoring IELTS 2026 exam content for:\n"
+        f"Create high-scoring IELTS exam content for:\n"
         f"Theme: {payload.theme}\n"
         f"Speaking Part: {part_desc}\n"
         f"Question count: {payload.question_count}\n"
-        f"Optional instruction: {payload.custom_instruction or 'Focus on predicted high-frequency 2026 examination trends'}\n\n"
+        f"Optional instruction: {payload.custom_instruction or 'Focus on predicted high-frequency examination trends'}\n\n"
         f"Output strictly a single JSON object with the following schema:\n"
         f"{{\n"
         f'  "topic_title": "Concise Category Name (e.g. Artificial Intelligence, Eco-Tourism)",\n'
-        f'  "status_badge": "2026 PREDICTED",\n'
+        f'  "status_badge": "PREDICTED",\n'
         f'  "questions": [\n'
         f"    {{\n"
         f'      "question_text": "The exact speaking prompt",\n'

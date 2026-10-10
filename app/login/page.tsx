@@ -50,16 +50,9 @@ function resolveTelegramBotSyncPreference(telegramId: number) {
   if (typeof window === "undefined" || !telegramId) return true;
   const key = `${TELEGRAM_BOT_SYNC_PREF_PREFIX}${telegramId}`;
   const stored = localStorage.getItem(key);
-  if (stored === "1") return true;
   if (stored === "0") return false;
-  let accepted = true;
-  try {
-    accepted = window.confirm("Telegram bot bilan ham sessiyani sinxron qilaylikmi?");
-  } catch {
-    accepted = true;
-  }
-  localStorage.setItem(key, accepted ? "1" : "0");
-  return accepted;
+  localStorage.setItem(key, "1");
+  return true;
 }
 
 function getTelegramMiniAppSyncPayload() {

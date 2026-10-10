@@ -53,7 +53,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   // Manual Add Topic Modal
   const [newTopicModalOpen, setNewTopicModalOpen] = useState<boolean>(false);
   const [newTopicTitle, setNewTopicTitle] = useState<string>("");
-  const [newTopicBadge, setNewTopicBadge] = useState<string>("2026 PREDICTED");
+  const [newTopicBadge, setNewTopicBadge] = useState<string>("PREDICTED");
   const [newTopicPart, setNewTopicPart] = useState<number>(1);
 
   // Manual Add Question Modal
@@ -610,7 +610,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     type="text"
                     value={aiInstruction}
                     onChange={(e) => setAiInstruction(e.target.value)}
-                    placeholder="Masalan: Focus on academic collocations and 2026 predictions"
+                    placeholder="Masalan: Focus on academic collocations and predicted exam trends"
                     className="w-full px-4 py-3 rounded-xl bg-navy-950 border border-navy-700 text-white placeholder-ink-500 text-sm focus:border-cyan-400 outline-none"
                   />
                 </div>
@@ -645,7 +645,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                       {aiGeneratedResult.topic_title || aiTheme}
                     </h4>
                     <span className="px-2.5 py-0.5 text-xs font-black uppercase rounded-md bg-cyan-500/20 text-cyan-300">
-                      {aiGeneratedResult.status_badge || "2026 PREDICTED"}
+                      {aiGeneratedResult.status_badge || "PREDICTED"}
                     </span>
                   </div>
 
@@ -720,7 +720,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 onChange={(e) => setNewTopicBadge(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl bg-navy-950 border border-navy-700 text-white text-sm outline-none"
               >
-                <option value="2026 PREDICTED">2026 PREDICTED</option>
+                <option value="PREDICTED">PREDICTED</option>
                 <option value="HIGH FREQUENCY">HIGH FREQUENCY</option>
                 <option value="COMMON">COMMON</option>
               </select>
