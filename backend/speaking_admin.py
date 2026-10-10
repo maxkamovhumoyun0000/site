@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 
 from db import get_conn
 import push_notifications
-from speaking_contract import normalize_topic_status, question_insert_values_for_topic
+from speaking_contract import (
+    normalize_topic_status,
+    public_sample_answer,
+    question_insert_values_for_topic,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -237,14 +241,15 @@ async def get_speaking_content(subject: str | None = Query(default=None)):
                 except Exception:
                     vocab_items = []
 
+            subject = (d.get("subject") or "english").lower()
             questions.append({
                 "id": str(d["id"]),
                 "topic_id": d["topic_id"],
                 "category": d.get("topic_title") or "General",
                 "part": d["part"],
-                "subject": (d.get("subject") or "english").lower(),
+                "subject": subject,
                 "prompt": d["question_text"],
-                "bestAnswer": d.get("sample_answer") or "",
+                "bestAnswer": public_sample_answer(d.get("sample_answer"), subject),
                 "tag": (d.get("status_badge") or "PREDICTED").replace("2026", "").strip(),
                 "prompts": bullet_points,
                 "examinerTip": None,

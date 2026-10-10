@@ -14,6 +14,13 @@ def normalize_topic_status(value: Any) -> str:
     return status
 
 
+def public_sample_answer(value: Any, subject: Any) -> str:
+    """Return an answer only for subjects that are allowed to expose one."""
+    if str(subject or "english").strip().lower() in {"russian", "ru"}:
+        return ""
+    return str(value or "")
+
+
 def question_insert_values_for_topic(payload: Any, topic: dict[str, Any]) -> dict[str, Any]:
     """Build a question record from its parent topic, not client-provided filters.
 
