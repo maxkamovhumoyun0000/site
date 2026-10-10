@@ -929,9 +929,9 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     <input
                       type="number"
                       min={1}
-                      max={5}
+                      max={10}
                       value={aiCount}
-                      onChange={(e) => setAiCount(Number(e.target.value))}
+                      onChange={(e) => setAiCount(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
                       className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none"
                     />
                   </div>

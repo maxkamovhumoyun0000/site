@@ -164,7 +164,7 @@ class QuestionUpdateRequest(BaseModel):
 class AiGenerateRequest(BaseModel):
     theme: str | None = None
     part: int = Field(default=1, ge=1, le=3)
-    question_count: int = Field(default=2, ge=1, le=5)
+    question_count: int = Field(default=2, ge=1, le=10)
     custom_instruction: str | None = None
     question_text: str | None = None
     subject: str = Field(default="english", max_length=32)
