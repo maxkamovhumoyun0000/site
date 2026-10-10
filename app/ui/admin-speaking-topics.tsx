@@ -378,8 +378,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
 
   // Manual Add or Edit Question
   async function handleSaveQuestion() {
-    if (!targetTopicId || !qText.trim() || !qAnswer.trim()) {
-      alert("Savol matni va namunaviy javobni kiriting.");
+    if (!targetTopicId || !qText.trim()) {
+      alert("Savol matnini kiriting.");
       return;
     }
     try {
@@ -394,7 +394,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           body: {
             question_text: qText.trim(),
             cue_card_bullet_points: activeSubject === "russian" ? [] : bullets,
-            sample_answer: qAnswer.trim(),
+            ...(qAnswer.trim() ? { sample_answer: qAnswer.trim() } : {}),
             vocabulary: vocabList,
           },
         });
@@ -402,11 +402,9 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         await apiFetch(`/staff/speaking/topics/${targetTopicId}/questions`, {
           method: "POST",
           body: {
-            part: activeSubject === "russian" ? 1 : activePart,
-            subject: activeSubject,
             question_text: qText.trim(),
             cue_card_bullet_points: activeSubject === "russian" ? [] : bullets,
-            sample_answer: qAnswer.trim(),
+            ...(qAnswer.trim() ? { sample_answer: qAnswer.trim() } : {}),
             vocabulary: vocabList,
           },
         });

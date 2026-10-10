@@ -51,6 +51,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+from token_encryption import TokenCipher, TokenEncryptionConfigurationError
+
 # One Firebase Admin `App` instance per slot — see module docstring.
 _firebase_apps: dict[str, Any] = {}
 _firebase_lock = threading.Lock()
@@ -363,6 +365,11 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
     plat = str(platform or "android").strip()[:20]
     if not tok:
         return
+    try:
+        cipher = TokenCipher.from_environment()
+    except TokenEncryptionConfigurationError:
+        logger.error("push_notifications: speaking token encryption is not configured")
+        raise
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -378,6 +385,7 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
             )
             """
         )
+        _encrypt_legacy_speaking_tokens(cur, conn, cipher)
         cur.execute(
             """
             INSERT INTO speaking_push_tokens (device_id, token, platform, updated_at)
@@ -387,7 +395,7 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
                 platform=excluded.platform,
                 updated_at=CURRENT_TIMESTAMP
             """,
-            (dev_id or f"dev_{hash(tok)}", tok, plat),
+            (dev_id or f"dev_{hash(tok)}", cipher.encrypt(tok), plat),
         )
         conn.commit()
     except Exception:
@@ -400,6 +408,23 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
         conn.close()
 
 
+def _encrypt_legacy_speaking_tokens(cur: Any, conn: Any, cipher: TokenCipher) -> None:
+    """Migrates old clear-text FCM rows before any new token is persisted."""
+    cur.execute("SELECT id, token FROM speaking_push_tokens")
+    legacy_rows = [
+        row for row in (cur.fetchall() or [])
+        if str(row.get("token") or "") and not str(row.get("token") or "").startswith("enc:v1:")
+    ]
+    for row in legacy_rows:
+        cur.execute(
+            "UPDATE speaking_push_tokens SET token=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (cipher.encrypt(str(row["token"])), int(row["id"])),
+        )
+    if legacy_rows:
+        conn.commit()
+        logger.info("push_notifications: migrated %s legacy speaking push token(s) to encrypted storage", len(legacy_rows))
+
+
 def send_push_to_speaking_devices(
     title: str,
     body: str,
@@ -410,14 +435,28 @@ def send_push_to_speaking_devices(
     from db import get_conn
 
     init_firebase()
+    try:
+        cipher = TokenCipher.from_environment()
+    except TokenEncryptionConfigurationError:
+        logger.error("push_notifications: speaking token encryption is not configured")
+        return 0
     conn = get_conn()
     cur = conn.cursor()
     token_rows: list[dict[str, str]] = []
     try:
+        _encrypt_legacy_speaking_tokens(cur, conn, cipher)
         cur.execute("SELECT token, platform FROM speaking_push_tokens")
         for row in (cur.fetchall() or []):
-            if row.get("token"):
-                token_rows.append({"token": str(row["token"]), "platform": str(row.get("platform") or "android"), "app": "speaking"})
+            encrypted_token = str(row.get("token") or "")
+            if not encrypted_token:
+                continue
+            try:
+                token = cipher.decrypt(encrypted_token)
+            except Exception:
+                logger.warning("push_notifications: skipped an unreadable encrypted speaking token")
+                continue
+            if token:
+                token_rows.append({"token": token, "platform": str(row.get("platform") or "android"), "app": "speaking"})
     except Exception:
         logger.info("push_notifications: speaking_push_tokens table not yet present or query error")
     finally:

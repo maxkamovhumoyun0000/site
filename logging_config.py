@@ -5,6 +5,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from token_encryption import TokenCipher, TokenEncryptionConfigurationError
+
 # Create logs directory if it doesn't exist
 log_dir = Path("logs")
 
@@ -23,6 +25,7 @@ class SensitiveDataFilter(logging.Filter):
 
     _key_value = re.compile(
         r"(?i)(password|passcode|authorization|bearer|access[_-]?token|refresh[_-]?token|"
+        r"(?:fcm|push|device)[_-]?token|"
         r"session(?:[_-]?id|[_-]?token)?|api[_-]?key|secret|private[_-]?key|otp|"
         r"reset[_-]?token|cookie)\s*([:=])\s*([^\s,;}\]]+)",
     )
@@ -44,7 +47,36 @@ class SensitiveDataFilter(logging.Filter):
             rendered = str(record.msg)
         record.msg = self.redact(rendered)
         record.args = ()
+        # Format and redact tracebacks before the handler formatter can append
+        # them. Exception messages often include request headers or payloads.
+        if record.exc_info:
+            try:
+                record.exc_text = self.redact(logging.Formatter().formatException(record.exc_info))
+                record.exc_info = None
+            except Exception:
+                record.exc_info = None
         return True
+
+
+class EncryptedRotatingFileHandler(RotatingFileHandler):
+    """Stores development log records as independent authenticated ciphertexts."""
+
+    def __init__(self, filename: Path, cipher: TokenCipher, **kwargs: object) -> None:
+        self._cipher = cipher
+        super().__init__(filename, **kwargs)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+            self.acquire()
+            if self.shouldRollover(record):
+                self.doRollover()
+            self.stream.write(self._cipher.encrypt(message) + "\n")
+            self.flush()
+        except Exception:
+            self.handleError(record)
+        finally:
+            self.release()
 
 def setup_logging():
     """Configure redacted, production-safe application logging.
@@ -69,7 +101,20 @@ def setup_logging():
 
     if not production and os.getenv("DIAMOND_FILE_LOGGING", "").strip().lower() in {"1", "true", "yes"}:
         log_dir.mkdir(mode=0o700, exist_ok=True)
-        file_handler = RotatingFileHandler(log_dir / "bot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+        try:
+            log_cipher = TokenCipher.from_environment(
+                key_name="LOG_ENCRYPTION_KEY",
+                derivation_context="application-log",
+            )
+        except TokenEncryptionConfigurationError as exc:
+            raise RuntimeError("Encrypted file logging requires LOG_ENCRYPTION_KEY or JWT_SECRET") from exc
+        file_handler = EncryptedRotatingFileHandler(
+            log_dir / "bot.log",
+            cipher=log_cipher,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(formatter)
         file_handler.addFilter(sanitizer)
         root.addHandler(file_handler)

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from db import get_conn
 import push_notifications
+from speaking_contract import question_insert_values_for_topic
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -141,9 +142,9 @@ class TopicUpdateRequest(BaseModel):
 
 class QuestionCreateRequest(BaseModel):
     part: int = Field(default=1, ge=1, le=3)
-    question_text: str = Field(..., min_length=1)
-    cue_card_bullet_points: list[str] = Field(default_factory=list)
-    sample_answer: str = Field(default="Sample answer to be reviewed.", min_length=1)
+    question_text: str = Field(..., min_length=1, max_length=3000)
+    cue_card_bullet_points: list[str] = Field(default_factory=list, max_length=6)
+    sample_answer: str = Field(default="Sample answer to be reviewed.", max_length=15000)
     examiner_tip: str | None = None
     vocabulary: list[dict[str, Any]] = Field(default_factory=list)
     sort_order: int = 0
@@ -413,10 +414,9 @@ async def create_staff_question(topic_id: int, payload: QuestionCreateRequest, a
         if not t_row:
             raise HTTPException(status_code=404, detail="Topic not found")
 
-        t_dict = dict(t_row)
-        subj = (payload.subject or t_dict.get("subject") or "english").strip().lower()
-        bp_json = json.dumps(payload.cue_card_bullet_points) if payload.cue_card_bullet_points else None
-        vocab_json = json.dumps(payload.vocabulary) if payload.vocabulary else None
+        values = question_insert_values_for_topic(payload, dict(t_row))
+        bp_json = json.dumps(values["cue_card_bullet_points"]) if values["cue_card_bullet_points"] else None
+        vocab_json = json.dumps(values["vocabulary"]) if values["vocabulary"] else None
 
         cur.execute(
             """
@@ -426,14 +426,14 @@ async def create_staff_question(topic_id: int, payload: QuestionCreateRequest, a
             """,
             (
                 topic_id,
-                payload.part or t_dict["part"],
-                payload.question_text.strip(),
+                values["part"],
+                values["question_text"],
                 bp_json,
-                payload.sample_answer.strip(),
-                payload.examiner_tip.strip() if payload.examiner_tip else None,
+                values["sample_answer"],
+                values["examiner_tip"],
                 vocab_json,
-                payload.sort_order,
-                subj,
+                values["sort_order"],
+                values["subject"],
             ),
         )
         q_row = cur.fetchone()
