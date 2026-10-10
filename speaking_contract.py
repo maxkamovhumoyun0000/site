@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
+PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
 MAX_BATCH_TOPIC_COUNT = 5
 
 
@@ -13,6 +14,15 @@ def normalize_topic_status(value: Any) -> str:
     if status not in TOPIC_STATUS_BADGES:
         raise ValueError("status_badge must be COMMON, PREDICTED, or HIGH FREQUENCY")
     return status
+
+
+def display_topic_status(value: Any) -> str:
+    """Return the user-facing label while keeping stored values canonical."""
+    try:
+        status = normalize_topic_status(value)
+    except ValueError:
+        status = "PREDICTED"
+    return PREDICTED_STATUS_LABEL if status == "PREDICTED" else status
 
 
 def normalize_batch_topic_count(value: Any) -> int:

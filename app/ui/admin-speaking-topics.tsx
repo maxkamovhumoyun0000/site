@@ -42,6 +42,11 @@ function normalizedTopicStatus(value?: string) {
     : "PREDICTED";
 }
 
+function topicStatusLabel(value?: string) {
+  const status = normalizedTopicStatus(value);
+  return status === "PREDICTED" ? "PREDICTED TILL THE END OF 2026" : status;
+}
+
 interface AdminSpeakingTopicsProps {
   apiFetch: (path: string, options?: { method?: string; body?: any; timeoutMs?: number; signal?: AbortSignal }) => Promise<any>;
 }
@@ -707,7 +712,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                         >
                           {TOPIC_STATUS_OPTIONS.map((status) => (
                             <option key={status} value={status}>
-                              {status}
+                              {topicStatusLabel(status)}
                             </option>
                           ))}
                         </select>
@@ -1109,7 +1114,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                             #{index + 1} {topic.topic_title || topic.title || "Mavzu"}
                           </span>
                           <span className="px-2 py-0.5 text-[10px] font-black uppercase rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300">
-                            {normalizedTopicStatus(topic.status_badge)}
+                            {topicStatusLabel(topic.status_badge)}
                           </span>
                         </div>
                         <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
@@ -1130,7 +1135,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                       </h4>
                     </div>
                     <span className="px-3 py-1 text-xs font-black uppercase rounded-lg bg-cyan-500/20 text-cyan-600 dark:text-cyan-300 border border-cyan-500/30">
-                      {aiGeneratedResult.status_badge || "PREDICTED"}
+                      {topicStatusLabel(aiGeneratedResult.status_badge)}
                     </span>
                   </div>
 
@@ -1243,7 +1248,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 onChange={(e) => setNewTopicBadge(e.target.value)}
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               >
-                <option value="PREDICTED">PREDICTED</option>
+                <option value="PREDICTED">PREDICTED TILL THE END OF 2026</option>
                 <option value="HIGH FREQUENCY">HIGH FREQUENCY</option>
                 <option value="COMMON">COMMON</option>
               </select>

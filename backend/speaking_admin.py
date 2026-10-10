@@ -18,6 +18,7 @@ from db import get_conn
 import push_notifications
 from speaking_contract import (
     MAX_BATCH_TOPIC_COUNT,
+    display_topic_status,
     normalize_batch_topic_count,
     normalize_topic_status,
     public_sample_answer,
@@ -275,7 +276,7 @@ async def get_speaking_content(subject: str | None = Query(default=None)):
                 "subject": subject,
                 "prompt": d["question_text"],
                 "bestAnswer": public_sample_answer(d.get("sample_answer"), subject),
-                "tag": (d.get("status_badge") or "PREDICTED").replace("2026", "").strip(),
+                "tag": display_topic_status(d.get("status_badge")),
                 "prompts": bullet_points,
                 "examinerTip": None,
                 "vocabulary": vocab_items,
@@ -642,11 +643,12 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
                 f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
+                f"- Самостоятельно выберите один status_badge: PREDICTED, HIGH FREQUENCY или COMMON. PREDICTED используйте только для обоснованного прогноза, актуального до конца 2026 года; HIGH FREQUENCY — только для устойчиво часто встречающейся темы; иначе COMMON.\n"
                 f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}\n\n"
                 f"Выведите СТРОГО один валидный JSON-объект следующей структуры:\n"
                 f"{{\n"
                 f'  "topic_title": "{theme}",\n'
-                f'  "status_badge": "РАЗГОВОРНЫЙ",\n'
+                f'  "status_badge": "PREDICTED | HIGH FREQUENCY | COMMON",\n'
                 f'  "questions": [\n'
                 f"    {{\n"
                 f'      "question_text": "Вопрос для беседы на русском языке",\n'
@@ -715,11 +717,12 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"- If Part 2, the question_text MUST start with 'Describe a/an...'.\n"
                 f"- For every question, provide 2-3 Band 9 collocations/vocabulary items with definitions and example sentences.\n"
                 f"- Do NOT provide any examiner tips.\n"
+                f"- Choose exactly one status_badge yourself: PREDICTED, HIGH FREQUENCY, or COMMON. Use PREDICTED only for a defensible exam prediction valid through the end of 2026; use HIGH FREQUENCY only for an established recurring topic; otherwise use COMMON.\n"
                 f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination topics and Band 9 lexical resource'}\n\n"
                 f"Output strictly a single JSON object with the following schema:\n"
                 f"{{\n"
                 f'  "topic_title": "Concise Category Name",\n'
-                f'  "status_badge": "PREDICTED",\n'
+                f'  "status_badge": "PREDICTED | HIGH FREQUENCY | COMMON",\n'
                 f'  "questions": [\n'
                 f"    {{\n"
                 f'      "question_text": "Speaking question prompt",\n'
@@ -739,7 +742,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         prompt += (
             f"\nIMPORTANT: Create exactly {batch_topic_count} DISTINCT topics, each with exactly "
             f"{payload.question_count} questions. Return one JSON object using this schema only:\n"
-            f'{{"topics": [{{"topic_title": "Distinct topic name", "status_badge": "PREDICTED", '
+            f'{{"topics": [{{"topic_title": "Distinct topic name", "status_badge": "PREDICTED | HIGH FREQUENCY | COMMON", '
             f'"questions": [{{"question_text": "Question"{answer_field}, "vocabulary": []}}]}}]}}\n'
             "Do not return a top-level 'questions' field in batch mode."
         )
@@ -934,6 +937,10 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             if not parsed.get("topic_title"):
                 parsed["topic_title"] = payload.theme or ("Русский язык" if is_russian else f"Part {payload.part} Topic")
             if not parsed.get("status_badge"):
+                parsed["status_badge"] = "PREDICTED"
+            try:
+                parsed["status_badge"] = normalize_topic_status(parsed["status_badge"])
+            except ValueError:
                 parsed["status_badge"] = "PREDICTED"
         else:
             single_norm = _normalize_item(parsed, is_russian, payload.part)
