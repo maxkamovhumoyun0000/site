@@ -285,6 +285,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       }
 
       // 2. Add Questions
+      const targetTopic = topics.find((t) => t.id === finalTopicId);
+      const targetPart = activeSubject === "russian" ? 1 : (targetTopic?.part ?? aiPart);
       const questionsToSave = aiGeneratedResult.questions || [];
       for (const q of questionsToSave) {
         const ans = (q.sample_answer || q.model_answer || q.answer || "Namuna javob").trim();
@@ -292,7 +294,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         await apiFetch(`/staff/speaking/topics/${finalTopicId}/questions`, {
           method: "POST",
           body: {
-            part: activeSubject === "russian" ? 1 : aiPart,
+            part: targetPart,
             subject: activeSubject,
             question_text: text,
             cue_card_bullet_points: activeSubject === "russian" ? [] : (q.cue_card_bullet_points || []),
@@ -999,7 +1001,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           #{i + 1} {q.question_text}
                         </p>
 
-                        {aiPart === 2 && q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
+                        {activeSubject !== "russian" && aiPart === 2 && q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
                           <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 space-y-1">
                             <span className="font-bold text-cyan-600 dark:text-cyan-400 block text-[10px] uppercase">
                               You should say:
@@ -1011,7 +1013,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                         )}
 
                         <div className="p-3 bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-900/30 rounded-lg text-slate-800 dark:text-slate-200 italic leading-relaxed">
-                          <strong>Band 8.5–9.0 Namuna:</strong> {q.sample_answer}
+                          <strong>{activeSubject === "russian" ? "Namunaviy javob (B2–C1):" : "Band 8.5–9.0 Namuna:"}</strong> {q.sample_answer}
                         </div>
 
                         {q.vocabulary && q.vocabulary.length > 0 && (

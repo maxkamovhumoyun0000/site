@@ -573,14 +573,17 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             part_desc = "Part 1 (Introduction & Interview - everyday familiar topics)"
             answer_req = "Answer must be DIRECT and CONCISE (strictly 2 to 3 sentences). Candidate must answer directly right away without rambling or giving long stories, followed by a brief reason or everyday example."
             bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 1)'
+            bullet_json_snippet = '"cue_card_bullet_points": []'
         elif payload.part == 2:
             part_desc = "Part 2 (Individual Long Turn / Cue Card)"
             answer_req = "Answer must be a COMPREHENSIVE, HIGH-SCORING MONOLOGUE (180 to 250 words, roughly 1.5 to 2 minutes of speech) addressing all 4 bullet points with chronological transitions and vivid descriptions."
             bullet_req = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."] (strictly 4 bullet points)'
+            bullet_json_snippet = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."]'
         else:
             part_desc = "Part 3 (Two-way Discussion - abstract, societal and analytical topics)"
             answer_req = "Answer must be an IN-DEPTH, ANALYTICAL answer (4 to 6 sentences) using sophisticated academic hedging (e.g. 'It could be argued that...', 'From a socioeconomic perspective...'), contrasting perspectives, and a logical conclusion."
             bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 3)'
+            bullet_json_snippet = '"cue_card_bullet_points": []'
 
         is_single_question = bool(payload.question_text and payload.question_text.strip())
 
@@ -599,7 +602,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"Output strictly a single JSON object with the following schema:\n"
                 f"{{\n"
                 f'  "question_text": "{q_text}",\n'
-                f'  {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
+                f'  {bullet_json_snippet},\n'
                 f'  "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
                 f'  "vocabulary": [\n'
                 f'    {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
@@ -629,7 +632,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f'  "questions": [\n'
                 f"    {{\n"
                 f'      "question_text": "Speaking question prompt",\n'
-                f'      {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
+                f'      {bullet_json_snippet},\n'
                 f'      "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
                 f'      "vocabulary": [\n'
                 f'        {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
@@ -673,19 +676,49 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         cleaned = re.sub(r"\s*```$", "", cleaned)
 
         parsed = None
-        start = cleaned.find("{")
-        if start >= 0:
-            sliced = _balanced_json_object_slice(cleaned, start)
-            if sliced:
-                parsed = json.loads(sliced, strict=False)
 
-        if parsed is None:
+        # Check if output is a JSON array: [ { ... } ]
+        array_start = cleaned.find("[")
+        obj_start = cleaned.find("{")
+        if array_start >= 0 and (obj_start < 0 or array_start < obj_start):
+            try:
+                array_end = cleaned.rfind("]") + 1
+                if array_end > array_start:
+                    arr_parsed = json.loads(cleaned[array_start:array_end], strict=False)
+                    if isinstance(arr_parsed, list):
+                        parsed = {
+                            "topic_title": payload.theme or ("Русский язык" if is_russian else f"Part {payload.part} Topic"),
+                            "status_badge": "PREDICTED",
+                            "questions": arr_parsed,
+                        }
+            except Exception:
+                pass
+
+        if parsed is None and obj_start >= 0:
+            sliced = _balanced_json_object_slice(cleaned, obj_start)
+            if sliced:
+                try:
+                    parsed = json.loads(sliced, strict=False)
+                except Exception:
+                    pass
+
+        if parsed is None and obj_start >= 0:
             end = cleaned.rfind("}") + 1
-            if start >= 0 and end > start:
-                parsed = json.loads(cleaned[start:end], strict=False)
+            if end > obj_start:
+                try:
+                    parsed = json.loads(cleaned[obj_start:end], strict=False)
+                except Exception:
+                    pass
 
         if not isinstance(parsed, dict):
             raise ValueError("Parsed result is not a JSON object")
+
+        # Flexible question list detection
+        if "questions" not in parsed:
+            for alt_key in ("items", "question_list", "data", "list", "results"):
+                if alt_key in parsed and isinstance(parsed[alt_key], list):
+                    parsed["questions"] = parsed[alt_key]
+                    break
 
         def _normalize_item(q: dict[str, Any], is_ru: bool, target_part: int) -> dict[str, Any]:
             q.pop("examiner_tip", None)
@@ -743,6 +776,15 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             q["vocabulary"] = [v for v in norm_v if v.get("word")]
             return q
 
+        if is_single_question:
+            if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:
+                first_q = parsed["questions"][0]
+                if isinstance(first_q, dict):
+                    parsed = first_q
+            parsed = _normalize_item(parsed, is_russian, payload.part)
+            parsed["subject"] = subject_val
+            return parsed
+
         if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:
             parsed["questions"] = [_normalize_item(q, is_russian, payload.part) for q in parsed["questions"] if isinstance(q, dict)]
             if not parsed.get("topic_title"):
@@ -750,8 +792,12 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             if not parsed.get("status_badge"):
                 parsed["status_badge"] = "PREDICTED"
         else:
-            # Single question format normalized
-            parsed = _normalize_item(parsed, is_russian, payload.part)
+            single_norm = _normalize_item(parsed, is_russian, payload.part)
+            parsed = {
+                "topic_title": payload.theme or ("Русский язык" if is_russian else f"Part {payload.part} Topic"),
+                "status_badge": "PREDICTED",
+                "questions": [single_norm],
+            }
 
         parsed["subject"] = subject_val
         return parsed
