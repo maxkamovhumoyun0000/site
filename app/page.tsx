@@ -23308,6 +23308,18 @@ function AdminUserCreatePanel({
   const [formError, setFormError] = useState("");
   const creatingRef = useRef(false);
 
+  // Auto-suggest state
+  const [suggestions, setSuggestions] = useState<GenericRow[]>([]);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [activeSuggestField, setActiveSuggestField] = useState<"firstName" | "lastName" | null>(null);
+  const suggestTimeoutRef = useRef<any>(null);
+
+  // Duplicate warning state
+  const [duplicateModalOpen, setDuplicateModalOpen] = useState(false);
+  const [duplicateResults, setDuplicateResults] = useState<GenericRow[]>([]);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+
   const normalizeNameInput = (value: string) => value
     .replace(/[ʻʼ‘’`´ʹ]/g, "'")
     .toUpperCase();
@@ -23323,7 +23335,44 @@ function AdminUserCreatePanel({
     return hay.includes(q);
   });
 
-  async function createUser() {
+  const fetchSuggestions = (query: string, field: "firstName" | "lastName") => {
+    if (suggestTimeoutRef.current) clearTimeout(suggestTimeoutRef.current);
+    const cleanQ = query.trim();
+    if (cleanQ.length < 2) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    suggestTimeoutRef.current = setTimeout(async () => {
+      setSuggestLoading(true);
+      try {
+        const token = localStorage.getItem("diamond_token") || "";
+        const res = await requestJson<{ items: GenericRow[] }>(
+          `/admin/users/suggest?q=${encodeURIComponent(cleanQ)}`,
+          { token }
+        );
+        if (res && Array.isArray(res.items)) {
+          setSuggestions(res.items);
+          setShowSuggestions(res.items.length > 0);
+          setActiveSuggestField(field);
+        }
+      } catch (err) {
+        // Silently catch suggest errors
+      } finally {
+        setSuggestLoading(false);
+      }
+    }, 280);
+  };
+
+  function applySuggestion(s: GenericRow) {
+    if (s.first_name) setFirstName(normalizeNameInput(String(s.first_name)));
+    if (s.last_name) setLastName(normalizeNameInput(String(s.last_name)));
+    if (s.phone) setPhone(String(s.phone));
+    if (s.parent_phone) setParentPhone(String(s.parent_phone));
+    setShowSuggestions(false);
+  }
+
+  async function createUser(bypassDuplicateCheck: boolean = false) {
     if (creatingRef.current || creating) return;
     setFormError("");
     const normalizedSubject = normalizeSubjectLabel(subject) || "English";
@@ -23341,7 +23390,40 @@ function AdminUserCreatePanel({
       return;
     }
 
+    // Duplicate Check
+    if (!bypassDuplicateCheck) {
+      setCheckingDuplicates(true);
+      try {
+        const token = localStorage.getItem("diamond_token") || "";
+        const dupRes = await requestJson<{
+          is_potential_duplicate: boolean;
+          highest_risk: string | null;
+          duplicates: GenericRow[];
+        }>("/admin/users/check-duplicate", {
+          method: "POST",
+          token,
+          body: {
+            first_name: normalizeNameInput(firstName).trim(),
+            last_name: normalizeNameInput(lastName).trim(),
+            phone: phone.trim(),
+            parent_phone: parentPhone.trim(),
+          },
+        });
 
+        if (dupRes && dupRes.is_potential_duplicate && dupRes.duplicates && dupRes.duplicates.length > 0) {
+          setDuplicateResults(dupRes.duplicates);
+          setDuplicateModalOpen(true);
+          setCheckingDuplicates(false);
+          return;
+        }
+      } catch (dupErr) {
+        console.warn("Duplicate check error:", dupErr);
+      } finally {
+        setCheckingDuplicates(false);
+      }
+    }
+
+    setDuplicateModalOpen(false);
     const payload: GenericRow = {
       user_type: userType,
       first_name: normalizeNameInput(firstName).trim(),
@@ -23384,6 +23466,8 @@ function AdminUserCreatePanel({
         setReferralStudentId(0);
         setReferralSearch("");
         setFormError("");
+        setDuplicateResults([]);
+        setShowSuggestions(false);
       }
     } finally {
       setCreating(false);
@@ -23420,14 +23504,97 @@ function AdminUserCreatePanel({
       <div className="admin-modal-section">
         <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">👤 Asosiy ma&apos;lumotlar</p>
         <div className="admin-form-grid-2">
-          <label className="admin-form-label">
-            {tt("admin.users.firstName", "Ism")}
-            <input value={firstName} onChange={(event) => setFirstName(normalizeNameInput(event.target.value))} placeholder="ISM" autoCapitalize="characters" />
-          </label>
-          <label className="admin-form-label">
-            {tt("admin.users.lastName", "Familiya")}
-            <input value={lastName} onChange={(event) => setLastName(normalizeNameInput(event.target.value))} placeholder="FAMILIYA" autoCapitalize="characters" />
-          </label>
+          <div className="relative">
+            <label className="admin-form-label">
+              {tt("admin.users.firstName", "Ism")}
+              <input
+                value={firstName}
+                onChange={(event) => {
+                  const val = normalizeNameInput(event.target.value);
+                  setFirstName(val);
+                  fetchSuggestions(val, "firstName");
+                }}
+                onFocus={() => {
+                  if (firstName.trim().length >= 2) fetchSuggestions(firstName, "firstName");
+                }}
+                placeholder="ISM"
+                autoCapitalize="characters"
+                autoComplete="off"
+              />
+            </label>
+            {showSuggestions && activeSuggestField === "firstName" && suggestions.length > 0 && (
+              <div className="absolute z-50 left-0 right-0 top-full mt-1.5 p-2 bg-white dark:bg-navy-900 border border-line dark:border-white/10 rounded-2xl shadow-2xl max-h-60 overflow-y-auto space-y-1 animate-fade-in">
+                <div className="flex items-center justify-between text-[11px] font-bold text-ink-500 dark:text-navy-400 px-2 py-1 border-b border-line dark:border-white/5">
+                  <span>💡 Tavsiya etilgan o&apos;quvchilar:</span>
+                  <button type="button" onClick={() => setShowSuggestions(false)} className="text-red-500 hover:underline">Yopish</button>
+                </div>
+                {suggestions.map((s) => (
+                  <div
+                    key={`sug-fn-${s.id}`}
+                    onClick={() => applySuggestion(s)}
+                    className="p-2.5 rounded-xl bg-surface-soft/60 dark:bg-white/5 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-transparent hover:border-blue-300 dark:hover:border-blue-700 cursor-pointer transition-all flex flex-col gap-1 text-xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <strong className="text-navy-900 dark:text-white font-bold">{s.full_name}</strong>
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-bold">{s.login_id}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-500 dark:text-navy-300">
+                      {s.phone && <span>📞 {s.phone}</span>}
+                      {s.parent_phone && <span>👨‍👩‍👦 {s.parent_phone}</span>}
+                      {s.match_type && <span className="text-cyan-600 dark:text-cyan-400 font-medium">({s.match_type})</span>}
+                    </div>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mt-0.5">↳ Tanlash va ma&apos;lumotlarni to&apos;ldirish</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <label className="admin-form-label">
+              {tt("admin.users.lastName", "Familiya")}
+              <input
+                value={lastName}
+                onChange={(event) => {
+                  const val = normalizeNameInput(event.target.value);
+                  setLastName(val);
+                  fetchSuggestions(val, "lastName");
+                }}
+                onFocus={() => {
+                  if (lastName.trim().length >= 2) fetchSuggestions(lastName, "lastName");
+                }}
+                placeholder="FAMILIYA"
+                autoCapitalize="characters"
+                autoComplete="off"
+              />
+            </label>
+            {showSuggestions && activeSuggestField === "lastName" && suggestions.length > 0 && (
+              <div className="absolute z-50 left-0 right-0 top-full mt-1.5 p-2 bg-white dark:bg-navy-900 border border-line dark:border-white/10 rounded-2xl shadow-2xl max-h-60 overflow-y-auto space-y-1 animate-fade-in">
+                <div className="flex items-center justify-between text-[11px] font-bold text-ink-500 dark:text-navy-400 px-2 py-1 border-b border-line dark:border-white/5">
+                  <span>💡 Tavsiya etilgan o&apos;quvchilar:</span>
+                  <button type="button" onClick={() => setShowSuggestions(false)} className="text-red-500 hover:underline">Yopish</button>
+                </div>
+                {suggestions.map((s) => (
+                  <div
+                    key={`sug-ln-${s.id}`}
+                    onClick={() => applySuggestion(s)}
+                    className="p-2.5 rounded-xl bg-surface-soft/60 dark:bg-white/5 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-transparent hover:border-blue-300 dark:hover:border-blue-700 cursor-pointer transition-all flex flex-col gap-1 text-xs"
+                  >
+                    <div className="flex items-center justify-between">
+                      <strong className="text-navy-900 dark:text-white font-bold">{s.full_name}</strong>
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-bold">{s.login_id}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-500 dark:text-navy-300">
+                      {s.phone && <span>📞 {s.phone}</span>}
+                      {s.parent_phone && <span>👨‍👩‍👦 {s.parent_phone}</span>}
+                      {s.match_type && <span className="text-cyan-600 dark:text-cyan-400 font-medium">({s.match_type})</span>}
+                    </div>
+                    <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold mt-0.5">↳ Tanlash va ma&apos;lumotlarni to&apos;ldirish</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <label className="admin-form-label">
             {tt("admin.users.phone", "Telefon")}
             <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+998 90 123 45 67" />
@@ -23520,9 +23687,14 @@ function AdminUserCreatePanel({
       {formError ? <div className="error-box">{formError}</div> : null}
 
       {/* Submit */}
-      <button className="admin-btn-primary" onClick={createUser} disabled={creating} style={{alignSelf: "flex-start"}}>
-        {creating ? (
-          <><svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {tt("common.loading", "Yaratilmoqda...")}</>
+      <button
+        className="admin-btn-primary"
+        onClick={() => createUser(false)}
+        disabled={creating || checkingDuplicates}
+        style={{alignSelf: "flex-start"}}
+      >
+        {creating || checkingDuplicates ? (
+          <><svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {checkingDuplicates ? "Dublikat tekshirilmoqda..." : tt("common.loading", "Yaratilmoqda...")}</>
         ) : (
           <><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12"/></svg> {tt("admin.users.createAction", "Foydalanuvchini yaratish")}</>
         )}
@@ -23571,6 +23743,123 @@ function AdminUserCreatePanel({
           </div>
         </div>
       ) : null}
+
+      {/* Duplicate Warning Modal */}
+      <ModalPortal open={duplicateModalOpen}>
+        <div className="overlay-modal-backdrop" style={{ zIndex: 99999 }} onClick={() => setDuplicateModalOpen(false)}>
+          <article
+            className="overlay-modal-card max-h-[90vh] w-[min(650px,calc(100vw-24px))] overflow-y-auto p-6 bg-white dark:bg-navy-900 border border-line dark:border-white/10 rounded-3xl shadow-2xl space-y-5 animate-fade-in"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-line dark:border-white/10 pb-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl">⚠️</span>
+                  <h3 className="text-lg font-black text-amber-600 dark:text-amber-400">
+                    Bu dublikat bo&apos;lishi mumkin, o&apos;ylab ko&apos;ring!
+                  </h3>
+                </div>
+                <p className="text-xs text-ink-500 dark:text-navy-300">
+                  Tizimda kiritilayotgan ma&apos;lumotlarga juda o&apos;xshash yoki bir xil foydalanuvchi(lar) topildi. Iltimos, tekshirib ko&apos;ring.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="admin-modal-close text-ink-400 hover:text-ink-700 dark:hover:text-white"
+                onClick={() => setDuplicateModalOpen(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-xs font-bold uppercase tracking-wider text-ink-400 dark:text-navy-400">
+                Topilgan o&apos;xshash hisoblar ({duplicateResults.length}):
+              </p>
+              {duplicateResults.map((dup, idx) => (
+                <div
+                  key={`dup-item-${dup.id || idx}`}
+                  className="p-4 rounded-2xl bg-amber-500/5 border border-amber-500/20 dark:border-amber-400/20 space-y-2.5 text-xs"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <strong className="text-sm font-black text-navy-900 dark:text-white">
+                        {String(dup.full_name || "")}
+                      </strong>
+                      <span className="font-mono text-[11px] px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 font-bold">
+                        {String(dup.login_id || "")}
+                      </span>
+                    </div>
+                    {dup.score ? (
+                      <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 text-[10px] font-black uppercase">
+                        O&apos;xshashlik: {dup.score}%
+                      </span>
+                    ) : null}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] text-ink-600 dark:text-navy-300">
+                    <div>
+                      <span className="text-ink-400 dark:text-navy-500 font-medium">Telefon: </span>
+                      <strong className="font-mono">{String(dup.phone || "Kiritilmagan")}</strong>
+                    </div>
+                    <div>
+                      <span className="text-ink-400 dark:text-navy-500 font-medium">Ota-onasi: </span>
+                      <strong className="font-mono">{String(dup.parent_phone || "Kiritilmagan")}</strong>
+                    </div>
+                    {dup.role && (
+                      <div>
+                        <span className="text-ink-400 dark:text-navy-500 font-medium">Roli: </span>
+                        <strong>{String(dup.role)}</strong>
+                      </div>
+                    )}
+                    {dup.groups && dup.groups.length > 0 && (
+                      <div>
+                        <span className="text-ink-400 dark:text-navy-500 font-medium">Guruhlari: </span>
+                        <span>{Array.isArray(dup.groups) ? dup.groups.join(", ") : String(dup.groups)}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {dup.reasons && dup.reasons.length > 0 && (
+                    <div className="pt-2 border-t border-amber-500/10 flex flex-wrap gap-1.5 items-center">
+                      <span className="text-[10px] font-bold text-amber-700 dark:text-amber-400">Sabablar:</span>
+                      {dup.reasons.map((r: string, rIdx: number) => (
+                        <span
+                          key={`reason-${rIdx}`}
+                          className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-900 dark:text-amber-200 text-[10px] font-medium"
+                        >
+                          ⚠️ {r}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-3 border-t border-line dark:border-white/10">
+              <button
+                type="button"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl border border-line dark:border-white/10 text-xs font-bold text-ink-600 dark:text-navy-200 hover:bg-surface-soft dark:hover:bg-white/5 transition-all"
+                onClick={() => setDuplicateModalOpen(false)}
+              >
+                Bekor qilish (Tekshirib ko&apos;raman)
+              </button>
+              <button
+                type="button"
+                className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-1.5"
+                onClick={() => {
+                  setDuplicateModalOpen(false);
+                  createUser(true);
+                }}
+              >
+                <span>Baribir yaratish (Dublikat emas)</span>
+                <span>➔</span>
+              </button>
+            </div>
+          </article>
+        </div>
+      </ModalPortal>
     </div>
   );
 }

@@ -1184,7 +1184,24 @@ type AddStudentsWizardState = {
   subject?: string;
   group_id?: number;
   joined_at?: string | null;
-  students: { first_name: string; last_name: string; phone: string; parent_phone?: string | null }[];
+  duplicate_count?: number;
+  students: {
+    first_name: string;
+    last_name: string;
+    phone: string;
+    parent_phone?: string | null;
+    is_duplicate?: boolean;
+    potential_duplicates?: {
+      id: number;
+      login_id: string;
+      full_name: string;
+      phone: string;
+      parent_phone: string;
+      role?: string;
+      similarity_score?: number;
+      reasons?: string[];
+    }[];
+  }[];
   created: any[];
   errors: string[];
 };
@@ -1202,6 +1219,7 @@ function DiamondVoyAddStudentsWizard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<{ created: any[]; failed: any[] } | null>(null);
+  const [expandedDuplicateRow, setExpandedDuplicateRow] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -1249,6 +1267,12 @@ function DiamondVoyAddStudentsWizard({
   }
 
   async function confirm() {
+    if (state?.duplicate_count && state.duplicate_count > 0) {
+      const ok = window.confirm(
+        `⚠️ DIQQAT: ${state.duplicate_count} ta o'quvchida dublikat ehtimoli aniqlangan!\n\nO'ylab ko'ring, ular tizimda avval mavjud bo'lgan bo'lishi mumkin.\n\nBaribir yangi hisob yaratishni tasdiqlaysizmi?`
+      );
+      if (!ok) return;
+    }
     setLoading(true); setError("");
     try {
       const res = await apiFetch(`/chats/diamondvoy/${chatId}/add-students/confirm`, { method: "POST" });
@@ -1343,8 +1367,21 @@ function DiamondVoyAddStudentsWizard({
               <span className="font-bold text-emerald-700 dark:text-emerald-300">{typeLabel}</span>
               <span className="text-emerald-400">·</span>
               <span className="font-bold">{state.students.length}</span>
-              <span className="text-ink-500">ta o'quvchi topildi</span>
+              <span className="text-ink-500">ta o&apos;quvchi topildi</span>
             </div>
+
+            {Boolean(state.duplicate_count && state.duplicate_count > 0) && (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-xs space-y-1.5 animate-fade-in">
+                <div className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
+                  <span className="text-base">⚠️</span>
+                  <span>Diqqat: {state.duplicate_count} ta o&apos;quvchida dublikat ehtimoli bor!</span>
+                </div>
+                <p className="text-[11px] text-amber-800 dark:text-amber-200">
+                  Tizimda ularning ismi yoki telefoniga to&apos;liq yoki qisman mos hisoblar mavjud. O&apos;ylab ko&apos;ring. Jadvaldagi sariq rangli qatorlarni tekshiring.
+                </p>
+              </div>
+            )}
+
             {state.errors.length > 0 && (
               <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded-xl px-3 py-2 text-xs text-amber-700 dark:text-amber-300 space-y-0.5">
                 <p className="font-bold mb-1">⚠️ {state.errors.length} ta xatolik:</p>
@@ -1353,7 +1390,7 @@ function DiamondVoyAddStudentsWizard({
               </div>
             )}
             {state.students.length > 0 && (
-              <div className="max-h-[240px] overflow-y-auto rounded-xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5">
+              <div className="max-h-[260px] overflow-y-auto rounded-xl border border-line dark:border-white/10 bg-surface-soft dark:bg-white/5">
                 <table className="w-full text-xs">
                   <thead className="sticky top-0 bg-surface-soft dark:bg-navy-900 border-b border-line dark:border-white/10">
                     <tr>
@@ -1362,18 +1399,75 @@ function DiamondVoyAddStudentsWizard({
                       <th className="px-3 py-2 text-left font-semibold">Familiya</th>
                       <th className="px-3 py-2 text-left font-semibold">Telefon</th>
                       <th className="px-3 py-2 text-left font-semibold">Ota-ona</th>
+                      <th className="px-3 py-2 text-left font-semibold">Holat</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {state.students.map((st, i) => (
-                      <tr key={i} className="border-t border-line dark:border-white/5 hover:bg-white/40 dark:hover:bg-white/5 transition-colors">
-                        <td className="px-3 py-1.5 text-ink-400">{i + 1}</td>
-                        <td className="px-3 py-1.5 font-medium">{st.first_name}</td>
-                        <td className="px-3 py-1.5">{st.last_name}</td>
-                        <td className="px-3 py-1.5 font-mono text-[11px] text-ink-500">{st.phone}</td>
-                        <td className="px-3 py-1.5 font-mono text-[11px] text-ink-500">{st.parent_phone || "-"}</td>
-                      </tr>
-                    ))}
+                    {state.students.map((st, i) => {
+                      const hasDup = Boolean(st.potential_duplicates && st.potential_duplicates.length > 0);
+                      const isExpanded = expandedDuplicateRow === i;
+                      const primaryDup = hasDup ? st.potential_duplicates![0] : null;
+
+                      return (
+                        <React.Fragment key={i}>
+                          <tr
+                            className={`border-t border-line dark:border-white/5 transition-colors ${
+                              hasDup
+                                ? "bg-amber-500/10 dark:bg-amber-500/15 border-l-4 border-l-amber-500"
+                                : "hover:bg-white/40 dark:hover:bg-white/5"
+                            }`}
+                          >
+                            <td className="px-3 py-1.5 text-ink-400">{i + 1}</td>
+                            <td className="px-3 py-1.5 font-medium">{st.first_name}</td>
+                            <td className="px-3 py-1.5">{st.last_name}</td>
+                            <td className="px-3 py-1.5 font-mono text-[11px] text-ink-500">{st.phone}</td>
+                            <td className="px-3 py-1.5 font-mono text-[11px] text-ink-500">{st.parent_phone || "-"}</td>
+                            <td className="px-3 py-1.5">
+                              {hasDup ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedDuplicateRow(isExpanded ? null : i)}
+                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-500/30 transition-all cursor-pointer"
+                                >
+                                  <span>⚠️ Dublikat</span>
+                                  <span>{isExpanded ? "▲" : "▼"}</span>
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-green-600 dark:text-green-400 font-bold">✓ Yangi</span>
+                              )}
+                            </td>
+                          </tr>
+                          {hasDup && isExpanded && primaryDup && (
+                            <tr className="bg-amber-500/15 dark:bg-amber-500/20 text-xs">
+                              <td colSpan={6} className="px-4 py-2.5">
+                                <div className="space-y-1.5">
+                                  <div className="flex items-center justify-between font-bold text-amber-900 dark:text-amber-200 text-[11px]">
+                                    <span>Topilgan o&apos;xshash hisob: {primaryDup.full_name} ({primaryDup.login_id})</span>
+                                    {primaryDup.similarity_score ? (
+                                      <span className="font-mono">O&apos;xshashlik: {primaryDup.similarity_score}%</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="flex flex-wrap gap-2 text-[11px] text-ink-600 dark:text-navy-300">
+                                    {primaryDup.phone && <span>Tel: {primaryDup.phone}</span>}
+                                    {primaryDup.parent_phone && <span>Ota-ona: {primaryDup.parent_phone}</span>}
+                                    {primaryDup.role && <span>Roli: {primaryDup.role}</span>}
+                                  </div>
+                                  {primaryDup.reasons && primaryDup.reasons.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 pt-1">
+                                      {primaryDup.reasons.map((r, rIdx) => (
+                                        <span key={rIdx} className="px-1.5 py-0.5 rounded bg-amber-600/20 text-[10px] font-medium text-amber-900 dark:text-amber-100">
+                                          {r}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1384,8 +1478,16 @@ function DiamondVoyAddStudentsWizard({
                 ← Orqaga
               </button>
               <button onClick={confirm} disabled={loading || state.students.length === 0}
-                className="flex-[2] px-4 py-2 bg-emerald-500 text-white font-bold rounded-xl disabled:opacity-50 hover:bg-emerald-600 transition-colors text-sm">
-                {loading ? "Yaratilmoqda..." : createActionText}
+                className={`flex-[2] px-4 py-2 font-bold rounded-xl disabled:opacity-50 transition-colors text-sm ${
+                  state.duplicate_count && state.duplicate_count > 0
+                    ? "bg-amber-600 hover:bg-amber-700 text-white"
+                    : "bg-emerald-500 hover:bg-emerald-600 text-white"
+                }`}>
+                {loading
+                  ? "Yaratilmoqda..."
+                  : state.duplicate_count && state.duplicate_count > 0
+                  ? `⚠️ Dublikatlarga qaramay yaratish (${state.students.length})`
+                  : createActionText}
               </button>
             </div>
           </div>

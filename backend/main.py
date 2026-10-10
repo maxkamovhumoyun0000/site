@@ -1521,6 +1521,13 @@ class AdminUserCreateRequest(BaseModel):
     free_access: bool = False
 
 
+class AdminUserCheckDuplicateRequest(BaseModel):
+    first_name: str | None = ""
+    last_name: str | None = ""
+    phone: str | None = ""
+    parent_phone: str | None = ""
+
+
 class AdminUserCreateResponse(BaseModel):
     id: int
     full_name: str
@@ -24074,6 +24081,219 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# FUZZY USER MATCHING & DUPLICATE DETECTION UTILITIES
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _normalize_uzbek_phonetics(s: str | None) -> str:
+    """Normalize Uzbek text for phonetic / typo tolerant matching."""
+    if not s:
+        return ""
+    val = s.lower().strip()
+    val = re.sub(r"[ʻʼ‘’`´ʹ']", "", val)
+    val = val.replace("h", "x")
+    val = val.replace("o", "u")
+    val = val.replace("q", "k")
+    val = val.replace("zh", "j").replace("dj", "j")
+    val = re.sub(r"(.)\1+", r"\1", val)
+    return val
+
+
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute Levenshtein edit distance between two strings."""
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+
+def _extract_phone_digits(p: str | None) -> str:
+    """Extract standard trailing 9 digits from a phone string."""
+    if not p:
+        return ""
+    digits = re.sub(r"\D", "", str(p))
+    return digits[-9:] if len(digits) >= 9 else digits
+
+
+def _compare_names_fuzzy(fn1: str, ln1: str, fn2: str, ln2: str) -> tuple[bool, int, str]:
+    """
+    Compare two name pairs with phonetic & typo tolerance.
+    Returns: (is_match, similarity_percentage, reason)
+    """
+    f1, l1 = (fn1 or "").strip().lower(), (ln1 or "").strip().lower()
+    f2, l2 = (fn2 or "").strip().lower(), (ln2 or "").strip().lower()
+    if not f1 and not l1:
+        return False, 0, ""
+
+    # Exact match
+    if f1 == f2 and l1 == l2:
+        return True, 100, "Ism va familiya to'liq mos"
+
+    # Swapped match (First Name is Last Name)
+    if f1 == l2 and l1 == f2:
+        return True, 98, "Ism va familiya o'rni almashgan (to'liq mos)"
+
+    # Phonetic normalization
+    pf1, pl1 = _normalize_uzbek_phonetics(f1), _normalize_uzbek_phonetics(l1)
+    pf2, pl2 = _normalize_uzbek_phonetics(f2), _normalize_uzbek_phonetics(l2)
+
+    if pf1 == pf2 and pl1 == pl2:
+        return True, 95, "Ism va familiya fonetik jihatdan bir xil (X/H yoki O/O')"
+
+    if pf1 == pl2 and pl1 == pf2:
+        return True, 93, "Ism va familiya almashgan va fonetik bir xil"
+
+    # Full name string comparison
+    full1 = f"{f1} {l1}".strip()
+    full2 = f"{f2} {l2}".strip()
+    pfull1 = f"{pf1} {pl1}".strip()
+    pfull2 = f"{pf2} {pl2}".strip()
+
+    dist_full = _levenshtein_distance(full1, full2)
+    dist_pfull = _levenshtein_distance(pfull1, pfull2)
+
+    # 1 or 2 letter typo in full name
+    max_len = max(len(full1), len(full2))
+    if max_len >= 5 and (dist_full <= 1 or dist_pfull <= 1):
+        return True, 90, "Ism-familiyada 1 ta harf farq (ehtimoliy xato)"
+
+    if max_len >= 8 and (dist_full <= 2 or dist_pfull <= 2):
+        return True, 80, "Ism-familiyada 2 ta harf farq (ehtimoliy xato)"
+
+    # One name matches exactly, other has small typo
+    dist_f = _levenshtein_distance(f1, f2)
+    dist_l = _levenshtein_distance(l1, l2)
+    dist_pf = _levenshtein_distance(pf1, pf2)
+    dist_pl = _levenshtein_distance(pl1, pl2)
+
+    if (f1 == f2 or pf1 == pf2) and (dist_l <= 1 or dist_pl <= 1):
+        return True, 88, f"Ism bir xil, familiyada 1 harf farq: {l2.upper()}"
+
+    if (l1 == l2 or pl1 == pl2) and (dist_f <= 1 or dist_pf <= 1):
+        return True, 88, f"Familiya bir xil, ismda 1 harf farq: {f2.upper()}"
+
+    return False, 0, ""
+
+
+def _get_all_candidate_users_for_duplicate_check() -> list[dict]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT u.id, u.login_id, u.first_name, u.last_name, u.phone, u.parent_phone,
+               u.login_type, u.level, u.created_at,
+               COALESCE(gc.group_count, 0) AS group_count
+        FROM users u
+        LEFT JOIN (
+            SELECT ug.user_id, COUNT(DISTINCT ug.group_id) AS group_count
+            FROM user_groups ug
+            LEFT JOIN groups g ON g.id = ug.group_id
+            WHERE (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='')
+              AND (g.id IS NULL OR COALESCE(g.active,1)=1)
+            GROUP BY ug.user_id
+        ) gc ON gc.user_id = u.id
+        WHERE u.login_type IN (1, 2, 3, 5, 6)
+          AND COALESCE(u.screenshot_demo, 0) = 0
+        """
+    )
+    rows = [dict(row) for row in (cur.fetchall() or [])]
+    conn.close()
+    return rows
+
+
+def _find_potential_user_duplicates(
+    req_fn: str,
+    req_ln: str,
+    req_phone: str | None,
+    req_parent_phone: str | None,
+    all_users: list[dict],
+    min_score: int = 60,
+    limit: int = 5,
+) -> list[dict]:
+    req_fn = (req_fn or "").strip()
+    req_ln = (req_ln or "").strip()
+    req_phone_digits = _extract_phone_digits(req_phone)
+    req_parent_digits = _extract_phone_digits(req_parent_phone)
+
+    if not req_fn and not req_ln and not req_phone_digits and not req_parent_digits:
+        return []
+
+    duplicates = []
+    for u_row in all_users:
+        u_fn = str(u_row.get("first_name") or "").strip()
+        u_ln = str(u_row.get("last_name") or "").strip()
+        u_phone_digits = _extract_phone_digits(u_row.get("phone"))
+        u_parent_digits = _extract_phone_digits(u_row.get("parent_phone"))
+
+        reasons = []
+        score = 0
+
+        # 1. Phone match
+        phone_matched = False
+        if req_phone_digits and len(req_phone_digits) >= 7:
+            if req_phone_digits == u_phone_digits:
+                phone_matched = True
+                reasons.append("🔴 Telefon raqami 100% bir xil")
+                score += 55
+            elif req_phone_digits == u_parent_digits:
+                reasons.append("🟠 Kiritilgan telefon ushbu akkauntning ota-onasi raqami")
+                score += 35
+
+        # 2. Parent phone match
+        if req_parent_digits and len(req_parent_digits) >= 7:
+            if req_parent_digits == u_parent_digits:
+                reasons.append("🟠 Ota-onasi telefon raqami bir xil")
+                score += 40
+            elif req_parent_digits == u_phone_digits:
+                reasons.append("🟠 Kiritilgan ota-onasi telefoni ushbu akkauntning o'z raqami")
+                score += 35
+
+        # 3. Name comparison
+        name_match, name_sim, name_reason = _compare_names_fuzzy(req_fn, req_ln, u_fn, u_ln)
+        if name_match:
+            reasons.append(f"🟡 {name_reason}")
+            score += int(name_sim * 0.5)
+
+        # Evaluate overall score
+        if phone_matched and name_match:
+            score = 100
+        elif phone_matched:
+            score = max(score, 75)
+        elif name_match and name_sim >= 90:
+            score = max(score, 70)
+
+        if score >= min_score and reasons:
+            role_label = _role_from_login_type(int(u_row.get("login_type") or 1), str(u_row.get("login_id") or ""))
+            duplicates.append({
+                "id": int(u_row["id"]),
+                "login_id": str(u_row.get("login_id") or ""),
+                "full_name": f"{u_fn} {u_ln}".strip() or "Noma'lum",
+                "first_name": u_fn,
+                "last_name": u_ln,
+                "phone": u_row.get("phone") or "",
+                "parent_phone": u_row.get("parent_phone") or "",
+                "role": role_label,
+                "level": u_row.get("level") or "-",
+                "group_count": int(u_row.get("group_count") or 0),
+                "created_at": str(u_row.get("created_at") or "")[:10],
+                "similarity_score": min(100, score),
+                "reasons": reasons,
+            })
+
+    duplicates.sort(key=lambda d: d["similarity_score"], reverse=True)
+    return duplicates[:limit]
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # DIAMONDVOY — ADMIN "ADD STUDENTS FROM XLSX" WIZARD
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -24414,8 +24634,52 @@ async def diamondvoy_add_students_upload_xlsx(
     else:
         students, parse_errors = _parse_students_xlsx(file_bytes)
 
+    # ── Check for potential duplicates against existing accounts & within file ──
+    candidate_users = _get_all_candidate_users_for_duplicate_check()
+    duplicate_count = 0
+    common_parent = str(state.get("parent_phone") or "").strip() or None
+
+    for i, st in enumerate(students):
+        s_fn = str(st.get("first_name") or "").strip()
+        s_ln = str(st.get("last_name") or "").strip()
+        s_ph = str(st.get("phone") or "").strip()
+        s_parent = str(st.get("parent_phone") or common_parent or "").strip() or None
+
+        dups = _find_potential_user_duplicates(s_fn, s_ln, s_ph, s_parent, candidate_users, min_score=60, limit=3)
+
+        # Also check if another student in the same file has the exact same phone
+        for j, other in enumerate(students):
+            if i == j:
+                continue
+            o_fn = str(other.get("first_name") or "").strip()
+            o_ln = str(other.get("last_name") or "").strip()
+            o_ph = str(other.get("phone") or "").strip()
+            if s_ph and o_ph and _extract_phone_digits(s_ph) == _extract_phone_digits(o_ph):
+                dups.insert(0, {
+                    "id": 0,
+                    "login_id": f"Fayldagi {j+1}-qator",
+                    "full_name": f"{o_fn} {o_ln}",
+                    "first_name": o_fn,
+                    "last_name": o_ln,
+                    "phone": o_ph,
+                    "parent_phone": "",
+                    "role": "Fayldagi takror",
+                    "similarity_score": 100,
+                    "reasons": ["🔴 Ushbu faylning o'zida bir xil telefon raqam takrorlangan"],
+                })
+                break
+
+        if dups:
+            st["potential_duplicates"] = dups
+            st["is_duplicate"] = True
+            duplicate_count += 1
+        else:
+            st["potential_duplicates"] = []
+            st["is_duplicate"] = False
+
     state["students"] = students
     state["errors"] = parse_errors
+    state["duplicate_count"] = duplicate_count
     state["step"] = "preview"
     state["created"] = []
     _save_add_students_wizard_state(chat_id, user_id, state)
@@ -24424,6 +24688,7 @@ async def diamondvoy_add_students_upload_xlsx(
         "ok": True,
         "state": state,
         "total": len(students),
+        "duplicate_count": duplicate_count,
         "parse_errors": parse_errors,
         "students": students,  # preview list
     }
@@ -39841,6 +40106,169 @@ async def admin_search_users(q: str = Query(default=""), authorization: str | No
     rows = [dict(row) for row in (cur.fetchall() or [])]
     conn.close()
     return {"items": [_serialize_user_row_light(r) for r in rows]}
+
+
+
+
+
+@app.get("/admin/users/suggest")
+async def admin_suggest_users(
+    q: str = Query(default=""),
+    authorization: str | None = Header(default=None),
+):
+    """Real-time autocomplete suggestion for users with phonetic and typo tolerance."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"items": []}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT u.id, u.login_id, u.first_name, u.last_name, u.phone, u.parent_phone,
+               u.login_type, u.level, u.subject,
+               COALESCE(gc.group_count, 0) AS group_count
+        FROM users u
+        LEFT JOIN (
+            SELECT ug.user_id, COUNT(DISTINCT ug.group_id) AS group_count
+            FROM user_groups ug
+            LEFT JOIN groups g ON g.id = ug.group_id
+            WHERE (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='')
+              AND (g.id IS NULL OR COALESCE(g.active,1)=1)
+            GROUP BY ug.user_id
+        ) gc ON gc.user_id = u.id
+        WHERE u.login_type IN (1, 2, 3, 5, 6)
+          AND COALESCE(u.screenshot_demo, 0) = 0
+        ORDER BY u.id DESC
+        LIMIT 1000
+        """
+    )
+    rows = [dict(r) for r in (cur.fetchall() or [])]
+    conn.close()
+
+    q_clean = query.lower()
+    q_digits = re.sub(r"\D", "", query)
+    q_phonetic = _normalize_uzbek_phonetics(q_clean)
+
+    scored_items = []
+    for r in rows:
+        fn = str(r.get("first_name") or "").strip()
+        ln = str(r.get("last_name") or "").strip()
+        full = f"{fn} {ln}".strip()
+        phone = str(r.get("phone") or "")
+        parent_phone = str(r.get("parent_phone") or "")
+        login_id = str(r.get("login_id") or "")
+        digits_phone = re.sub(r"\D", "", phone)
+        digits_parent = re.sub(r"\D", "", parent_phone)
+
+        score = 0
+        match_type = ""
+
+        # 1. Digits match if query contains digits
+        if len(q_digits) >= 3:
+            if q_digits in digits_phone:
+                score = 95
+                match_type = f"Tel: {phone}"
+            elif q_digits in digits_parent:
+                score = 85
+                match_type = f"Ota-ona: {parent_phone}"
+
+        # 2. Login ID match
+        if q_clean.upper() in login_id.upper():
+            score = max(score, 90)
+            match_type = f"ID: {login_id}"
+
+        # 3. Exact prefix or substring in name
+        fn_low, ln_low, full_low = fn.lower(), ln.lower(), full.lower()
+        if fn_low.startswith(q_clean) or ln_low.startswith(q_clean):
+            score = max(score, 88)
+            match_type = "Ism/familiya boshlanishi"
+        elif q_clean in full_low:
+            score = max(score, 78)
+            match_type = "To'liq ismda bor"
+
+        # 4. Phonetic & Typo match (X/H, O/O', 1-letter typo)
+        p_fn = _normalize_uzbek_phonetics(fn_low)
+        p_ln = _normalize_uzbek_phonetics(ln_low)
+        p_full = f"{p_fn} {p_ln}".strip()
+
+        if q_phonetic in p_fn or q_phonetic in p_ln or q_phonetic in p_full:
+            score = max(score, 82)
+            if not match_type:
+                match_type = "O'xshash talaffuz (X/H, O/O')"
+
+        # 5. Typo (Levenshtein distance <= 1 or <= 2)
+        words = [fn_low, ln_low]
+        for w in words:
+            if len(w) >= 3 and len(q_clean) >= 3:
+                w_prefix = w[:len(q_clean)]
+                dist = _levenshtein_distance(q_clean, w_prefix)
+                dist_p = _levenshtein_distance(q_phonetic, _normalize_uzbek_phonetics(w_prefix))
+                if dist <= 1 or dist_p <= 1:
+                    score = max(score, 80)
+                    if not match_type:
+                        match_type = f"1 ta harf farq ({w.upper()})"
+
+        if score > 0:
+            role_label = _role_from_login_type(int(r.get("login_type") or 1), login_id)
+            scored_items.append({
+                "score": score,
+                "item": {
+                    "id": int(r["id"]),
+                    "login_id": login_id,
+                    "full_name": full or "Noma'lum",
+                    "first_name": fn,
+                    "last_name": ln,
+                    "phone": phone,
+                    "parent_phone": parent_phone,
+                    "role": role_label,
+                    "level": r.get("level") or "-",
+                    "subject": r.get("subject") or "English",
+                    "group_count": int(r.get("group_count") or 0),
+                    "match_type": match_type,
+                }
+            })
+
+    scored_items.sort(key=lambda x: x["score"], reverse=True)
+    return {"items": [x["item"] for x in scored_items[:8]]}
+
+
+@app.post("/admin/users/check-duplicate")
+async def admin_check_user_duplicate(
+    payload: AdminUserCheckDuplicateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Check potential duplicate student accounts with phonetic and typo tolerance."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"admin"})
+
+    all_users = _get_all_candidate_users_for_duplicate_check()
+    duplicates = _find_potential_user_duplicates(
+        payload.first_name,
+        payload.last_name,
+        payload.phone,
+        payload.parent_phone,
+        all_users,
+        min_score=60,
+        limit=8,
+    )
+
+    highest_risk = None
+    if duplicates:
+        max_score = duplicates[0]["similarity_score"]
+        if max_score >= 85:
+            highest_risk = "critical"
+        else:
+            highest_risk = "warning"
+
+    return {
+        "is_potential_duplicate": len(duplicates) > 0,
+        "highest_risk": highest_risk,
+        "duplicates": duplicates,
+    }
 
 
 @app.get("/admin/teachers/search")
