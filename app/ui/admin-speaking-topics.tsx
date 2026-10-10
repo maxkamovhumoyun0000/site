@@ -1117,7 +1117,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               </button>
             </div>
 
-            {activeSubject === "english" && (
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                 Mavzu Nomi (Topic Title):
@@ -1130,7 +1129,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               />
             </div>
-            )}
 
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
