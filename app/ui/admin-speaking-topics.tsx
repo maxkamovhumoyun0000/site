@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
+import { ModalPortal } from "./modal-portal";
 
 type VocabularyItem = {
   word: string;
@@ -12,6 +13,7 @@ type SpeakingQuestion = {
   id: number;
   topic_id: number;
   part: number;
+  subject?: string;
   question_text: string;
   cue_card_bullet_points?: string[];
   sample_answer: string;
@@ -23,6 +25,7 @@ type SpeakingQuestion = {
 type SpeakingTopic = {
   id: number;
   part: number;
+  subject?: string;
   title: string;
   status_badge: string;
   sort_order: number;
@@ -35,6 +38,7 @@ interface AdminSpeakingTopicsProps {
 }
 
 export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
+  const [activeSubject, setActiveSubject] = useState<"english" | "russian">("english");
   const [activePart, setActivePart] = useState<number>(1);
   const [topics, setTopics] = useState<SpeakingTopic[]>([]);
   const [questions, setQuestions] = useState<SpeakingQuestion[]>([]);
@@ -72,6 +76,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [vocabList, setVocabList] = useState<VocabularyItem[]>([]);
   const [qAiAutoLoading, setQAiAutoLoading] = useState<boolean>(false);
 
+  // Push Notification Modal State
+  const [notifModalOpen, setNotifModalOpen] = useState<boolean>(false);
+  const [notifTitle, setNotifTitle] = useState<string>("");
+  const [notifBody, setNotifBody] = useState<string>("");
+  const [notifPart, setNotifPart] = useState<number | null>(null);
+  const [notifLoading, setNotifLoading] = useState<boolean>(false);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -91,12 +102,47 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     }
   }
 
-  const filteredTopics = topics.filter((t) => t.part === activePart);
+  async function handleSendNotif() {
+    if (!notifTitle.trim() || !notifBody.trim()) {
+      alert("Iltimos, bildirishnoma sarlavhasi va matnini to'liq kiriting.");
+      return;
+    }
+    setNotifLoading(true);
+    try {
+      const res = await apiFetch("/staff/speaking/notifications/send", {
+        method: "POST",
+        body: {
+          title: notifTitle.trim(),
+          body: notifBody.trim(),
+          target_part: notifPart || undefined,
+        },
+      });
+      if (res && res.success) {
+        alert("✅ Bildirishnoma Speaking app foydalanuvchilariga muvaffaqiyatli yuborildi!");
+        setNotifModalOpen(false);
+        setNotifTitle("");
+        setNotifBody("");
+        setNotifPart(null);
+      }
+    } catch (e: any) {
+      alert("Bildirishnoma yuborishda xatolik: " + (e?.message || String(e)));
+    } finally {
+      setNotifLoading(false);
+    }
+  }
+
+  const filteredTopics = topics.filter((t) => {
+    const s = t.subject || "english";
+    if (activeSubject === "russian") {
+      return s === "russian";
+    }
+    return s === "english" && t.part === activePart;
+  });
 
   // Open AI modal for creating a new topic
   function openAiModalForNewTopic(part?: number) {
     setAiMode("new_topic");
-    setAiPart(part || activePart);
+    setAiPart(activeSubject === "russian" ? 1 : (part || activePart));
     setAiTargetTopicId(null);
     setAiTheme("");
     setAiInstruction("");
@@ -108,7 +154,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   // Open AI modal targeting an existing topic
   function openAiModalForExistingTopic(topic: SpeakingTopic) {
     setAiMode("existing_topic");
-    setAiPart(topic.part);
+    setAiPart(topic.part || 1);
     setAiTargetTopicId(topic.id);
     setAiTheme(topic.title);
     setAiInstruction("");
@@ -130,7 +176,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         method: "POST",
         body: {
           theme: aiTheme.trim(),
-          part: aiPart,
+          part: activeSubject === "russian" ? 1 : aiPart,
+          subject: activeSubject,
           question_count: aiCount,
           custom_instruction: aiInstruction.trim() || undefined,
         },
@@ -170,18 +217,36 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         method: "POST",
         body: {
           question_text: qText.trim(),
-          part: activePart,
+          part: activeSubject === "russian" ? 1 : activePart,
+          subject: activeSubject,
         },
         timeoutMs: 90000,
       });
 
       if (res) {
-        if (res.sample_answer) setQAnswer(res.sample_answer);
-        if (res.cue_card_bullet_points && Array.isArray(res.cue_card_bullet_points)) {
-          setQBullets(res.cue_card_bullet_points.join("\n"));
+        const answer =
+          res.sample_answer ||
+          res.model_answer ||
+          res.answer ||
+          (res.questions && res.questions[0]?.sample_answer) ||
+          "";
+        if (answer) setQAnswer(answer);
+
+        const bullets =
+          res.cue_card_bullet_points ||
+          (res.questions && res.questions[0]?.cue_card_bullet_points) ||
+          [];
+        if (Array.isArray(bullets) && bullets.length > 0) {
+          setQBullets(bullets.join("\n"));
         }
-        if (res.vocabulary && Array.isArray(res.vocabulary)) {
-          setVocabList(res.vocabulary);
+
+        const vocabs =
+          res.vocabulary ||
+          res.words ||
+          (res.questions && res.questions[0]?.vocabulary) ||
+          [];
+        if (Array.isArray(vocabs) && vocabs.length > 0) {
+          setVocabList(vocabs);
         }
       }
     } catch (e: any) {
@@ -204,7 +269,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         const topicRes = await apiFetch("/staff/speaking/topics", {
           method: "POST",
           body: {
-            part: aiPart,
+            part: activeSubject === "russian" ? 1 : aiPart,
+            subject: activeSubject,
             title: aiGeneratedResult.topic_title || aiTheme.trim(),
             status_badge: aiGeneratedResult.status_badge || "PREDICTED",
             sort_order: 0,
@@ -221,13 +287,16 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       // 2. Add Questions
       const questionsToSave = aiGeneratedResult.questions || [];
       for (const q of questionsToSave) {
+        const ans = (q.sample_answer || q.model_answer || q.answer || "Namuna javob").trim();
+        const text = (q.question_text || q.question || q.prompt || "Savol").trim();
         await apiFetch(`/staff/speaking/topics/${finalTopicId}/questions`, {
           method: "POST",
           body: {
-            part: aiPart,
-            question_text: q.question_text || "",
-            cue_card_bullet_points: q.cue_card_bullet_points || [],
-            sample_answer: q.sample_answer || "",
+            part: activeSubject === "russian" ? 1 : aiPart,
+            subject: activeSubject,
+            question_text: text,
+            cue_card_bullet_points: activeSubject === "russian" ? [] : (q.cue_card_bullet_points || []),
+            sample_answer: ans,
             vocabulary: q.vocabulary || [],
             sort_order: 0,
           },
@@ -258,7 +327,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       const res = await apiFetch("/staff/speaking/topics", {
         method: "POST",
         body: {
-          part: newTopicPart,
+          part: activeSubject === "russian" ? 1 : newTopicPart,
+          subject: activeSubject,
           title: newTopicTitle.trim(),
           status_badge: newTopicBadge.trim() || "PREDICTED",
         },
@@ -321,7 +391,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           method: "PATCH",
           body: {
             question_text: qText.trim(),
-            cue_card_bullet_points: bullets,
+            cue_card_bullet_points: activeSubject === "russian" ? [] : bullets,
             sample_answer: qAnswer.trim(),
             vocabulary: vocabList,
           },
@@ -330,9 +400,10 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         await apiFetch(`/staff/speaking/topics/${targetTopicId}/questions`, {
           method: "POST",
           body: {
-            part: activePart,
+            part: activeSubject === "russian" ? 1 : activePart,
+            subject: activeSubject,
             question_text: qText.trim(),
-            cue_card_bullet_points: bullets,
+            cue_card_bullet_points: activeSubject === "russian" ? [] : bullets,
             sample_answer: qAnswer.trim(),
             vocabulary: vocabList,
           },
@@ -427,6 +498,15 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
 
           <button
             type="button"
+            onClick={() => setNotifModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold text-sm shadow-md shadow-indigo-600/25 active:scale-95 transition-all"
+          >
+            <span>📢</span>
+            <span>Bildirishnoma</span>
+          </button>
+
+          <button
+            type="button"
             onClick={loadData}
             title="Ma'lumotlarni yangilash"
             className="p-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-slate-700 active:scale-95 transition-all"
@@ -436,28 +516,58 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         </div>
       </div>
 
-      {/* ─── PART SEGMENTED SELECTOR ─── */}
-      <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-inner max-w-lg transition-colors">
-        {[
-          { part: 1, label: "Part 1", desc: "Introduction & Interview" },
-          { part: 2, label: "Part 2", desc: "Cue Cards / Long Turn" },
-          { part: 3, label: "Part 3", desc: "Two-way Discussion" },
-        ].map((item) => (
-          <button
-            key={item.part}
-            type="button"
-            onClick={() => setActivePart(item.part)}
-            className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs md:text-sm transition-all flex flex-col items-center ${
-              activePart === item.part
-                ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-blue-600/30"
-                : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-900"
-            }`}
-          >
-            <span>{item.label}</span>
-            <span className="text-[10px] opacity-80 font-normal hidden sm:inline">{item.desc}</span>
-          </button>
-        ))}
+      {/* ─── SUBJECT SELECTOR (ENGLISH vs RUSSIAN) ─── */}
+      <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-inner max-w-md transition-colors">
+        <button
+          type="button"
+          onClick={() => setActiveSubject("english")}
+          className={`flex-1 py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm transition-all flex items-center justify-center gap-2 ${
+            activeSubject === "english"
+              ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-blue-600/30"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-900"
+          }`}
+        >
+          <span>🇬🇧</span>
+          <span>English (IELTS)</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveSubject("russian")}
+          className={`flex-1 py-2.5 px-4 rounded-xl font-bold text-xs md:text-sm transition-all flex items-center justify-center gap-2 ${
+            activeSubject === "russian"
+              ? "bg-gradient-to-r from-rose-600 to-amber-600 text-white shadow-md shadow-rose-600/30"
+              : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-900"
+          }`}
+        >
+          <span>🇷🇺</span>
+          <span>Русский язык</span>
+        </button>
       </div>
+
+      {/* ─── PART SEGMENTED SELECTOR (ONLY FOR ENGLISH IELTS) ─── */}
+      {activeSubject === "english" && (
+        <div className="flex items-center gap-2 p-1.5 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-inner max-w-lg transition-colors">
+          {[
+            { part: 1, label: "Part 1", desc: "Introduction & Interview" },
+            { part: 2, label: "Part 2", desc: "Cue Cards / Long Turn" },
+            { part: 3, label: "Part 3", desc: "Two-way Discussion" },
+          ].map((item) => (
+            <button
+              key={item.part}
+              type="button"
+              onClick={() => setActivePart(item.part)}
+              className={`flex-1 py-2.5 px-3 rounded-xl font-bold text-xs md:text-sm transition-all flex flex-col items-center ${
+                activePart === item.part
+                  ? "bg-gradient-to-r from-blue-600 to-cyan-600 text-white shadow-md shadow-blue-600/30"
+                  : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-slate-900"
+              }`}
+            >
+              <span>{item.label}</span>
+              <span className="text-[10px] opacity-80 font-normal hidden sm:inline">{item.desc}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* ─── TOPICS LIST / CATALOG ─── */}
       {loading ? (
@@ -472,10 +582,14 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           </div>
           <div>
             <p className="text-lg font-bold text-slate-900 dark:text-white mb-1">
-              Part {activePart} bo'yicha mavzular mavjud emas
+              {activeSubject === "russian"
+                ? "Русский язык бўйича мавзулар ҳозирча йўқ"
+                : `Part ${activePart} bo'yicha mavzular mavjud emas`}
             </p>
             <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
-              Diamondvoy AI orqali bir tugma bilan yangi IELTS Speaking mavzulari va Band 8.5–9.0 savollarini yarating.
+              {activeSubject === "russian"
+                ? "Diamondvoy AI orqali bir tugma bilan rus tili so'zlashuv mavzulari va savollarini yarating."
+                : "Diamondvoy AI orqali bir tugma bilan yangi IELTS Speaking mavzulari va Band 8.5–9.0 savollarini yarating."}
             </p>
           </div>
           <button
@@ -669,8 +783,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       )}
 
       {/* ─── MODAL: AI GENERATOR (DIAMONDVOY) ─── */}
-      {aiModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/60 dark:bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+      <ModalPortal open={aiModalOpen}>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-md animate-fade-in">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-4xl w-full p-6 md:p-8 space-y-6 shadow-2xl overflow-y-auto max-h-[92vh] text-slate-900 dark:text-white">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
               <div className="flex items-center gap-3">
@@ -761,11 +875,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                       }}
                       className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none"
                     >
-                      {topics.map((t) => (
-                        <option key={t.id} value={t.id}>
-                          Part {t.part} — {t.title}
-                        </option>
-                      ))}
+                      {topics
+                        .filter((t) => (t.subject || "english") === activeSubject)
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {activeSubject === "russian" ? t.title : `Part ${t.part} — ${t.title}`}
+                          </option>
+                        ))}
                     </select>
                   </div>
                 )}
@@ -778,27 +894,33 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     type="text"
                     value={aiTheme}
                     onChange={(e) => setAiTheme(e.target.value)}
-                    placeholder="Masalan: Artificial Intelligence, Traditional Festivals, Sustainable Energy, Daily Routines"
+                    placeholder={
+                      activeSubject === "russian"
+                        ? "Masalan: Путешествия и страны, Профессия и карьера, Хобби, Технологии в нашей жизни"
+                        : "Masalan: Artificial Intelligence, Traditional Festivals, Sustainable Energy, Daily Routines"
+                    }
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:border-cyan-500 outline-none"
                   />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                      IELTS Bo'limi (Part):
-                    </label>
-                    <select
-                      value={aiPart}
-                      disabled={aiMode === "existing_topic"}
-                      onChange={(e) => setAiPart(Number(e.target.value))}
-                      className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none disabled:opacity-60"
-                    >
-                      <option value={1}>Part 1 (Introduction & Interview)</option>
-                      <option value={2}>Part 2 (Cue Card / Long Turn)</option>
-                      <option value={3}>Part 3 (Two-way Discussion)</option>
-                    </select>
-                  </div>
+                <div className={`grid grid-cols-1 ${activeSubject === "english" ? "sm:grid-cols-2" : ""} gap-4`}>
+                  {activeSubject === "english" && (
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
+                        IELTS Bo'limi (Part):
+                      </label>
+                      <select
+                        value={aiPart}
+                        disabled={aiMode === "existing_topic"}
+                        onChange={(e) => setAiPart(Number(e.target.value))}
+                        className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none disabled:opacity-60"
+                      >
+                        <option value={1}>Part 1 (Introduction & Interview)</option>
+                        <option value={2}>Part 2 (Cue Card / Long Turn)</option>
+                        <option value={3}>Part 3 (Two-way Discussion)</option>
+                      </select>
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
@@ -932,15 +1054,15 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             )}
           </div>
         </div>
-      )}
+      </ModalPortal>
 
       {/* ─── MODAL: MANUAL ADD TOPIC ─── */}
-      {newTopicModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/60 dark:bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+      <ModalPortal open={newTopicModalOpen}>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-md animate-fade-in">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 md:p-8 space-y-5 shadow-2xl text-slate-900 dark:text-white">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3 className="text-lg font-bold text-slate-900 dark:text-white">
-                Part {newTopicPart} — Yangi Mavzu Qo'shish
+                {activeSubject === "russian" ? "Русский язык — Yangi Mavzu Qo'shish" : `Part ${newTopicPart} — Yangi Mavzu Qo'shish`}
               </h3>
               <button
                 type="button"
@@ -959,7 +1081,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 type="text"
                 value={newTopicTitle}
                 onChange={(e) => setNewTopicTitle(e.target.value)}
-                placeholder="Masalan: Weather and Climate, Traditional Festivals"
+                placeholder={activeSubject === "russian" ? "Masalan: Путешествия и страны" : "Masalan: Weather and Climate, Traditional Festivals"}
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               />
             </div>
@@ -997,11 +1119,11 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             </div>
           </div>
         </div>
-      )}
+      </ModalPortal>
 
       {/* ─── MODAL: MANUAL ADD / EDIT QUESTION ─── */}
-      {newQuestionModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/60 dark:bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+      <ModalPortal open={newQuestionModalOpen}>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-md animate-fade-in">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-3xl w-full p-6 md:p-8 space-y-5 shadow-2xl max-h-[92vh] overflow-y-auto text-slate-900 dark:text-white">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3 className="text-lg font-bold text-slate-900 dark:text-white">
@@ -1039,7 +1161,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               />
             </div>
 
-            {activePart === 2 && (
+            {activeSubject === "english" && activePart === 2 && (
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                   Cue Card Bullet Points (har biri yangi qatorda):
@@ -1142,7 +1264,115 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             </div>
           </div>
         </div>
-      )}
+      </ModalPortal>
+
+      {/* ─── MODAL: PUSH NOTIFICATION ─── */}
+      <ModalPortal open={notifModalOpen}>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-md animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 md:p-8 space-y-5 shadow-2xl text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">📢</span>
+                <h3 className="text-lg font-bold text-slate-900 dark:text-white">
+                  Speaking App-ga Bildirishnoma (Push)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setNotifModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white text-xl"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-700 dark:text-blue-300">
+              Bu xabar Diamond Speaking ilovasini yuklab olgan barcha o'quvchilarga (FCM orqali) real-time bildirishnoma sifatida boradi.
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                Xabar Sarlavhasi (Title):
+              </label>
+              <input
+                type="text"
+                value={notifTitle}
+                onChange={(e) => setNotifTitle(e.target.value)}
+                placeholder="Masalan: 🔥 Yangi B2-C1 Rus tili mavzulari qo'shildi!"
+                className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                Xabar Matni (Body):
+              </label>
+              <textarea
+                rows={3}
+                value={notifBody}
+                onChange={(e) => setNotifBody(e.target.value)}
+                placeholder="Masalan: Ilovani yangilang yoki qayta yuklang va yangi speaking savollarini ko'rib chiqing..."
+                className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-blue-500 resize-none"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                Target Bo'lim (Ixtiyoriy):
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: "Barchasi", val: null },
+                  { label: "Part 1", val: 1 },
+                  { label: "Part 2", val: 2 },
+                  { label: "Part 3", val: 3 },
+                ].map((item) => (
+                  <button
+                    key={String(item.val)}
+                    type="button"
+                    onClick={() => setNotifPart(item.val)}
+                    className={`py-2 text-xs font-bold rounded-xl border transition-all ${
+                      notifPart === item.val
+                        ? "bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-600/20"
+                        : "bg-slate-50 dark:bg-slate-950 border-slate-300 dark:border-slate-800 text-slate-700 dark:text-slate-300"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-3">
+              <button
+                type="button"
+                onClick={() => setNotifModalOpen(false)}
+                className="px-4 py-2.5 rounded-xl text-slate-500 hover:text-slate-800 dark:hover:text-white text-sm"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={notifLoading}
+                onClick={handleSendNotif}
+                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm shadow-md shadow-blue-600/25 disabled:opacity-50 active:scale-95 transition-all flex items-center gap-2"
+              >
+                {notifLoading ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Yuborilmoqda...
+                  </>
+                ) : (
+                  <>
+                    <span>🚀</span>
+                    Yuborish
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </ModalPortal>
     </div>
   );
 }

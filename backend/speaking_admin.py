@@ -42,6 +42,7 @@ def ensure_speaking_tables() -> None:
                 title TEXT NOT NULL,
                 status_badge TEXT DEFAULT 'PREDICTED',
                 sort_order INTEGER DEFAULT 0,
+                subject TEXT DEFAULT 'english',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -59,6 +60,7 @@ def ensure_speaking_tables() -> None:
                 examiner_tip TEXT,
                 vocabulary_json TEXT,
                 sort_order INTEGER DEFAULT 0,
+                subject TEXT DEFAULT 'english',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -92,6 +94,17 @@ def ensure_speaking_tables() -> None:
             """
         )
         conn.commit()
+
+        # Ensure subject column exists in existing tables
+        for table in ("speaking_topics", "speaking_questions"):
+            try:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN subject TEXT DEFAULT 'english'")
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
     except Exception:
         try:
             conn.rollback()
@@ -111,10 +124,11 @@ class PushTokenRegisterRequest(BaseModel):
 
 
 class TopicCreateRequest(BaseModel):
-    part: int = Field(..., ge=1, le=3)
+    part: int = Field(default=1, ge=1, le=3)
     title: str = Field(..., min_length=1, max_length=180)
     status_badge: str = Field(default="PREDICTED", max_length=50)
     sort_order: int = 0
+    subject: str = Field(default="english", max_length=32)
 
 
 class TopicUpdateRequest(BaseModel):
@@ -122,16 +136,18 @@ class TopicUpdateRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=180)
     status_badge: str | None = Field(default=None, max_length=50)
     sort_order: int | None = None
+    subject: str | None = None
 
 
 class QuestionCreateRequest(BaseModel):
-    part: int = Field(..., ge=1, le=3)
-    question_text: str = Field(..., min_length=2)
+    part: int = Field(default=1, ge=1, le=3)
+    question_text: str = Field(..., min_length=1)
     cue_card_bullet_points: list[str] = Field(default_factory=list)
-    sample_answer: str = Field(..., min_length=2)
+    sample_answer: str = Field(default="Sample answer to be reviewed.", min_length=1)
     examiner_tip: str | None = None
     vocabulary: list[dict[str, Any]] = Field(default_factory=list)
     sort_order: int = 0
+    subject: str = Field(default="english", max_length=32)
 
 
 class QuestionUpdateRequest(BaseModel):
@@ -141,6 +157,7 @@ class QuestionUpdateRequest(BaseModel):
     examiner_tip: str | None = None
     vocabulary: list[dict[str, Any]] | None = None
     sort_order: int | None = None
+    subject: str | None = None
 
 
 class AiGenerateRequest(BaseModel):
@@ -149,6 +166,7 @@ class AiGenerateRequest(BaseModel):
     question_count: int = Field(default=2, ge=1, le=5)
     custom_instruction: str | None = None
     question_text: str | None = None
+    subject: str = Field(default="english", max_length=32)
 
 
 class NotificationSendRequest(BaseModel):
@@ -161,30 +179,44 @@ class NotificationSendRequest(BaseModel):
 # --- PUBLIC API (FOR FLUTTER APP) ---
 @router.get("/api/speaking/content")
 @router.get("/speaking/content")
-async def get_speaking_content():
+async def get_speaking_content(subject: str | None = Query(default=None)):
     """Returns all topics and questions for Diamond Speaking Questions app."""
     ensure_speaking_tables()
     conn = get_conn()
     cur = conn.cursor()
     try:
+        where_subj = ""
+        params_t = []
+        params_q = []
+        if subject:
+            where_subj = "WHERE LOWER(COALESCE(subject, 'english')) = ?"
+            params_t.append(subject.lower())
+            params_q.append(subject.lower())
+
         cur.execute(
-            """
-            SELECT id, part, title, status_badge, sort_order
+            f"""
+            SELECT id, part, title, status_badge, sort_order, COALESCE(subject, 'english') AS subject
             FROM speaking_topics
+            {where_subj}
             ORDER BY part ASC, sort_order ASC, id ASC
-            """
+            """,
+            tuple(params_t),
         )
         topics = [dict(row) for row in (cur.fetchall() or [])]
 
+        q_where = f"WHERE LOWER(COALESCE(q.subject, COALESCE(t.subject, 'english'))) = ?" if subject else ""
         cur.execute(
-            """
+            f"""
             SELECT q.id, q.topic_id, q.part, q.question_text, q.cue_card_bullet_points,
                    q.sample_answer, q.examiner_tip, q.vocabulary_json, q.sort_order,
+                   COALESCE(q.subject, COALESCE(t.subject, 'english')) AS subject,
                    t.title AS topic_title, t.status_badge
             FROM speaking_questions q
             JOIN speaking_topics t ON q.topic_id = t.id
+            {q_where}
             ORDER BY q.part ASC, t.sort_order ASC, q.sort_order ASC, q.id ASC
-            """
+            """,
+            tuple(params_q),
         )
         q_rows = cur.fetchall() or []
         questions = []
@@ -209,6 +241,7 @@ async def get_speaking_content():
                 "topic_id": d["topic_id"],
                 "category": d.get("topic_title") or "General",
                 "part": d["part"],
+                "subject": (d.get("subject") or "english").lower(),
                 "prompt": d["question_text"],
                 "bestAnswer": d.get("sample_answer") or "",
                 "tag": (d.get("status_badge") or "PREDICTED").replace("2026", "").strip(),
@@ -246,10 +279,11 @@ async def list_staff_topics(authorization: str | None = Header(default=None)):
         cur.execute(
             """
             SELECT t.id, t.part, t.title, t.status_badge, t.sort_order, t.created_at,
+                   COALESCE(t.subject, 'english') AS subject,
                    COUNT(q.id) AS question_count
             FROM speaking_topics t
             LEFT JOIN speaking_questions q ON t.id = q.topic_id
-            GROUP BY t.id, t.part, t.title, t.status_badge, t.sort_order, t.created_at
+            GROUP BY t.id, t.part, t.title, t.status_badge, t.sort_order, t.created_at, t.subject
             ORDER BY t.part ASC, t.sort_order ASC, t.id DESC
             """
         )
@@ -258,7 +292,8 @@ async def list_staff_topics(authorization: str | None = Header(default=None)):
         cur.execute(
             """
             SELECT id, topic_id, part, question_text, cue_card_bullet_points,
-                   sample_answer, examiner_tip, vocabulary_json, sort_order
+                   sample_answer, examiner_tip, vocabulary_json, sort_order,
+                   COALESCE(subject, 'english') AS subject
             FROM speaking_questions
             ORDER BY part ASC, sort_order ASC, id ASC
             """
@@ -294,13 +329,14 @@ async def create_staff_topic(payload: TopicCreateRequest, authorization: str | N
     conn = get_conn()
     cur = conn.cursor()
     try:
+        subj = (payload.subject or "english").strip().lower()
         cur.execute(
             """
-            INSERT INTO speaking_topics (part, title, status_badge, sort_order)
-            VALUES (?, ?, ?, ?)
-            RETURNING id, part, title, status_badge, sort_order
+            INSERT INTO speaking_topics (part, title, status_badge, sort_order, subject)
+            VALUES (?, ?, ?, ?, ?)
+            RETURNING id, part, title, status_badge, sort_order, subject
             """,
-            (payload.part, payload.title.strip(), payload.status_badge.strip(), payload.sort_order),
+            (payload.part, payload.title.strip(), payload.status_badge.strip(), payload.sort_order, subj),
         )
         row = cur.fetchone()
         conn.commit()
@@ -334,6 +370,9 @@ async def update_staff_topic(topic_id: int, payload: TopicUpdateRequest, authori
         if payload.sort_order is not None:
             updates.append("sort_order = ?")
             params.append(payload.sort_order)
+        if payload.subject is not None:
+            updates.append("subject = ?")
+            params.append(payload.subject.strip().lower())
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -341,7 +380,7 @@ async def update_staff_topic(topic_id: int, payload: TopicUpdateRequest, authori
             cur.execute(f"UPDATE speaking_topics SET {', '.join(updates)} WHERE id=?", tuple(params))
             conn.commit()
 
-        cur.execute("SELECT id, part, title, status_badge, sort_order FROM speaking_topics WHERE id=?", (topic_id,))
+        cur.execute("SELECT id, part, title, status_badge, sort_order, COALESCE(subject, 'english') AS subject FROM speaking_topics WHERE id=?", (topic_id,))
         return {"topic": dict(cur.fetchone())}
     finally:
         conn.close()
@@ -369,29 +408,32 @@ async def create_staff_question(topic_id: int, payload: QuestionCreateRequest, a
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT id, part FROM speaking_topics WHERE id=?", (topic_id,))
+        cur.execute("SELECT id, part, COALESCE(subject, 'english') AS subject FROM speaking_topics WHERE id=?", (topic_id,))
         t_row = cur.fetchone()
         if not t_row:
             raise HTTPException(status_code=404, detail="Topic not found")
 
+        t_dict = dict(t_row)
+        subj = (payload.subject or t_dict.get("subject") or "english").strip().lower()
         bp_json = json.dumps(payload.cue_card_bullet_points) if payload.cue_card_bullet_points else None
         vocab_json = json.dumps(payload.vocabulary) if payload.vocabulary else None
 
         cur.execute(
             """
-            INSERT INTO speaking_questions (topic_id, part, question_text, cue_card_bullet_points, sample_answer, examiner_tip, vocabulary_json, sort_order)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id, topic_id, part, question_text, sample_answer, examiner_tip
+            INSERT INTO speaking_questions (topic_id, part, question_text, cue_card_bullet_points, sample_answer, examiner_tip, vocabulary_json, sort_order, subject)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id, topic_id, part, question_text, sample_answer, examiner_tip, subject
             """,
             (
                 topic_id,
-                payload.part or dict(t_row)["part"],
+                payload.part or t_dict["part"],
                 payload.question_text.strip(),
                 bp_json,
                 payload.sample_answer.strip(),
                 payload.examiner_tip.strip() if payload.examiner_tip else None,
                 vocab_json,
                 payload.sort_order,
+                subj,
             ),
         )
         q_row = cur.fetchone()
@@ -432,6 +474,9 @@ async def update_staff_question(question_id: int, payload: QuestionUpdateRequest
         if payload.sort_order is not None:
             updates.append("sort_order = ?")
             params.append(payload.sort_order)
+        if payload.subject is not None:
+            updates.append("subject = ?")
+            params.append(payload.subject.strip().lower())
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -465,83 +510,142 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     """Generates complete IELTS Speaking topics, questions, Band 8-9 answers, and vocabulary using Diamondvoy."""
     _auth_staff(authorization)
 
-    if payload.part == 1:
-        part_desc = "Part 1 (Introduction & Interview - everyday familiar topics)"
-        answer_req = "Answer must be DIRECT and CONCISE (strictly 2 to 3 sentences). Candidate must answer directly right away without rambling or giving long stories, followed by a brief reason or everyday example."
-        bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 1)'
-    elif payload.part == 2:
-        part_desc = "Part 2 (Individual Long Turn / Cue Card)"
-        answer_req = "Answer must be a COMPREHENSIVE, HIGH-SCORING MONOLOGUE (180 to 250 words, roughly 1.5 to 2 minutes of speech) addressing all 4 bullet points with chronological transitions and vivid descriptions."
-        bullet_req = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."] (strictly 4 bullet points)'
-    else:
-        part_desc = "Part 3 (Two-way Discussion - abstract, societal and analytical topics)"
-        answer_req = "Answer must be an IN-DEPTH, ANALYTICAL answer (4 to 6 sentences) using sophisticated academic hedging (e.g. 'It could be argued that...', 'From a socioeconomic perspective...'), contrasting perspectives, and a logical conclusion."
-        bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 3)'
+    subject_val = (payload.subject or "english").strip().lower()
+    is_russian = subject_val == "russian"
 
-    is_single_question = bool(payload.question_text and payload.question_text.strip())
-
-    if is_single_question:
-        q_text = payload.question_text.strip()
-        prompt = (
-            f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
-            f"Create exam-standard content for IELTS Speaking {part_desc}:\n"
-            f"Question: \"{q_text}\"\n"
-            f"Requirements:\n"
-            f"- {answer_req}\n"
-            f"- {bullet_req}\n"
-            f"- Provide 2-3 high-level C1/C2 collocations/vocabulary items with clear definitions and natural example sentences.\n"
-            f"- Do NOT provide any examiner tips.\n"
-            f"Optional instructions: {payload.custom_instruction or 'Natural Band 8.5-9.0 phrasing and C1/C2 lexical resource'}\n\n"
-            f"Output strictly a single JSON object with the following schema:\n"
-            f"{{\n"
-            f'  "question_text": "{q_text}",\n'
-            f'  {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
-            f'  "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
-            f'  "vocabulary": [\n'
-            f'    {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
-            f"  ]\n"
-            f"}}\n"
-            f"Only valid JSON. No markdown backticks, no explanations outside JSON."
-        )
+    if is_russian:
+        is_single_question = bool(payload.question_text and payload.question_text.strip())
+        if is_single_question:
+            q_text = payload.question_text.strip()
+            prompt = (
+                f"Вы — ведущий преподаватель разговорного русского языка в учебном центре Diamond Education.\n"
+                f"Создайте учебный материал для разговорной практики по русскому языку:\n"
+                f"Вопрос: \"{q_text}\"\n"
+                f"Требования:\n"
+                f"- Образец ответа ('sample_answer') должен быть естественным, грамотным, развёрнутым (3-5 предложений уровня B2-C1).\n"
+                f"- cue_card_bullet_points: [] (строго пустой массив).\n"
+                f"- Предоставьте 2-3 полезных русских слова, идиомы или устойчивых выражения ('vocabulary') с объяснением значения и живым примером.\n"
+                f"- Не добавляйте examiner tips.\n"
+                f"Дополнительные указания: {payload.custom_instruction or 'Живая литературная речь, богатая лексика'}\n\n"
+                f"Выведите СТРОГО один валидный JSON-объект следующей структуры:\n"
+                f"{{\n"
+                f'  "question_text": "{q_text}",\n'
+                f'  "cue_card_bullet_points": [],\n'
+                f'  "sample_answer": "Естественный, богатый лексикой развёрнутый ответ на русском языке.",\n'
+                f'  "vocabulary": [\n'
+                f'    {{"word": "Полезное слово или идиома", "definition": "Краткое понятное объяснение значения", "example": "Живой пример употребления в речи"}}\n'
+                f"  ]\n"
+                f"}}\n"
+                f"Только чистый JSON. Без markdown и текста вне JSON."
+            )
+        else:
+            theme = (payload.theme or "Общая разговорная тема").strip()
+            prompt = (
+                f"Вы — ведущий преподаватель разговорного русского языка в учебном центре Diamond Education.\n"
+                f"Создайте учебный блок для разговорной практики по теме:\n"
+                f"Тема: {theme}\n"
+                f"Количество вопросов: {payload.question_count}\n"
+                f"Требования:\n"
+                f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
+                f"- Для каждого вопроса составьте естественный, развёрнутый образец ответа ('sample_answer', 3-5 предложений уровня B2-C1).\n"
+                f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
+                f"- cue_card_bullet_points: [] (строго пустой массив).\n"
+                f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}\n\n"
+                f"Выведите СТРОГО один валидный JSON-объект следующей структуры:\n"
+                f"{{\n"
+                f'  "topic_title": "{theme}",\n'
+                f'  "status_badge": "РАЗГОВОРНЫЙ",\n'
+                f'  "questions": [\n'
+                f"    {{\n"
+                f'      "question_text": "Вопрос для беседы на русском языке",\n'
+                f'      "cue_card_bullet_points": [],\n'
+                f'      "sample_answer": "Грамотный, живой и развёрнутый ответ на русском языке.",\n'
+                f'      "vocabulary": [\n'
+                f'        {{"word": "Русское слово или выражение", "definition": "Объяснение значения", "example": "Пример употребления в предложении"}}\n'
+                f"      ]\n"
+                f"    }}\n"
+                f"  ]\n"
+                f"}}\n"
+                f"Только чистый JSON. Без markdown и текста вне JSON."
+            )
     else:
-        theme = (payload.theme or "General Topic").strip()
-        prompt = (
-            f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
-            f"Create complete IELTS Speaking content for:\n"
-            f"Theme: {theme}\n"
-            f"Speaking Section: {part_desc}\n"
-            f"Question count: {payload.question_count}\n"
-            f"Requirements:\n"
-            f"- {answer_req}\n"
-            f"- {bullet_req}\n"
-            f"- If Part 2, the question_text MUST start with 'Describe a/an...'.\n"
-            f"- For every question, provide 2-3 Band 9 collocations/vocabulary items with definitions and example sentences.\n"
-            f"- Do NOT provide any examiner tips.\n"
-            f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination topics and Band 9 lexical resource'}\n\n"
-            f"Output strictly a single JSON object with the following schema:\n"
-            f"{{\n"
-            f'  "topic_title": "Concise Category Name",\n'
-            f'  "status_badge": "PREDICTED",\n'
-            f'  "questions": [\n'
-            f"    {{\n"
-            f'      "question_text": "Speaking question prompt",\n'
-            f'      {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
-            f'      "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
-            f'      "vocabulary": [\n'
-            f'        {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
-            f"      ]\n"
-            f"    }}\n"
-            f"  ]\n"
-            f"}}\n"
-            f"Only valid JSON. No markdown backticks, no explanations outside JSON."
-        )
+        if payload.part == 1:
+            part_desc = "Part 1 (Introduction & Interview - everyday familiar topics)"
+            answer_req = "Answer must be DIRECT and CONCISE (strictly 2 to 3 sentences). Candidate must answer directly right away without rambling or giving long stories, followed by a brief reason or everyday example."
+            bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 1)'
+        elif payload.part == 2:
+            part_desc = "Part 2 (Individual Long Turn / Cue Card)"
+            answer_req = "Answer must be a COMPREHENSIVE, HIGH-SCORING MONOLOGUE (180 to 250 words, roughly 1.5 to 2 minutes of speech) addressing all 4 bullet points with chronological transitions and vivid descriptions."
+            bullet_req = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."] (strictly 4 bullet points)'
+        else:
+            part_desc = "Part 3 (Two-way Discussion - abstract, societal and analytical topics)"
+            answer_req = "Answer must be an IN-DEPTH, ANALYTICAL answer (4 to 6 sentences) using sophisticated academic hedging (e.g. 'It could be argued that...', 'From a socioeconomic perspective...'), contrasting perspectives, and a logical conclusion."
+            bullet_req = '"cue_card_bullet_points": [] (strictly empty array, NO bullet points in Part 3)'
+
+        is_single_question = bool(payload.question_text and payload.question_text.strip())
+
+        if is_single_question:
+            q_text = payload.question_text.strip()
+            prompt = (
+                f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
+                f"Create exam-standard content for IELTS Speaking {part_desc}:\n"
+                f"Question: \"{q_text}\"\n"
+                f"Requirements:\n"
+                f"- {answer_req}\n"
+                f"- {bullet_req}\n"
+                f"- Provide 2-3 high-level C1/C2 collocations/vocabulary items with clear definitions and natural example sentences.\n"
+                f"- Do NOT provide any examiner tips.\n"
+                f"Optional instructions: {payload.custom_instruction or 'Natural Band 8.5-9.0 phrasing and C1/C2 lexical resource'}\n\n"
+                f"Output strictly a single JSON object with the following schema:\n"
+                f"{{\n"
+                f'  "question_text": "{q_text}",\n'
+                f'  {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
+                f'  "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
+                f'  "vocabulary": [\n'
+                f'    {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
+                f"  ]\n"
+                f"}}\n"
+                f"Only valid JSON. No markdown backticks, no explanations outside JSON."
+            )
+        else:
+            theme = (payload.theme or "General Topic").strip()
+            prompt = (
+                f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
+                f"Create complete IELTS Speaking content for:\n"
+                f"Theme: {theme}\n"
+                f"Speaking Section: {part_desc}\n"
+                f"Question count: {payload.question_count}\n"
+                f"Requirements:\n"
+                f"- {answer_req}\n"
+                f"- {bullet_req}\n"
+                f"- If Part 2, the question_text MUST start with 'Describe a/an...'.\n"
+                f"- For every question, provide 2-3 Band 9 collocations/vocabulary items with definitions and example sentences.\n"
+                f"- Do NOT provide any examiner tips.\n"
+                f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination topics and Band 9 lexical resource'}\n\n"
+                f"Output strictly a single JSON object with the following schema:\n"
+                f"{{\n"
+                f'  "topic_title": "Concise Category Name",\n'
+                f'  "status_badge": "PREDICTED",\n'
+                f'  "questions": [\n'
+                f"    {{\n"
+                f'      "question_text": "Speaking question prompt",\n'
+                f'      {"cue_card_bullet_points": [] if payload.part != 2 else \'"cue_card_bullet_points": ["point 1", "point 2", "point 3", "point 4"]\'},\n'
+                f'      "sample_answer": "Model answer adhering strictly to the length and structure requirements above.",\n'
+                f'      "vocabulary": [\n'
+                f'        {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
+                f"      ]\n"
+                f"    }}\n"
+                f"  ]\n"
+                f"}}\n"
+                f"Only valid JSON. No markdown backticks, no explanations outside JSON."
+            )
 
     raw_text = ""
     # Try xAI / Grok generator
     try:
         import aiohttp
         from ai_generator import _xai_generate_text
-        sys_prompt = "You are an elite IELTS Examiner for Diamond Education. Return only valid JSON."
+        sys_prompt = "You are a master Russian language conversation teacher for Diamond Education. Return only valid JSON." if is_russian else "You are an elite IELTS Examiner for Diamond Education. Return only valid JSON."
         async with aiohttp.ClientSession() as session:
             raw_text = await _xai_generate_text(prompt, session=session, system_content=sys_prompt, temperature=0.5)
     except Exception as e:
@@ -552,7 +656,9 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     if not raw_text.strip():
         try:
             from diamondvoy_helpers import diamondvoy_gemini_answer
-            raw_text = await diamondvoy_gemini_answer(prompt, subjects=["English"], lang="en")
+            lang_code = "ru" if is_russian else "en"
+            subjects_list = ["Russian"] if is_russian else ["English"]
+            raw_text = await diamondvoy_gemini_answer(prompt, subjects=subjects_list, lang=lang_code)
         except Exception as e:
             logger.warning("Diamondvoy gemini fallback failed: %s", e)
             raw_text = ""
@@ -581,33 +687,73 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         if not isinstance(parsed, dict):
             raise ValueError("Parsed result is not a JSON object")
 
-        # Post-processing: enforce strict part-specific constraints & strip examiner tips
-        if "questions" in parsed and isinstance(parsed["questions"], list):
-            for q in parsed["questions"]:
-                q.pop("examiner_tip", None)
-                if payload.part in (1, 3):
-                    q["cue_card_bullet_points"] = []
-                elif payload.part == 2:
-                    if not q.get("cue_card_bullet_points") or not isinstance(q["cue_card_bullet_points"], list) or len(q["cue_card_bullet_points"]) == 0:
-                        q["cue_card_bullet_points"] = [
-                            "What or who it is",
-                            "When and where it took place",
-                            "What occurred in detail",
-                            "And explain how you felt about it"
-                        ]
-        else:
-            parsed.pop("examiner_tip", None)
-            if payload.part in (1, 3):
-                parsed["cue_card_bullet_points"] = []
-            elif payload.part == 2:
-                if not parsed.get("cue_card_bullet_points") or not isinstance(parsed["cue_card_bullet_points"], list) or len(parsed["cue_card_bullet_points"]) == 0:
-                    parsed["cue_card_bullet_points"] = [
+        def _normalize_item(q: dict[str, Any], is_ru: bool, target_part: int) -> dict[str, Any]:
+            q.pop("examiner_tip", None)
+            q["subject"] = "russian" if is_ru else "english"
+            
+            # Normalize question text
+            if not q.get("question_text"):
+                q["question_text"] = q.get("question") or q.get("prompt") or q.get("text") or "Speaking Question"
+            q["question_text"] = str(q["question_text"]).strip()
+
+            # Normalize sample answer
+            if not q.get("sample_answer"):
+                q["sample_answer"] = (
+                    q.get("model_answer")
+                    or q.get("answer")
+                    or q.get("best_answer")
+                    or q.get("bestAnswer")
+                    or q.get("response")
+                    or "Namuna javob"
+                )
+            q["sample_answer"] = str(q["sample_answer"]).strip()
+
+            # Normalize cue card bullets
+            if is_ru or target_part != 2:
+                q["cue_card_bullet_points"] = []
+            else:
+                raw_bp = q.get("cue_card_bullet_points") or q.get("bullet_points") or q.get("bullets") or q.get("prompts")
+                if isinstance(raw_bp, list) and len(raw_bp) > 0:
+                    q["cue_card_bullet_points"] = [str(x).strip() for x in raw_bp if x]
+                else:
+                    q["cue_card_bullet_points"] = [
                         "What or who it is",
                         "When and where it took place",
                         "What occurred in detail",
                         "And explain how you felt about it"
                     ]
 
+            # Normalize vocabulary list
+            raw_v = q.get("vocabulary") or q.get("vocab") or q.get("words") or []
+            norm_v = []
+            if isinstance(raw_v, list):
+                for item in raw_v:
+                    if isinstance(item, dict):
+                        norm_v.append({
+                            "word": str(item.get("word") or item.get("term") or "").strip(),
+                            "definition": str(item.get("definition") or item.get("meaning") or "").strip(),
+                            "example": str(item.get("example") or item.get("sentence") or "").strip(),
+                        })
+                    elif isinstance(item, str) and item.strip():
+                        norm_v.append({
+                            "word": item.strip(),
+                            "definition": "",
+                            "example": "",
+                        })
+            q["vocabulary"] = [v for v in norm_v if v.get("word")]
+            return q
+
+        if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:
+            parsed["questions"] = [_normalize_item(q, is_russian, payload.part) for q in parsed["questions"] if isinstance(q, dict)]
+            if not parsed.get("topic_title"):
+                parsed["topic_title"] = payload.theme or ("Русский язык" if is_russian else f"Part {payload.part} Topic")
+            if not parsed.get("status_badge"):
+                parsed["status_badge"] = "PREDICTED"
+        else:
+            # Single question format normalized
+            parsed = _normalize_item(parsed, is_russian, payload.part)
+
+        parsed["subject"] = subject_val
         return parsed
     except Exception as exc:
         logger.exception("Failed to parse AI generated speaking content")
