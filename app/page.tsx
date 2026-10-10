@@ -18163,11 +18163,11 @@ function AdminSection({
   }
 
   if (section === "speaking-topics") {
-    return <AdminSpeakingTopics apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+    return <AdminSpeakingTopics apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs || 90000 })} />;
   }
 
   if (section === "speaking-notifications") {
-    return <AdminSpeakingNotifications apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+    return <AdminSpeakingNotifications apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs || 60000 })} />;
   }
 
   if (section === "competitions-history") {

@@ -20,7 +20,7 @@ import push_notifications
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer"}
+MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer", "teacher", "support"}
 
 
 def _auth_staff(authorization: str | None) -> dict[str, Any]:
@@ -200,25 +200,25 @@ class PushTokenRegisterRequest(BaseModel):
 
 class TopicCreateRequest(BaseModel):
     part: int = Field(..., ge=1, le=3)
-    title: str = Field(..., min_length=2, max_length=120)
+    title: str = Field(..., min_length=1, max_length=180)
     status_badge: str = Field(default="PREDICTED", max_length=50)
     sort_order: int = 0
 
 
 class TopicUpdateRequest(BaseModel):
     part: int | None = Field(default=None, ge=1, le=3)
-    title: str | None = Field(default=None, min_length=2, max_length=120)
+    title: str | None = Field(default=None, min_length=1, max_length=180)
     status_badge: str | None = Field(default=None, max_length=50)
     sort_order: int | None = None
 
 
 class QuestionCreateRequest(BaseModel):
     part: int = Field(..., ge=1, le=3)
-    question_text: str = Field(..., min_length=5)
+    question_text: str = Field(..., min_length=2)
     cue_card_bullet_points: list[str] = Field(default_factory=list)
-    sample_answer: str = Field(..., min_length=10)
+    sample_answer: str = Field(..., min_length=2)
     examiner_tip: str | None = None
-    vocabulary: list[dict[str, str]] = Field(default_factory=list)
+    vocabulary: list[dict[str, Any]] = Field(default_factory=list)
     sort_order: int = 0
 
 
@@ -227,15 +227,16 @@ class QuestionUpdateRequest(BaseModel):
     cue_card_bullet_points: list[str] | None = None
     sample_answer: str | None = None
     examiner_tip: str | None = None
-    vocabulary: list[dict[str, str]] | None = None
+    vocabulary: list[dict[str, Any]] | None = None
     sort_order: int | None = None
 
 
 class AiGenerateRequest(BaseModel):
-    theme: str = Field(..., min_length=2)
+    theme: str | None = None
     part: int = Field(default=1, ge=1, le=3)
     question_count: int = Field(default=2, ge=1, le=5)
     custom_instruction: str | None = None
+    question_text: str | None = None
 
 
 class NotificationSendRequest(BaseModel):
@@ -556,31 +557,54 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         else "Part 3 (Two-way Discussion - deep analytical questions, Band 9 nuanced answers)"
     )
 
-    prompt = (
-        f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
-        f"Create high-scoring IELTS exam content for:\n"
-        f"Theme: {payload.theme}\n"
-        f"Speaking Part: {part_desc}\n"
-        f"Question count: {payload.question_count}\n"
-        f"Optional instruction: {payload.custom_instruction or 'Focus on predicted high-frequency examination trends'}\n\n"
-        f"Output strictly a single JSON object with the following schema:\n"
-        f"{{\n"
-        f'  "topic_title": "Concise Category Name (e.g. Artificial Intelligence, Eco-Tourism)",\n'
-        f'  "status_badge": "PREDICTED",\n'
-        f'  "questions": [\n'
-        f"    {{\n"
-        f'      "question_text": "The exact speaking prompt",\n'
-        f'      "cue_card_bullet_points": ["bullet 1", "bullet 2", "bullet 3", "bullet 4"],\n'
-        f'      "sample_answer": "Band 8.5-9.0 natural model answer with advanced lexical resource and cohesive discourse markers.",\n'
-        f'      "examiner_tip": "Practical examiner guidance on how to secure Band 8+ on this specific question.",\n'
-        f'      "vocabulary": [\n'
-        f'        {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
-        f"      ]\n"
-        f"    }}\n"
-        f"  ]\n"
-        f"}}\n"
-        f"Only valid JSON. No markdown backticks, no explanatory preamble."
-    )
+    is_single_question = bool(payload.question_text and payload.question_text.strip())
+
+    if is_single_question:
+        q_text = payload.question_text.strip()
+        prompt = (
+            f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
+            f"For this IELTS Speaking {part_desc} prompt:\n"
+            f"Question: \"{q_text}\"\n"
+            f"Optional instructions: {payload.custom_instruction or 'Provide high-scoring academic collocations and natural Band 8.5-9.0 phrasing'}\n\n"
+            f"Output strictly a single JSON object with the following schema:\n"
+            f"{{\n"
+            f'  "question_text": "{q_text}",\n'
+            f'  "cue_card_bullet_points": ["bullet 1", "bullet 2", "bullet 3", "bullet 4"],\n'
+            f'  "sample_answer": "Band 8.5-9.0 natural model answer with advanced lexical resource and cohesive discourse markers.",\n'
+            f'  "examiner_tip": "Practical examiner guidance on how to secure Band 8+ on this specific question.",\n'
+            f'  "vocabulary": [\n'
+            f'    {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
+            f"  ]\n"
+            f"}}\n"
+            f"Only valid JSON. No markdown backticks, no explanatory preamble."
+        )
+    else:
+        theme = (payload.theme or "General Topic").strip()
+        prompt = (
+            f"You are a Senior British Council IELTS Examiner and Master Trainer for Diamond Education.\n"
+            f"Create high-scoring IELTS exam content for:\n"
+            f"Theme: {theme}\n"
+            f"Speaking Part: {part_desc}\n"
+            f"Question count: {payload.question_count}\n"
+            f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination trends and C1/C2 vocabulary'}\n\n"
+            f"Output strictly a single JSON object with the following schema:\n"
+            f"{{\n"
+            f'  "topic_title": "Concise Category Name (e.g. Artificial Intelligence, Eco-Tourism)",\n'
+            f'  "status_badge": "PREDICTED",\n'
+            f'  "questions": [\n'
+            f"    {{\n"
+            f'      "question_text": "The exact speaking prompt",\n'
+            f'      "cue_card_bullet_points": ["bullet 1", "bullet 2", "bullet 3", "bullet 4"],\n'
+            f'      "sample_answer": "Band 8.5-9.0 natural model answer with advanced lexical resource and cohesive discourse markers.",\n'
+            f'      "examiner_tip": "Practical examiner guidance on how to secure Band 8+ on this specific question.",\n'
+            f'      "vocabulary": [\n'
+            f'        {{"word": "C1/C2 Collocation or Phrase", "definition": "Clear concise English definition", "example": "Natural usage sentence"}}\n'
+            f"      ]\n"
+            f"    }}\n"
+            f"  ]\n"
+            f"}}\n"
+            f"Only valid JSON. No markdown backticks, no explanatory preamble."
+        )
 
     raw_text = ""
     # Try xAI / Grok generator
@@ -589,7 +613,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         from ai_generator import _xai_generate_text
         sys_prompt = "You are an elite IELTS Examiner for Diamond Education. Return only valid JSON."
         async with aiohttp.ClientSession() as session:
-            raw_text = await _xai_generate_text(prompt, session=session, system_content=sys_prompt, temperature=0.7)
+            raw_text = await _xai_generate_text(prompt, session=session, system_content=sys_prompt, temperature=0.5)
     except Exception as e:
         logger.warning("xAI generator failed for speaking AI: %s", e)
         raw_text = ""
@@ -607,13 +631,22 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         raise HTTPException(status_code=503, detail="Diamondvoy AI generator is temporarily unavailable")
 
     try:
-        source = str(raw_text).strip()
-        source = re.sub(r"^```(?:json)?\s*", "", source, flags=re.IGNORECASE)
-        source = re.sub(r"\s*```$", "", source)
-        start = source.find("{")
-        end = source.rfind("}") + 1
+        from ai_generator import _balanced_json_object_slice, _sanitize_json_like_text
+        cleaned = _sanitize_json_like_text(str(raw_text).strip())
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+
+        start = cleaned.find("{")
+        if start >= 0:
+            sliced = _balanced_json_object_slice(cleaned, start)
+            if sliced:
+                parsed = json.loads(sliced, strict=False)
+                return parsed
+
+        # Fallback to general slice
+        end = cleaned.rfind("}") + 1
         if start >= 0 and end > start:
-            parsed = json.loads(source[start:end])
+            parsed = json.loads(cleaned[start:end], strict=False)
             return parsed
         else:
             raise ValueError("No JSON object brackets found in response")
