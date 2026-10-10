@@ -66,7 +66,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [qText, setQText] = useState<string>("");
   const [qAnswer, setQAnswer] = useState<string>("");
   const [qBullets, setQBullets] = useState<string>("");
-  const [qTip, setQTip] = useState<string>("");
   const [qVocabWord, setQVocabWord] = useState<string>("");
   const [qVocabDef, setQVocabDef] = useState<string>("");
   const [qVocabEx, setQVocabEx] = useState<string>("");
@@ -181,7 +180,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         if (res.cue_card_bullet_points && Array.isArray(res.cue_card_bullet_points)) {
           setQBullets(res.cue_card_bullet_points.join("\n"));
         }
-        if (res.examiner_tip) setQTip(res.examiner_tip);
         if (res.vocabulary && Array.isArray(res.vocabulary)) {
           setVocabList(res.vocabulary);
         }
@@ -230,7 +228,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             question_text: q.question_text || "",
             cue_card_bullet_points: q.cue_card_bullet_points || [],
             sample_answer: q.sample_answer || "",
-            examiner_tip: q.examiner_tip || "",
             vocabulary: q.vocabulary || [],
             sort_order: 0,
           },
@@ -293,7 +290,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     setQText("");
     setQAnswer("");
     setQBullets("");
-    setQTip("");
     setVocabList([]);
     setNewQuestionModalOpen(true);
   }
@@ -304,7 +300,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     setQText(q.question_text || "");
     setQAnswer(q.sample_answer || "");
     setQBullets((q.cue_card_bullet_points || []).join("\n"));
-    setQTip(q.examiner_tip || "");
     setVocabList(q.vocabulary || []);
     setNewQuestionModalOpen(true);
   }
@@ -328,7 +323,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             question_text: qText.trim(),
             cue_card_bullet_points: bullets,
             sample_answer: qAnswer.trim(),
-            examiner_tip: qTip.trim() || null,
             vocabulary: vocabList,
           },
         });
@@ -340,7 +334,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             question_text: qText.trim(),
             cue_card_bullet_points: bullets,
             sample_answer: qAnswer.trim(),
-            examiner_tip: qTip.trim() || undefined,
             vocabulary: vocabList,
           },
         });
@@ -351,7 +344,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       setQText("");
       setQAnswer("");
       setQBullets("");
-      setQTip("");
       setVocabList([]);
       await loadData();
     } catch (e: any) {
@@ -617,7 +609,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           </div>
 
                           {/* Cue Card Bullet Points (Part 2) */}
-                          {q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
+                          {topic.part === 2 && q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
                             <div className="bg-slate-50 dark:bg-slate-950/70 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 space-y-1.5">
                               <span className="font-bold text-cyan-600 dark:text-cyan-400 uppercase text-[10px] tracking-wider block">
                                 You should say:
@@ -640,16 +632,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                               {q.sample_answer}
                             </p>
                           </div>
-
-                          {/* Examiner Tip */}
-                          {q.examiner_tip && (
-                            <div className="text-[11px] text-amber-800 dark:text-amber-200 bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/30 p-3 rounded-xl flex items-start gap-2">
-                              <span className="text-base">💡</span>
-                              <span>
-                                <strong>Examiner Tip:</strong> {q.examiner_tip}
-                              </span>
-                            </div>
-                          )}
 
                           {/* Vocabulary items */}
                           {q.vocabulary && q.vocabulary.length > 0 && (
@@ -841,7 +823,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     type="text"
                     value={aiInstruction}
                     onChange={(e) => setAiInstruction(e.target.value)}
-                    placeholder="Masalan: C1/C2 academic collocations, idiomatic expressions and examiner advice"
+                    placeholder="Masalan: C1/C2 academic collocations, idiomatic expressions"
                     className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 text-sm focus:border-cyan-500 outline-none"
                   />
                 </div>
@@ -895,7 +877,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           #{i + 1} {q.question_text}
                         </p>
 
-                        {q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
+                        {aiPart === 2 && q.cue_card_bullet_points && q.cue_card_bullet_points.length > 0 && (
                           <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-300 space-y-1">
                             <span className="font-bold text-cyan-600 dark:text-cyan-400 block text-[10px] uppercase">
                               You should say:
@@ -909,12 +891,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                         <div className="p-3 bg-blue-50/60 dark:bg-blue-950/20 border border-blue-200/80 dark:border-blue-900/30 rounded-lg text-slate-800 dark:text-slate-200 italic leading-relaxed">
                           <strong>Band 8.5–9.0 Namuna:</strong> {q.sample_answer}
                         </div>
-
-                        {q.examiner_tip && (
-                          <div className="text-[11px] text-amber-800 dark:text-amber-200 bg-amber-50/70 dark:bg-amber-950/20 p-2 rounded-lg">
-                            💡 <strong>Tip:</strong> {q.examiner_tip}
-                          </div>
-                        )}
 
                         {q.vocabulary && q.vocabulary.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 pt-1">
@@ -1087,19 +1063,6 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 value={qAnswer}
                 onChange={(e) => setQAnswer(e.target.value)}
                 placeholder="Model answer with rich lexical resource and natural discourse markers..."
-                className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                Examiner Maslahati (Tip):
-              </label>
-              <input
-                type="text"
-                value={qTip}
-                onChange={(e) => setQTip(e.target.value)}
-                placeholder="Masalan: Contrast past and present experiences using discourse markers."
                 className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm outline-none focus:border-cyan-500"
               />
             </div>
