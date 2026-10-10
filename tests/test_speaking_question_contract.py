@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from speaking_contract import question_insert_values_for_topic
+from speaking_contract import public_sample_answer, question_insert_values_for_topic
 
 
 class SpeakingQuestionContractTests(unittest.TestCase):
@@ -55,3 +55,13 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         values = question_insert_values_for_topic(payload, {"part": 1, "subject": "russian"})
 
         self.assertEqual(values["sample_answer"], "")
+
+    def test_public_russian_question_never_exposes_a_legacy_sample_answer(self) -> None:
+        self.assertEqual(
+            public_sample_answer("Legacy answer that must stay private", "russian"),
+            "",
+        )
+        self.assertEqual(
+            public_sample_answer("English model answer", "english"),
+            "English model answer",
+        )
