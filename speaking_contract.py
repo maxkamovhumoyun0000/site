@@ -38,6 +38,17 @@ def normalize_batch_topic_count(value: Any) -> int:
     return count
 
 
+def individual_ai_topic_generation_count(value: Any) -> int:
+    """Return the number of standalone AI calls required for a topic batch.
+
+    A single large response with several topics, long model answers, and
+    vocabulary can be truncated by an AI provider. Generating each topic as a
+    normal one-topic response keeps every response within its output budget.
+    """
+    count = normalize_batch_topic_count(value)
+    return count if count > 1 else 0
+
+
 def public_sample_answer(value: Any, subject: Any) -> str:
     """Return an answer only for subjects that are allowed to expose one."""
     if str(subject or "english").strip().lower() in {"russian", "ru"}:

@@ -19,6 +19,7 @@ import push_notifications
 from speaking_contract import (
     MAX_BATCH_TOPIC_COUNT,
     display_topic_status,
+    individual_ai_topic_generation_count,
     normalize_batch_topic_count,
     normalize_topic_status,
     public_sample_answer,
@@ -600,6 +601,54 @@ async def delete_staff_question(question_id: int, authorization: str | None = He
 
 
 # --- AI TOPIC & QUESTIONS GENERATOR (DIAMONDVOY) ---
+async def _generate_batch_topics_individually(
+    payload: AiGenerateRequest,
+    authorization: str | None,
+    topic_count: int,
+) -> dict[str, Any]:
+    """Generate one topic per AI response so long batches cannot be truncated."""
+    subject = (payload.subject or "english").strip().lower()
+    generated_topics: list[dict[str, Any]] = []
+    prior_titles: list[str] = []
+
+    for index in range(topic_count):
+        prior_title_note = ", ".join(prior_titles[-4:]) or "none"
+        batch_instruction = (
+            f"This is topic {index + 1} of {topic_count} in one batch. Generate a distinctly different "
+            f"topic; do not overlap with these already generated titles: {prior_title_note}."
+        )
+        custom_instruction = " ".join(
+            part.strip()
+            for part in (payload.custom_instruction or "", batch_instruction)
+            if part.strip()
+        )
+        one_topic_payload = payload.model_copy(
+            update={"topic_count": 1, "custom_instruction": custom_instruction}
+        )
+        generated = await generate_speaking_ai_content(one_topic_payload, authorization)
+        questions = generated.get("questions") if isinstance(generated, dict) else None
+        if not isinstance(questions, list) or not questions:
+            raise HTTPException(
+                status_code=502,
+                detail=f"AI did not return questions for batch topic {index + 1}",
+            )
+        title = str(generated.get("topic_title") or payload.theme or f"Speaking Topic {index + 1}").strip()
+        prior_titles.append(title)
+        try:
+            status_badge = normalize_topic_status(generated.get("status_badge") or "PREDICTED")
+        except ValueError:
+            status_badge = "PREDICTED"
+        generated_topics.append(
+            {
+                "topic_title": title,
+                "status_badge": status_badge,
+                "questions": questions,
+            }
+        )
+
+    return {"topics": generated_topics, "subject": subject}
+
+
 @router.post("/staff/speaking/ai-generate")
 async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization: str | None = Header(default=None)):
     """Generates complete IELTS Speaking topics, questions, Band 8-9 answers, and vocabulary using Diamondvoy."""
@@ -608,6 +657,11 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     subject_val = (payload.subject or "english").strip().lower()
     is_russian = subject_val == "russian"
     batch_topic_count = normalize_batch_topic_count(payload.topic_count)
+    individual_generation_count = individual_ai_topic_generation_count(batch_topic_count)
+    if individual_generation_count and not (payload.question_text and payload.question_text.strip()):
+        return await _generate_batch_topics_individually(
+            payload, authorization, individual_generation_count
+        )
 
     if is_russian:
         is_single_question = bool(payload.question_text and payload.question_text.strip())
