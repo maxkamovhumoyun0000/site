@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 from db import get_conn
 import push_notifications
 from speaking_contract import (
+    MAX_BATCH_TOPIC_COUNT,
+    normalize_batch_topic_count,
     normalize_topic_status,
     public_sample_answer,
     question_insert_values_for_topic,
@@ -169,9 +171,32 @@ class AiGenerateRequest(BaseModel):
     theme: str | None = None
     part: int = Field(default=1, ge=1, le=3)
     question_count: int = Field(default=2, ge=1, le=10)
+    topic_count: int = Field(default=1, ge=1, le=MAX_BATCH_TOPIC_COUNT)
     custom_instruction: str | None = None
     question_text: str | None = None
     subject: str = Field(default="english", max_length=32)
+
+
+class BatchQuestionCreateRequest(BaseModel):
+    question_text: str = Field(..., min_length=1, max_length=3000)
+    cue_card_bullet_points: list[str] = Field(default_factory=list, max_length=6)
+    sample_answer: str = Field(default="", max_length=15000)
+    examiner_tip: str | None = None
+    vocabulary: list[dict[str, Any]] = Field(default_factory=list)
+    sort_order: int = 0
+
+
+class BatchTopicCreateItem(BaseModel):
+    part: int = Field(default=1, ge=1, le=3)
+    title: str = Field(..., min_length=1, max_length=180)
+    status_badge: str = Field(default="PREDICTED", max_length=50)
+    sort_order: int = 0
+    questions: list[BatchQuestionCreateRequest] = Field(..., min_length=1, max_length=10)
+
+
+class TopicBatchCreateRequest(BaseModel):
+    subject: str = Field(default="english", max_length=32)
+    topics: list[BatchTopicCreateItem] = Field(..., min_length=1, max_length=MAX_BATCH_TOPIC_COUNT)
 
 
 class NotificationSendRequest(BaseModel):
@@ -355,6 +380,62 @@ async def create_staff_topic(payload: TopicCreateRequest, authorization: str | N
         conn.close()
 
 
+@router.post("/staff/speaking/topics/batch")
+async def create_staff_topic_batch(payload: TopicBatchCreateRequest, authorization: str | None = Header(default=None)):
+    """Create several topics and all of their questions atomically."""
+    _auth_staff(authorization)
+    ensure_speaking_tables()
+    subject = (payload.subject or "english").strip().lower()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        created_topics = []
+        for item in payload.topics:
+            try:
+                status_badge = normalize_topic_status(item.status_badge)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            cur.execute(
+                """
+                INSERT INTO speaking_topics (part, title, status_badge, sort_order, subject)
+                VALUES (?, ?, ?, ?, ?)
+                RETURNING id, part, title, status_badge, sort_order, subject
+                """,
+                (item.part, item.title.strip(), status_badge, item.sort_order, subject),
+            )
+            topic = dict(cur.fetchone())
+            question_count = 0
+            for question in item.questions:
+                values = question_insert_values_for_topic(question, topic)
+                cur.execute(
+                    """
+                    INSERT INTO speaking_questions (topic_id, part, question_text, cue_card_bullet_points, sample_answer, examiner_tip, vocabulary_json, sort_order, subject)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        topic["id"],
+                        values["part"],
+                        values["question_text"],
+                        json.dumps(values["cue_card_bullet_points"]) if values["cue_card_bullet_points"] else None,
+                        values["sample_answer"],
+                        values["examiner_tip"],
+                        json.dumps(values["vocabulary"]) if values["vocabulary"] else None,
+                        values["sort_order"],
+                        values["subject"],
+                    ),
+                )
+                question_count += 1
+            created_topics.append({**topic, "question_count": question_count})
+        conn.commit()
+        return {"topics": created_topics}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 @router.patch("/staff/speaking/topics/{topic_id}")
 async def update_staff_topic(topic_id: int, payload: TopicUpdateRequest, authorization: str | None = Header(default=None)):
     _auth_staff(authorization)
@@ -525,6 +606,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
 
     subject_val = (payload.subject or "english").strip().lower()
     is_russian = subject_val == "russian"
+    batch_topic_count = normalize_batch_topic_count(payload.topic_count)
 
     if is_russian:
         is_single_question = bool(payload.question_text and payload.question_text.strip())
@@ -651,6 +733,16 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"}}\n"
                 f"Only valid JSON. No markdown backticks, no explanations outside JSON."
             )
+
+    if not is_single_question and batch_topic_count > 1:
+        answer_field = "" if is_russian else ', "sample_answer": "Model answer"'
+        prompt += (
+            f"\nIMPORTANT: Create exactly {batch_topic_count} DISTINCT topics, each with exactly "
+            f"{payload.question_count} questions. Return one JSON object using this schema only:\n"
+            f'{{"topics": [{{"topic_title": "Distinct topic name", "status_badge": "PREDICTED", '
+            f'"questions": [{{"question_text": "Question"{answer_field}, "vocabulary": []}}]}}]}}\n'
+            "Do not return a top-level 'questions' field in batch mode."
+        )
 
     raw_text = ""
     # Try xAI / Grok generator
@@ -786,6 +878,47 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                         })
             q["vocabulary"] = [v for v in norm_v if v.get("word")]
             return q
+
+        if not is_single_question and batch_topic_count > 1:
+            raw_topics = parsed.get("topics")
+            if not isinstance(raw_topics, list):
+                raise ValueError("Batch response must contain a topics array")
+
+            normalized_topics = []
+            for index, raw_topic in enumerate(raw_topics[:batch_topic_count]):
+                if not isinstance(raw_topic, dict):
+                    continue
+                raw_questions = raw_topic.get("questions")
+                if not isinstance(raw_questions, list):
+                    for alt_key in ("items", "question_list", "data", "list", "results"):
+                        if isinstance(raw_topic.get(alt_key), list):
+                            raw_questions = raw_topic[alt_key]
+                            break
+                normalized_questions = [
+                    _normalize_item(question, is_russian, payload.part)
+                    for question in (raw_questions or [])
+                    if isinstance(question, dict)
+                ][:payload.question_count]
+                if len(normalized_questions) != payload.question_count:
+                    raise ValueError(
+                        f"Batch topic {index + 1} must contain {payload.question_count} questions"
+                    )
+                try:
+                    status_badge = normalize_topic_status(raw_topic.get("status_badge") or "PREDICTED")
+                except ValueError:
+                    status_badge = "PREDICTED"
+                title = str(raw_topic.get("topic_title") or raw_topic.get("title") or "").strip()
+                if not title:
+                    title = f"{(payload.theme or 'Speaking Topic').strip()} {index + 1}"
+                normalized_topics.append({
+                    "topic_title": title,
+                    "status_badge": status_badge,
+                    "questions": normalized_questions,
+                })
+
+            if len(normalized_topics) != batch_topic_count:
+                raise ValueError(f"Batch response must contain exactly {batch_topic_count} topics")
+            return {"topics": normalized_topics, "subject": subject_val}
 
         if is_single_question:
             if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:

@@ -56,11 +56,12 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
 
   // AI Modal State
   const [aiModalOpen, setAiModalOpen] = useState<boolean>(false);
-  const [aiMode, setAiMode] = useState<"new_topic" | "existing_topic">("new_topic");
+  const [aiMode, setAiMode] = useState<"new_topic" | "existing_topic" | "batch_topics">("new_topic");
   const [aiTargetTopicId, setAiTargetTopicId] = useState<number | null>(null);
   const [aiTheme, setAiTheme] = useState<string>("");
   const [aiPart, setAiPart] = useState<number>(1);
   const [aiCount, setAiCount] = useState<number>(2);
+  const [aiTopicCount, setAiTopicCount] = useState<number>(2);
   const [aiInstruction, setAiInstruction] = useState<string>("");
   const [aiLoading, setAiLoading] = useState<boolean>(false);
   const [aiError, setAiError] = useState<string | null>(null);
@@ -153,6 +154,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     setAiMode("new_topic");
     setAiPart(activeSubject === "russian" ? 1 : (part || activePart));
     setAiTargetTopicId(null);
+    setAiTopicCount(2);
     setAiTheme("");
     setAiInstruction("");
     setAiGeneratedResult(null);
@@ -188,12 +190,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           part: activeSubject === "russian" ? 1 : aiPart,
           subject: activeSubject,
           question_count: aiCount,
+          topic_count: aiMode === "batch_topics" ? aiTopicCount : 1,
           custom_instruction: aiInstruction.trim() || undefined,
         },
         timeoutMs: 90000,
       });
 
-      if (res && (res.questions || res.question_text)) {
+      if (res && (res.topics || res.questions || res.question_text)) {
         // If single question returned format to list
         if (!res.questions && res.question_text) {
           setAiGeneratedResult({
@@ -271,6 +274,44 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     setAiLoading(true);
     setAiError(null);
     try {
+      if (aiMode === "batch_topics") {
+        const generatedTopics = Array.isArray(aiGeneratedResult.topics) ? aiGeneratedResult.topics : [];
+        if (generatedTopics.length === 0) {
+          throw new Error("Bir nechta mavzu uchun AI javobi topilmadi.");
+        }
+        const batchRes = await apiFetch("/staff/speaking/topics/batch", {
+          method: "POST",
+          body: {
+            subject: activeSubject,
+            topics: generatedTopics.map((topic: any) => ({
+              part: activeSubject === "russian" ? 1 : aiPart,
+              title: String(topic.topic_title || topic.title || "Mavzu").trim(),
+              status_badge: normalizedTopicStatus(topic.status_badge),
+              sort_order: 0,
+              questions: (topic.questions || []).map((q: any) => ({
+                question_text: String(q.question_text || q.question || q.prompt || "Savol").trim(),
+                cue_card_bullet_points: activeSubject === "russian" ? [] : (q.cue_card_bullet_points || []),
+                sample_answer: activeSubject === "russian" ? "" : String(q.sample_answer || q.model_answer || q.answer || "").trim(),
+                vocabulary: q.vocabulary || [],
+                sort_order: 0,
+              })),
+            })),
+          },
+        });
+        const createdTopics = batchRes?.topics || [];
+        if (createdTopics.length === 0) {
+          throw new Error("Mavzular bazaga yozilmadi.");
+        }
+        alert(`✨ ${createdTopics.length} ta mavzu va savollari muvaffaqiyatli saqlandi!`);
+        setAiModalOpen(false);
+        setAiGeneratedResult(null);
+        setAiTheme("");
+        setAiInstruction("");
+        setExpandedTopicId(createdTopics[0].id);
+        await loadData();
+        return;
+      }
+
       let finalTopicId = aiTargetTopicId;
 
       if (aiMode === "new_topic" || !finalTopicId) {
@@ -863,7 +904,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             {!aiGeneratedResult ? (
               <div className="space-y-5">
                 {/* Mode Selector */}
-                <div className="grid grid-cols-2 gap-3 p-1 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-1 bg-slate-100 dark:bg-slate-950 rounded-2xl border border-slate-200 dark:border-slate-800">
                   <button
                     type="button"
                     onClick={() => {
@@ -877,6 +918,22 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     }`}
                   >
                     ✨ Yangi Mavzu & Savollar Ochish
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiMode("batch_topics");
+                      setAiTargetTopicId(null);
+                      setAiTopicCount(Math.max(2, aiTopicCount));
+                    }}
+                    className={`py-2.5 px-3 rounded-xl font-bold text-xs transition-all ${
+                      aiMode === "batch_topics"
+                        ? "bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-sm"
+                        : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                    }`}
+                  >
+                    🗂️ Bir Nechta Mavzu & Savollar
                   </button>
 
                   <button
@@ -930,7 +987,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
 
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                    Mavzu mavzusi yoki kalit so'z (Theme):
+                    {aiMode === "batch_topics" ? "Mavzular yo'nalishi yoki kalit so'z (Theme):" : "Mavzu mavzusi yoki kalit so'z (Theme):"}
                   </label>
                   <input
                     type="text"
@@ -966,7 +1023,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
 
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
-                      Savollar soni:
+                      {aiMode === "batch_topics" ? "Har bir mavzu uchun savollar soni:" : "Savollar soni:"}
                     </label>
                     <input
                       type="number"
@@ -978,6 +1035,25 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     />
                   </div>
                 </div>
+
+                {aiMode === "batch_topics" && (
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
+                      Mavzular soni:
+                    </label>
+                    <input
+                      type="number"
+                      min={2}
+                      max={5}
+                      value={aiTopicCount}
+                      onChange={(e) => setAiTopicCount(Math.max(2, Math.min(5, Number(e.target.value) || 2)))}
+                      className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none"
+                    />
+                    <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                      Bir marta generatsiya qilinadi va tasdiqlaganda barcha mavzu hamda savollar birga saqlanadi.
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300 mb-1.5">
@@ -1007,7 +1083,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     ) : (
                       <>
                         <span className="text-base">✨</span>
-                        <span>Mavzu va Savollarni Generatsiya Qilish</span>
+                        <span>{aiMode === "batch_topics" ? "Mavzular va Savollarni Generatsiya Qilish" : "Mavzu va Savollarni Generatsiya Qilish"}</span>
                       </>
                     )}
                   </button>
@@ -1016,6 +1092,33 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             ) : (
               /* Preview of Generated Content */
               <div className="space-y-5">
+                {aiMode === "batch_topics" ? (
+                  <div className="p-5 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-cyan-500/30 space-y-3">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
+                        Birgalikda saqlanadigan mavzular:
+                      </span>
+                      <h4 className="text-lg font-bold text-slate-900 dark:text-white">
+                        {aiGeneratedResult.topics?.length || 0} ta mavzu · har birida {aiCount} ta savol
+                      </h4>
+                    </div>
+                    {(aiGeneratedResult.topics || []).map((topic: any, index: number) => (
+                      <div key={index} className="p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-bold text-sm text-slate-900 dark:text-white">
+                            #{index + 1} {topic.topic_title || topic.title || "Mavzu"}
+                          </span>
+                          <span className="px-2 py-0.5 text-[10px] font-black uppercase rounded-md bg-cyan-500/15 text-cyan-700 dark:text-cyan-300">
+                            {normalizedTopicStatus(topic.status_badge)}
+                          </span>
+                        </div>
+                        <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                          {(topic.questions || []).length} ta savol tayyorlandi
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
                 <div className="p-5 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-cyan-500/30 space-y-4">
                   <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
                     <div>
@@ -1074,6 +1177,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     ))}
                   </div>
                 </div>
+                )}
 
                 <div className="flex items-center gap-3 pt-2">
                   <button

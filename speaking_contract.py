@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
+MAX_BATCH_TOPIC_COUNT = 5
 
 
 def normalize_topic_status(value: Any) -> str:
@@ -12,6 +13,19 @@ def normalize_topic_status(value: Any) -> str:
     if status not in TOPIC_STATUS_BADGES:
         raise ValueError("status_badge must be COMMON, PREDICTED, or HIGH FREQUENCY")
     return status
+
+
+def normalize_batch_topic_count(value: Any) -> int:
+    """Validate the number of topics generated or saved in one batch."""
+    if isinstance(value, bool):
+        raise ValueError(f"topic_count must be between 1 and {MAX_BATCH_TOPIC_COUNT}")
+    try:
+        count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"topic_count must be between 1 and {MAX_BATCH_TOPIC_COUNT}") from exc
+    if not 1 <= count <= MAX_BATCH_TOPIC_COUNT:
+        raise ValueError(f"topic_count must be between 1 and {MAX_BATCH_TOPIC_COUNT}")
+    return count
 
 
 def public_sample_answer(value: Any, subject: Any) -> str:
