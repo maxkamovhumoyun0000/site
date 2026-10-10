@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from db import get_conn
 import push_notifications
-from speaking_contract import question_insert_values_for_topic
+from speaking_contract import normalize_topic_status, question_insert_values_for_topic
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -331,13 +331,17 @@ async def create_staff_topic(payload: TopicCreateRequest, authorization: str | N
     cur = conn.cursor()
     try:
         subj = (payload.subject or "english").strip().lower()
+        try:
+            status_badge = normalize_topic_status(payload.status_badge)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         cur.execute(
             """
             INSERT INTO speaking_topics (part, title, status_badge, sort_order, subject)
             VALUES (?, ?, ?, ?, ?)
             RETURNING id, part, title, status_badge, sort_order, subject
             """,
-            (payload.part, payload.title.strip(), payload.status_badge.strip(), payload.sort_order, subj),
+            (payload.part, payload.title.strip(), status_badge, payload.sort_order, subj),
         )
         row = cur.fetchone()
         conn.commit()
@@ -366,8 +370,12 @@ async def update_staff_topic(topic_id: int, payload: TopicUpdateRequest, authori
             updates.append("title = ?")
             params.append(payload.title.strip())
         if payload.status_badge is not None:
+            try:
+                status_badge = normalize_topic_status(payload.status_badge)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             updates.append("status_badge = ?")
-            params.append(payload.status_badge.strip())
+            params.append(status_badge)
         if payload.sort_order is not None:
             updates.append("sort_order = ?")
             params.append(payload.sort_order)

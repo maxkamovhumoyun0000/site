@@ -33,6 +33,15 @@ type SpeakingTopic = {
   question_count: number;
 };
 
+const TOPIC_STATUS_OPTIONS = ["COMMON", "PREDICTED", "HIGH FREQUENCY"] as const;
+
+function normalizedTopicStatus(value?: string) {
+  const status = (value || "").trim().toUpperCase();
+  return TOPIC_STATUS_OPTIONS.includes(status as (typeof TOPIC_STATUS_OPTIONS)[number])
+    ? status
+    : "PREDICTED";
+}
+
 interface AdminSpeakingTopicsProps {
   apiFetch: (path: string, options?: { method?: string; body?: any; timeoutMs?: number; signal?: AbortSignal }) => Promise<any>;
 }
@@ -272,7 +281,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             part: activeSubject === "russian" ? 1 : aiPart,
             subject: activeSubject,
             title: aiGeneratedResult.topic_title || aiTheme.trim(),
-            status_badge: aiGeneratedResult.status_badge || "PREDICTED",
+            status_badge: normalizedTopicStatus(aiGeneratedResult.status_badge),
             sort_order: 0,
           },
         });
@@ -332,7 +341,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           part: activeSubject === "russian" ? 1 : newTopicPart,
           subject: activeSubject,
           title: newTopicTitle.trim(),
-          status_badge: newTopicBadge.trim() || "PREDICTED",
+          status_badge: normalizedTopicStatus(newTopicBadge),
         },
       });
       setNewTopicModalOpen(false);
@@ -341,6 +350,20 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       await loadData();
     } catch (e: any) {
       alert("Xatolik: " + (e?.message || String(e)));
+    }
+  }
+
+  async function handleTopicStatusChange(topic: SpeakingTopic, statusBadge: string) {
+    try {
+      const res = await apiFetch(`/staff/speaking/topics/${topic.id}`, {
+        method: "PATCH",
+        body: { status_badge: normalizedTopicStatus(statusBadge) },
+      });
+      if (res?.topic) {
+        setTopics((current) => current.map((item) => (item.id === topic.id ? { ...item, ...res.topic } : item)));
+      }
+    } catch (e: any) {
+      alert("Mavzu statusini saqlashda xatolik: " + (e?.message || String(e)));
     }
   }
 
@@ -627,9 +650,26 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                         <h3 className="text-base md:text-lg font-bold text-slate-900 dark:text-white truncate">
                           {topic.title}
                         </h3>
-                        <span className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30">
-                          {topic.status_badge || "PREDICTED"}
-                        </span>
+                        <label className="sr-only" htmlFor={`topic-status-${topic.id}`}>
+                          {topic.title} statusi
+                        </label>
+                        <select
+                          id={`topic-status-${topic.id}`}
+                          value={normalizedTopicStatus(topic.status_badge)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            void handleTopicStatusChange(topic, e.target.value);
+                          }}
+                          className="px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 cursor-pointer outline-none focus:ring-2 focus:ring-cyan-500"
+                          title="Mavzu statusini o'zgartirish"
+                        >
+                          {TOPIC_STATUS_OPTIONS.map((status) => (
+                            <option key={status} value={status}>
+                              {status}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                         {topicQuestions.length} ta savol va Band 9 namuna javoblar

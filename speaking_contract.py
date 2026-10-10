@@ -3,6 +3,16 @@ from __future__ import annotations
 
 from typing import Any
 
+TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
+
+
+def normalize_topic_status(value: Any) -> str:
+    """Return the canonical status badge accepted for a Speaking topic."""
+    status = str(value or "").strip().upper()
+    if status not in TOPIC_STATUS_BADGES:
+        raise ValueError("status_badge must be COMMON, PREDICTED, or HIGH FREQUENCY")
+    return status
+
 
 def question_insert_values_for_topic(payload: Any, topic: dict[str, Any]) -> dict[str, Any]:
     """Build a question record from its parent topic, not client-provided filters.
