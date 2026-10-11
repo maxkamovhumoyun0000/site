@@ -705,7 +705,7 @@ async def _generate_batch_topics_individually(
     topic_question_targets = variable_batch_question_targets(
         requested_questions,
         topic_count,
-        f"{payload.subject}|{payload.part}|{payload.theme}|{payload.custom_instruction}",
+        f"{payload.subject}|{payload.part}|{payload.theme}|{payload.custom_instruction}|{datetime.now().isoformat()}",
     )
     planned_total_questions = sum(topic_question_targets)
     replacement_semaphore = asyncio.Semaphore(3)
