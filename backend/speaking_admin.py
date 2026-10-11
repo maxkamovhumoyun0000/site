@@ -5,6 +5,7 @@ AI generation (via Diamondvoy / xAI / Gemini), and broadcast push notifications.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -18,9 +19,11 @@ from db import get_conn
 import push_notifications
 from speaking_contract import (
     MAX_BATCH_TOPIC_COUNT,
+    MAX_QUESTION_GENERATION_COUNT,
     display_topic_status,
     individual_ai_topic_generation_count,
     normalize_batch_topic_count,
+    normalize_question_generation_count,
     normalize_topic_status,
     public_sample_answer,
     question_insert_values_for_topic,
@@ -28,6 +31,9 @@ from speaking_contract import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+AI_PRIMARY_GENERATION_TIMEOUT_SECONDS = 90
+AI_FALLBACK_GENERATION_TIMEOUT_SECONDS = 60
 
 MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer", "teacher", "support"}
 
@@ -172,7 +178,7 @@ class QuestionUpdateRequest(BaseModel):
 class AiGenerateRequest(BaseModel):
     theme: str | None = None
     part: int = Field(default=1, ge=1, le=3)
-    question_count: int = Field(default=2, ge=1, le=10)
+    question_count: int = Field(default=2, ge=1, le=MAX_QUESTION_GENERATION_COUNT)
     topic_count: int = Field(default=1, ge=1, le=MAX_BATCH_TOPIC_COUNT)
     custom_instruction: str | None = None
     question_text: str | None = None
@@ -657,6 +663,8 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     subject_val = (payload.subject or "english").strip().lower()
     is_russian = subject_val == "russian"
     batch_topic_count = normalize_batch_topic_count(payload.topic_count)
+    question_count = normalize_question_generation_count(payload.question_count)
+    payload = payload.model_copy(update={"question_count": question_count})
     individual_generation_count = individual_ai_topic_generation_count(batch_topic_count)
     if individual_generation_count and not (payload.question_text and payload.question_text.strip()):
         return await _generate_batch_topics_individually(
@@ -808,7 +816,22 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         from ai_generator import _xai_generate_text
         sys_prompt = "You are a master Russian language conversation teacher for Diamond Education. Return only valid JSON." if is_russian else "You are an elite IELTS Examiner for Diamond Education. Return only valid JSON."
         async with aiohttp.ClientSession() as session:
-            raw_text = await _xai_generate_text(prompt, session=session, system_content=sys_prompt, temperature=0.5)
+            raw_text = await asyncio.wait_for(
+                _xai_generate_text(
+                    prompt,
+                    session=session,
+                    system_content=sys_prompt,
+                    temperature=0.5,
+                ),
+                timeout=AI_PRIMARY_GENERATION_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Speaking AI primary generation timed out after %ss subject=%s",
+            AI_PRIMARY_GENERATION_TIMEOUT_SECONDS,
+            subject_val,
+        )
+        raw_text = ""
     except Exception as e:
         logger.warning("xAI generator failed for speaking AI: %s", e)
         raw_text = ""
@@ -819,7 +842,17 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             from diamondvoy_helpers import diamondvoy_gemini_answer
             lang_code = "ru" if is_russian else "en"
             subjects_list = ["Russian"] if is_russian else ["English"]
-            raw_text = await diamondvoy_gemini_answer(prompt, subjects=subjects_list, lang=lang_code)
+            raw_text = await asyncio.wait_for(
+                diamondvoy_gemini_answer(prompt, subjects=subjects_list, lang=lang_code),
+                timeout=AI_FALLBACK_GENERATION_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Speaking AI fallback timed out after %ss subject=%s",
+                AI_FALLBACK_GENERATION_TIMEOUT_SECONDS,
+                subject_val,
+            )
+            raw_text = ""
         except Exception as e:
             logger.warning("Diamondvoy gemini fallback failed: %s", e)
             raw_text = ""

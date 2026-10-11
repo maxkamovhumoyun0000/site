@@ -6,6 +6,7 @@ from typing import Any
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
 PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
 MAX_BATCH_TOPIC_COUNT = 5
+MAX_QUESTION_GENERATION_COUNT = 10
 
 
 def normalize_topic_status(value: Any) -> str:
@@ -47,6 +48,25 @@ def individual_ai_topic_generation_count(value: Any) -> int:
     """
     count = normalize_batch_topic_count(value)
     return count if count > 1 else 0
+
+
+def normalize_question_generation_count(value: Any) -> int:
+    """Validate the number of questions requested from the Speaking AI."""
+    if isinstance(value, bool):
+        raise ValueError(
+            f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
+        )
+    try:
+        count = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
+        ) from exc
+    if not 1 <= count <= MAX_QUESTION_GENERATION_COUNT:
+        raise ValueError(
+            f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
+        )
+    return count
 
 
 def public_sample_answer(value: Any, subject: Any) -> str:
