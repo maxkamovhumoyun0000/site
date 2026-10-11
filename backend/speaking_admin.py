@@ -6,13 +6,15 @@ AI generation (via Diamondvoy / xAI / Gemini), and broadcast push notifications.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 from typing import Any
 from datetime import datetime
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -217,7 +219,10 @@ class NotificationSendRequest(BaseModel):
 # --- PUBLIC API (FOR FLUTTER APP) ---
 @router.get("/api/speaking/content")
 @router.get("/speaking/content")
-async def get_speaking_content(subject: str | None = Query(default=None)):
+async def get_speaking_content(
+    request: Request,
+    subject: str | None = Query(default=None),
+):
     """Returns all topics and questions for Diamond Speaking Questions app."""
     ensure_speaking_tables()
     conn = get_conn()
@@ -289,7 +294,21 @@ async def get_speaking_content(subject: str | None = Query(default=None)):
                 "vocabulary": vocab_items,
             })
 
-        return {"topics": topics, "questions": questions}
+        payload = {"topics": topics, "questions": questions}
+        # The mobile app sends this value back on its next sync. An unchanged
+        # content set gets a tiny 304 response instead of downloading every
+        # English and Russian question again.
+        content_bytes = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        etag = f'"{hashlib.sha256(content_bytes).hexdigest()}"'
+        headers = {"ETag": etag, "Cache-Control": "no-cache"}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return JSONResponse(content=payload, headers=headers)
     finally:
         conn.close()
 
