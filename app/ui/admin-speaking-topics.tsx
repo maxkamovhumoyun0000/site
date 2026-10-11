@@ -208,6 +208,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           subject: activeSubject,
           question_count: questionCount,
           topic_count: topicCount,
+          existing_topic_id: aiMode === "existing_topic" ? aiTargetTopicId || undefined : undefined,
           custom_instruction: aiInstruction.trim() || undefined,
         },
         timeoutMs: 30000,
@@ -1056,7 +1057,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                       className="w-full px-4 py-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white text-sm focus:border-cyan-500 outline-none"
                     />
                     <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                      Maksimum 10 ta savol generatsiya qilinadi.
+                      Bu maksimum: 10 tanlansa ham 4–10 ta sifatli savol yetarli bo‘ladi.
                     </p>
                   </div>
                 </div>

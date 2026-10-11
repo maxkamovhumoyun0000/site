@@ -8,6 +8,7 @@ TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
 PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
 MAX_BATCH_TOPIC_COUNT = 5
 MAX_QUESTION_GENERATION_COUNT = 10
+MIN_BATCH_QUESTIONS_PER_TOPIC = 4
 
 
 def normalize_topic_status(value: Any) -> str:
@@ -68,6 +69,16 @@ def normalize_question_generation_count(value: Any) -> int:
             f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
         )
     return count
+
+
+def minimum_questions_for_requested_limit(value: Any) -> int:
+    """Return the minimum useful batch size without forcing the selected cap.
+
+    The media admin's value is a maximum.  A request for ten should not fail
+    merely because the provider supplied four strong questions, while requests
+    below four retain their exact requested count.
+    """
+    return min(normalize_question_generation_count(value), MIN_BATCH_QUESTIONS_PER_TOPIC)
 
 
 def part_two_cue_card_fallback(question_text: Any) -> list[str]:

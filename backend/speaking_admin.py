@@ -24,6 +24,7 @@ from speaking_contract import (
     MAX_QUESTION_GENERATION_COUNT,
     display_topic_status,
     individual_ai_topic_generation_count,
+    minimum_questions_for_requested_limit,
     normalize_batch_topic_count,
     normalize_question_generation_count,
     normalize_topic_status,
@@ -205,6 +206,7 @@ class AiGenerateRequest(BaseModel):
     topic_count: int = Field(default=1, ge=1, le=MAX_BATCH_TOPIC_COUNT)
     custom_instruction: str | None = None
     question_text: str | None = None
+    existing_topic_id: int | None = Field(default=None, ge=1)
     subject: str = Field(default="english", max_length=32)
 
 
@@ -647,6 +649,40 @@ async def delete_staff_question(question_id: int, authorization: str | None = He
 
 
 # --- AI TOPIC & QUESTIONS GENERATOR (DIAMONDVOY) ---
+def _question_comparison_key(value: Any) -> str:
+    """Normalize only harmless formatting differences for duplicate checks."""
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _load_existing_topic_questions(topic_id: int, subject: str) -> tuple[str, list[str]]:
+    """Read the authoritative questions already stored in an admin-selected topic."""
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, title, COALESCE(subject, 'english') AS subject FROM speaking_topics WHERE id=?",
+            (topic_id,),
+        )
+        topic = cur.fetchone()
+        if not topic:
+            raise HTTPException(status_code=404, detail="Selected speaking topic was not found")
+        topic_subject = str(topic.get("subject") or "english").strip().lower()
+        if topic_subject != subject:
+            raise HTTPException(status_code=400, detail="Selected topic belongs to a different subject")
+        cur.execute(
+            "SELECT question_text FROM speaking_questions WHERE topic_id=? ORDER BY sort_order ASC, id ASC",
+            (topic_id,),
+        )
+        return str(topic.get("title") or "").strip(), [
+            str(row.get("question_text") or "").strip()
+            for row in (cur.fetchall() or [])
+            if str(row.get("question_text") or "").strip()
+        ]
+    finally:
+        conn.close()
+
+
 async def _generate_batch_topics_individually(
     payload: AiGenerateRequest,
     authorization: str | None,
@@ -658,12 +694,14 @@ async def _generate_batch_topics_individually(
     Long Part 2 answers can make a provider return one question even when ten
     were requested.  We retain all valid initial questions, then request only
     the missing items as compact one-question calls.  The returned batch is
-    therefore always exactly the size selected by the media admin.
+    therefore always has a useful minimum, without treating the selected
+    question count as a mandatory exact total.
     """
     subject = (payload.subject or "english").strip().lower()
     generated_topics: list[dict[str, Any]] = []
     prior_titles: list[str] = []
     requested_questions = payload.question_count
+    minimum_questions = minimum_questions_for_requested_limit(requested_questions)
     replacement_semaphore = asyncio.Semaphore(3)
 
     async def notify(percent: int, stage: str) -> None:
@@ -672,7 +710,7 @@ async def _generate_batch_topics_individually(
 
     for index in range(topic_count):
         await notify(
-            int((index * requested_questions) * 95 / max(1, topic_count * requested_questions)),
+            int((index * minimum_questions) * 95 / max(1, topic_count * minimum_questions)),
             f"{index + 1}/{topic_count}-mavzu tayyorlanmoqda",
         )
         prior_title_note = ", ".join(prior_titles[-4:]) or "none"
@@ -702,7 +740,7 @@ async def _generate_batch_topics_individually(
         # If the model was cut off, request the remaining questions separately.
         # They can run in parallel because each prompt is already anchored to
         # this topic title and explicitly asks for a different cue-card angle.
-        missing_count = requested_questions - len(normalized_questions)
+        missing_count = max(0, minimum_questions - len(normalized_questions))
         if missing_count > 0:
             existing_questions = "; ".join(
                 str(item.get("question_text") or "").strip()
@@ -720,7 +758,7 @@ async def _generate_batch_topics_individually(
                     for part in (
                         payload.custom_instruction or "",
                         (
-                            f"This is question {question_number} of {requested_questions} for batch topic "
+                            f"This is question {question_number} of the minimum {minimum_questions} required for batch topic "
                             f"'{title}'. Return exactly ONE complete, distinct question for this exact topic. "
                             f"Do not reuse or paraphrase these already generated questions: {existing_questions}."
                         ),
@@ -750,14 +788,14 @@ async def _generate_batch_topics_individually(
                     await notify(
                         int(
                             (
-                                index * requested_questions
+                                index * minimum_questions
                                 + len(normalized_questions)
                                 + completed_replacements
                             )
                             * 95
-                            / max(1, topic_count * requested_questions)
+                            / max(1, topic_count * minimum_questions)
                         ),
-                        f"{index + 1}/{topic_count}-mavzu: {len(normalized_questions) + completed_replacements}/{requested_questions} savol tayyor",
+                        f"{index + 1}/{topic_count}-mavzu: {len(normalized_questions) + completed_replacements}/{minimum_questions}+ savol tayyor",
                     )
                 return repaired_questions[0]
 
@@ -766,13 +804,13 @@ async def _generate_batch_topics_individually(
             )
             normalized_questions.extend(repaired_questions)
 
-        if len(normalized_questions) != requested_questions:
+        if len(normalized_questions) < minimum_questions:
             raise HTTPException(
                 status_code=502,
-                detail=f"AI returned {len(normalized_questions)} of {requested_questions} questions for batch topic {index + 1}",
+                detail=f"AI returned only {len(normalized_questions)} of the minimum {minimum_questions} questions for batch topic {index + 1}",
             )
         await notify(
-            int(((index + 1) * requested_questions) * 95 / max(1, topic_count * requested_questions)),
+            int(((index + 1) * minimum_questions) * 95 / max(1, topic_count * minimum_questions)),
             f"{index + 1}/{topic_count}-mavzu tayyor",
         )
         try:
@@ -803,6 +841,21 @@ async def _generate_speaking_ai_content(
     batch_topic_count = normalize_batch_topic_count(payload.topic_count)
     question_count = normalize_question_generation_count(payload.question_count)
     payload = payload.model_copy(update={"question_count": question_count})
+    existing_question_texts: list[str] = []
+    if payload.existing_topic_id:
+        existing_title, existing_question_texts = _load_existing_topic_questions(
+            payload.existing_topic_id, subject_val
+        )
+        # The database-selected title is authoritative for an existing topic.
+        if existing_title:
+            payload = payload.model_copy(update={"theme": existing_title})
+    existing_question_note = ""
+    if existing_question_texts:
+        existing_question_note = (
+            "\n- These questions are already stored in this topic. Do not repeat or paraphrase any of them: "
+            + " | ".join(existing_question_texts[:30])
+        )
+    minimum_questions = minimum_questions_for_requested_limit(question_count)
     individual_generation_count = individual_ai_topic_generation_count(batch_topic_count)
     if individual_generation_count and not (payload.question_text and payload.question_text.strip()):
         return await _generate_batch_topics_individually(
@@ -840,12 +893,12 @@ async def _generate_speaking_ai_content(
                 f"Тема: {theme}\n"
                 f"Количество вопросов: {payload.question_count}\n"
                 f"Требования:\n"
-                f"- КРИТИЧНО: верните ровно {payload.question_count} полных, разных объектов в массиве questions; не останавливайтесь после одного.\n"
+                f"- КРИТИЧНО: верните от {minimum_questions} до {payload.question_count} полных, разных объектов в массиве questions; не останавливайтесь после одного.\n"
                 f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
                 f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
                 f"- Самостоятельно выберите один status_badge: PREDICTED, HIGH FREQUENCY или COMMON. PREDICTED используйте только для обоснованного прогноза, актуального до конца 2026 года; HIGH FREQUENCY — только для устойчиво часто встречающейся темы; иначе COMMON.\n"
-                f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}\n\n"
+                f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}{existing_question_note}\n\n"
                 f"Выведите СТРОГО один валидный JSON-объект следующей структуры:\n"
                 f"{{\n"
                 f'  "topic_title": "{theme}",\n'
@@ -921,7 +974,7 @@ async def _generate_speaking_ai_content(
                 f"Speaking Section: {part_desc}\n"
                 f"Question count: {payload.question_count}\n"
                 f"Requirements:\n"
-                f"- CRITICAL: Return exactly {payload.question_count} complete, distinct objects inside the questions array. "
+                f"- CRITICAL: Return between {minimum_questions} and {payload.question_count} complete, distinct objects inside the questions array. "
                 f"Do not stop after one object.\n"
                 f"- {answer_req}\n"
                 f"- {bullet_req}\n"
@@ -929,7 +982,7 @@ async def _generate_speaking_ai_content(
                 f"- For every question, provide 2-3 Band 9 collocations/vocabulary items with definitions and example sentences.\n"
                 f"- Do NOT provide any examiner tips.\n"
                 f"- Choose exactly one status_badge yourself: PREDICTED, HIGH FREQUENCY, or COMMON. Use PREDICTED only for a defensible exam prediction valid through the end of 2026; use HIGH FREQUENCY only for an established recurring topic; otherwise use COMMON.\n"
-                f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination topics and Band 9 lexical resource'}\n\n"
+                f"Optional instruction: {payload.custom_instruction or 'Focus on predicted examination topics and Band 9 lexical resource'}{existing_question_note}\n\n"
                 f"Output strictly a single JSON object with the following schema:\n"
                 f"{{\n"
                 f'  "topic_title": "Concise Category Name",\n'
@@ -951,7 +1004,7 @@ async def _generate_speaking_ai_content(
     if not is_single_question and batch_topic_count > 1:
         answer_field = "" if is_russian else ', "sample_answer": "Model answer"'
         prompt += (
-            f"\nIMPORTANT: Create exactly {batch_topic_count} DISTINCT topics, each with exactly "
+            f"\nIMPORTANT: Create exactly {batch_topic_count} DISTINCT topics, each with {minimum_questions} to "
             f"{payload.question_count} questions. Return one JSON object using this schema only:\n"
             f'{{"topics": [{{"topic_title": "Distinct topic name", "status_badge": "PREDICTED | HIGH FREQUENCY | COMMON", '
             f'"questions": [{{"question_text": "Question"{answer_field}, "vocabulary": []}}]}}]}}\n'
@@ -1148,9 +1201,9 @@ async def _generate_speaking_ai_content(
                     for question in (raw_questions or [])
                     if isinstance(question, dict)
                 ][:payload.question_count]
-                if len(normalized_questions) != payload.question_count:
+                if len(normalized_questions) < minimum_questions:
                     raise ValueError(
-                        f"Batch topic {index + 1} must contain {payload.question_count} questions"
+                        f"Batch topic {index + 1} must contain at least {minimum_questions} questions"
                     )
                 try:
                     status_badge = normalize_topic_status(raw_topic.get("status_badge") or "PREDICTED")
@@ -1179,7 +1232,21 @@ async def _generate_speaking_ai_content(
             return parsed
 
         if "questions" in parsed and isinstance(parsed["questions"], list) and len(parsed["questions"]) > 0:
-            parsed["questions"] = [_normalize_item(q, is_russian, payload.part) for q in parsed["questions"] if isinstance(q, dict)]
+            normalized_items = [
+                _normalize_item(q, is_russian, payload.part)
+                for q in parsed["questions"]
+                if isinstance(q, dict)
+            ]
+            if existing_question_texts:
+                existing_keys = {_question_comparison_key(text) for text in existing_question_texts}
+                normalized_items = [
+                    item
+                    for item in normalized_items
+                    if _question_comparison_key(item.get("question_text")) not in existing_keys
+                ]
+                if not normalized_items:
+                    raise ValueError("AI only returned questions already stored in the selected topic")
+            parsed["questions"] = normalized_items
             if not parsed.get("topic_title"):
                 parsed["topic_title"] = payload.theme or ("Русский язык" if is_russian else f"Part {payload.part} Topic")
             if not parsed.get("status_badge"):

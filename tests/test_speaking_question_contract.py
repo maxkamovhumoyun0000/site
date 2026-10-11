@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from speaking_contract import (
+    minimum_questions_for_requested_limit,
     part_two_cue_card_fallback,
     public_sample_answer,
     question_insert_values_for_topic,
@@ -79,3 +80,8 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertNotEqual(travel, teacher)
         self.assertIn("memorable journey you took", travel[0])
         self.assertIn("teacher who influenced you", teacher[0])
+
+    def test_ten_is_a_generation_cap_with_four_questions_as_the_batch_minimum(self) -> None:
+        self.assertEqual(minimum_questions_for_requested_limit(10), 4)
+        self.assertEqual(minimum_questions_for_requested_limit(4), 4)
+        self.assertEqual(minimum_questions_for_requested_limit(3), 3)
