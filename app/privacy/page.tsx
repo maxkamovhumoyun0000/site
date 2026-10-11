@@ -126,6 +126,7 @@ export default function PrivacyPolicyPage() {
               <h3 className="font-semibold text-white mb-1.5">Diamond IELTS Speaking App uchun alohida izoh</h3>
               <p className="text-slate-300">
                 Speaking App akkaunt, ism, telefon raqami, profil rasmi, mikrofon, kamera yoki galereya ruxsatini so&apos;ramaydi. Ilova savol va mavzularni Diamond Education serveridan HTTPS orqali yuklaydi; qurilmada til va interfeys tanlovlari saqlanishi mumkin. Foydalanuvchi bildirishnomaga ruxsat bersa, Firebase Cloud Messaging tokeni va ilova yaratgan texnik qurilma identifikatori faqat Speaking App push-bildirishnomalarini yetkazish uchun saqlanadi.
+                Ilovada Google AdMob banner va mukofotli reklamalar ham ko&apos;rsatiladi. Reklama yetkazib berish, xavfsizlik va samaradorlikni o&apos;lchash uchun Google/AdMob rozilik holatiga muvofiq qurilma yoki reklama identifikatorlari, IP manzildan olingan taxminiy joylashuv, reklama ko&apos;rish va o&apos;zaro aloqalar, ilova diagnostikasi hamda ishlash ko&apos;rsatkichlarini qayta ishlashi mumkin.
               </p>
             </div>
           </section>
@@ -232,6 +233,9 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 <strong className="text-white">Firebase Cloud Messaging (Google LLC):</strong> Bildirishnomalarni yetkazish uchun.
+              </li>
+              <li>
+                <strong className="text-white">Google Mobile Ads / AdMob (Google LLC):</strong> Banner va mukofotli reklamalarni ko&apos;rsatish, reklama xavfsizligi, samaradorligi va foydalanuvchi roziligi boshqaruvi uchun. Bu xizmat qurilma yoki reklama identifikatorlari, IP manzildan olingan taxminiy joylashuv, reklama ma&apos;lumotlari, diagnostika va ilova ichidagi reklama bilan bog&apos;liq o&apos;zaro aloqalarni qayta ishlashi mumkin.
               </li>
             </ul>
           </section>
