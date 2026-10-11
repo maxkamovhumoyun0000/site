@@ -204,7 +204,10 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           topic_count: topicCount,
           custom_instruction: aiInstruction.trim() || undefined,
         },
-        timeoutMs: Math.max(180000, topicCount * 90000),
+        // A topic can use both bounded providers (90s primary + 60s fallback).
+        // Leave a small margin so a multi-topic Russian request is not cancelled
+        // by the browser before the server returns its controlled result.
+        timeoutMs: Math.max(180000, topicCount * 180000),
       });
 
       if (res && (res.topics || res.questions || res.question_text)) {

@@ -17,7 +17,8 @@ initially failed at import time.
 The shared contract now validates counts from 1 through 10. The admin API uses
 that contract and wraps primary/fallback provider calls with 90/60-second
 deadlines. The media UI starts count inputs blank, validates the same ranges,
-shows their maximums, and keeps a client timeout long enough for batch work.
+shows their maximums, and allows a client timeout for both bounded providers
+per batch topic.
 
 ## Verification
 
