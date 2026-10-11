@@ -27,6 +27,7 @@ from speaking_contract import (
     normalize_batch_topic_count,
     normalize_question_generation_count,
     normalize_topic_status,
+    part_two_cue_card_fallback,
     public_sample_answer,
     question_insert_values_for_topic,
 )
@@ -36,6 +37,10 @@ router = APIRouter()
 
 AI_PRIMARY_GENERATION_TIMEOUT_SECONDS = 90
 AI_FALLBACK_GENERATION_TIMEOUT_SECONDS = 60
+# A provider can be slow without being unavailable.  Jobs retry a timed-out
+# provider once with this bounded extended window before moving to fallback.
+AI_PRIMARY_RETRY_GENERATION_TIMEOUT_SECONDS = 150
+AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS = 120
 
 MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer", "teacher", "support"}
 
@@ -107,6 +112,22 @@ def ensure_speaking_tables() -> None:
                 recipient_count INTEGER DEFAULT 0,
                 status TEXT DEFAULT 'sent',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speaking_ai_generation_jobs (
+                id BIGSERIAL PRIMARY KEY,
+                created_by_user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_percent INTEGER NOT NULL DEFAULT 0,
+                stage TEXT NOT NULL DEFAULT 'Queued',
+                request_json TEXT NOT NULL,
+                result_json TEXT,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -630,13 +651,30 @@ async def _generate_batch_topics_individually(
     payload: AiGenerateRequest,
     authorization: str | None,
     topic_count: int,
+    report_progress: Any = None,
 ) -> dict[str, Any]:
-    """Generate one topic per AI response so long batches cannot be truncated."""
+    """Generate one topic per AI response and repair any truncated topic.
+
+    Long Part 2 answers can make a provider return one question even when ten
+    were requested.  We retain all valid initial questions, then request only
+    the missing items as compact one-question calls.  The returned batch is
+    therefore always exactly the size selected by the media admin.
+    """
     subject = (payload.subject or "english").strip().lower()
     generated_topics: list[dict[str, Any]] = []
     prior_titles: list[str] = []
+    requested_questions = payload.question_count
+    replacement_semaphore = asyncio.Semaphore(3)
+
+    async def notify(percent: int, stage: str) -> None:
+        if report_progress:
+            await report_progress(max(1, min(99, percent)), stage)
 
     for index in range(topic_count):
+        await notify(
+            int((index * requested_questions) * 95 / max(1, topic_count * requested_questions)),
+            f"{index + 1}/{topic_count}-mavzu tayyorlanmoqda",
+        )
         prior_title_note = ", ".join(prior_titles[-4:]) or "none"
         batch_instruction = (
             f"This is topic {index + 1} of {topic_count} in one batch. Generate a distinctly different "
@@ -650,7 +688,7 @@ async def _generate_batch_topics_individually(
         one_topic_payload = payload.model_copy(
             update={"topic_count": 1, "custom_instruction": custom_instruction}
         )
-        generated = await generate_speaking_ai_content(one_topic_payload, authorization)
+        generated = await _generate_speaking_ai_content(one_topic_payload, authorization)
         questions = generated.get("questions") if isinstance(generated, dict) else None
         if not isinstance(questions, list) or not questions:
             raise HTTPException(
@@ -659,6 +697,84 @@ async def _generate_batch_topics_individually(
             )
         title = str(generated.get("topic_title") or payload.theme or f"Speaking Topic {index + 1}").strip()
         prior_titles.append(title)
+        normalized_questions = list(questions[:requested_questions])
+
+        # If the model was cut off, request the remaining questions separately.
+        # They can run in parallel because each prompt is already anchored to
+        # this topic title and explicitly asks for a different cue-card angle.
+        missing_count = requested_questions - len(normalized_questions)
+        if missing_count > 0:
+            existing_questions = "; ".join(
+                str(item.get("question_text") or "").strip()
+                for item in normalized_questions
+                if isinstance(item, dict)
+            ) or "none"
+
+            completed_replacements = 0
+            replacement_progress_lock = asyncio.Lock()
+
+            async def generate_missing_question(question_number: int) -> dict[str, Any]:
+                nonlocal completed_replacements
+                missing_instruction = " ".join(
+                    part.strip()
+                    for part in (
+                        payload.custom_instruction or "",
+                        (
+                            f"This is question {question_number} of {requested_questions} for batch topic "
+                            f"'{title}'. Return exactly ONE complete, distinct question for this exact topic. "
+                            f"Do not reuse or paraphrase these already generated questions: {existing_questions}."
+                        ),
+                    )
+                    if part.strip()
+                )
+                one_question_payload = payload.model_copy(
+                    update={
+                        "topic_count": 1,
+                        "question_count": 1,
+                        "theme": title,
+                        "custom_instruction": missing_instruction,
+                    }
+                )
+                # Limit repair calls so a 5 × 10 batch stays reliable even if
+                # the provider applies concurrent-request limits.
+                async with replacement_semaphore:
+                    repaired = await _generate_speaking_ai_content(one_question_payload, authorization)
+                repaired_questions = repaired.get("questions") if isinstance(repaired, dict) else None
+                if not isinstance(repaired_questions, list) or not repaired_questions:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"AI did not return replacement question {question_number} for batch topic {index + 1}",
+                    )
+                async with replacement_progress_lock:
+                    completed_replacements += 1
+                    await notify(
+                        int(
+                            (
+                                index * requested_questions
+                                + len(normalized_questions)
+                                + completed_replacements
+                            )
+                            * 95
+                            / max(1, topic_count * requested_questions)
+                        ),
+                        f"{index + 1}/{topic_count}-mavzu: {len(normalized_questions) + completed_replacements}/{requested_questions} savol tayyor",
+                    )
+                return repaired_questions[0]
+
+            repaired_questions = await asyncio.gather(
+                *(generate_missing_question(len(normalized_questions) + offset + 1) for offset in range(missing_count))
+            )
+            normalized_questions.extend(repaired_questions)
+
+        if len(normalized_questions) != requested_questions:
+            raise HTTPException(
+                status_code=502,
+                detail=f"AI returned {len(normalized_questions)} of {requested_questions} questions for batch topic {index + 1}",
+            )
+        await notify(
+            int(((index + 1) * requested_questions) * 95 / max(1, topic_count * requested_questions)),
+            f"{index + 1}/{topic_count}-mavzu tayyor",
+        )
         try:
             status_badge = normalize_topic_status(generated.get("status_badge") or "PREDICTED")
         except ValueError:
@@ -667,15 +783,18 @@ async def _generate_batch_topics_individually(
             {
                 "topic_title": title,
                 "status_badge": status_badge,
-                "questions": questions,
+                "questions": normalized_questions,
             }
         )
 
     return {"topics": generated_topics, "subject": subject}
 
 
-@router.post("/staff/speaking/ai-generate")
-async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization: str | None = Header(default=None)):
+async def _generate_speaking_ai_content(
+    payload: AiGenerateRequest,
+    authorization: str | None,
+    report_progress: Any = None,
+):
     """Generates complete IELTS Speaking topics, questions, Band 8-9 answers, and vocabulary using Diamondvoy."""
     _auth_staff(authorization)
 
@@ -687,7 +806,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     individual_generation_count = individual_ai_topic_generation_count(batch_topic_count)
     if individual_generation_count and not (payload.question_text and payload.question_text.strip()):
         return await _generate_batch_topics_individually(
-            payload, authorization, individual_generation_count
+            payload, authorization, individual_generation_count, report_progress
         )
 
     if is_russian:
@@ -721,6 +840,7 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"Тема: {theme}\n"
                 f"Количество вопросов: {payload.question_count}\n"
                 f"Требования:\n"
+                f"- КРИТИЧНО: верните ровно {payload.question_count} полных, разных объектов в массиве questions; не останавливайтесь после одного.\n"
                 f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
                 f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
@@ -751,8 +871,16 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         elif payload.part == 2:
             part_desc = "Part 2 (Individual Long Turn / Cue Card)"
             answer_req = "Answer must be a COMPREHENSIVE, HIGH-SCORING MONOLOGUE (180 to 250 words, roughly 1.5 to 2 minutes of speech) addressing all 4 bullet points with chronological transitions and vivid descriptions."
-            bullet_req = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."] (strictly 4 bullet points)'
-            bullet_json_snippet = '"cue_card_bullet_points": ["Where/What it was", "Who was involved", "What happened", "And explain why..."]'
+            bullet_req = (
+                '"cue_card_bullet_points": exactly 4 concise, specific prompts tailored to THIS exact cue card. '
+                'Every question must have a different set of prompts: mention its real people, place, action, object or '
+                'experience where relevant. Never reuse a generic template such as "Where/What it was".'
+            )
+            bullet_json_snippet = (
+                '"cue_card_bullet_points": ["A specific detail from this cue card", '
+                '"A person, place or time relevant to this card", "What happened or what you did", '
+                '"And explain why this exact experience mattered"]'
+            )
         else:
             part_desc = "Part 3 (Two-way Discussion - abstract, societal and analytical topics)"
             answer_req = "Answer must be an IN-DEPTH, ANALYTICAL answer (4 to 6 sentences) using sophisticated academic hedging (e.g. 'It could be argued that...', 'From a socioeconomic perspective...'), contrasting perspectives, and a logical conclusion."
@@ -793,6 +921,8 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 f"Speaking Section: {part_desc}\n"
                 f"Question count: {payload.question_count}\n"
                 f"Requirements:\n"
+                f"- CRITICAL: Return exactly {payload.question_count} complete, distinct objects inside the questions array. "
+                f"Do not stop after one object.\n"
                 f"- {answer_req}\n"
                 f"- {bullet_req}\n"
                 f"- If Part 2, the question_text MUST start with 'Describe a/an...'.\n"
@@ -835,22 +965,29 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
         from ai_generator import _xai_generate_text
         sys_prompt = "You are a master Russian language conversation teacher for Diamond Education. Return only valid JSON." if is_russian else "You are an elite IELTS Examiner for Diamond Education. Return only valid JSON."
         async with aiohttp.ClientSession() as session:
-            raw_text = await asyncio.wait_for(
-                _xai_generate_text(
-                    prompt,
-                    session=session,
-                    system_content=sys_prompt,
-                    temperature=0.5,
-                ),
-                timeout=AI_PRIMARY_GENERATION_TIMEOUT_SECONDS,
-            )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "Speaking AI primary generation timed out after %ss subject=%s",
-            AI_PRIMARY_GENERATION_TIMEOUT_SECONDS,
-            subject_val,
-        )
-        raw_text = ""
+            for timeout_seconds in (
+                AI_PRIMARY_GENERATION_TIMEOUT_SECONDS,
+                AI_PRIMARY_RETRY_GENERATION_TIMEOUT_SECONDS,
+            ):
+                try:
+                    raw_text = await asyncio.wait_for(
+                        _xai_generate_text(
+                            prompt,
+                            session=session,
+                            system_content=sys_prompt,
+                            temperature=0.5,
+                        ),
+                        timeout=timeout_seconds,
+                    )
+                    if str(raw_text or "").strip():
+                        break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Speaking AI primary generation timed out after %ss subject=%s; retrying=%s",
+                        timeout_seconds,
+                        subject_val,
+                        timeout_seconds != AI_PRIMARY_RETRY_GENERATION_TIMEOUT_SECONDS,
+                    )
     except Exception as e:
         logger.warning("xAI generator failed for speaking AI: %s", e)
         raw_text = ""
@@ -861,17 +998,24 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
             from diamondvoy_helpers import diamondvoy_gemini_answer
             lang_code = "ru" if is_russian else "en"
             subjects_list = ["Russian"] if is_russian else ["English"]
-            raw_text = await asyncio.wait_for(
-                diamondvoy_gemini_answer(prompt, subjects=subjects_list, lang=lang_code),
-                timeout=AI_FALLBACK_GENERATION_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                "Speaking AI fallback timed out after %ss subject=%s",
+            for timeout_seconds in (
                 AI_FALLBACK_GENERATION_TIMEOUT_SECONDS,
-                subject_val,
-            )
-            raw_text = ""
+                AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS,
+            ):
+                try:
+                    raw_text = await asyncio.wait_for(
+                        diamondvoy_gemini_answer(prompt, subjects=subjects_list, lang=lang_code),
+                        timeout=timeout_seconds,
+                    )
+                    if str(raw_text or "").strip():
+                        break
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Speaking AI fallback timed out after %ss subject=%s; retrying=%s",
+                        timeout_seconds,
+                        subject_val,
+                        timeout_seconds != AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS,
+                    )
         except Exception as e:
             logger.warning("Diamondvoy gemini fallback failed: %s", e)
             raw_text = ""
@@ -958,15 +1102,11 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
                 q["cue_card_bullet_points"] = []
             else:
                 raw_bp = q.get("cue_card_bullet_points") or q.get("bullet_points") or q.get("bullets") or q.get("prompts")
-                if isinstance(raw_bp, list) and len(raw_bp) > 0:
-                    q["cue_card_bullet_points"] = [str(x).strip() for x in raw_bp if x]
+                if isinstance(raw_bp, list):
+                    clean_bullets = [str(x).strip() for x in raw_bp if str(x).strip()]
+                    q["cue_card_bullet_points"] = clean_bullets[:4] if len(clean_bullets) >= 4 else part_two_cue_card_fallback(q["question_text"])
                 else:
-                    q["cue_card_bullet_points"] = [
-                        "What or who it is",
-                        "When and where it took place",
-                        "What occurred in detail",
-                        "And explain how you felt about it"
-                    ]
+                    q["cue_card_bullet_points"] = part_two_cue_card_fallback(q["question_text"])
 
             # Normalize vocabulary list
             raw_v = q.get("vocabulary") or q.get("vocab") or q.get("words") or []
@@ -1061,6 +1201,156 @@ async def generate_speaking_ai_content(payload: AiGenerateRequest, authorization
     except Exception as exc:
         logger.exception("Failed to parse AI generated speaking content")
         raise HTTPException(status_code=502, detail=f"Failed to parse Diamondvoy response: {exc}")
+
+
+def _serialize_speaking_ai_job(row: Any) -> dict[str, Any]:
+    job = dict(row)
+    for key in ("request_json", "result_json"):
+        raw = job.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                job[key] = json.loads(raw)
+            except (TypeError, ValueError):
+                job[key] = None
+    job["progress_percent"] = max(0, min(100, int(job.get("progress_percent") or 0)))
+    # The browser only needs progress/result; preserve the submitted prompt in
+    # the database for diagnostics without reflecting it in API responses.
+    job.pop("request_json", None)
+    return job
+
+
+def _read_speaking_ai_job(job_id: int) -> dict[str, Any]:
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM speaking_ai_generation_jobs WHERE id=?", (job_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Speaking AI generation job not found")
+        return _serialize_speaking_ai_job(row)
+    finally:
+        conn.close()
+
+
+def _update_speaking_ai_job(job_id: int, **updates: Any) -> None:
+    allowed = {
+        "status",
+        "progress_percent",
+        "stage",
+        "result_json",
+        "error_message",
+    }
+    values = {key: value for key, value in updates.items() if key in allowed}
+    if not values:
+        return
+    columns = []
+    params: list[Any] = []
+    for key, value in values.items():
+        columns.append(f"{key}=?")
+        params.append(json.dumps(value, ensure_ascii=False) if key == "result_json" else value)
+    columns.append("updated_at=CURRENT_TIMESTAMP")
+    params.append(job_id)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"UPDATE speaking_ai_generation_jobs SET {', '.join(columns)} WHERE id=?",
+            tuple(params),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _run_speaking_ai_generation_job(
+    job_id: int,
+    payload: AiGenerateRequest,
+    authorization: str | None,
+) -> None:
+    async def report(percent: int, stage: str) -> None:
+        _update_speaking_ai_job(job_id, progress_percent=percent, stage=stage)
+
+    try:
+        await report(1, "AI so'roviga tayyorgarlik")
+        result = await _generate_speaking_ai_content(payload, authorization, report)
+        _update_speaking_ai_job(
+            job_id,
+            status="completed",
+            progress_percent=100,
+            stage="Generatsiya tayyor",
+            result_json=result,
+        )
+    except HTTPException as exc:
+        _update_speaking_ai_job(
+            job_id,
+            status="failed",
+            progress_percent=100,
+            stage="Generatsiya to'xtadi",
+            error_message=str(exc.detail),
+        )
+    except Exception:
+        logger.exception("Speaking AI generation job failed job_id=%s", job_id)
+        _update_speaking_ai_job(
+            job_id,
+            status="failed",
+            progress_percent=100,
+            stage="Generatsiya to'xtadi",
+            error_message="AI generatsiyasida kutilmagan xatolik yuz berdi",
+        )
+
+
+@router.post("/staff/speaking/ai-generate")
+async def generate_speaking_ai_content(
+    payload: AiGenerateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Immediate mode retained for single topic/question requests."""
+    return await _generate_speaking_ai_content(payload, authorization)
+
+
+@router.post("/staff/speaking/ai-generate/jobs")
+async def start_speaking_ai_generation_job(
+    payload: AiGenerateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Start a durable, pollable batch job so the admin sees real progress."""
+    user = _auth_staff(authorization)
+    # Validate before creating a job, so invalid requests never remain queued.
+    normalize_batch_topic_count(payload.topic_count)
+    normalize_question_generation_count(payload.question_count)
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO speaking_ai_generation_jobs
+                (created_by_user_id, status, progress_percent, stage, request_json)
+            VALUES (?, 'queued', 0, 'Navbatda', ?)
+            RETURNING id
+            """,
+            (int(user.get("id") or 0), json.dumps(payload.model_dump(), ensure_ascii=False)),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        job_id = int(row["id"] if isinstance(row, dict) else row[0])
+    finally:
+        conn.close()
+    asyncio.create_task(_run_speaking_ai_generation_job(job_id, payload, authorization))
+    return {"job": _read_speaking_ai_job(job_id)}
+
+
+@router.get("/staff/speaking/ai-generate/jobs/{job_id}")
+async def get_speaking_ai_generation_job(
+    job_id: int,
+    authorization: str | None = Header(default=None),
+):
+    user = _auth_staff(authorization)
+    job = _read_speaking_ai_job(job_id)
+    if int(job.get("created_by_user_id") or 0) != int(user.get("id") or 0):
+        raise HTTPException(status_code=403, detail="Speaking AI generation job belongs to another user")
+    return {"job": job}
 
 
 # --- SPEAKING NOTIFICATIONS (BROADCAST PUSH) ---

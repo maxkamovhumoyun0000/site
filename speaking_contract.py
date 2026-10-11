@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
 PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
@@ -67,6 +68,24 @@ def normalize_question_generation_count(value: Any) -> int:
             f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
         )
     return count
+
+
+def part_two_cue_card_fallback(question_text: Any) -> list[str]:
+    """Build four cue-card prompts that still reflect the actual question.
+
+    The AI normally supplies these prompts.  This fallback prevents a malformed
+    provider response from making every Part 2 card show the same generic
+    ``You should say`` text.
+    """
+    text = " ".join(str(question_text or "").split()).strip(" ?.")
+    subject = re.sub(r"^(?:describe|talk about|tell me about)\s+", "", text, flags=re.IGNORECASE)
+    subject = subject[:160].strip(" ?.") or "the experience or thing in the cue card"
+    return [
+        f"The key details of {subject}",
+        f"When, where and how {subject} was part of your experience",
+        f"The people, actions or events connected with {subject}",
+        f"And explain why {subject} was meaningful to you",
+    ]
 
 
 def public_sample_answer(value: Any, subject: Any) -> str:

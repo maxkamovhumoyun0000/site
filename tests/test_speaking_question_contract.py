@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from speaking_contract import public_sample_answer, question_insert_values_for_topic
+from speaking_contract import (
+    part_two_cue_card_fallback,
+    public_sample_answer,
+    question_insert_values_for_topic,
+)
 
 
 class SpeakingQuestionContractTests(unittest.TestCase):
@@ -65,3 +69,13 @@ class SpeakingQuestionContractTests(unittest.TestCase):
             public_sample_answer("English model answer", "english"),
             "English model answer",
         )
+
+    def test_part_two_fallback_bullets_are_question_specific_and_complete(self) -> None:
+        travel = part_two_cue_card_fallback("Describe a memorable journey you took.")
+        teacher = part_two_cue_card_fallback("Describe a teacher who influenced you.")
+
+        self.assertEqual(len(travel), 4)
+        self.assertEqual(len(teacher), 4)
+        self.assertNotEqual(travel, teacher)
+        self.assertIn("memorable journey you took", travel[0])
+        self.assertIn("teacher who influenced you", teacher[0])

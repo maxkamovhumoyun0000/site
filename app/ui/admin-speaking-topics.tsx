@@ -64,6 +64,8 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [aiTopicCount, setAiTopicCount] = useState<number | "">("");
   const [aiInstruction, setAiInstruction] = useState<string>("");
   const [aiLoading, setAiLoading] = useState<boolean>(false);
+  const [aiProgress, setAiProgress] = useState<number>(0);
+  const [aiProgressStage, setAiProgressStage] = useState<string>("");
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiGeneratedResult, setAiGeneratedResult] = useState<any | null>(null);
 
@@ -192,9 +194,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       return;
     }
     setAiLoading(true);
+    setAiProgress(0);
+    setAiProgressStage("AI generatsiyasi navbatga qo'yilmoqda...");
     setAiError(null);
     try {
-      const res = await apiFetch("/staff/speaking/ai-generate", {
+      // Generation is a pollable backend job: the browser never has to keep
+      // one long request open, and the percentage is based on completed work.
+      const started = await apiFetch("/staff/speaking/ai-generate/jobs", {
         method: "POST",
         body: {
           theme: aiTheme.trim(),
@@ -204,11 +210,47 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
           topic_count: topicCount,
           custom_instruction: aiInstruction.trim() || undefined,
         },
-        // A topic can use both bounded providers (90s primary + 60s fallback).
-        // Leave a small margin so a multi-topic Russian request is not cancelled
-        // by the browser before the server returns its controlled result.
-        timeoutMs: Math.max(180000, topicCount * 180000),
+        timeoutMs: 30000,
       });
+      const jobId = Number(started?.job?.id);
+      if (!Number.isInteger(jobId) || jobId < 1) {
+        throw new Error("AI generatsiya vazifasi yaratilmadi.");
+      }
+
+      let res: any = null;
+      // The backend may retry a slow provider and repair a truncated response.
+      // This scales with requested work instead of cutting off a valid 5 × 10
+      // batch at a fixed browser timeout.
+      const deadline = Date.now() + Math.max(30 * 60_000, topicCount * questionCount * 5 * 60_000);
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        let statusResponse: any;
+        try {
+          statusResponse = await apiFetch(`/staff/speaking/ai-generate/jobs/${jobId}`, {
+            method: "GET",
+            timeoutMs: 30000,
+          });
+        } catch {
+          // A transient network hiccup must not discard a server-side job.
+          setAiProgressStage("Server bilan aloqa qayta tiklanmoqda...");
+          continue;
+        }
+        const job = statusResponse?.job;
+        const progress = Number(job?.progress_percent);
+        setAiProgress(Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0);
+        setAiProgressStage(String(job?.stage || "AI savollarni yaratmoqda..."));
+
+        if (job?.status === "completed") {
+          res = job?.result_json;
+          break;
+        }
+        if (job?.status === "failed") {
+          throw new Error(String(job?.error_message || "AI generatsiyasi yakunlanmadi."));
+        }
+      }
+      if (!res) {
+        throw new Error("AI generatsiyasi kutish vaqtidan oshdi. Jarayon serverda davom etayotgan bo'lishi mumkin; qayta urinib ko'ring.");
+      }
 
       if (res && (res.topics || res.questions || res.question_text)) {
         // If single question returned format to list
@@ -1059,10 +1101,16 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                     className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-xl shadow-cyan-500/25 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                   >
                     {aiLoading ? (
-                      <>
-                        <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        <span>Diamondvoy AI savollarni yaratmoqda... (10–25s)</span>
-                      </>
+                      <span className="w-full flex flex-col gap-2 px-2">
+                        <span className="flex items-center justify-center gap-2">
+                          <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <span>Diamondvoy AI: {aiProgress}%</span>
+                        </span>
+                        <span className="h-1.5 w-full max-w-sm mx-auto overflow-hidden rounded-full bg-white/25">
+                          <span className="block h-full rounded-full bg-white transition-all duration-500" style={{ width: `${aiProgress}%` }} />
+                        </span>
+                        <span className="text-[11px] font-medium text-white/85">{aiProgressStage || "AI savollarni yaratmoqda..."}</span>
+                      </span>
                     ) : (
                       <>
                         <span className="text-base">✨</span>
