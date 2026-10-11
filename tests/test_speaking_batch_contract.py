@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from speaking_contract import normalize_batch_topic_count
+from speaking_contract import normalize_batch_topic_count, normalize_question_generation_count
 
 
 class SpeakingBatchContractTests(unittest.TestCase):
@@ -15,4 +15,10 @@ class SpeakingBatchContractTests(unittest.TestCase):
             with self.subTest(count=count):
                 with self.assertRaises(ValueError):
                     normalize_batch_topic_count(count)
+
+    def test_accepts_up_to_ten_questions_for_ai_generation(self) -> None:
+        self.assertEqual(normalize_question_generation_count(1), 1)
+        self.assertEqual(normalize_question_generation_count("10"), 10)
+        with self.assertRaises(ValueError):
+            normalize_question_generation_count(11)
 
