@@ -46,6 +46,46 @@ AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS = 120
 
 MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer", "teacher", "support"}
 
+# A deliberately curated first catalogue for the Russian conversation area.
+# The normal media-admin form remains capped at 5 topics / 10 questions so a
+# regular request stays responsive.  This preset is a durable background job
+# because it is intentionally much larger and saves each completed topic
+# immediately instead of asking the browser to hold a giant AI response.
+RUSSIAN_CATALOG_TOPICS = (
+    "Семья и близкие люди",
+    "Детство и воспоминания",
+    "Дружба и общение",
+    "Учёба и образование",
+    "Профессия и карьера",
+    "Рабочий день и баланс жизни",
+    "Хобби и свободное время",
+    "Спорт и здоровый образ жизни",
+    "Путешествия и новые места",
+    "Родной город и любимые места",
+    "Дом и повседневный быт",
+    "Еда и кулинарные традиции",
+    "Праздники и семейные традиции",
+    "Культура, книги и кино",
+    "Музыка и концерты",
+    "Природа и окружающая среда",
+    "Погода и времена года",
+    "Технологии в повседневной жизни",
+    "Социальные сети и общение онлайн",
+    "Покупки и разумное потребление",
+    "Деньги и финансовые привычки",
+    "Транспорт и дороги",
+    "Новости и источники информации",
+    "Общество и взаимопомощь",
+    "Волонтёрство и добрые дела",
+    "Цели, мечты и планы",
+    "Ошибки и жизненный опыт",
+    "Стресс, отдых и эмоциональное здоровье",
+    "Изменения в жизни и адаптация",
+    "Будущее, наука и искусственный интеллект",
+)
+RUSSIAN_CATALOG_TARGET_QUESTIONS = 15
+RUSSIAN_CATALOG_MAX_ATTEMPTS_PER_TOPIC = 4
+
 
 def _auth_staff(authorization: str | None) -> dict[str, Any]:
     from backend.main import _require_role, _user_row_from_bearer
@@ -650,6 +690,126 @@ async def delete_staff_question(question_id: int, authorization: str | None = He
 
 
 # --- AI TOPIC & QUESTIONS GENERATOR (DIAMONDVOY) ---
+def _get_or_create_russian_catalog_topic(title: str, status_badge: str = "COMMON") -> tuple[dict[str, Any], bool]:
+    """Return one preset topic, without creating a second copy on retries."""
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, part, title, status_badge, sort_order, COALESCE(subject, 'english') AS subject
+            FROM speaking_topics
+            WHERE LOWER(title)=LOWER(?) AND LOWER(COALESCE(subject, 'english'))='russian'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (title.strip(),),
+        )
+        existing = cur.fetchone()
+        if existing:
+            return dict(existing), False
+
+        try:
+            normalized_status = normalize_topic_status(status_badge)
+        except ValueError:
+            normalized_status = "COMMON"
+        cur.execute(
+            """
+            INSERT INTO speaking_topics (part, title, status_badge, sort_order, subject)
+            VALUES (1, ?, ?, 0, 'russian')
+            RETURNING id, part, title, status_badge, sort_order, subject
+            """,
+            (title.strip(), normalized_status),
+        )
+        created = cur.fetchone()
+        conn.commit()
+        return dict(created), True
+    finally:
+        conn.close()
+
+
+def _save_russian_catalog_questions(topic: dict[str, Any], raw_questions: list[Any]) -> tuple[int, int]:
+    """Append only new Russian questions and return ``(inserted, total)``.
+
+    The duplicate check is database-backed, so a restarted catalogue job can
+    safely resume and an administrator can run the preset again later to fill
+    only the missing material.
+    """
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT question_text FROM speaking_questions WHERE topic_id=?",
+            (int(topic["id"]),),
+        )
+        known_keys = {
+            _question_comparison_key(row.get("question_text"))
+            for row in (cur.fetchall() or [])
+        }
+        cur.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) AS maximum FROM speaking_questions WHERE topic_id=?",
+            (int(topic["id"]),),
+        )
+        max_row = cur.fetchone() or {}
+        maximum = max_row.get("maximum")
+        next_sort_order = int(maximum if maximum is not None else -1) + 1
+        inserted = 0
+
+        for raw_question in raw_questions:
+            if not isinstance(raw_question, dict):
+                continue
+            text = str(
+                raw_question.get("question_text")
+                or raw_question.get("question")
+                or raw_question.get("prompt")
+                or ""
+            ).strip()
+            key = _question_comparison_key(text)
+            if not text or key in known_keys:
+                continue
+            payload = QuestionCreateRequest(
+                question_text=text,
+                cue_card_bullet_points=[],
+                sample_answer="",
+                examiner_tip=None,
+                vocabulary=raw_question.get("vocabulary") if isinstance(raw_question.get("vocabulary"), list) else [],
+                sort_order=next_sort_order,
+                subject="russian",
+            )
+            values = question_insert_values_for_topic(payload, topic)
+            cur.execute(
+                """
+                INSERT INTO speaking_questions
+                    (topic_id, part, question_text, cue_card_bullet_points, sample_answer, examiner_tip, vocabulary_json, sort_order, subject)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(topic["id"]),
+                    values["part"],
+                    values["question_text"],
+                    None,
+                    "",
+                    None,
+                    json.dumps(values["vocabulary"], ensure_ascii=False) if values["vocabulary"] else None,
+                    values["sort_order"],
+                    "russian",
+                ),
+            )
+            known_keys.add(key)
+            inserted += 1
+            next_sort_order += 1
+
+        conn.commit()
+        return inserted, len(known_keys)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def _question_comparison_key(value: Any) -> str:
     """Normalize only harmless formatting differences for duplicate checks."""
     return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
@@ -1375,6 +1535,156 @@ async def _run_speaking_ai_generation_job(
         )
 
 
+def _update_speaking_topic_status(topic_id: int, status_badge: str) -> None:
+    try:
+        status = normalize_topic_status(status_badge)
+    except ValueError:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE speaking_topics SET status_badge=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (status, int(topic_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+async def _run_russian_catalog_generation_job(
+    job_id: int,
+    authorization: str | None,
+) -> None:
+    """Build the Russian starter catalogue gradually and persist every result.
+
+    A run is intentionally resumable: topics already at the target are skipped,
+    and topics with fewer questions receive only the missing amount.  This is
+    important for a long AI task because a provider hiccup must not waste the
+    work that was already saved to the database.
+    """
+    created_topics = 0
+    ready_topics = 0
+    inserted_questions = 0
+    incomplete_topics: list[dict[str, Any]] = []
+    total_target = len(RUSSIAN_CATALOG_TOPICS) * RUSSIAN_CATALOG_TARGET_QUESTIONS
+
+    try:
+        _update_speaking_ai_job(
+            job_id,
+            status="running",
+            progress_percent=1,
+            stage="Rus tili katalogi tayyorlanmoqda",
+        )
+        for topic_index, title in enumerate(RUSSIAN_CATALOG_TOPICS, start=1):
+            topic, was_created = _get_or_create_russian_catalog_topic(title)
+            created_topics += int(was_created)
+            _, current_total = _save_russian_catalog_questions(topic, [])
+            attempts = 0
+            last_error = ""
+
+            while (
+                current_total < RUSSIAN_CATALOG_TARGET_QUESTIONS
+                and attempts < RUSSIAN_CATALOG_MAX_ATTEMPTS_PER_TOPIC
+            ):
+                attempts += 1
+                remaining = RUSSIAN_CATALOG_TARGET_QUESTIONS - current_total
+                requested_count = min(MAX_QUESTION_GENERATION_COUNT, remaining)
+                percent = max(
+                    1,
+                    min(
+                        99,
+                        int(
+                            ((topic_index - 1) * RUSSIAN_CATALOG_TARGET_QUESTIONS + current_total)
+                            * 99
+                            / total_target
+                        ),
+                    ),
+                )
+                _update_speaking_ai_job(
+                    job_id,
+                    progress_percent=percent,
+                    stage=(
+                        f"{topic_index}/{len(RUSSIAN_CATALOG_TOPICS)} mavzu: "
+                        f"{current_total}/{RUSSIAN_CATALOG_TARGET_QUESTIONS} savol"
+                    ),
+                )
+                request = AiGenerateRequest(
+                    theme=title,
+                    part=1,
+                    subject="russian",
+                    question_count=requested_count,
+                    topic_count=1,
+                    existing_topic_id=int(topic["id"]),
+                    custom_instruction=(
+                        "Bu Diamond Speaking rus tili katalogini to'ldirish uchun so'rov. "
+                        "Mavjud savollardan mutlaqo farqli, tabiiy og'zaki nutqqa mos savollar yarating. "
+                        f"Bu urinishda {requested_count} ta turli savol qaytaring."
+                    ),
+                )
+                try:
+                    generated = await _generate_speaking_ai_content(request, authorization)
+                    generated_questions = generated.get("questions") if isinstance(generated, dict) else []
+                    if not isinstance(generated_questions, list) or not generated_questions:
+                        raise ValueError("AI savollar ro'yxatini qaytarmadi")
+                    status = str(generated.get("status_badge") or "COMMON")
+                    _update_speaking_topic_status(int(topic["id"]), status)
+                    added, current_total = _save_russian_catalog_questions(topic, generated_questions)
+                    inserted_questions += added
+                    if added == 0:
+                        last_error = "AI faqat mavjud yoki takror savollarni qaytardi"
+                except Exception as exc:
+                    last_error = str(getattr(exc, "detail", exc))[:300]
+                    logger.warning(
+                        "Russian speaking catalogue topic generation failed job_id=%s topic=%s attempt=%s: %s",
+                        job_id,
+                        title,
+                        attempts,
+                        last_error,
+                    )
+
+            if current_total >= RUSSIAN_CATALOG_TARGET_QUESTIONS:
+                ready_topics += 1
+            else:
+                incomplete_topics.append(
+                    {
+                        "title": title,
+                        "question_count": current_total,
+                        "error": last_error or "Savollar soni maqsadga yetmadi",
+                    }
+                )
+
+        summary = {
+            "preset": "russian_catalog_v1",
+            "target_topics": len(RUSSIAN_CATALOG_TOPICS),
+            "target_questions_per_topic": RUSSIAN_CATALOG_TARGET_QUESTIONS,
+            "topics_created": created_topics,
+            "topics_ready": ready_topics,
+            "questions_inserted": inserted_questions,
+            "incomplete_topics": incomplete_topics,
+        }
+        _update_speaking_ai_job(
+            job_id,
+            status="completed",
+            progress_percent=100,
+            stage=(
+                "Rus tili katalogi tayyor"
+                if not incomplete_topics
+                else f"Katalog qisman tayyor: {ready_topics}/{len(RUSSIAN_CATALOG_TOPICS)} mavzu"
+            ),
+            result_json=summary,
+        )
+    except Exception:
+        logger.exception("Russian speaking catalogue job failed job_id=%s", job_id)
+        _update_speaking_ai_job(
+            job_id,
+            status="failed",
+            progress_percent=100,
+            stage="Rus tili katalogi to'xtadi",
+            error_message="Rus tili katalogi generatsiyasida kutilmagan xatolik yuz berdi",
+        )
+
+
 @router.post("/staff/speaking/ai-generate")
 async def generate_speaking_ai_content(
     payload: AiGenerateRequest,
@@ -1414,6 +1724,58 @@ async def start_speaking_ai_generation_job(
         conn.close()
     asyncio.create_task(_run_speaking_ai_generation_job(job_id, payload, authorization))
     return {"job": _read_speaking_ai_job(job_id)}
+
+
+@router.post("/staff/speaking/russian-catalog/jobs")
+async def start_russian_catalog_generation_job(
+    authorization: str | None = Header(default=None),
+):
+    """Queue the one-click 30-topic Russian Speaking catalogue fill."""
+    user = _auth_staff(authorization)
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        # Reusing a running job avoids duplicate AI spend if the media admin
+        # double-clicks the trigger or refreshes the page while it is working.
+        cur.execute(
+            """
+            SELECT id FROM speaking_ai_generation_jobs
+            WHERE created_by_user_id=? AND status IN ('queued', 'running')
+              AND request_json LIKE ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(user.get("id") or 0), "%russian_catalog_v1%"),
+        )
+        active = cur.fetchone()
+        if active:
+            active_id = int(active["id"] if isinstance(active, dict) else active[0])
+            return {"job": _read_speaking_ai_job(active_id), "reused": True}
+
+        request_json = {
+            "preset": "russian_catalog_v1",
+            "subject": "russian",
+            "topic_count": len(RUSSIAN_CATALOG_TOPICS),
+            "target_questions_per_topic": RUSSIAN_CATALOG_TARGET_QUESTIONS,
+        }
+        cur.execute(
+            """
+            INSERT INTO speaking_ai_generation_jobs
+                (created_by_user_id, status, progress_percent, stage, request_json)
+            VALUES (?, 'queued', 0, 'Navbatda', ?)
+            RETURNING id
+            """,
+            (int(user.get("id") or 0), json.dumps(request_json, ensure_ascii=False)),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        job_id = int(row["id"] if isinstance(row, dict) else row[0])
+    finally:
+        conn.close()
+
+    asyncio.create_task(_run_russian_catalog_generation_job(job_id, authorization))
+    return {"job": _read_speaking_ai_job(job_id), "reused": False}
 
 
 @router.get("/staff/speaking/ai-generate/jobs/{job_id}")
