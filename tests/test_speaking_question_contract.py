@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from speaking_contract import (
     minimum_questions_for_requested_limit,
+    variable_batch_question_targets,
     part_two_cue_card_fallback,
     public_sample_answer,
     question_insert_values_for_topic,
@@ -85,3 +86,10 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertEqual(minimum_questions_for_requested_limit(10), 4)
         self.assertEqual(minimum_questions_for_requested_limit(4), 4)
         self.assertEqual(minimum_questions_for_requested_limit(3), 3)
+
+    def test_batch_targets_vary_without_exceeding_the_requested_cap(self) -> None:
+        targets = variable_batch_question_targets(10, 5, "English|2|Travel")
+
+        self.assertEqual(len(targets), 5)
+        self.assertTrue(all(4 <= count <= 10 for count in targets))
+        self.assertGreater(len(set(targets)), 1)

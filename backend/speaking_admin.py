@@ -31,6 +31,7 @@ from speaking_contract import (
     part_two_cue_card_fallback,
     public_sample_answer,
     question_insert_values_for_topic,
+    variable_batch_question_targets,
 )
 
 logger = logging.getLogger(__name__)
@@ -701,7 +702,12 @@ async def _generate_batch_topics_individually(
     generated_topics: list[dict[str, Any]] = []
     prior_titles: list[str] = []
     requested_questions = payload.question_count
-    minimum_questions = minimum_questions_for_requested_limit(requested_questions)
+    topic_question_targets = variable_batch_question_targets(
+        requested_questions,
+        topic_count,
+        f"{payload.subject}|{payload.part}|{payload.theme}|{payload.custom_instruction}",
+    )
+    planned_total_questions = sum(topic_question_targets)
     replacement_semaphore = asyncio.Semaphore(3)
 
     async def notify(percent: int, stage: str) -> None:
@@ -709,14 +715,16 @@ async def _generate_batch_topics_individually(
             await report_progress(max(1, min(99, percent)), stage)
 
     for index in range(topic_count):
+        target_questions = topic_question_targets[index]
         await notify(
-            int((index * minimum_questions) * 95 / max(1, topic_count * minimum_questions)),
+            int(sum(topic_question_targets[:index]) * 95 / max(1, planned_total_questions)),
             f"{index + 1}/{topic_count}-mavzu tayyorlanmoqda",
         )
         prior_title_note = ", ".join(prior_titles[-4:]) or "none"
         batch_instruction = (
             f"This is topic {index + 1} of {topic_count} in one batch. Generate a distinctly different "
-            f"topic; do not overlap with these already generated titles: {prior_title_note}."
+            f"topic; do not overlap with these already generated titles: {prior_title_note}. "
+            f"Create {target_questions} complete, distinct questions for this topic."
         )
         custom_instruction = " ".join(
             part.strip()
@@ -735,12 +743,12 @@ async def _generate_batch_topics_individually(
             )
         title = str(generated.get("topic_title") or payload.theme or f"Speaking Topic {index + 1}").strip()
         prior_titles.append(title)
-        normalized_questions = list(questions[:requested_questions])
+        normalized_questions = list(questions[:target_questions])
 
         # If the model was cut off, request the remaining questions separately.
         # They can run in parallel because each prompt is already anchored to
         # this topic title and explicitly asks for a different cue-card angle.
-        missing_count = max(0, minimum_questions - len(normalized_questions))
+        missing_count = max(0, target_questions - len(normalized_questions))
         if missing_count > 0:
             existing_questions = "; ".join(
                 str(item.get("question_text") or "").strip()
@@ -758,7 +766,7 @@ async def _generate_batch_topics_individually(
                     for part in (
                         payload.custom_instruction or "",
                         (
-                            f"This is question {question_number} of the minimum {minimum_questions} required for batch topic "
+                            f"This is question {question_number} of {target_questions} required for batch topic "
                             f"'{title}'. Return exactly ONE complete, distinct question for this exact topic. "
                             f"Do not reuse or paraphrase these already generated questions: {existing_questions}."
                         ),
@@ -788,14 +796,14 @@ async def _generate_batch_topics_individually(
                     await notify(
                         int(
                             (
-                                index * minimum_questions
+                                sum(topic_question_targets[:index])
                                 + len(normalized_questions)
                                 + completed_replacements
                             )
                             * 95
-                            / max(1, topic_count * minimum_questions)
+                            / max(1, planned_total_questions)
                         ),
-                        f"{index + 1}/{topic_count}-mavzu: {len(normalized_questions) + completed_replacements}/{minimum_questions}+ savol tayyor",
+                        f"{index + 1}/{topic_count}-mavzu: {len(normalized_questions) + completed_replacements}/{target_questions} savol tayyor",
                     )
                 return repaired_questions[0]
 
@@ -804,13 +812,13 @@ async def _generate_batch_topics_individually(
             )
             normalized_questions.extend(repaired_questions)
 
-        if len(normalized_questions) < minimum_questions:
+        if len(normalized_questions) < target_questions:
             raise HTTPException(
                 status_code=502,
-                detail=f"AI returned only {len(normalized_questions)} of the minimum {minimum_questions} questions for batch topic {index + 1}",
+                detail=f"AI returned only {len(normalized_questions)} of {target_questions} questions for batch topic {index + 1}",
             )
         await notify(
-            int(((index + 1) * minimum_questions) * 95 / max(1, topic_count * minimum_questions)),
+            int(sum(topic_question_targets[:index + 1]) * 95 / max(1, planned_total_questions)),
             f"{index + 1}/{topic_count}-mavzu tayyor",
         )
         try:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+import hashlib
 import re
 
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
@@ -79,6 +80,24 @@ def minimum_questions_for_requested_limit(value: Any) -> int:
     below four retain their exact requested count.
     """
     return min(normalize_question_generation_count(value), MIN_BATCH_QUESTIONS_PER_TOPIC)
+
+
+def variable_batch_question_targets(value: Any, topic_count: Any, seed: Any) -> list[int]:
+    """Plan varied per-topic counts within the requested maximum.
+
+    A digest-derived rotation is intentionally stable for the same batch input,
+    but distributes topic counts across the allowed range rather than making
+    every saved topic have the same minimum count.
+    """
+    maximum = normalize_question_generation_count(value)
+    topics = normalize_batch_topic_count(topic_count)
+    minimum = minimum_questions_for_requested_limit(maximum)
+    span = maximum - minimum + 1
+    if span == 1:
+        return [minimum] * topics
+    digest = hashlib.sha256(str(seed or "speaking-batch").encode("utf-8")).digest()
+    start = int.from_bytes(digest[:4], "big") % span
+    return [minimum + ((start + index) % span) for index in range(topics)]
 
 
 def part_two_cue_card_fallback(question_text: Any) -> list[str]:
