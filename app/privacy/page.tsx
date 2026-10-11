@@ -3,12 +3,12 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: "Privacy Policy | Diamond Education Mobile Applications",
-  description: "Official Privacy Policy for Diamond Education mobile applications: Diamond Student App, Diamond Teacher App, and Diamond Support App.",
+  description: "Official Privacy Policy for Diamond Education mobile applications: Diamond Student App, Diamond Teacher App, Diamond Support App, and Diamond IELTS Speaking App.",
   robots: "index, follow",
 };
 
 export default function PrivacyPolicyPage() {
-  const lastUpdated = "August 12, 2026";
+  const lastUpdated = "October 11, 2026";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-20">
@@ -54,7 +54,8 @@ export default function PrivacyPolicyPage() {
             Bu maxfiylik siyosati <strong>Diamond Education</strong> tomonidan ishlab chiqilgan mobil ilovalar —{" "}
             <span className="text-white font-semibold">Diamond Student App</span>,{" "}
             <span className="text-white font-semibold">Diamond Teacher App</span> va{" "}
-            <span className="text-white font-semibold">Diamond Support App</span> tomonidan shaxsiy ma&apos;lumotlarni to&apos;plash, ishlatish hamda himoya qilish tartibini tushuntiradi.
+            <span className="text-white font-semibold">Diamond Support App</span>,{" "}
+            <span className="text-white font-semibold">Diamond IELTS Speaking App</span> tomonidan shaxsiy ma&apos;lumotlarni to&apos;plash, ishlatish hamda himoya qilish tartibini tushuntiradi.
           </p>
           <div className="mt-6 pt-6 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-4 text-xs text-slate-400">
             <div>So&apos;nggi yangilanish sanasi: <span className="text-slate-200 font-medium">{lastUpdated}</span></div>
@@ -63,12 +64,19 @@ export default function PrivacyPolicyPage() {
         </div>
 
         {/* Quick App Badges */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-12">
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 hover:border-indigo-500/40 transition-colors">
             <div className="text-xs font-mono text-indigo-400 mb-1">uz.diamondeducation.diamond_students</div>
             <h3 className="text-lg font-bold text-white mb-2">Diamond Student App</h3>
             <p className="text-xs text-slate-400 leading-relaxed">
               O&apos;quvchilar uchun davomat, testlar, uy vazifalari, reyting, Voice Room hamda qo&apos;llab-quvvatlash darslarini band qilish tizimi.
+            </p>
+          </div>
+          <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 hover:border-violet-500/40 transition-colors">
+            <div className="text-xs font-mono text-violet-400 mb-1">Android: uz.diamondeducation.diamond_speaking<br />iOS: uz.diamondeducation.diamondSpeaking</div>
+            <h3 className="text-lg font-bold text-white mb-2">Diamond IELTS Speaking App</h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              IELTS Speaking mavzulari, savollar va o&apos;quv materiallarini ko&apos;rish hamda yangiliklar haqida push-bildirishnoma olish uchun ilova.
             </p>
           </div>
           <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 hover:border-indigo-500/40 transition-colors">
@@ -114,6 +122,12 @@ export default function PrivacyPolicyPage() {
                 <strong className="text-white">Texnik va qurilma ma&apos;lumotlari:</strong> IP manzil, operatsion tizim versiyasi, bildirishnomalar (Push Notifications) uchun Firebase Cloud Messaging tokeni hamda ilova xatolik jurnallari (Crash Logs).
               </li>
             </ul>
+            <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 text-sm">
+              <h3 className="font-semibold text-white mb-1.5">Diamond IELTS Speaking App uchun alohida izoh</h3>
+              <p className="text-slate-300">
+                Speaking App akkaunt, ism, telefon raqami, profil rasmi, mikrofon, kamera yoki galereya ruxsatini so&apos;ramaydi. Ilova savol va mavzularni Diamond Education serveridan HTTPS orqali yuklaydi; qurilmada til va interfeys tanlovlari saqlanishi mumkin. Foydalanuvchi bildirishnomaga ruxsat bersa, Firebase Cloud Messaging tokeni va ilova yaratgan texnik qurilma identifikatori faqat Speaking App push-bildirishnomalarini yetkazish uchun saqlanadi.
+              </p>
+            </div>
           </section>
 
           {/* Section 2 */}
@@ -134,7 +148,7 @@ export default function PrivacyPolicyPage() {
               </div>
               <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
                 <h4 className="font-semibold text-white mb-1">🔔 Bildirishnomalar</h4>
-                <p className="text-xs text-slate-400">Yangi darslar, support bandlovlari va muhim e&apos;lonlar haqida eslatma yuborish.</p>
+                <p className="text-xs text-slate-400">Yangi darslar, support bandlovlari, Speaking App savol/mavzu yangiliklari va muhim e&apos;lonlar haqida eslatma yuborish.</p>
               </div>
               <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
                 <h4 className="font-semibold text-white mb-1">🎤 Ovozli muloqot</h4>
