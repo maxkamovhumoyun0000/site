@@ -7,6 +7,8 @@ from speaking_contract import (
     cue_card_bullets_are_open_ended,
     is_safe_speaking_vocabulary_query,
     minimum_questions_for_requested_limit,
+    normalize_speaking_voice_guest_name,
+    speaking_voice_guest_identity,
     variable_batch_question_targets,
     part_two_cue_card_fallback,
     public_sample_answer,
@@ -105,6 +107,23 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertTrue(is_safe_speaking_vocabulary_query("resilient"))
         self.assertFalse(is_safe_speaking_vocabulary_query("pornography"))
         self.assertFalse(is_safe_speaking_vocabulary_query("секс"))
+
+    def test_voice_room_guest_identity_is_stable_without_exposing_device_id(self) -> None:
+        raw_device_id = "speaking-device-1234567890"
+
+        identity = speaking_voice_guest_identity(raw_device_id)
+
+        self.assertTrue(identity.startswith("guest-"))
+        self.assertNotIn(raw_device_id, identity)
+        self.assertEqual(identity, speaking_voice_guest_identity(raw_device_id))
+        self.assertIsNone(speaking_voice_guest_identity("short"))
+
+    def test_voice_room_guest_name_removes_controls_and_uses_a_fallback(self) -> None:
+        self.assertEqual(
+            normalize_speaking_voice_guest_name("  Dilnoza\n\t "),
+            "Dilnoza",
+        )
+        self.assertEqual(normalize_speaking_voice_guest_name("\x00 \t"), "Speaking learner")
 
     def test_ten_is_a_generation_cap_with_four_questions_as_the_batch_minimum(self) -> None:
         self.assertEqual(minimum_questions_for_requested_limit(10), 4)
