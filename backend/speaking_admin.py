@@ -27,6 +27,7 @@ from speaking_contract import (
     display_topic_status,
     cue_card_bullets_are_open_ended,
     individual_ai_topic_generation_count,
+    is_safe_speaking_vocabulary_query,
     minimum_questions_for_requested_limit,
     normalize_batch_topic_count,
     normalize_catalog_question_target,
@@ -41,6 +42,9 @@ from speaking_contract import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_SPEAKING_VOCAB_AI_REQUESTS: dict[str, list[float]] = {}
+_SPEAKING_VOCAB_AI_REQUEST_LIMIT = 8
 
 AI_PRIMARY_GENERATION_TIMEOUT_SECONDS = 90
 AI_FALLBACK_GENERATION_TIMEOUT_SECONDS = 60
@@ -453,6 +457,104 @@ async def register_speaking_push_token(payload: PushTokenRegisterRequest):
         platform=payload.platform,
     )
     return {"message": "Token registered successfully"}
+
+
+def _speaking_vocabulary_ai_allowed(request: Request) -> bool:
+    """Rate-limit unauthenticated fallback generation per app installation.
+
+    A local search never consumes AI. This guard applies only after a safe
+    word is missing from the vocabulary bank, which prevents public clients
+    from turning the endpoint into an unrestricted token-spending API.
+    """
+    raw_id = str(request.headers.get("x-speaking-device-id") or "").strip()
+    if not raw_id:
+        raw_id = str((request.client.host if request.client else "unknown") or "unknown")
+    key = hashlib.sha256(raw_id[:200].encode("utf-8")).hexdigest()
+    now = datetime.utcnow().timestamp()
+    recent = [stamp for stamp in _SPEAKING_VOCAB_AI_REQUESTS.get(key, []) if now - stamp < 3600]
+    if len(recent) >= _SPEAKING_VOCAB_AI_REQUEST_LIMIT:
+        _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
+        return False
+    recent.append(now)
+    _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
+    return True
+
+
+@router.get("/api/speaking/vocabulary")
+@router.get("/speaking/vocabulary")
+async def search_speaking_vocabulary(
+    request: Request,
+    subject: str = Query(default="english"),
+    query: str = Query(default="", max_length=80),
+):
+    """Search the shared vocabulary bank for the anonymous Speaking app.
+
+    Existing entries return immediately. A safe missing word may use the same
+    deduplicated AI bank writer as the Student app; adult/unsafe text exits
+    before database lookup and before any AI provider sees it.
+    """
+    requested_subject = str(subject or "english").strip().lower()
+    selected_subject = "Russian" if requested_subject in {"russian", "ru"} else "English"
+    normalized_query = " ".join(str(query or "").split()).strip()
+    if not normalized_query:
+        return {"items": [], "ai_generated": False, "blocked": False}
+    if not is_safe_speaking_vocabulary_query(normalized_query):
+        return {"items": [], "ai_generated": False, "blocked": True}
+
+    # These imports are intentionally lazy: backend.main registers this router
+    # at startup, while the existing vocabulary AI helper lives in main.
+    from backend.main import _vocab_ai_rows_for_words, _vocab_ai_try_add_missing_word, vocab_language_for_subject
+
+    language = vocab_language_for_subject(selected_subject)
+
+    def find_matches() -> list[dict[str, Any]]:
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            pattern = f"%{normalized_query.lower()}%"
+            cur.execute(
+                """
+                SELECT id, word, subject, language, level, translation_uz,
+                       translation_ru, definition, example
+                FROM words
+                WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)
+                  AND (LOWER(word) LIKE ? OR LOWER(translation_uz) LIKE ?
+                       OR LOWER(translation_ru) LIKE ? OR LOWER(definition) LIKE ?
+                       OR LOWER(example) LIKE ?)
+                ORDER BY id ASC
+                LIMIT 20
+                """,
+                (selected_subject, language, pattern, pattern, pattern, pattern, pattern),
+            )
+            return [dict(row) for row in (cur.fetchall() or [])]
+        finally:
+            conn.close()
+
+    rows = find_matches()
+    ai_generated = False
+    if not rows and _speaking_vocabulary_ai_allowed(request):
+        try:
+            generated = await _vocab_ai_try_add_missing_word(
+                selected_subject,
+                normalized_query.lower(),
+                0,
+            )
+        except Exception:
+            # Never echo a learner's raw query in public-service logs.
+            logger.warning("Speaking vocabulary fallback generation failed")
+            generated = None
+        if generated:
+            ai_generated = True
+            rows = find_matches()
+            if not rows:
+                conn = get_conn()
+                try:
+                    suggestions = [generated.get("main")] + list(generated.get("related") or [])
+                    words = [str((item or {}).get("word") or "") for item in suggestions]
+                    rows = _vocab_ai_rows_for_words(conn, words, selected_subject, language)
+                finally:
+                    conn.close()
+    return {"items": rows, "ai_generated": ai_generated, "blocked": False}
 
 
 # --- STAFF MEDIA ADMIN API ---

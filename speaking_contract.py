@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 import hashlib
+import os
 import re
+import unicodedata
 
 TOPIC_STATUS_BADGES = frozenset({"COMMON", "PREDICTED", "HIGH FREQUENCY"})
 PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
@@ -14,6 +16,57 @@ MIN_BATCH_QUESTIONS_PER_TOPIC = 4
 # fuller plan than the regular one-request AI generator.
 MAX_CATALOG_TOPIC_COUNT = 30
 MAX_CATALOG_QUESTION_TARGET = 30
+
+# Public Speaking vocabulary lookup is intentionally family-safe. This is a
+# narrow search filter, not a judgement on a learner: it prevents adult terms
+# from being shown or sent to the paid AI fallback. Deployment owners may add
+# locally relevant terms without publishing a new mobile build.
+_SPEAKING_VOCABULARY_18_PLUS_TERMS = frozenset(
+    {
+        "porn",
+        "pornography",
+        "xxx",
+        "onlyfans",
+        "nude",
+        "nudity",
+        "sex",
+        "sexual",
+        "erotic",
+        "порно",
+        "порнография",
+        "секс",
+        "сексуальный",
+        "эротика",
+        "jinsiy",
+        "porno",
+        "yalangoch",
+        "yalang'och",
+        "yalang‘och",
+    }
+)
+
+
+def is_safe_speaking_vocabulary_query(value: Any) -> bool:
+    """Whether a public vocabulary query may be searched or sent to AI.
+
+    The normalizer removes zero-width characters and folds case first, so a
+    simple visual spelling variation cannot bypass the family-safety filter.
+    """
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    text = "".join(char for char in text if unicodedata.category(char) != "Cf")
+    text = re.sub(r"\s+", " ", text)
+    if len(text) < 2 or len(text) > 80:
+        return False
+    terms = set(_SPEAKING_VOCABULARY_18_PLUS_TERMS)
+    terms.update(
+        term.strip().casefold()
+        for term in str(os.environ.get("SPEAKING_VOCAB_BLOCKED_TERMS") or "").split("|")
+        if term.strip()
+    )
+    return not any(
+        re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", text)
+        for term in terms
+    )
 
 
 def normalize_topic_status(value: Any) -> str:
