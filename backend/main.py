@@ -36,6 +36,7 @@ from typing import Any, Callable, Iterable, Literal
 from urllib.parse import parse_qs, parse_qsl, quote, urlparse
 from uuid import uuid4
 from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
 
 import aiohttp
 import jwt
@@ -19597,6 +19598,11 @@ def _send_speaking_verification_email(*, recipient: str, code: str, language: st
     message["Subject"] = subject
     message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
     message["To"] = recipient
+    # These RFC 5322 headers help receiving providers identify the message as
+    # a normal transactional account email, rather than malformed bulk mail.
+    message["Date"] = formatdate(localtime=False)
+    message["Message-ID"] = make_msgid(domain="diamond-education.uz")
+    message["Auto-Submitted"] = "auto-generated"
     message.set_content(f"{heading}\n\n{label}: {code}\n\n{note}")
     message.add_alternative(
         f"""<!doctype html><html><body style=\"margin:0;background:#f2f6ff;font-family:Arial,sans-serif;color:#102041\"><main style=\"max-width:520px;margin:32px auto;background:#fff;border-radius:20px;padding:36px;text-align:center;border:1px solid #d9e4ff\"><div style=\"font-size:28px\">💎</div><h1 style=\"font-size:24px;margin:12px 0\">{html.escape(heading)}</h1><p style=\"color:#52627d\">{html.escape(label)}</p><div style=\"letter-spacing:8px;font-size:30px;font-weight:800;color:#0b5cff;background:#edf4ff;border-radius:14px;padding:16px;margin:20px 0\">{escaped_code}</div><p style=\"font-size:13px;color:#68758d\">{html.escape(note)}</p><p style=\"font-size:12px;color:#9aa5b7;margin-top:28px\">Diamond Education · Diamond Speaking</p></main></body></html>""",
@@ -52480,9 +52486,6 @@ async def admin_domain_email_status(authorization: str | None = Header(default=N
         "notes": notes,
     }
 
-
-import smtplib
-from email.message import EmailMessage
 
 @app.post("/admin/domain-email/send")
 async def admin_domain_email_send(
