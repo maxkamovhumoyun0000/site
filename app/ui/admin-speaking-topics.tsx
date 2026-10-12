@@ -68,9 +68,9 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [aiProgressStage, setAiProgressStage] = useState<string>("");
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiGeneratedResult, setAiGeneratedResult] = useState<any | null>(null);
-  const [russianCatalogLoading, setRussianCatalogLoading] = useState<boolean>(false);
-  const [russianCatalogProgress, setRussianCatalogProgress] = useState<number>(0);
-  const [russianCatalogStage, setRussianCatalogStage] = useState<string>("");
+  const [catalogLoading, setCatalogLoading] = useState<boolean>(false);
+  const [catalogProgress, setCatalogProgress] = useState<number>(0);
+  const [catalogStage, setCatalogStage] = useState<string>("");
 
   // Manual Add Topic Modal
   const [newTopicModalOpen, setNewTopicModalOpen] = useState<boolean>(false);
@@ -277,24 +277,25 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     }
   }
 
-  async function handleRussianCatalogFill() {
+  async function handleCatalogFill(subject: "english" | "russian") {
+    const subjectLabel = subject === "russian" ? "Rus tili" : "English IELTS";
     const accepted = window.confirm(
-      "Rus tili katalogi uchun 30 ta mavzu yaratiladi va har birida 15 tagacha savol to'ldiriladi. " +
-      "Jarayon fon rejimida ishlaydi va bir necha vaqt olishi mumkin. Boshlaymizmi?"
+      `${subjectLabel} katalogi uchun 30 ta mavzu yaratiladi yoki mavjud mos mavzular to'ldiriladi. ` +
+      "Har birida 15 tagacha savol bo'ladi. Jarayon fon rejimida ishlaydi va bir necha vaqt olishi mumkin. Boshlaymizmi?"
     );
     if (!accepted) return;
 
-    setRussianCatalogLoading(true);
-    setRussianCatalogProgress(0);
-    setRussianCatalogStage("Vazifa navbatga qo'yilmoqda...");
+    setCatalogLoading(true);
+    setCatalogProgress(0);
+    setCatalogStage("Vazifa navbatga qo'yilmoqda...");
     try {
-      const started = await apiFetch("/staff/speaking/russian-catalog/jobs", {
+      const started = await apiFetch(`/staff/speaking/${subject}-catalog/jobs`, {
         method: "POST",
         timeoutMs: 30000,
       });
       const jobId = Number(started?.job?.id);
       if (!Number.isInteger(jobId) || jobId < 1) {
-        throw new Error("Rus tili katalogi uchun vazifa yaratilmagan.");
+        throw new Error(`${subjectLabel} katalogi uchun vazifa yaratilmagan.`);
       }
 
       const deadline = Date.now() + 5 * 60 * 60_000;
@@ -308,19 +309,19 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
             timeoutMs: 30000,
           });
         } catch {
-          setRussianCatalogStage("Server bilan aloqa qayta tiklanmoqda...");
+          setCatalogStage("Server bilan aloqa qayta tiklanmoqda...");
           continue;
         }
         const job = statusResponse?.job;
         const progress = Number(job?.progress_percent);
-        setRussianCatalogProgress(Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0);
-        setRussianCatalogStage(String(job?.stage || "Rus tili savollari tayyorlanmoqda..."));
+        setCatalogProgress(Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0);
+        setCatalogStage(String(job?.stage || `${subjectLabel} savollari tayyorlanmoqda...`));
         if (job?.status === "completed") {
           completedJob = job;
           break;
         }
         if (job?.status === "failed") {
-          throw new Error(String(job?.error_message || "Rus tili katalogi yakunlanmadi."));
+          throw new Error(String(job?.error_message || `${subjectLabel} katalogi yakunlanmadi.`));
         }
       }
 
@@ -332,13 +333,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       await loadData();
       alert(
         incomplete === 0
-          ? `✅ Rus katalogi tayyor: ${result.topics_ready || 30} ta mavzu to'ldirildi.`
+          ? `✅ ${subjectLabel} katalogi tayyor: ${result.topics_ready || 30} ta mavzu to'ldirildi.`
           : `⚠️ Katalog qisman tayyor: ${result.topics_ready || 0}/30 mavzu 15 ta savolga yetdi. Qayta bosilsa faqat yetishmayotgan savollar to'ldiriladi.`
       );
     } catch (e: any) {
-      alert("Rus katalogini to'ldirishda xatolik: " + (e?.message || String(e)));
+      alert(`${subjectLabel} katalogini to'ldirishda xatolik: ` + (e?.message || String(e)));
     } finally {
-      setRussianCatalogLoading(false);
+      setCatalogLoading(false);
     }
   }
 
@@ -719,43 +720,51 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         </button>
       </div>
 
-      {activeSubject === "russian" && (
-        <section className="rounded-3xl border border-amber-300/70 dark:border-amber-700/60 bg-gradient-to-br from-amber-50 via-white to-orange-50 dark:from-amber-950/30 dark:via-slate-900 dark:to-orange-950/20 p-5 md:p-6 shadow-sm">
+      <section className={`rounded-3xl border p-5 md:p-6 shadow-sm ${
+        activeSubject === "russian"
+          ? "border-amber-300/70 dark:border-amber-700/60 bg-gradient-to-br from-amber-50 via-white to-orange-50 dark:from-amber-950/30 dark:via-slate-900 dark:to-orange-950/20"
+          : "border-blue-300/70 dark:border-blue-700/60 bg-gradient-to-br from-blue-50 via-white to-cyan-50 dark:from-blue-950/30 dark:via-slate-900 dark:to-cyan-950/20"
+      }`}>
           <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200 font-extrabold">
-                <span className="text-xl">🇷🇺</span>
-                <span>Rus tili katalogini avtomatik to‘ldirish</span>
+              <div className={`flex items-center gap-2 font-extrabold ${activeSubject === "russian" ? "text-amber-800 dark:text-amber-200" : "text-blue-800 dark:text-blue-200"}`}>
+                <span className="text-xl">{activeSubject === "russian" ? "🇷🇺" : "🇬🇧"}</span>
+                <span>{activeSubject === "russian" ? "Rus tili katalogini avtomatik to‘ldirish" : "English IELTS katalogini avtomatik to‘ldirish"}</span>
               </div>
               <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-                AI 30 ta suhbat mavzusini yaratadi va har biriga 15 tagacha takrorlanmaydigan savol qo‘shadi.
-                Jarayon fon rejimida saqlanadi: sahifa yopilib qolsa ham tayyor bo‘lgan savollar yo‘qolmaydi.
+                {activeSubject === "russian"
+                  ? "AI 30 ta suhbat mavzusini yaratadi yoki mavjud mos mavzularni 15 tagacha takrorlanmaydigan savol bilan to‘ldiradi."
+                  : "AI Part 1, Part 2 va Part 3 uchun 30 ta mavzuni yaratadi yoki mavjud mos mavzularni to‘ldiradi; savollar, cue cardlar, Band 9 javoblar va vocabulary ham to‘liq yaratiladi."}
+                {" "}Mavjud topic hamda savollar avval tekshiriladi; sahifa yopilsa ham tayyor bo‘lgan material yo‘qolmaydi.
               </p>
             </div>
             <button
               type="button"
-              onClick={handleRussianCatalogFill}
-              disabled={russianCatalogLoading}
-              className="shrink-0 rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-5 py-3 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition-all hover:from-amber-400 hover:to-orange-500 active:scale-95 disabled:cursor-wait disabled:opacity-70"
+              onClick={() => handleCatalogFill(activeSubject)}
+              disabled={catalogLoading}
+              className={`shrink-0 rounded-xl px-5 py-3 text-sm font-extrabold text-white shadow-lg transition-all active:scale-95 disabled:cursor-wait disabled:opacity-70 ${
+                activeSubject === "russian"
+                  ? "bg-gradient-to-r from-amber-500 to-orange-600 shadow-amber-500/25 hover:from-amber-400 hover:to-orange-500"
+                  : "bg-gradient-to-r from-blue-600 to-cyan-600 shadow-blue-500/25 hover:from-blue-500 hover:to-cyan-500"
+              }`}
             >
-              {russianCatalogLoading ? `⏳ ${russianCatalogProgress}% tayyorlanmoqda` : "✨ 30 mavzuni AI bilan to‘ldirish"}
+              {catalogLoading ? `⏳ ${catalogProgress}% tayyorlanmoqda` : "✨ 30 mavzuni AI bilan to‘ldirish"}
             </button>
           </div>
-          {russianCatalogLoading && (
+          {catalogLoading && (
             <div className="mt-4 space-y-1.5">
-              <div className="h-2 overflow-hidden rounded-full bg-amber-200/80 dark:bg-amber-950/80">
+              <div className={`h-2 overflow-hidden rounded-full ${activeSubject === "russian" ? "bg-amber-200/80 dark:bg-amber-950/80" : "bg-blue-200/80 dark:bg-blue-950/80"}`}>
                 <div
-                  className="h-full rounded-full bg-gradient-to-r from-amber-500 to-orange-600 transition-all duration-500"
-                  style={{ width: `${russianCatalogProgress}%` }}
+                  className={`h-full rounded-full transition-all duration-500 ${activeSubject === "russian" ? "bg-gradient-to-r from-amber-500 to-orange-600" : "bg-gradient-to-r from-blue-600 to-cyan-600"}`}
+                  style={{ width: `${catalogProgress}%` }}
                 />
               </div>
-              <p className="text-[11px] font-medium text-amber-800 dark:text-amber-200">
-                {russianCatalogStage || "Rus tili savollari tayyorlanmoqda..."}
+              <p className={`text-[11px] font-medium ${activeSubject === "russian" ? "text-amber-800 dark:text-amber-200" : "text-blue-800 dark:text-blue-200"}`}>
+                {catalogStage || "Savollar tayyorlanmoqda..."}
               </p>
             </div>
           )}
-        </section>
-      )}
+      </section>
 
       {/* ─── PART SEGMENTED SELECTOR (ONLY FOR ENGLISH IELTS) ─── */}
       {activeSubject === "english" && (
