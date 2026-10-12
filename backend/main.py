@@ -19647,15 +19647,19 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
         existing_id = int((existing or {}).get("id") or 0)
         if existing and (not is_speaking_app_account(existing.get("speaking_app_account")) or not existing.get("speaking_deleted_at")):
             raise HTTPException(status_code=409, detail="Login ID already exists")
-        if existing_id:
-            conn = get_conn(); cur = conn.cursor()
-            try:
+        conn = get_conn(); cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE email=?", (email,))
+            email_owner = int((cur.fetchone() or {}).get("user_id") or 0)
+            if email_owner and email_owner != existing_id:
+                raise HTTPException(status_code=409, detail="Email is already associated with a Speaking account")
+            if existing_id:
                 cur.execute("SELECT email FROM speaking_account_contacts WHERE user_id=?", (existing_id,))
                 stored = cur.fetchone()
-            finally:
-                conn.close()
-            if not stored or normalize_speaking_email(dict(stored).get("email")) != email:
-                raise HTTPException(status_code=409, detail="This deleted account must be restored with its original email")
+                if not stored or normalize_speaking_email(dict(stored).get("email")) != email:
+                    raise HTTPException(status_code=409, detail="This deleted account must be restored with its original email")
+        finally:
+            conn.close()
     except HTTPException:
         if throttle_key: record_login_failure(throttle_key)
         raise
