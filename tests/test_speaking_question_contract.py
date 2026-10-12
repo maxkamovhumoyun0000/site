@@ -9,6 +9,8 @@ from speaking_contract import (
     is_speaking_app_account,
     minimum_questions_for_requested_limit,
     normalize_speaking_link_code,
+    normalize_speaking_email,
+    speaking_account_state_label,
     normalize_speaking_voice_guest_name,
     speaking_voice_guest_identity,
     session_replacements_for_login,
@@ -190,3 +192,8 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertEqual(normalize_speaking_link_code(' speak-ab12cd34 '), 'SPEAK-AB12CD34')
         with self.assertRaises(ValueError):
             normalize_speaking_link_code('SPEAK-<script>')
+
+    def test_speaking_email_is_normalized_and_deleted_accounts_are_labeled_inactive(self) -> None:
+        self.assertEqual(normalize_speaking_email(' Learner@Example.COM '), 'learner@example.com')
+        self.assertEqual(speaking_account_state_label('2026-10-12T00:00:00Z'), 'inactive')
+        self.assertEqual(speaking_account_state_label(None), 'active')
