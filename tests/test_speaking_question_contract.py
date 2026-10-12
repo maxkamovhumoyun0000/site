@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from speaking_contract import (
     cue_card_bullets_are_open_ended,
+    is_safe_speaking_vocabulary_query,
     minimum_questions_for_requested_limit,
     variable_batch_question_targets,
     part_two_cue_card_fallback,
@@ -99,6 +100,11 @@ class SpeakingQuestionContractTests(unittest.TestCase):
 
         self.assertTrue(cue_card_bullets_are_open_ended(generic))
         self.assertFalse(cue_card_bullets_are_open_ended(pre_written))
+
+    def test_vocabulary_lookup_rejects_18_plus_queries_before_ai_can_receive_them(self) -> None:
+        self.assertTrue(is_safe_speaking_vocabulary_query("resilient"))
+        self.assertFalse(is_safe_speaking_vocabulary_query("pornography"))
+        self.assertFalse(is_safe_speaking_vocabulary_query("секс"))
 
     def test_ten_is_a_generation_cap_with_four_questions_as_the_batch_minimum(self) -> None:
         self.assertEqual(minimum_questions_for_requested_limit(10), 4)
