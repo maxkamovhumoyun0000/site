@@ -25,6 +25,7 @@ from speaking_contract import (
     MAX_CATALOG_TOPIC_COUNT,
     MAX_QUESTION_GENERATION_COUNT,
     display_topic_status,
+    cue_card_bullets_are_open_ended,
     individual_ai_topic_generation_count,
     minimum_questions_for_requested_limit,
     normalize_batch_topic_count,
@@ -1215,6 +1216,7 @@ async def _generate_speaking_ai_content(
                 f"Вопрос: \"{q_text}\"\n"
                 f"Требования:\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
+                f"- НЕ генерируйте sample_answer, model_answer или любой текст образца ответа. Не пишите образец ответа: этот раздел предназначен только для вопросов и лексики.\n"
                 f"- Предоставьте 2-3 полезных русских слова, идиомы или устойчивых выражения ('vocabulary') с объяснением значения и живым примером.\n"
                 f"- Не добавляйте examiner tips.\n"
                 f"Дополнительные указания: {payload.custom_instruction or 'Живая литературная речь, богатая лексика'}\n\n"
@@ -1240,6 +1242,7 @@ async def _generate_speaking_ai_content(
                 f"- Все вопросы ('question_text') должны быть интересными, жизненными, побуждающими к подробному ответу на русском языке.\n"
                 f"- Для каждого вопроса предоставьте 2-3 полезных русских слова, выражения или идиомы ('vocabulary') с толкованием и примером.\n"
                 f"- cue_card_bullet_points: [] (строго пустой массив).\n"
+                f"- НЕ генерируйте sample_answer, model_answer или любой текст образца ответа. Не пишите образец ответа: возвращайте только вопросы и vocabulary.\n"
                 f"- Самостоятельно выберите один status_badge: PREDICTED, HIGH FREQUENCY или COMMON. PREDICTED используйте только для обоснованного прогноза, актуального до конца 2026 года; HIGH FREQUENCY — только для устойчиво часто встречающейся темы; иначе COMMON.\n"
                 f"Дополнительные указания: {payload.custom_instruction or 'Разговорная практика, расширение словарного запаса'}{existing_question_note}\n\n"
                 f"Выведите СТРОГО один валидный JSON-объект следующей структуры:\n"
@@ -1269,13 +1272,15 @@ async def _generate_speaking_ai_content(
             answer_req = "Answer must be a COMPREHENSIVE, HIGH-SCORING MONOLOGUE (180 to 250 words, roughly 1.5 to 2 minutes of speech) addressing all 4 bullet points with chronological transitions and vivid descriptions."
             bullet_req = (
                 '"cue_card_bullet_points": exactly 4 concise, specific prompts tailored to THIS exact cue card. '
-                'Every question must have a different set of prompts: mention its real people, place, action, object or '
-                'experience where relevant. Never reuse a generic template such as "Where/What it was".'
+                'Every question must have a different set of open-ended prompts. They must guide the learner to choose '
+                'their OWN people, place, time, actions and details; never invent or prescribe names (for example Alex), '
+                'locations, dates, ages, purchases or a sample-answer storyline. Never reuse a generic template such as '
+                '"Where/What it was".'
             )
             bullet_json_snippet = (
-                '"cue_card_bullet_points": ["A specific detail from this cue card", '
-                '"A person, place or time relevant to this card", "What happened or what you did", '
-                '"And explain why this exact experience mattered"]'
+                '"cue_card_bullet_points": ["The key details you would include in your description", '
+                '"When and where it happened, or how you know about it", "The people, events or features that are relevant to you", '
+                '"And explain why it was important or memorable to you"]'
             )
         else:
             part_desc = "Part 3 (Two-way Discussion - abstract, societal and analytical topics)"
@@ -1500,7 +1505,11 @@ async def _generate_speaking_ai_content(
                 raw_bp = q.get("cue_card_bullet_points") or q.get("bullet_points") or q.get("bullets") or q.get("prompts")
                 if isinstance(raw_bp, list):
                     clean_bullets = [str(x).strip() for x in raw_bp if str(x).strip()]
-                    q["cue_card_bullet_points"] = clean_bullets[:4] if len(clean_bullets) >= 4 else part_two_cue_card_fallback(q["question_text"])
+                    q["cue_card_bullet_points"] = (
+                        clean_bullets[:4]
+                        if cue_card_bullets_are_open_ended(clean_bullets)
+                        else part_two_cue_card_fallback(q["question_text"])
+                    )
                 else:
                     q["cue_card_bullet_points"] = part_two_cue_card_fallback(q["question_text"])
 

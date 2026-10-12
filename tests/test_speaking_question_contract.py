@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 
 from speaking_contract import (
+    cue_card_bullets_are_open_ended,
     minimum_questions_for_requested_limit,
     variable_batch_question_targets,
     part_two_cue_card_fallback,
@@ -81,6 +82,23 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertNotEqual(travel, teacher)
         self.assertIn("memorable journey you took", travel[0])
         self.assertIn("teacher who influenced you", teacher[0])
+
+    def test_part_two_cue_cards_reject_pre_written_answer_details(self) -> None:
+        generic = [
+            "The key details you would include in your description",
+            "When and where it happened, or how you know about it",
+            "The people, events or features that are relevant to you",
+            "And explain why it was important or memorable to you",
+        ]
+        pre_written = [
+            "Talk about your friend Alex in London",
+            "Explain why he bought the red bicycle in 2024",
+            "Describe what happened at the party",
+            "Say why the experience mattered",
+        ]
+
+        self.assertTrue(cue_card_bullets_are_open_ended(generic))
+        self.assertFalse(cue_card_bullets_are_open_ended(pre_written))
 
     def test_ten_is_a_generation_cap_with_four_questions_as_the_batch_minimum(self) -> None:
         self.assertEqual(minimum_questions_for_requested_limit(10), 4)

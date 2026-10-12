@@ -169,6 +169,16 @@ def part_two_cue_card_fallback(question_text: Any) -> list[str]:
     """
     text = " ".join(str(question_text or "").split()).strip(" ?.")
     subject = re.sub(r"^(?:describe|talk about|tell me about)\s+", "", text, flags=re.IGNORECASE)
+    # A cue card must help the learner plan *their own* answer. If a legacy
+    # question itself contains a name, place or year, do not carry that fact
+    # into the fallback guidance as though it were part of a model response.
+    subject = re.sub(
+        r"\b(?:named|called|with|from|in|at)\s+[A-Z][A-Za-z'’-]{1,}\b",
+        "",
+        subject,
+    )
+    subject = re.sub(r"\b(?:19|20)\d{2}\b", "", subject)
+    subject = re.sub(r"\s{2,}", " ", subject).strip(" ,;:-")
     subject = subject[:160].strip(" ?.") or "the experience or thing in the cue card"
     return [
         f"The key details of {subject}",
@@ -176,6 +186,32 @@ def part_two_cue_card_fallback(question_text: Any) -> list[str]:
         f"The people, actions or events connected with {subject}",
         f"And explain why {subject} was meaningful to you",
     ]
+
+
+def cue_card_bullets_are_open_ended(points: Any) -> bool:
+    """Reject cue-card bullets that prescribe a model answer's private facts.
+
+    Names, dates and exact locations belong in a learner's answer, never in
+    ``You should say`` planning prompts. The provider still has flexibility to
+    tailor prompts to a question; this guard only falls back when it starts
+    inventing a story for the learner.
+    """
+    if not isinstance(points, list) or len(points) < 4:
+        return False
+    cleaned = [" ".join(str(point or "").split()) for point in points[:4]]
+    if any(not point for point in cleaned):
+        return False
+    combined = " ".join(cleaned)
+    if re.search(r"\b(?:19|20)\d{2}\b", combined):
+        return False
+    # These constructions expose an invented proper noun in context, while
+    # allowing normal bullet openings such as "Describe the person...".
+    if re.search(
+        r"\b(?:named|called|with|from|in|at|to|visited)\s+[A-Z][A-Za-z'’-]{1,}\b",
+        combined,
+    ):
+        return False
+    return True
 
 
 def public_sample_answer(value: Any, subject: Any) -> str:
