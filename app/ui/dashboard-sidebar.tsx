@@ -65,7 +65,7 @@ export function orderSections(sections: string[]) {
         ]
       : sectionSet.has("users") && sectionSet.has("reviews")
       ? [
-          "home", "users", "groups", "family-groups", "payments", "purchases", "homework",
+          "home", "users", "speaking-users", "groups", "family-groups", "payments", "purchases", "homework",
           "attendance", "holidays", "admin-callbacks",
           "videos", "books", "grammar", "courses", "gifts", "reviews", "leaderboard",
           "generator", "results", "competitions-history", "broadcasts", "surveys",

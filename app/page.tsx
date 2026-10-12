@@ -43,6 +43,7 @@ import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
+import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import AdminUserbot from "./ui/admin-userbot";
@@ -25053,6 +25054,8 @@ function DashboardShell({
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
+    } else if (currentSection === "speaking-users" && activeRole === "admin") {
+      content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
     } else {
       content = (
         <AdminSection
@@ -25491,6 +25494,10 @@ export default function DiamondEducationApp() {
   const [section, setSection] = useState("home");
   const [appState, setAppState] = useState<GenericRow | null>(null);
   const [isTelegramMode, setIsTelegramMode] = useState(false);
+  // Telegram can inject initData a moment after Next has hydrated.  Keep this
+  // separate from `isTelegramMode` (which means an actual Telegram identity)
+  // so a Mini App never briefly falls back to the public hero landing page.
+  const [isTelegramClient, setIsTelegramClient] = useState(false);
   const [isTelegramSubscribed, setIsTelegramSubscribed] = useState<boolean>(true);
   const [notice, setNotice] = useState("");
   const [activeGeneratorJob, setActiveGeneratorJob] = useState<GeneratorJobSnapshot | null>(null);
@@ -25900,9 +25907,10 @@ export default function DiamondEducationApp() {
         window.location.hash.includes("tgWebAppData") ||
         window.location.search.includes("tgWebAppPlatform")
       );
+      setIsTelegramClient(isTgClient);
 
       if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
-        for (let i = 0; i < 20; i++) {
+        for (let i = 0; i < 60; i++) {
           webApp = (window as any).Telegram?.WebApp;
           if (webApp?.ready) {
             try { webApp.ready(); } catch {}
@@ -26786,6 +26794,24 @@ export default function DiamondEducationApp() {
       />
     );
   
+  } else if (!user && isTelegramClient) {
+    content = (
+      <main className="placement-page process-runtime-page">
+        <section className="placement-card placement-runtime-card">
+          <article className="panel-card">
+            <h2>Telegram akkaunti tekshirilmoqda</h2>
+            <p className="text-sm text-ink-600 dark:text-navy-300">
+              Mini App Telegram sessiyangiz bilan kirishga urinmoqda. Iltimos, sahifani yopmang.
+            </p>
+            {showAuthRetry ? (
+              <button className="btn btn-primary mt-4" onClick={() => setAuthRetryTrigger((value) => value + 1)}>
+                Qayta tekshirish
+              </button>
+            ) : null}
+          </article>
+        </section>
+      </main>
+    );
   } else if (!user) {
     content = (
       <>

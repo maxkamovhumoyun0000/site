@@ -65,7 +65,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "profile",
   ],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
-  admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
+  admin: ["home", "study-room", "chats", "users", "speaking-users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   media: ["home", "speaking-topics", "speaking-notifications", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   developer: [
     "home",
@@ -161,6 +161,7 @@ export const SECTION_LABELS: Record<string, string> = {
   results: "Natijalar",
   profile: "Mening Profilim",
   users: "Foydalanuvchilar",
+  "speaking-users": "Speaking App foydalanuvchilari",
   groups: "Guruhlar",
   "family-groups": "Family Groups",
   payments: "To'lovlar",

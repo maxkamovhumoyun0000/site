@@ -25,6 +25,7 @@ import string
 import subprocess
 import threading
 import time
+import smtplib
 from contextlib import contextmanager, suppress
 from functools import lru_cache
 from decimal import Decimal, ROUND_HALF_UP
@@ -34,6 +35,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 from urllib.parse import parse_qs, parse_qsl, quote, urlparse
 from uuid import uuid4
+from email.message import EmailMessage
 
 import aiohttp
 import jwt
@@ -58,6 +60,16 @@ from userbot_manager import (
 )
 from passwords import generate_password, hash_password, verify_password
 from name_standardization import name_search_terms, normalize_new_latin_name
+from speaking_contract import (
+    SPEAKING_APP_LOGIN_TYPE,
+    is_speaking_app_account,
+    normalize_speaking_voice_guest_name,
+    normalize_speaking_link_code,
+    normalize_speaking_email,
+    session_replacements_for_login,
+    speaking_account_state_label,
+    speaking_voice_guest_identity,
+)
 from config import (
     ADMIN_CHAT_IDS,
     DATABASE_URL,
@@ -1386,6 +1398,38 @@ class PublicRegistrationRequest(BaseModel):
     language: Literal["uz", "ru", "en"] = "uz"
 
 
+class SpeakingRegistrationRequest(BaseModel):
+    """Self-service account for the standalone Diamond Speaking client."""
+
+    login_id: str = Field(min_length=4, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
+    first_name: str = Field(min_length=1, max_length=80)
+    last_name: str = Field(default="", max_length=80)
+    email: str = Field(min_length=5, max_length=254)
+    language: Literal["uz", "ru", "en"] = "uz"
+
+
+class SpeakingRegistrationVerificationRequest(BaseModel):
+    verification_id: str = Field(min_length=16, max_length=128)
+    code: str = Field(min_length=6, max_length=6)
+
+
+class SpeakingLinkStartRequest(BaseModel):
+    device_id: str = Field(min_length=12, max_length=160)
+    device_model: str | None = Field(default=None, max_length=120)
+
+
+class SpeakingLinkApproveRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+
+
+class SpeakingLinkCompleteRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+    device_id: str = Field(min_length=12, max_length=160)
+    device_model: str | None = Field(default=None, max_length=120)
+    revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
+
+
 class User(UserBase):
     id: str
     role: str
@@ -1415,6 +1459,10 @@ class User(UserBase):
     instagram_url: str | None = None
     telegram_url: str | None = None
     screenshot_demo: bool = False
+    # This marker is deliberately returned only to the account owner.  The
+    # mobile client uses it to show self-service deletion only for accounts
+    # originally created in Diamond Speaking, never for a linked school user.
+    speaking_app_account: bool = False
     created_at: datetime
 
     class Config:
@@ -1447,6 +1495,9 @@ class LoginRequest(BaseModel):
     init_data: str | None = None
     sync_bot_session: bool = True
     client_app: str | None = None
+    # Submitted only after a successful password check reports that the
+    # learner has already reached their three-device limit.
+    revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
 
 
 class PasswordReauthenticationRequest(BaseModel):
@@ -6522,6 +6573,8 @@ def _build_user_payload(u: dict) -> User:
         int(u.get("pending_approval") or 0),
         int(u.get("access_enabled") or 0),
         int(u.get("screenshot_demo") or 0),
+        int(u.get("speaking_app_account") or 0),
+        str(u.get("speaking_deleted_at") or ""),
     )
     now_ts = time.time()
     cached_payload = _USER_PAYLOAD_CACHE.get(cache_key)
@@ -6576,6 +6629,9 @@ def _build_user_payload(u: dict) -> User:
         instagram_url=str(user_row.get("instagram_url") or "").strip() or None,
         telegram_url=str(user_row.get("telegram_url") or "").strip() or None,
         screenshot_demo=is_screenshot_demo,
+        speaking_app_account=is_speaking_app_account(
+            user_row.get("speaking_app_account")
+        ),
         created_at=_now_utc(),
     )
     if user_id > 0:
@@ -6596,6 +6652,104 @@ def _web_session_limit_for_user(user: dict) -> int:
     if role == "admin":
         return 0
     return 3
+
+
+def _active_web_sessions_for_user(user_id: int) -> list[dict[str, Any]]:
+    """Return only the caller's still-valid sessions, newest first."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return []
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT session_id, device_id, device_model, source, created_at, last_seen_at, expires_at
+            FROM web_user_sessions
+            WHERE user_id=?
+              AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at>?)
+            ORDER BY last_seen_at DESC, created_at DESC, id DESC
+            """,
+            (uid, _now_utc().isoformat()),
+        )
+        return [dict(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+
+def _public_session_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Safe device metadata returned only after that user's password check."""
+    return [
+        {
+            "session_id": str(row.get("session_id") or ""),
+            "source": str(row.get("source") or "web"),
+            "device_model": str(row.get("device_model") or "").strip() or None,
+            "created_at": row.get("created_at"),
+            "last_seen_at": row.get("last_seen_at"),
+            "expires_at": row.get("expires_at"),
+        }
+        for row in rows
+        if str(row.get("session_id") or "").strip()
+    ]
+
+
+def _reserve_web_session_slot(
+    user: dict,
+    *,
+    device_id: str | None,
+    requested_session_ids: list[str] | None,
+) -> None:
+    """End selected old sessions before issuing a new student session.
+
+    This deliberately runs after password verification.  It neither exposes
+    device data for invalid credentials nor silently logs a learner out of an
+    unrelated device when their limit is reached.
+    """
+    limit = _web_session_limit_for_user(user)
+    if limit <= 0:
+        return
+    uid = int(user.get("id") or 0)
+    active = _active_web_sessions_for_user(uid)
+    try:
+        replacements = session_replacements_for_login(
+            active,
+            limit=limit,
+            device_id=device_id,
+            requested_session_ids=requested_session_ids or [],
+        )
+    except ValueError as exc:
+        if str(exc) == "session_limit_selection_required":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "session_limit",
+                    "message": f"Bu account uchun ko‘pi bilan {limit} ta faol sessiya mumkin. Davom etish uchun eski qurilmalardan birini tanlab chiqaring.",
+                    "session_limit": limit,
+                    "sessions": _public_session_rows(active),
+                },
+            ) from exc
+        raise
+    if not replacements:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        placeholders = ",".join(["?"] * len(replacements))
+        cur.execute(
+            f"""
+            UPDATE web_user_sessions
+            SET revoked_at=?, revoked_reason=?
+            WHERE user_id=?
+              AND session_id IN ({placeholders})
+              AND revoked_at IS NULL
+            """,
+            (_now_utc().isoformat(), "session_replaced_by_learner", uid, *replacements),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _clear_auth_caches_for_user(uid)
 
 
 def _revoke_web_sessions(user_id: int, keep_session_id: str | None = None, reason: str | None = None) -> int:
@@ -9937,6 +10091,8 @@ def _ensure_user_web_columns() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS placement_subject TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_approval INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS public_signup INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS speaking_app_account INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS speaking_deleted_at TIMESTAMP",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS group_join_requested_at TIMESTAMP",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS review_wait_required INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_upload_daily_tests INTEGER DEFAULT 1",
@@ -13332,6 +13488,8 @@ def _serialize_user_row_light(row: dict) -> dict:
         "group_count": int(row.get("group_count") or 0),
         "created_at": row.get("created_at"),
         "joined_at": row.get("joined_at"),
+        "speaking_account_state": speaking_account_state_label(row.get("speaking_deleted_at")),
+        "speaking_deleted_at": row.get("speaking_deleted_at"),
     }
 
 
@@ -14812,7 +14970,7 @@ def _book_row_for_external_open(book_id: int, user: dict[str, Any], role: str) -
             raise HTTPException(status_code=404, detail="Book not found")
         if role != "admin" and not _media_subject_allowed_for_user(user, book):
             raise HTTPException(status_code=403, detail="Sizda bu kitobni ko'rish huquqi yo'q")
-        if role == "student":
+        if role == "student" and not is_speaking_app_account(user.get("speaking_app_account")):
             cur.execute(
                 "SELECT id FROM student_book_purchases WHERE user_id=? AND book_id=? LIMIT 1",
                 (user_id, int(book_id)),
@@ -19377,6 +19535,326 @@ async def _notify_admins_group_join_request(user: dict) -> None:
                 chat_id,
             )
 
+def _ensure_speaking_account_schema() -> None:
+    """Private contact + one-time-code storage for the standalone app."""
+    _ensure_user_web_columns()
+    conn = get_conn()
+    cur = conn.cursor()
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS speaking_account_contacts (
+            user_id BIGINT PRIMARY KEY,
+            email TEXT NOT NULL UNIQUE,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS speaking_registration_verifications (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            user_id BIGINT,
+            payload_json TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            expires_at TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS speaking_student_link_requests (
+            code TEXT PRIMARY KEY,
+            user_id BIGINT,
+            device_id TEXT NOT NULL,
+            device_model TEXT,
+            approved_at TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_speaking_verify_email_created ON speaking_registration_verifications(email, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_speaking_link_user_created ON speaking_student_link_requests(user_id, created_at DESC)",
+    )
+    try:
+        for statement in statements:
+            cur.execute(statement)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _send_speaking_verification_email(*, recipient: str, code: str, language: str) -> None:
+    """Send a short, aligned HTML code email from the verified domain sender."""
+    copy = {
+        "uz": ("Diamond Speaking tasdiqlash kodi", "Akkauntingizni tasdiqlang", "Tasdiqlash kodingiz", "Kod 10 daqiqa amal qiladi. Agar bu so‘rov sizniki bo‘lmasa, xatni e’tiborsiz qoldiring."),
+        "ru": ("Код подтверждения Diamond Speaking", "Подтвердите аккаунт", "Ваш код подтверждения", "Код действует 10 минут. Если запрос сделали не вы, просто проигнорируйте это письмо."),
+        "en": ("Diamond Speaking verification code", "Confirm your account", "Your verification code", "The code expires in 10 minutes. If you did not request it, you can safely ignore this email."),
+    }.get(language, ("Diamond Speaking verification code", "Confirm your account", "Your verification code", "The code expires in 10 minutes."))
+    subject, heading, label, note = copy
+    escaped_code = html.escape(code)
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
+    message["To"] = recipient
+    message.set_content(f"{heading}\n\n{label}: {code}\n\n{note}")
+    message.add_alternative(
+        f"""<!doctype html><html><body style=\"margin:0;background:#f2f6ff;font-family:Arial,sans-serif;color:#102041\"><main style=\"max-width:520px;margin:32px auto;background:#fff;border-radius:20px;padding:36px;text-align:center;border:1px solid #d9e4ff\"><div style=\"font-size:28px\">💎</div><h1 style=\"font-size:24px;margin:12px 0\">{html.escape(heading)}</h1><p style=\"color:#52627d\">{html.escape(label)}</p><div style=\"letter-spacing:8px;font-size:30px;font-weight:800;color:#0b5cff;background:#edf4ff;border-radius:14px;padding:16px;margin:20px 0\">{escaped_code}</div><p style=\"font-size:13px;color:#68758d\">{html.escape(note)}</p><p style=\"font-size:12px;color:#9aa5b7;margin-top:28px\">Diamond Education · Diamond Speaking</p></main></body></html>""",
+        subtype="html",
+    )
+    try:
+        with smtplib.SMTP("127.0.0.1", 25, timeout=10) as smtp:
+            smtp.send_message(message)
+        return
+    except Exception:
+        smtp_host = os.getenv("SMTP_HOST")
+        smtp_user = os.getenv("SMTP_USER")
+        smtp_password = os.getenv("SMTP_PASSWORD")
+        if not (smtp_host and smtp_user and smtp_password):
+            raise HTTPException(status_code=503, detail="Tasdiqlash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.")
+        try:
+            with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT") or 587), timeout=15) as smtp:
+                smtp.starttls()
+                smtp.login(smtp_user, smtp_password)
+                smtp.send_message(message)
+        except Exception as exc:
+            logger.warning("speaking verification email failed error=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail="Tasdiqlash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.") from exc
+
+
+@app.post("/auth/speaking-registration/start")
+async def start_speaking_registration(payload: SpeakingRegistrationRequest, req: Request):
+    """Create a one-time email challenge; no account exists until it is used."""
+    client_ip = _client_ip(req)
+    throttle_key = f"speaking-registration:{client_ip}" if client_ip else ""
+    if throttle_key and is_login_throttled(throttle_key, max_failures=PUBLIC_REGISTRATION_IP_MAX_FAILURES):
+        raise HTTPException(status_code=429, detail="Too many registration attempts. Please try again later.")
+    try:
+        login_id = _public_registration_login_id(payload.login_id)
+        email = normalize_speaking_email(payload.email)
+        first_name = " ".join(str(payload.first_name or "").split())
+        last_name = " ".join(str(payload.last_name or "").split())
+        if not first_name:
+            raise HTTPException(status_code=422, detail="First name is required")
+        _ensure_speaking_account_schema()
+        existing = get_user_by_login_id(login_id)
+        existing_id = int((existing or {}).get("id") or 0)
+        if existing and (not is_speaking_app_account(existing.get("speaking_app_account")) or not existing.get("speaking_deleted_at")):
+            raise HTTPException(status_code=409, detail="Login ID already exists")
+        if existing_id:
+            conn = get_conn(); cur = conn.cursor()
+            try:
+                cur.execute("SELECT email FROM speaking_account_contacts WHERE user_id=?", (existing_id,))
+                stored = cur.fetchone()
+            finally:
+                conn.close()
+            if not stored or normalize_speaking_email(dict(stored).get("email")) != email:
+                raise HTTPException(status_code=409, detail="This deleted account must be restored with its original email")
+    except HTTPException:
+        if throttle_key: record_login_failure(throttle_key)
+        raise
+    except ValueError:
+        if throttle_key: record_login_failure(throttle_key)
+        raise HTTPException(status_code=422, detail="A valid email is required")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    verification_id = f"sv_{secrets.token_urlsafe(24)}"
+    record = {
+        "login_id": login_id, "password_hash": hash_password(str(payload.password)),
+        "first_name": first_name, "last_name": last_name, "language": payload.language,
+    }
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM speaking_registration_verifications WHERE email=? AND consumed_at IS NULL", (email,))
+        cur.execute(
+            "INSERT INTO speaking_registration_verifications(id,email,user_id,payload_json,code_hash,expires_at) VALUES (?,?,?,?,?,?)",
+            (verification_id, email, existing_id or None, json.dumps(record), hashlib.sha256(code.encode()).hexdigest(), (_now_utc() + timedelta(minutes=10)).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _send_speaking_verification_email(recipient=email, code=code, language=payload.language)
+    if throttle_key: clear_login_throttle(throttle_key)
+    return {"verification_id": verification_id, "expires_in_seconds": 600, "message": "Tasdiqlash kodi emailga yuborildi. Spam papkasini ham tekshiring."}
+
+
+@app.post("/auth/speaking-registration/verify", response_model=TokenResponse)
+async def verify_speaking_registration(payload: SpeakingRegistrationVerificationRequest):
+    """Consume the email code, creating or restoring the dedicated account."""
+    _ensure_speaking_account_schema()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        # PostgreSQL locks the one-time code row.  SQLite is supported for
+        # local development and has no `FOR UPDATE`, so use its transaction
+        # lock plus the conditional consume update below there instead.
+        try:
+            cur.execute("SELECT * FROM speaking_registration_verifications WHERE id=? FOR UPDATE", (payload.verification_id,))
+        except Exception:
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM speaking_registration_verifications WHERE id=?", (payload.verification_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail="Verification request not found")
+        verification = dict(row)
+        if verification.get("consumed_at") or str(verification.get("expires_at") or "") <= _now_utc().isoformat() or int(verification.get("attempts") or 0) >= 5:
+            raise HTTPException(status_code=400, detail="Verification code expired. Request a new code.")
+        if not hmac.compare_digest(str(verification.get("code_hash") or ""), hashlib.sha256(payload.code.strip().encode()).hexdigest()):
+            cur.execute("UPDATE speaking_registration_verifications SET attempts=attempts+1 WHERE id=?", (payload.verification_id,))
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Verification code is incorrect")
+        data = json.loads(str(verification.get("payload_json") or "{}"))
+        user_id = int(verification.get("user_id") or 0)
+        if user_id:
+            cur.execute("UPDATE users SET password=?,first_name=?,last_name=?,language=?,blocked=0,access_enabled=1,pending_approval=0,speaking_deleted_at=NULL WHERE id=? AND speaking_app_account=1", (data["password_hash"], data["first_name"], data["last_name"], data["language"], user_id))
+        else:
+            cur.execute("INSERT INTO users(login_id,password,first_name,last_name,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?, 'English,Russian', ?,0,1,0,0,1,?,0,0) RETURNING id", (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], SPEAKING_APP_LOGIN_TYPE, data["language"]))
+            user_id = int((cur.fetchone() or {}).get("id") or 0)
+            cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, verification["email"], _now_utc().isoformat()))
+        cur.execute(
+            "UPDATE speaking_registration_verifications SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+            (_now_utc().isoformat(), payload.verification_id),
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise HTTPException(status_code=409, detail="Verification code has already been used")
+        conn.commit()
+    except HTTPException:
+        with suppress(Exception): conn.rollback()
+        raise
+    except Exception as exc:
+        with suppress(Exception): conn.rollback()
+        logger.exception("speaking verification failed error=%s", type(exc).__name__)
+        raise HTTPException(status_code=400, detail="Account could not be verified") from exc
+    finally:
+        conn.close()
+    created = get_user_by_id(user_id)
+    if not created: raise HTTPException(status_code=500, detail="Account could not be loaded")
+    session_id, ttl_hours = _issue_web_session(created, device_id=None, source="speaking_registration")
+    return TokenResponse(access_token=_create_access_token(created, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(created))
+
+
+def _speaking_link_code() -> str:
+    alphabet = string.ascii_uppercase + string.digits
+    return "SPEAK-" + "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+def _require_student_link_user(authorization: str | None) -> dict:
+    user = _user_row_from_bearer(authorization)
+    role = _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+    if role != "student" or is_speaking_app_account(user.get("speaking_app_account")):
+        raise HTTPException(status_code=403, detail="A Student App account is required")
+    return user
+
+
+@app.post("/auth/speaking-link/start")
+async def start_speaking_student_link(
+    payload: SpeakingLinkStartRequest,
+):
+    """Create a short code for a *signed-in Student App* user to approve.
+
+    The code by itself cannot sign anyone in: it needs a confirmation from the
+    matching Student App session and expires after ten minutes.
+    """
+    _ensure_speaking_account_schema()
+    now = _now_utc()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM speaking_student_link_requests WHERE device_id=? AND consumed_at IS NULL",
+            (payload.device_id.strip(),),
+        )
+        code = _speaking_link_code()
+        cur.execute(
+            "INSERT INTO speaking_student_link_requests(code,user_id,device_id,device_model,expires_at) VALUES (?,?,?,?,?)",
+            (code, None, payload.device_id.strip(), (payload.device_model or "").strip()[:120] or None, (now + timedelta(minutes=10)).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"code": code, "expires_in_seconds": 600}
+
+
+@app.post("/auth/speaking-link/approve")
+async def approve_speaking_student_link(
+    payload: SpeakingLinkApproveRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Approve a code inside Student App; no user data is exposed to it."""
+    user = _require_student_link_user(authorization)
+    try:
+        code = normalize_speaking_link_code(payload.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid Speaking link code") from exc
+    _ensure_speaking_account_schema()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE speaking_student_link_requests
+            SET approved_at=?, user_id=?
+            WHERE code=? AND user_id IS NULL AND consumed_at IS NULL
+              AND expires_at>?
+            """,
+            (_now_utc().isoformat(), int(user.get("id") or 0), code, _now_utc().isoformat()),
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise HTTPException(status_code=400, detail="Speaking link code is invalid or expired")
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"approved": True}
+
+
+@app.post("/auth/speaking-link/complete", response_model=TokenResponse)
+async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
+    """Issue a normal Speaking session only after Student App approval."""
+    try:
+        code = normalize_speaking_link_code(payload.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid Speaking link code") from exc
+    _ensure_speaking_account_schema()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM speaking_student_link_requests WHERE code=? FOR UPDATE", (code,))
+        row = cur.fetchone()
+    except Exception:
+        conn.rollback(); cur = conn.cursor()
+        cur.execute("SELECT * FROM speaking_student_link_requests WHERE code=?", (code,))
+        row = cur.fetchone()
+    try:
+        link = dict(row or {})
+        if not link or link.get("consumed_at") or not link.get("approved_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
+            raise HTTPException(status_code=400, detail="Speaking link has not been approved or has expired")
+        user_id = int(link.get("user_id") or 0)
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="Student account not found")
+        _reserve_web_session_slot(user, device_id=payload.device_id, requested_session_ids=payload.revoke_session_ids)
+        cur.execute(
+            "UPDATE speaking_student_link_requests SET consumed_at=? WHERE code=? AND consumed_at IS NULL",
+            (_now_utc().isoformat(), code),
+        )
+        if int(cur.rowcount or 0) != 1:
+            raise HTTPException(status_code=409, detail="Speaking link has already been used")
+        conn.commit()
+    except HTTPException:
+        with suppress(Exception): conn.rollback()
+        raise
+    finally:
+        conn.close()
+    session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_student_link")
+    return TokenResponse(access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(user))
+
+
+@app.post("/auth/speaking-registration", response_model=TokenResponse)
+async def deprecated_speaking_registration(payload: SpeakingRegistrationRequest):
+    raise HTTPException(status_code=410, detail="Email verification is required. Use /auth/speaking-registration/start.")
+
 
 @app.post("/auth/public-registration", response_model=PublicRegistrationResponse)
 async def public_registration(payload: PublicRegistrationRequest, req: Request):
@@ -19671,6 +20149,8 @@ async def login(request: LoginRequest, req: Request):
     clear_failed_logins(int(user.get("id") or 0))
     if int(user.get("login_type") or 0) == 6:
         raise HTTPException(status_code=403, detail="Accountless student cannot log in")
+    if is_speaking_app_account(user.get("speaking_app_account")) and user.get("speaking_deleted_at"):
+        raise HTTPException(status_code=403, detail="Speaking account is inactive. Register again to restore it.")
     if int(user.get("blocked") or 0) == 1:
         raise HTTPException(status_code=403, detail="Account is blocked")
 
@@ -19721,7 +20201,17 @@ async def login(request: LoginRequest, req: Request):
     user = _apply_web_login_policy(user, device_id)
     if requested_telegram_id > 0 and bool(request.sync_bot_session):
         _sync_bot_login_state(int(user.get("id") or 0), requested_telegram_id)
-    session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="login", device_model=request.device_model)
+    _reserve_web_session_slot(
+        user,
+        device_id=device_id,
+        requested_session_ids=request.revoke_session_ids,
+    )
+    session_id, ttl_hours = _issue_web_session(
+        user,
+        device_id=device_id,
+        source=client_app or "login",
+        device_model=request.device_model,
+    )
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
     return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
 
@@ -21215,6 +21705,28 @@ async def delete_my_account(authorization: str | None = Header(default=None)):
     _invalidate_student_overview_cache(user_id)
     logger.info("user.account_deleted user_id=%s role=%s", user_id, role)
     return {"success": True, "message": "Account and personal data deleted"}
+
+
+@app.delete("/auth/speaking-account")
+async def deactivate_speaking_account(authorization: str | None = Header(default=None)):
+    """Soft-delete only accounts that were created inside Diamond Speaking."""
+    user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    if user_id <= 0 or not is_speaking_app_account(user.get("speaking_app_account")):
+        raise HTTPException(status_code=403, detail="Only a standalone Speaking account can be deleted here")
+    _ensure_speaking_account_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE users SET speaking_deleted_at=?, access_enabled=0, pending_approval=0 WHERE id=? AND speaking_app_account=1",
+            (_now_utc().isoformat(), user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    _revoke_web_sessions(user_id, keep_session_id=None, reason="speaking_account_deactivated")
+    return {"success": True, "message": "Your Speaking account has been deleted."}
 
 
 @app.delete("/user/sessions/{session_id}")
@@ -39448,11 +39960,13 @@ async def admin_users(
     subject: str | None = Query(default=None),
     limit: int = Query(default=120, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    speaking_only: bool = Query(default=False),
     authorization: str | None = Header(default=None),
 ):
     started_at = time.perf_counter()
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    _ensure_user_web_columns()
     _ensure_admin_perf_indexes()
     _safe_call(_ensure_proctoring_schema_runtime_fast, None)
     role_filter = str(role or "").strip().lower()
@@ -39460,7 +39974,12 @@ async def admin_users(
     query = str(q or "").strip().lower()
     # Screenshot fixtures are authentication-only accounts used for App Review.
     # They must never leak into staff/admin search, pagination totals or lists.
-    where_clauses: list[str] = ["COALESCE(u.screenshot_demo, 0)=0"]
+    where_clauses: list[str] = [
+        "COALESCE(u.screenshot_demo, 0)=0",
+        "COALESCE(u.speaking_app_account, 0)=1"
+        if speaking_only
+        else "COALESCE(u.speaking_app_account, 0)=0",
+    ]
     params: list[Any] = []
 
     if query:
@@ -57338,8 +57857,10 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
         )
         cur.execute("DELETE FROM web_voicerooms WHERE subject = %s", (req_subject if req_subject else "community",))
             
-        # Deduct Dcoin if student
-        if role == "student":
+        # Standalone Speaking accounts are immediately active learning
+        # accounts. They can host their own practice room without a Dcoin
+        # balance; regular platform students retain the existing Dcoin rule.
+        if role == "student" and not is_speaking_app_account(user.get("speaking_app_account")):
             settings = _get_runtime_settings()
             price = float(settings.get("voice_room_price", 50.0))
             if price > 0:
@@ -57495,6 +58016,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
     my_role = "student"
     my_subject = "english"
     my_avatar_url = ""
+    guest_identity = None
 
     # Auth: Authorization header preferred (native apps set it on the
     # handshake; keeps the JWT out of proxy/access logs). The query-param
@@ -57524,6 +58046,18 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     my_role = "student"
         except Exception:
             pass
+
+    # Keep the legacy browser guest fallback for already-shipped web clients.
+    # The Diamond Speaking mobile client itself always authenticates first and
+    # sends the Authorization header above; its users never take this branch.
+    # A fallback installation id is one-way and is never stored as an account.
+    if not my_user_id:
+        guest_identity = speaking_voice_guest_identity(
+            websocket.headers.get("x-speaking-guest-id")
+        )
+        my_name = normalize_speaking_voice_guest_name(
+            websocket.headers.get("x-speaking-guest-name")
+        )
 
     async def _send(msg: dict):
         try:
@@ -57587,13 +58121,13 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 if action == "join_room":
                     room_id = str(msg.get("room_id"))
                     
-                    if _REDIS_CLIENT.sismember("voice_room_banned_users", str(my_user_id)) and my_role != "admin":
+                    if my_user_id and _REDIS_CLIENT.sismember("voice_room_banned_users", str(my_user_id)) and my_role != "admin":
                         await _send({"type": "error", "message": "Siz ovozli xonalardan chetlashtirilgansiz."})
                         continue
                     # A block must apply beyond the screen where it was made:
                     # do not let mutually blocked users enter the same live
                     # voice room on a subsequent join.
-                    blocked_ids = community_safety.blocked_ids(my_user_id)
+                    blocked_ids = community_safety.blocked_ids(my_user_id) if my_user_id else set()
                     if blocked_ids:
                         existing_peer_ids = set()
                         for existing_peer in _REDIS_CLIENT.smembers(f"voice_room_peers_{room_id}") or set():
@@ -57725,7 +58259,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     
                     # Store peer info for avatar and name
                     _REDIS_CLIENT.hset(f"voice_room_peer_info_{my_ws_id}", mapping={
-                        "user_id": str(my_user_id) if my_user_id else "",
+                        "user_id": str(my_user_id) if my_user_id else (guest_identity or ""),
                         "name": my_name,
                         "avatar_url": my_avatar_url or ""
                     })

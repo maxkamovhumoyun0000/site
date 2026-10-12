@@ -16,6 +16,75 @@ MIN_BATCH_QUESTIONS_PER_TOPIC = 4
 # fuller plan than the regular one-request AI generator.
 MAX_CATALOG_TOPIC_COUNT = 30
 MAX_CATALOG_QUESTION_TARGET = 30
+SPEAKING_APP_LOGIN_TYPE = 7
+
+
+def is_speaking_app_account(value: Any) -> bool:
+    """Interpret the dedicated Speaking-app account marker conservatively."""
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def session_replacements_for_login(
+    active_sessions: list[dict[str, Any]],
+    *,
+    limit: int,
+    device_id: Any,
+    requested_session_ids: Any,
+) -> tuple[str, ...]:
+    """Choose sessions that must end before a new authenticated device starts.
+
+    A known device replaces only its own older session automatically.  A new
+    device must explicitly name an existing session when the learner has
+    reached the three-session student limit.  IDs are intersected with the
+    authenticated user's active sessions here so a client cannot revoke a
+    different account's session by guessing an identifier.
+    """
+    if limit <= 0:
+        return ()
+    rows = [row for row in active_sessions if str(row.get("session_id") or "").strip()]
+    required = max(0, len(rows) + 1 - int(limit))
+    if required == 0:
+        return ()
+    current_device = str(device_id or "").strip()
+    valid_ids = {str(row.get("session_id") or "").strip() for row in rows}
+    selected: list[str] = []
+    if current_device:
+        selected.extend(
+            str(row.get("session_id") or "").strip()
+            for row in rows
+            if str(row.get("device_id") or "").strip() == current_device
+        )
+    if isinstance(requested_session_ids, (list, tuple, set)):
+        for item in requested_session_ids:
+            session_id = str(item or "").strip()
+            if session_id and session_id in valid_ids and session_id not in selected:
+                selected.append(session_id)
+    if len(selected) < required:
+        raise ValueError("session_limit_selection_required")
+    return tuple(selected[:required])
+
+
+def normalize_speaking_link_code(value: Any) -> str:
+    """Validate a short, user-visible Student-to-Speaking approval code."""
+    code = str(value or "").strip().upper().replace(" ", "")
+    if re.fullmatch(r"SPEAK-[A-Z0-9]{8}", code):
+        return code
+    raise ValueError("invalid_speaking_link_code")
+
+
+def normalize_speaking_email(value: Any) -> str:
+    """Normalize a deliverable email without accepting display-name syntax."""
+    email = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    if not re.fullmatch(r"[a-z0-9.!#$%&'*+/=?^_`{|}~-]{1,64}@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", email):
+        raise ValueError("invalid_speaking_email")
+    if len(email) > 254:
+        raise ValueError("invalid_speaking_email")
+    return email
+
+
+def speaking_account_state_label(deleted_at: Any) -> str:
+    """The only public state labels for the dedicated admin list."""
+    return "inactive" if str(deleted_at or "").strip() else "active"
 
 # Public Speaking vocabulary lookup is intentionally family-safe. This is a
 # narrow search filter, not a judgement on a learner: it prevents adult terms
@@ -44,6 +113,31 @@ _SPEAKING_VOCABULARY_18_PLUS_TERMS = frozenset(
         "yalang‘och",
     }
 )
+
+
+def normalize_speaking_voice_guest_name(value: Any) -> str:
+    """Return a safe, short display name for an unauthenticated speaker.
+
+    Voice-room guest labels are displayed to everyone in a live room, so
+    control characters are stripped rather than echoed into WebSocket frames.
+    This is deliberately a display label only; it never becomes an account.
+    """
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character)[0] != "C"
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized[:32].strip() or "Speaking learner"
+
+
+def speaking_voice_guest_identity(value: Any) -> str | None:
+    """Create a non-reversible room identity from a random app installation id."""
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", raw):
+        return None
+    return "guest-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def is_safe_speaking_vocabulary_query(value: Any) -> bool:
