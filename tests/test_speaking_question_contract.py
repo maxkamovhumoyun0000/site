@@ -8,6 +8,7 @@ from speaking_contract import (
     is_safe_speaking_vocabulary_query,
     is_speaking_app_account,
     minimum_questions_for_requested_limit,
+    normalize_speaking_link_code,
     normalize_speaking_voice_guest_name,
     speaking_voice_guest_identity,
     session_replacements_for_login,
@@ -184,3 +185,8 @@ class SpeakingQuestionContractTests(unittest.TestCase):
             ),
             ("old-speaking",),
         )
+
+    def test_student_app_link_code_is_canonical_and_rejects_unsafe_input(self) -> None:
+        self.assertEqual(normalize_speaking_link_code(' speak-ab12cd34 '), 'SPEAK-AB12CD34')
+        with self.assertRaises(ValueError):
+            normalize_speaking_link_code('SPEAK-<script>')
