@@ -6,9 +6,11 @@ from types import SimpleNamespace
 from speaking_contract import (
     cue_card_bullets_are_open_ended,
     is_safe_speaking_vocabulary_query,
+    is_speaking_app_account,
     minimum_questions_for_requested_limit,
     normalize_speaking_voice_guest_name,
     speaking_voice_guest_identity,
+    session_replacements_for_login,
     variable_batch_question_targets,
     part_two_cue_card_fallback,
     public_sample_answer,
@@ -125,6 +127,11 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         )
         self.assertEqual(normalize_speaking_voice_guest_name("\x00 \t"), "Speaking learner")
 
+    def test_speaking_accounts_are_explicitly_marked_for_admin_list_isolation(self) -> None:
+        self.assertTrue(is_speaking_app_account(1))
+        self.assertTrue(is_speaking_app_account("true"))
+        self.assertFalse(is_speaking_app_account(0))
+
     def test_ten_is_a_generation_cap_with_four_questions_as_the_batch_minimum(self) -> None:
         self.assertEqual(minimum_questions_for_requested_limit(10), 4)
         self.assertEqual(minimum_questions_for_requested_limit(4), 4)
@@ -136,3 +143,44 @@ class SpeakingQuestionContractTests(unittest.TestCase):
         self.assertEqual(len(targets), 5)
         self.assertTrue(all(4 <= count <= 10 for count in targets))
         self.assertGreater(len(set(targets)), 1)
+
+    def test_session_limit_requires_the_learner_to_select_a_real_old_device(self) -> None:
+        active = [
+            {"session_id": "student-phone", "device_id": "phone-a"},
+            {"session_id": "student-tablet", "device_id": "tablet-b"},
+            {"session_id": "speaking-phone", "device_id": "phone-c"},
+        ]
+
+        self.assertEqual(
+            session_replacements_for_login(
+                active,
+                limit=3,
+                device_id="new-phone",
+                requested_session_ids=["student-tablet"],
+            ),
+            ("student-tablet",),
+        )
+        with self.assertRaises(ValueError):
+            session_replacements_for_login(
+                active,
+                limit=3,
+                device_id="new-phone",
+                requested_session_ids=["not-this-users-session"],
+            )
+
+    def test_session_limit_reuses_the_same_device_without_prompting_for_another(self) -> None:
+        active = [
+            {"session_id": "old-speaking", "device_id": "same-device"},
+            {"session_id": "student-phone", "device_id": "phone-a"},
+            {"session_id": "student-tablet", "device_id": "tablet-b"},
+        ]
+
+        self.assertEqual(
+            session_replacements_for_login(
+                active,
+                limit=3,
+                device_id="same-device",
+                requested_session_ids=[],
+            ),
+            ("old-speaking",),
+        )
