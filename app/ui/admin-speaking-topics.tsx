@@ -71,6 +71,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [catalogLoading, setCatalogLoading] = useState<boolean>(false);
   const [catalogProgress, setCatalogProgress] = useState<number>(0);
   const [catalogStage, setCatalogStage] = useState<string>("");
+  const [catalogPart, setCatalogPart] = useState<number | null>(null);
 
   // Manual Add Topic Modal
   const [newTopicModalOpen, setNewTopicModalOpen] = useState<boolean>(false);
@@ -152,6 +153,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     }
     return s === "english" && t.part === activePart;
   });
+  const displayedCatalogPart = catalogPart || activePart;
 
   // Open AI modal for creating a new topic
   function openAiModalForNewTopic(part?: number) {
@@ -277,19 +279,26 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     }
   }
 
-  async function handleCatalogFill(subject: "english" | "russian") {
-    const subjectLabel = subject === "russian" ? "Rus tili" : "English IELTS";
+  async function handleCatalogFill(subject: "english" | "russian", part?: number) {
+    const isEnglishPart = subject === "english";
+    const selectedPart = isEnglishPart ? part || activePart : null;
+    const subjectLabel = isEnglishPart ? `English IELTS Part ${selectedPart}` : "Rus tili";
+    const topicTarget = isEnglishPart ? 10 : 30;
     const accepted = window.confirm(
-      `${subjectLabel} katalogi uchun 30 ta mavzu yaratiladi yoki mavjud mos mavzular to'ldiriladi. ` +
+      `${subjectLabel} katalogi uchun ${topicTarget} ta mavzu yaratiladi yoki mavjud mos mavzular to'ldiriladi. ` +
       "Har birida 15 tagacha savol bo'ladi. Jarayon fon rejimida ishlaydi va bir necha vaqt olishi mumkin. Boshlaymizmi?"
     );
     if (!accepted) return;
 
     setCatalogLoading(true);
+    setCatalogPart(selectedPart);
     setCatalogProgress(0);
     setCatalogStage("Vazifa navbatga qo'yilmoqda...");
     try {
-      const started = await apiFetch(`/staff/speaking/${subject}-catalog/jobs`, {
+      const path = isEnglishPart
+        ? `/staff/speaking/english-catalog/jobs?part=${selectedPart}`
+        : "/staff/speaking/russian-catalog/jobs";
+      const started = await apiFetch(path, {
         method: "POST",
         timeoutMs: 30000,
       });
@@ -340,6 +349,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
       alert(`${subjectLabel} katalogini to'ldirishda xatolik: ` + (e?.message || String(e)));
     } finally {
       setCatalogLoading(false);
+      setCatalogPart(null);
     }
   }
 
@@ -734,13 +744,13 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               <p className="mt-1.5 max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-300">
                 {activeSubject === "russian"
                   ? "AI 30 ta suhbat mavzusini yaratadi yoki mavjud mos mavzularni 15 tagacha takrorlanmaydigan savol bilan to‘ldiradi."
-                  : "AI Part 1, Part 2 va Part 3 uchun 30 ta mavzuni yaratadi yoki mavjud mos mavzularni to‘ldiradi; savollar, cue cardlar, Band 9 javoblar va vocabulary ham to‘liq yaratiladi."}
+                  : `AI faqat hozir tanlangan Part ${displayedCatalogPart} uchun 10 ta mavzuni yaratadi yoki mavjud mos mavzularni to‘ldiradi; savollar, cue cardlar, Band 9 javoblar va vocabulary ham to‘liq yaratiladi.`}
                 {" "}Mavjud topic hamda savollar avval tekshiriladi; sahifa yopilsa ham tayyor bo‘lgan material yo‘qolmaydi.
               </p>
             </div>
             <button
               type="button"
-              onClick={() => handleCatalogFill(activeSubject)}
+              onClick={() => handleCatalogFill(activeSubject, activeSubject === "english" ? activePart : undefined)}
               disabled={catalogLoading}
               className={`shrink-0 rounded-xl px-5 py-3 text-sm font-extrabold text-white shadow-lg transition-all active:scale-95 disabled:cursor-wait disabled:opacity-70 ${
                 activeSubject === "russian"
@@ -748,7 +758,11 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                   : "bg-gradient-to-r from-blue-600 to-cyan-600 shadow-blue-500/25 hover:from-blue-500 hover:to-cyan-500"
               }`}
             >
-              {catalogLoading ? `⏳ ${catalogProgress}% tayyorlanmoqda` : "✨ 30 mavzuni AI bilan to‘ldirish"}
+              {catalogLoading
+                ? `⏳ ${catalogProgress}% tayyorlanmoqda`
+                : activeSubject === "english"
+                  ? `✨ Part ${activePart} uchun 10 mavzuni AI bilan to‘ldirish`
+                  : "✨ 30 mavzuni AI bilan to‘ldirish"}
             </button>
           </div>
           {catalogLoading && (

@@ -126,6 +126,14 @@ ENGLISH_CATALOG_TOPICS = (
 ENGLISH_CATALOG_TARGET_QUESTIONS = 15
 
 
+def english_catalog_topics_for_part(part: int) -> tuple[tuple[int, str], ...]:
+    """Return only the ten catalogue topics for the media admin's selected part."""
+    selected_part = int(part)
+    if selected_part not in (1, 2, 3):
+        raise ValueError("English catalogue part must be 1, 2, or 3")
+    return tuple(spec for spec in ENGLISH_CATALOG_TOPICS if spec[0] == selected_part)
+
+
 def _auth_staff(authorization: str | None) -> dict[str, Any]:
     from backend.main import _require_role, _user_row_from_bearer
     user = _user_row_from_bearer(authorization)
@@ -1828,15 +1836,21 @@ async def _run_russian_catalog_generation_job(job_id: int, authorization: str | 
     )
 
 
-async def _run_english_catalog_generation_job(job_id: int, authorization: str | None) -> None:
+async def _run_english_catalog_generation_job(
+    job_id: int,
+    authorization: str | None,
+    *,
+    part: int,
+) -> None:
+    topic_specs = english_catalog_topics_for_part(part)
     return await _run_catalog_generation_job(
         job_id,
         authorization,
         subject="english",
-        topic_specs=ENGLISH_CATALOG_TOPICS,
+        topic_specs=topic_specs,
         target_questions=ENGLISH_CATALOG_TARGET_QUESTIONS,
-        preset="english_catalog_v1",
-        label="English IELTS",
+        preset=f"english_catalog_part_{part}_v1",
+        label=f"English IELTS Part {part}",
     )
 
 
@@ -1955,16 +1969,22 @@ async def start_russian_catalog_generation_job(
 
 @router.post("/staff/speaking/english-catalog/jobs")
 async def start_english_catalog_generation_job(
+    part: int = Query(default=1, ge=1, le=3),
     authorization: str | None = Header(default=None),
 ):
-    """Queue the one-click 30-topic English IELTS catalogue fill."""
+    """Queue the selected IELTS part's ten-topic catalogue fill."""
+    topic_specs = english_catalog_topics_for_part(part)
     return await _start_catalog_generation_job(
         authorization,
-        preset="english_catalog_v1",
+        preset=f"english_catalog_part_{part}_v1",
         subject="english",
-        topic_count=len(ENGLISH_CATALOG_TOPICS),
+        topic_count=len(topic_specs),
         target_questions=ENGLISH_CATALOG_TARGET_QUESTIONS,
-        runner=_run_english_catalog_generation_job,
+        runner=lambda job_id, auth: _run_english_catalog_generation_job(
+            job_id,
+            auth,
+            part=part,
+        ),
     )
 
 
