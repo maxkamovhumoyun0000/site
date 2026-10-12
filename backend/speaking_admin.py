@@ -22,11 +22,14 @@ from db import get_conn
 import push_notifications
 from speaking_contract import (
     MAX_BATCH_TOPIC_COUNT,
+    MAX_CATALOG_TOPIC_COUNT,
     MAX_QUESTION_GENERATION_COUNT,
     display_topic_status,
     individual_ai_topic_generation_count,
     minimum_questions_for_requested_limit,
     normalize_batch_topic_count,
+    normalize_catalog_question_target,
+    normalize_catalog_topic_titles,
     normalize_question_generation_count,
     normalize_topic_status,
     part_two_cue_card_fallback,
@@ -296,6 +299,20 @@ class AiGenerateRequest(BaseModel):
     question_text: str | None = None
     existing_topic_id: int | None = Field(default=None, ge=1)
     subject: str = Field(default="english", max_length=32)
+
+
+class CatalogGenerationRequest(BaseModel):
+    """A durable, configurable catalogue fill requested by media admin."""
+    subject: str = Field(default="english", max_length=32)
+    part: int = Field(default=1, ge=1, le=3)
+    topics: list[str] = Field(default_factory=list, max_length=MAX_CATALOG_TOPIC_COUNT)
+    question_target_mode: str = Field(default="exact", max_length=16)
+    exact_question_count: int | None = Field(default=None, ge=1, le=30)
+    minimum_question_count: int | None = Field(default=None, ge=1, le=30)
+    maximum_question_count: int | None = Field(default=None, ge=1, le=30)
+    # When present, manual titles are intentionally ignored: the job locates
+    # only existing topics with this exact current number of questions.
+    existing_question_count: int | None = Field(default=None, ge=0, le=30)
 
 
 class BatchQuestionCreateRequest(BaseModel):
@@ -837,6 +854,43 @@ def _get_or_create_catalog_topic(
         created = cur.fetchone()
         conn.commit()
         return dict(created), True
+    finally:
+        conn.close()
+
+
+def _catalog_existing_topics_with_question_count(
+    subject: str,
+    part: int,
+    question_count: int,
+) -> tuple[tuple[int, str], ...]:
+    """Find up to thirty existing topics with exactly the requested count."""
+    ensure_speaking_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT t.part, t.title
+            FROM speaking_topics t
+            LEFT JOIN speaking_questions q ON q.topic_id=t.id
+            WHERE LOWER(COALESCE(t.subject, 'english'))=? AND t.part=?
+            GROUP BY t.id, t.part, t.title, t.sort_order
+            HAVING COUNT(q.id)=?
+            ORDER BY t.sort_order ASC, t.id ASC
+            LIMIT ?
+            """,
+            (
+                subject.strip().lower(),
+                int(part),
+                int(question_count),
+                MAX_CATALOG_TOPIC_COUNT,
+            ),
+        )
+        return tuple(
+            (int(row.get("part") or part), str(row.get("title") or "").strip())
+            for row in (cur.fetchall() or [])
+            if str(row.get("title") or "").strip()
+        )
     finally:
         conn.close()
 
@@ -1673,13 +1727,29 @@ def _update_speaking_topic_status(topic_id: int, status_badge: str) -> None:
         conn.close()
 
 
+def _catalog_target_for_topic(
+    minimum: int,
+    maximum: int,
+    *,
+    job_id: int,
+    topic_id: int,
+) -> int:
+    """Use a stable varied target so a range does not look machine-uniform."""
+    if minimum == maximum:
+        return minimum
+    span = maximum - minimum + 1
+    digest = hashlib.sha256(f"catalog:{job_id}:{topic_id}".encode("utf-8")).digest()
+    return minimum + (int.from_bytes(digest[:4], "big") % span)
+
+
 async def _run_catalog_generation_job(
     job_id: int,
     authorization: str | None,
     *,
     subject: str,
     topic_specs: tuple[tuple[int, str], ...],
-    target_questions: int,
+    minimum_target_questions: int,
+    maximum_target_questions: int,
     preset: str,
     label: str,
 ) -> None:
@@ -1694,7 +1764,7 @@ async def _run_catalog_generation_job(
     ready_topics = 0
     inserted_questions = 0
     incomplete_topics: list[dict[str, Any]] = []
-    total_target = len(topic_specs) * target_questions
+    total_target = len(topic_specs) * maximum_target_questions
 
     try:
         _update_speaking_ai_job(
@@ -1711,12 +1781,26 @@ async def _run_catalog_generation_job(
             )
             created_topics += int(was_created)
             _, current_total = _save_catalog_questions(topic, [])
+            target_questions = _catalog_target_for_topic(
+                minimum_target_questions,
+                maximum_target_questions,
+                job_id=job_id,
+                topic_id=int(topic["id"]),
+            )
             attempts = 0
+            # A large custom target may need more than the legacy four
+            # retries, because the provider is allowed to return a smaller
+            # useful set on each attempt. Keep it bounded but sufficient to
+            # reach a 1–30 target through incremental, de-duplicated saves.
+            max_attempts = max(
+                RUSSIAN_CATALOG_MAX_ATTEMPTS_PER_TOPIC,
+                ((target_questions + 3) // 4) + 1,
+            )
             last_error = ""
 
             while (
                 current_total < target_questions
-                and attempts < RUSSIAN_CATALOG_MAX_ATTEMPTS_PER_TOPIC
+                and attempts < max_attempts
             ):
                 attempts += 1
                 remaining = target_questions - current_total
@@ -1726,7 +1810,10 @@ async def _run_catalog_generation_job(
                     min(
                         99,
                         int(
-                            ((topic_index - 1) * target_questions + current_total)
+                            (
+                                (topic_index - 1) * maximum_target_questions
+                                + min(current_total, target_questions)
+                            )
                             * 99
                             / total_target
                         ),
@@ -1796,7 +1883,10 @@ async def _run_catalog_generation_job(
             "preset": preset,
             "subject": subject,
             "target_topics": len(topic_specs),
-            "target_questions_per_topic": target_questions,
+            "target_question_range": [
+                minimum_target_questions,
+                maximum_target_questions,
+            ],
             "topics_created": created_topics,
             "topics_ready": ready_topics,
             "questions_inserted": inserted_questions,
@@ -1830,7 +1920,8 @@ async def _run_russian_catalog_generation_job(job_id: int, authorization: str | 
         authorization,
         subject="russian",
         topic_specs=tuple((1, title) for title in RUSSIAN_CATALOG_TOPICS),
-        target_questions=RUSSIAN_CATALOG_TARGET_QUESTIONS,
+        minimum_target_questions=RUSSIAN_CATALOG_TARGET_QUESTIONS,
+        maximum_target_questions=RUSSIAN_CATALOG_TARGET_QUESTIONS,
         preset="russian_catalog_v2",
         label="Rus tili",
     )
@@ -1848,9 +1939,33 @@ async def _run_english_catalog_generation_job(
         authorization,
         subject="english",
         topic_specs=topic_specs,
-        target_questions=ENGLISH_CATALOG_TARGET_QUESTIONS,
+        minimum_target_questions=ENGLISH_CATALOG_TARGET_QUESTIONS,
+        maximum_target_questions=ENGLISH_CATALOG_TARGET_QUESTIONS,
         preset=f"english_catalog_part_{part}_v1",
         label=f"English IELTS Part {part}",
+    )
+
+
+async def _run_custom_catalog_generation_job(
+    job_id: int,
+    authorization: str | None,
+    *,
+    subject: str,
+    topic_specs: tuple[tuple[int, str], ...],
+    minimum_target_questions: int,
+    maximum_target_questions: int,
+    preset: str,
+    label: str,
+) -> None:
+    return await _run_catalog_generation_job(
+        job_id,
+        authorization,
+        subject=subject,
+        topic_specs=topic_specs,
+        minimum_target_questions=minimum_target_questions,
+        maximum_target_questions=maximum_target_questions,
+        preset=preset,
+        label=label,
     )
 
 
@@ -1984,6 +2099,89 @@ async def start_english_catalog_generation_job(
             job_id,
             auth,
             part=part,
+        ),
+    )
+
+
+@router.post("/staff/speaking/catalog/jobs")
+async def start_custom_catalog_generation_job(
+    payload: CatalogGenerationRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Queue a media-admin selected list or an exact-count existing-topic fill."""
+    subject = payload.subject.strip().lower()
+    if subject not in {"english", "russian"}:
+        raise HTTPException(status_code=422, detail="subject must be english or russian")
+    part = int(payload.part)
+    if subject == "russian" and part != 1:
+        raise HTTPException(status_code=422, detail="Russian Speaking uses Part 1")
+    try:
+        minimum_target, maximum_target = normalize_catalog_question_target(
+            payload.question_target_mode,
+            exact_count=payload.exact_question_count,
+            minimum_count=payload.minimum_question_count,
+            maximum_count=payload.maximum_question_count,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if payload.existing_question_count is not None:
+        topic_specs = _catalog_existing_topics_with_question_count(
+            subject,
+            part,
+            int(payload.existing_question_count),
+        )
+        if not topic_specs:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Part {part} ichida aynan {payload.existing_question_count} ta savolli mavzu topilmadi"
+                ),
+            )
+        source_label = f"aynan {payload.existing_question_count} ta savolli mavjud mavzular"
+    else:
+        try:
+            titles = normalize_catalog_topic_titles(payload.topics)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not titles:
+            raise HTTPException(
+                status_code=422,
+                detail="Kamida bitta topic kiriting yoki mavjud savol soni filtrini yoqing",
+            )
+        topic_specs = tuple((part, title) for title in titles)
+        source_label = "kiritilgan mavzular"
+
+    request_identity = {
+        "subject": subject,
+        "part": part,
+        "topics": topic_specs,
+        "minimum_target": minimum_target,
+        "maximum_target": maximum_target,
+        "existing_question_count": payload.existing_question_count,
+    }
+    digest = hashlib.sha256(
+        json.dumps(request_identity, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    preset = f"custom_catalog_{digest}"
+    label = (
+        f"{'Rus tili' if subject == 'russian' else 'English IELTS'} Part {part}"
+    )
+    return await _start_catalog_generation_job(
+        authorization,
+        preset=preset,
+        subject=subject,
+        topic_count=len(topic_specs),
+        target_questions=maximum_target,
+        runner=lambda job_id, auth: _run_custom_catalog_generation_job(
+            job_id,
+            auth,
+            subject=subject,
+            topic_specs=topic_specs,
+            minimum_target_questions=minimum_target,
+            maximum_target_questions=maximum_target,
+            preset=preset,
+            label=f"{label}: {source_label}",
         ),
     )
 

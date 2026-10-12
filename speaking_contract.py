@@ -10,6 +10,10 @@ PREDICTED_STATUS_LABEL = "PREDICTED TILL THE END OF 2026"
 MAX_BATCH_TOPIC_COUNT = 5
 MAX_QUESTION_GENERATION_COUNT = 10
 MIN_BATCH_QUESTIONS_PER_TOPIC = 4
+# Catalogue fills run as durable background jobs, so they can safely accept a
+# fuller plan than the regular one-request AI generator.
+MAX_CATALOG_TOPIC_COUNT = 30
+MAX_CATALOG_QUESTION_TARGET = 30
 
 
 def normalize_topic_status(value: Any) -> str:
@@ -70,6 +74,62 @@ def normalize_question_generation_count(value: Any) -> int:
             f"question_count must be between 1 and {MAX_QUESTION_GENERATION_COUNT}"
         )
     return count
+
+
+def normalize_catalog_topic_titles(value: Any) -> tuple[str, ...]:
+    """Clean a manually supplied catalogue list without creating duplicates."""
+    if not isinstance(value, list):
+        raise ValueError("topics must be a list")
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        title = " ".join(str(item or "").split()).strip()
+        if not title:
+            continue
+        if len(title) > 180:
+            raise ValueError("each topic title must be at most 180 characters")
+        key = title.casefold()
+        if key not in seen:
+            cleaned.append(title)
+            seen.add(key)
+    if len(cleaned) > MAX_CATALOG_TOPIC_COUNT:
+        raise ValueError(f"at most {MAX_CATALOG_TOPIC_COUNT} topics can be filled at once")
+    return tuple(cleaned)
+
+
+def normalize_catalog_question_target(
+    mode: Any,
+    *,
+    exact_count: Any = None,
+    minimum_count: Any = None,
+    maximum_count: Any = None,
+) -> tuple[int, int]:
+    """Validate a fixed or varied final question total for every topic."""
+    normalized_mode = str(mode or "").strip().lower()
+
+    def normalize(value: Any, label: str) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{label} must be between 1 and {MAX_CATALOG_QUESTION_TARGET}")
+        try:
+            count = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{label} must be between 1 and {MAX_CATALOG_QUESTION_TARGET}"
+            ) from exc
+        if not 1 <= count <= MAX_CATALOG_QUESTION_TARGET:
+            raise ValueError(f"{label} must be between 1 and {MAX_CATALOG_QUESTION_TARGET}")
+        return count
+
+    if normalized_mode == "exact":
+        exact = normalize(exact_count, "exact_question_count")
+        return exact, exact
+    if normalized_mode == "range":
+        minimum = normalize(minimum_count, "minimum_question_count")
+        maximum = normalize(maximum_count, "maximum_question_count")
+        if minimum > maximum:
+            raise ValueError("minimum_question_count cannot exceed maximum_question_count")
+        return minimum, maximum
+    raise ValueError("question_target_mode must be exact or range")
 
 
 def minimum_questions_for_requested_limit(value: Any) -> int:

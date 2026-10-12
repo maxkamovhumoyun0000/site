@@ -72,6 +72,15 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
   const [catalogProgress, setCatalogProgress] = useState<number>(0);
   const [catalogStage, setCatalogStage] = useState<string>("");
   const [catalogPart, setCatalogPart] = useState<number | null>(null);
+  const [catalogBuilderOpen, setCatalogBuilderOpen] = useState<boolean>(false);
+  const [customCatalogTopics, setCustomCatalogTopics] = useState<string>("");
+  const [customCatalogPart, setCustomCatalogPart] = useState<number>(1);
+  const [customQuestionTargetMode, setCustomQuestionTargetMode] = useState<"exact" | "range">("exact");
+  const [customExactQuestionCount, setCustomExactQuestionCount] = useState<number>(15);
+  const [customMinimumQuestionCount, setCustomMinimumQuestionCount] = useState<number>(4);
+  const [customMaximumQuestionCount, setCustomMaximumQuestionCount] = useState<number>(10);
+  const [customExistingOnly, setCustomExistingOnly] = useState<boolean>(false);
+  const [customExistingQuestionCount, setCustomExistingQuestionCount] = useState<number>(0);
 
   // Manual Add Topic Modal
   const [newTopicModalOpen, setNewTopicModalOpen] = useState<boolean>(false);
@@ -279,6 +288,53 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
     }
   }
 
+  async function waitForCatalogCompletion(jobId: number, subjectLabel: string, targetTopics: number) {
+    const deadline = Date.now() + 5 * 60 * 60_000;
+    let completedJob: any = null;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      let statusResponse: any;
+      try {
+        statusResponse = await apiFetch(`/staff/speaking/ai-generate/jobs/${jobId}`, {
+          method: "GET",
+          timeoutMs: 30000,
+        });
+      } catch {
+        setCatalogStage("Server bilan aloqa qayta tiklanmoqda...");
+        continue;
+      }
+      const job = statusResponse?.job;
+      const progress = Number(job?.progress_percent);
+      setCatalogProgress(Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0);
+      setCatalogStage(String(job?.stage || `${subjectLabel} savollari tayyorlanmoqda...`));
+      if (job?.status === "completed") {
+        completedJob = job;
+        break;
+      }
+      if (job?.status === "failed") {
+        throw new Error(String(job?.error_message || `${subjectLabel} katalogi yakunlanmadi.`));
+      }
+    }
+    if (!completedJob) {
+      throw new Error("Katalog generatsiyasi hali davom etmoqda. Sahifani keyinroq yangilang — tayyor qismi saqlanib qoladi.");
+    }
+    const result = completedJob.result_json || {};
+    const incomplete = Array.isArray(result.incomplete_topics) ? result.incomplete_topics.length : 0;
+    const actualTargetTopics = Number(result.target_topics) || targetTopics;
+    await loadData();
+    alert(
+      incomplete === 0
+        ? `✅ ${subjectLabel} katalogi tayyor: ${result.topics_ready || actualTargetTopics} ta mavzu to'ldirildi.`
+        : `⚠️ Katalog qisman tayyor: ${result.topics_ready || 0}/${actualTargetTopics} mavzu belgilangan savol soniga yetdi. Qayta bosilsa faqat yetishmayotgan savollar to'ldiriladi.`
+    );
+  }
+
+  function openCatalogBuilder() {
+    setCustomCatalogPart(activeSubject === "russian" ? 1 : activePart);
+    setCustomExistingOnly(false);
+    setCatalogBuilderOpen(true);
+  }
+
   async function handleCatalogFill(subject: "english" | "russian", part?: number) {
     const isEnglishPart = subject === "english";
     const selectedPart = isEnglishPart ? part || activePart : null;
@@ -307,44 +363,75 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
         throw new Error(`${subjectLabel} katalogi uchun vazifa yaratilmagan.`);
       }
 
-      const deadline = Date.now() + 5 * 60 * 60_000;
-      let completedJob: any = null;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1500));
-        let statusResponse: any;
-        try {
-          statusResponse = await apiFetch(`/staff/speaking/ai-generate/jobs/${jobId}`, {
-            method: "GET",
-            timeoutMs: 30000,
-          });
-        } catch {
-          setCatalogStage("Server bilan aloqa qayta tiklanmoqda...");
-          continue;
-        }
-        const job = statusResponse?.job;
-        const progress = Number(job?.progress_percent);
-        setCatalogProgress(Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0);
-        setCatalogStage(String(job?.stage || `${subjectLabel} savollari tayyorlanmoqda...`));
-        if (job?.status === "completed") {
-          completedJob = job;
-          break;
-        }
-        if (job?.status === "failed") {
-          throw new Error(String(job?.error_message || `${subjectLabel} katalogi yakunlanmadi.`));
-        }
-      }
+      await waitForCatalogCompletion(jobId, subjectLabel, topicTarget);
+    } catch (e: any) {
+      alert(`${subjectLabel} katalogini to'ldirishda xatolik: ` + (e?.message || String(e)));
+    } finally {
+      setCatalogLoading(false);
+      setCatalogPart(null);
+    }
+  }
 
-      if (!completedJob) {
-        throw new Error("Katalog generatsiyasi hali davom etmoqda. Sahifani keyinroq yangilang — tayyor qismi saqlanib qoladi.");
+  async function handleCustomCatalogFill() {
+    const selectedPart = activeSubject === "russian" ? 1 : customCatalogPart;
+    const topicTitles = customCatalogTopics
+      .split(/\r?\n/)
+      .map((title) => title.trim())
+      .filter(Boolean);
+    if (!customExistingOnly && topicTitles.length === 0) {
+      alert("Kamida bitta topic kiriting. Har topicni yangi qatordan yozing.");
+      return;
+    }
+    if (!customExistingOnly && topicTitles.length > 30) {
+      alert("Bir jarayonda maksimum 30 ta topic kiritish mumkin.");
+      return;
+    }
+    const minimum = customQuestionTargetMode === "exact"
+      ? customExactQuestionCount
+      : customMinimumQuestionCount;
+    const maximum = customQuestionTargetMode === "exact"
+      ? customExactQuestionCount
+      : customMaximumQuestionCount;
+    if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 1 || maximum > 30 || minimum > maximum) {
+      alert("Savollar sonini to'g'ri kiriting: 1 dan 30 gacha, minimum maximumdan katta bo'lmasin.");
+      return;
+    }
+    if (customExistingOnly && (!Number.isInteger(customExistingQuestionCount) || customExistingQuestionCount < 0 || customExistingQuestionCount > 30)) {
+      alert("Mavjud savollar sonini 0 dan 30 gacha kiriting.");
+      return;
+    }
+    const sourceText = customExistingOnly
+      ? `Part ${selectedPart} ichida aynan ${customExistingQuestionCount} ta savolli mavjud topiclar topiladi`
+      : `${topicTitles.length} ta kiritilgan topic ishlatiladi`;
+    const targetText = minimum === maximum ? `${minimum} ta` : `${minimum}–${maximum} ta`;
+    if (!window.confirm(`${sourceText}. Har topic yakunida ${targetText} savol bo'ladi. Boshlaymizmi?`)) return;
+
+    const subjectLabel = activeSubject === "russian" ? "Rus tili" : `English IELTS Part ${selectedPart}`;
+    setCatalogLoading(true);
+    setCatalogPart(selectedPart);
+    setCatalogProgress(0);
+    setCatalogStage("Moslashuvchan katalog vazifasi navbatga qo'yilmoqda...");
+    try {
+      const started = await apiFetch("/staff/speaking/catalog/jobs", {
+        method: "POST",
+        timeoutMs: 30000,
+        body: {
+          subject: activeSubject,
+          part: selectedPart,
+          topics: customExistingOnly ? [] : topicTitles,
+          question_target_mode: customQuestionTargetMode,
+          exact_question_count: customQuestionTargetMode === "exact" ? customExactQuestionCount : undefined,
+          minimum_question_count: customQuestionTargetMode === "range" ? customMinimumQuestionCount : undefined,
+          maximum_question_count: customQuestionTargetMode === "range" ? customMaximumQuestionCount : undefined,
+          existing_question_count: customExistingOnly ? customExistingQuestionCount : undefined,
+        },
+      });
+      const jobId = Number(started?.job?.id);
+      if (!Number.isInteger(jobId) || jobId < 1) {
+        throw new Error("Moslashuvchan katalog vazifasi yaratilmadi.");
       }
-      const result = completedJob.result_json || {};
-      const incomplete = Array.isArray(result.incomplete_topics) ? result.incomplete_topics.length : 0;
-      await loadData();
-      alert(
-        incomplete === 0
-          ? `✅ ${subjectLabel} katalogi tayyor: ${result.topics_ready || 30} ta mavzu to'ldirildi.`
-          : `⚠️ Katalog qisman tayyor: ${result.topics_ready || 0}/30 mavzu 15 ta savolga yetdi. Qayta bosilsa faqat yetishmayotgan savollar to'ldiriladi.`
-      );
+      setCatalogBuilderOpen(false);
+      await waitForCatalogCompletion(jobId, subjectLabel, customExistingOnly ? 30 : topicTitles.length);
     } catch (e: any) {
       alert(`${subjectLabel} katalogini to'ldirishda xatolik: ` + (e?.message || String(e)));
     } finally {
@@ -748,22 +835,32 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 {" "}Mavjud topic hamda savollar avval tekshiriladi; sahifa yopilsa ham tayyor bo‘lgan material yo‘qolmaydi.
               </p>
             </div>
-            <button
-              type="button"
-              onClick={() => handleCatalogFill(activeSubject, activeSubject === "english" ? activePart : undefined)}
-              disabled={catalogLoading}
-              className={`shrink-0 rounded-xl px-5 py-3 text-sm font-extrabold text-white shadow-lg transition-all active:scale-95 disabled:cursor-wait disabled:opacity-70 ${
-                activeSubject === "russian"
-                  ? "bg-gradient-to-r from-amber-500 to-orange-600 shadow-amber-500/25 hover:from-amber-400 hover:to-orange-500"
-                  : "bg-gradient-to-r from-blue-600 to-cyan-600 shadow-blue-500/25 hover:from-blue-500 hover:to-cyan-500"
-              }`}
-            >
-              {catalogLoading
-                ? `⏳ ${catalogProgress}% tayyorlanmoqda`
-                : activeSubject === "english"
-                  ? `✨ Part ${activePart} uchun 10 mavzuni AI bilan to‘ldirish`
-                  : "✨ 30 mavzuni AI bilan to‘ldirish"}
-            </button>
+            <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                onClick={openCatalogBuilder}
+                disabled={catalogLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-extrabold text-slate-700 shadow-sm transition-all hover:bg-slate-50 active:scale-95 disabled:cursor-wait disabled:opacity-70 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                ⚙️ Qo'lda sozlash
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCatalogFill(activeSubject, activeSubject === "english" ? activePart : undefined)}
+                disabled={catalogLoading}
+                className={`rounded-xl px-5 py-3 text-sm font-extrabold text-white shadow-lg transition-all active:scale-95 disabled:cursor-wait disabled:opacity-70 ${
+                  activeSubject === "russian"
+                    ? "bg-gradient-to-r from-amber-500 to-orange-600 shadow-amber-500/25 hover:from-amber-400 hover:to-orange-500"
+                    : "bg-gradient-to-r from-blue-600 to-cyan-600 shadow-blue-500/25 hover:from-blue-500 hover:to-cyan-500"
+                }`}
+              >
+                {catalogLoading
+                  ? `⏳ ${catalogProgress}% tayyorlanmoqda`
+                  : activeSubject === "english"
+                    ? `✨ Part ${activePart} uchun 10 mavzuni AI bilan to‘ldirish`
+                    : "✨ 30 mavzuni AI bilan to‘ldirish"}
+              </button>
+            </div>
           </div>
           {catalogLoading && (
             <div className="mt-4 space-y-1.5">
@@ -1355,6 +1452,188 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      </ModalPortal>
+
+      {/* ─── MODAL: CONFIGURABLE CATALOGUE FILL ─── */}
+      <ModalPortal open={catalogBuilderOpen}>
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-950/70 p-3 backdrop-blur-md animate-fade-in sm:p-5">
+          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 text-slate-900 shadow-2xl dark:border-slate-800 dark:bg-slate-900 dark:text-white md:p-8">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 pb-4 dark:border-slate-800">
+              <div>
+                <h3 className="text-lg font-extrabold">⚙️ Moslashuvchan katalog generatsiyasi</h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  Topiclarni qo'lda kiriting yoki aynan belgilangan sonli savolga ega mavjud topiclarni topib to'ldiring. AI har bir topicdagi eski savollarni tekshiradi va takrorini qo'shmaydi.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCatalogBuilderOpen(false)}
+                className="text-xl text-slate-400 transition-colors hover:text-slate-800 dark:hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-5">
+              <div>
+                <label className="mb-2 block text-xs font-extrabold text-slate-700 dark:text-slate-300">IELTS bo'limi (Part)</label>
+                {activeSubject === "russian" ? (
+                  <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                    🇷🇺 Rus tili uchun Part 1 ishlatiladi
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-3 gap-2">
+                    {[1, 2, 3].map((part) => (
+                      <button
+                        key={part}
+                        type="button"
+                        onClick={() => setCustomCatalogPart(part)}
+                        className={`rounded-xl border px-3 py-2.5 text-sm font-extrabold transition-all ${
+                          customCatalogPart === part
+                            ? "border-blue-600 bg-blue-600 text-white shadow-md shadow-blue-600/20"
+                            : "border-slate-300 bg-slate-50 text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                        }`}
+                      >
+                        Part {part}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 p-4 dark:border-slate-800">
+                <label className="flex cursor-pointer items-start gap-3">
+                  <input
+                    type="checkbox"
+                    checked={customExistingOnly}
+                    onChange={(e) => setCustomExistingOnly(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-extrabold">Mavjud topiclarni savol soni bo'yicha topish</span>
+                    <span className="mt-0.5 block text-xs text-slate-500 dark:text-slate-400">
+                      Yoqilsa, qo'lda kiritilgan topiclar ishlatilmaydi: tanlangan Part ichidan aynan siz ko'rsatgan miqdorda savoli bor topiclar topiladi va to'ldiriladi. Bir ishda ko'pi bilan 30 tasi olinadi.
+                    </span>
+                  </span>
+                </label>
+                {customExistingOnly && (
+                  <div className="mt-4">
+                    <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">Topic hozir nechta savolga ega bo'lishi kerak?</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={30}
+                      value={customExistingQuestionCount}
+                      onChange={(e) => setCustomExistingQuestionCount(Number(e.target.value))}
+                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {!customExistingOnly && (
+                <div>
+                  <label className="mb-1.5 block text-xs font-extrabold text-slate-700 dark:text-slate-300">
+                    Topiclar (har biri yangi qatorda, maksimum 30 ta)
+                  </label>
+                  <textarea
+                    rows={8}
+                    value={customCatalogTopics}
+                    onChange={(e) => setCustomCatalogTopics(e.target.value)}
+                    placeholder={activeSubject === "russian"
+                      ? "Путешествия и новые места\nРабота и карьера\nХобби и свободное время"
+                      : "Travel and tourism\nTechnology in everyday life\nA person who influenced you"}
+                    className="w-full resize-y rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+                  />
+                  <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+                    {customCatalogTopics.split(/\r?\n/).map((value) => value.trim()).filter(Boolean).length}/30 topic kiritildi.
+                  </p>
+                </div>
+              )}
+
+              <div>
+                <label className="mb-2 block text-xs font-extrabold text-slate-700 dark:text-slate-300">Har topicdagi yakuniy savollar soni</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {([
+                    ["exact", "Aniq belgilangan miqdor"],
+                    ["range", "Minimum–maximum oralig'i"],
+                  ] as const).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setCustomQuestionTargetMode(mode)}
+                      className={`rounded-xl border px-3 py-2.5 text-xs font-extrabold transition-all ${
+                        customQuestionTargetMode === mode
+                          ? "border-blue-600 bg-blue-600 text-white"
+                          : "border-slate-300 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {customQuestionTargetMode === "exact" ? (
+                  <div className="mt-3">
+                    <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">Aniq miqdor (1–30)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      value={customExactQuestionCount}
+                      onChange={(e) => setCustomExactQuestionCount(Number(e.target.value))}
+                      className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+                    />
+                  </div>
+                ) : (
+                  <div className="mt-3 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">Minimum (1–30)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={customMinimumQuestionCount}
+                        onChange={(e) => setCustomMinimumQuestionCount(Number(e.target.value))}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">Maximum (1–30)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        value={customMaximumQuestionCount}
+                        onChange={(e) => setCustomMaximumQuestionCount(Number(e.target.value))}
+                        className="w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-950"
+                      />
+                    </div>
+                  </div>
+                )}
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Minimum–maximum rejimida har topic uchun oraliqdagi turli yakuniy miqdor tanlanadi; hammasi bir xil ko'rinmaydi.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3 border-t border-slate-200 pt-4 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setCatalogBuilderOpen(false)}
+                className="px-4 py-2.5 text-sm text-slate-500 hover:text-slate-800 dark:hover:text-white"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                onClick={handleCustomCatalogFill}
+                className="rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 px-6 py-2.5 text-sm font-extrabold text-white shadow-md shadow-blue-600/25 transition-all active:scale-95 hover:from-blue-500 hover:to-cyan-500"
+              >
+                ✨ Katalogni boshlash
+              </button>
+            </div>
           </div>
         </div>
       </ModalPortal>
