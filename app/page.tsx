@@ -128,6 +128,23 @@ function DiamondWordmark({
 
 type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "telegram-unregistered";
 type GenericRow = Record<string, any>;
+
+function adminGroupFromCreateResult(result: GenericRow): GenericRow | null {
+  const nested = result?.group;
+  const candidate = nested && typeof nested === "object" ? nested as GenericRow : result;
+  const groupId = Number(candidate?.id || candidate?.group_id || 0);
+  return groupId > 0 ? { ...candidate, id: groupId } : null;
+}
+
+function upsertAdminGroupRow(existing: GenericRow[], incoming: GenericRow): GenericRow[] {
+  const groupId = Number(incoming.id || incoming.group_id || 0);
+  if (groupId <= 0) return existing;
+  const normalized = { ...incoming, id: groupId };
+  return [
+    normalized,
+    ...existing.filter((row) => Number(row.id || 0) !== groupId),
+  ];
+}
 const FACEID_GATE_ENABLED = false;
 
 function escapeReceiptHtml(value: unknown): string {
@@ -16374,8 +16391,23 @@ function AdminSection({
         }
       }
     } else if (String(path || "") === "/admin/groups" && method === "POST" && result) {
-      setAdminGroupsFallback((prev) => prev !== null ? [result, ...prev] : null);
-      setAdminGroupsTotal((prev) => Number(prev || 0) + 1);
+      const createdGroup = adminGroupFromCreateResult(result);
+      if (createdGroup) {
+        const currentRows = (adminGroupsFallback !== null
+          ? adminGroupsFallback
+          : (data.groups || [])) as GenericRow[];
+        const groupId = Number(createdGroup.id || 0);
+        const alreadyVisible = currentRows.some(
+          (row) => Number(row.id || 0) === groupId,
+        );
+        setAdminGroupsFallback((prev) => upsertAdminGroupRow(
+          (prev !== null ? prev : (data.groups || [])) as GenericRow[],
+          createdGroup,
+        ));
+        if (!alreadyVisible) {
+          setAdminGroupsTotal((prev) => Number(prev || currentRows.length || 0) + 1);
+        }
+      }
     }
 
     return result;
@@ -20933,13 +20965,6 @@ function AdminSection({
               <AdminGroupCreatePanel
                 onCreate={async (payload) => {
                   const result = await onAdminCall("/admin/groups", payload, "POST", tt("admin.groups.createSuccess", "Guruh yaratildi"));
-                  if (result) {
-                    const createdGroup = (result.group || (result.id || result.group_id ? { ...result, id: Number(result.id || result.group_id) } : null)) as GenericRow | null;
-                    if (createdGroup && createdGroup.id) {
-                      setAdminGroupsFallback((prev) => [createdGroup as any, ...(prev !== null ? prev : (data.groups || []))]);
-                      setAdminGroupsTotal((prev) => prev + 1);
-                    }
-                  }
                   setAdminGroupCreateOpen(false);
                   return result;
                 }}
