@@ -14,6 +14,7 @@ def test_student_bot_channel_handoff_stays_inside_the_bot() -> None:
     assert '_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX = "channel_join_verify:"' in source
     assert 'callback_data=f"{_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX}{request_token}"' in source
     assert "async def verify_student_channel_membership" in source
+    assert "check_subscription_and_notify(callback.message.bot, callback, lang=lang)" not in source
 
 
 def test_mini_app_never_keeps_a_terminal_telegram_auth_failure_in_checking_state() -> None:

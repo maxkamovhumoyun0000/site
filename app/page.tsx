@@ -681,6 +681,29 @@ function isAuthErrorMessage(message: string) {
   );
 }
 
+function isTerminalTelegramAuthError(message: string) {
+  const lowered = String(message || "").toLowerCase();
+  // These are completed server decisions (including failed initData
+  // validation), not transport failures. Retrying them cannot authenticate a
+  // Mini App and previously left it on the checking screen forever.
+  return (
+    lowered.includes("telegram initdata") ||
+    lowered.includes("telegram user mismatch") ||
+    lowered.includes("account is blocked") ||
+    lowered.includes("accountless student") ||
+    lowered.includes("telegram account belongs") ||
+    lowered.includes("huquqi yo'q") ||
+    lowered.includes("royxatdan") ||
+    lowered.includes("ro‘yxatdan") ||
+    lowered.includes("not registered") ||
+    lowered.includes("404") ||
+    lowered.includes("401") ||
+    lowered.includes("403") ||
+    lowered.includes("409") ||
+    lowered.includes("422")
+  );
+}
+
 function friendlyHttpError(status: number, fallback?: string) {
   const locale = resolveLocale(typeof window === "undefined" ? "uz" : localStorage.getItem(LOCALE_KEY));
   const cleanFallback = String(fallback || "").trim();
@@ -26062,7 +26085,7 @@ export default function DiamondEducationApp() {
             return;
           } catch (tgErr: any) {
             const msg = tgErr instanceof Error ? tgErr.message : String(tgErr || "");
-            if (msg.includes("royxatdan") || msg.includes("404")) {
+            if (isTerminalTelegramAuthError(msg)) {
               setAuthStatus("telegram-unregistered");
               setInitialStateReady(true);
               setAuthResolved(true);
@@ -26794,7 +26817,7 @@ export default function DiamondEducationApp() {
       />
     );
   
-  } else if (!user && isTelegramClient) {
+  } else if (!user && isTelegramClient && !authResolved) {
     content = (
       <main className="placement-page process-runtime-page">
         <section className="placement-card placement-runtime-card">

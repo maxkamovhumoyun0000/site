@@ -38,6 +38,7 @@ from config import (
     ALL_ADMIN_IDS,
     STUDENT_WEBHOOK_PORT,
     TELEGRAM_MINI_APP_BASE_URL,
+    FORCE_SUBSCRIBE_CHANNEL_URL,
 )
 from bot_runtime import create_resilient_bot, log_telegram_delivery_failure, run_bot_dispatcher, spawn_guarded_task
 from db import (
@@ -2742,6 +2743,7 @@ async def cmd_otp(message: types.Message):
 
 _MOBILE_APP_LOGIN_CALLBACK_PREFIX = "mobile_login:"
 _CHANNEL_LINK_CALLBACK_PREFIX = "channel_link:"
+_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX = "channel_join_verify:"
 
 
 def _mobile_app_login_token_from_start(message: types.Message) -> str:
@@ -2768,7 +2770,9 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "prompt": "Diamond Students ilovasidagi akkauntni shu Telegram profiliga bog‘lashni tasdiqlang. Keyin kanal a’zoligi tekshiriladi.",
             "button": "✅ Akkauntni bog‘lash",
             "approved": "✅ Akkaunt bog‘landi. Kanal a’zoligi tasdiqlandi — endi ilovaga qayting.",
-            "join_first": "Akkaunt bog‘landi. Endi pastdagi tugma orqali kanalga a’zo bo‘ling, so‘ng ilovaga qayting.",
+            "join_first": "Akkaunt bog‘landi. Endi shu bot ichidagi tugma orqali kanalga a’zo bo‘ling va “A’zolikni tekshirish”ni bosing.",
+            "join_channel": "📢 Kanalga a’zo bo‘lish",
+            "check_membership": "✅ A’zolikni tekshirish",
             "expired": "Bu akkauntni bog‘lash so‘rovi tugagan. Ilovadan qayta urinib ko‘ring.",
             "in_use": "Bu Telegram profili boshqa akkauntga bog‘langan. Adminga murojaat qiling.",
         },
@@ -2776,7 +2780,9 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "prompt": "Подтвердите привязку аккаунта Diamond Students к этому профилю Telegram. Затем будет проверена подписка на канал.",
             "button": "✅ Привязать аккаунт",
             "approved": "✅ Аккаунт привязан, подписка подтверждена. Вернитесь в приложение.",
-            "join_first": "Аккаунт привязан. Подпишитесь на канал по кнопке ниже, затем вернитесь в приложение.",
+            "join_first": "Аккаунт привязан. Подпишитесь на канал кнопкой в этом боте и нажмите «Проверить подписку».",
+            "join_channel": "📢 Подписаться на канал",
+            "check_membership": "✅ Проверить подписку",
             "expired": "Запрос на привязку истек. Повторите попытку из приложения.",
             "in_use": "Этот профиль Telegram уже привязан к другому аккаунту. Обратитесь к администратору.",
         },
@@ -2784,12 +2790,40 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "prompt": "Confirm linking the Diamond Students account to this Telegram profile. Channel membership will then be checked.",
             "button": "✅ Link account",
             "approved": "✅ Account linked and membership confirmed. Return to the app.",
-            "join_first": "Account linked. Join the channel with the button below, then return to the app.",
+            "join_first": "Account linked. Join the channel using the button in this bot, then tap “Check membership”.",
+            "join_channel": "📢 Join channel",
+            "check_membership": "✅ Check membership",
             "expired": "This account-link request expired. Try again from the app.",
             "in_use": "This Telegram profile is already linked to another account. Contact an administrator.",
         },
     }
     return copy.get(lang, copy["uz"])[key]
+
+
+def _channel_membership_keyboard(*, request_token: str, lang: str) -> InlineKeyboardMarkup:
+    """Keep joining and membership verification in the already-open bot chat.
+
+    The opaque request token is used only to correlate the UI interaction; it
+    never authorizes a link by itself. The link was already approved by the
+    preceding signed callback and Telegram remains the membership authority.
+    """
+    channel_url = (FORCE_SUBSCRIBE_CHANNEL_URL or "https://t.me/diamond_education1").strip()
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=_channel_link_copy(lang, "join_channel"),
+                    url=channel_url,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=_channel_link_copy(lang, "check_membership"),
+                    callback_data=f"{_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX}{request_token}",
+                ),
+            ],
+        ],
+    )
 
 
 async def _send_channel_link_confirmation(
@@ -2921,12 +2955,52 @@ async def confirm_student_channel_link(callback: CallbackQuery):
     except Exception:
         pass
     await callback.answer()
-    from force_subscribe import check_subscription_and_notify
+    # Do not call the generic subscription notifier here: it sends a second
+    # independent join message, which made the app-to-bot flow look like a
+    # second `/start` hand-off. This callback owns the whole link → join →
+    # verify sequence in one bot chat.
+    from force_subscribe import is_user_subscribed
 
-    subscribed = await check_subscription_and_notify(callback.message.bot, callback, lang=lang)
+    subscribed = await is_user_subscribed(callback.message.bot, callback.from_user.id)
+    if subscribed is not False:
+        await callback.message.answer(_channel_link_copy(lang, "approved"))
+        return
     await callback.message.answer(
-        _channel_link_copy(lang, "approved" if subscribed else "join_first")
+        _channel_link_copy(lang, "join_first"),
+        reply_markup=_channel_membership_keyboard(
+            request_token=request_token,
+            lang=lang,
+        ),
     )
+
+
+@dp.callback_query(lambda c: str(c.data or "").startswith(_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX))
+async def verify_student_channel_membership(callback: CallbackQuery):
+    """Verify a post-link channel join without requiring another `/start`."""
+    request_token = str(callback.data or "")[len(_CHANNEL_JOIN_VERIFY_CALLBACK_PREFIX):]
+    if not re.fullmatch(r"channel_link_[A-Za-z0-9_-]{24,64}", request_token):
+        await callback.answer("So‘rov yaroqsiz", show_alert=True)
+        return
+
+    known_user = get_user_by_telegram(str(callback.from_user.id))
+    lang = detect_lang_from_user(known_user or callback.from_user)
+    from force_subscribe import is_user_subscribed
+
+    subscribed = await is_user_subscribed(callback.message.bot, callback.from_user.id)
+    if subscribed is True:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        await callback.answer()
+        await callback.message.answer(_channel_link_copy(lang, "approved"))
+        return
+
+    if subscribed is None:
+        await callback.answer("Telegram tekshiruvi vaqtincha mavjud emas. Birozdan keyin qayta bosing.", show_alert=True)
+        return
+
+    await callback.answer("Avval kanalga a’zo bo‘ling, so‘ng qayta tekshiring.", show_alert=True)
 
 
 @dp.message(Command('start'))
