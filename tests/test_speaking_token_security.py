@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from cryptography.fernet import Fernet, InvalidToken
 
 from logging_config import SensitiveDataFilter
 from token_encryption import TokenCipher, TokenEncryptionConfigurationError
+from speaking_contract import is_speaking_verification_expired
 
 
 class SpeakingTokenSecurityTests(unittest.TestCase):
+    def test_verification_expiry_accepts_a_postgres_datetime_until_it_expires(self) -> None:
+        now = datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc)
+
+        self.assertFalse(
+            is_speaking_verification_expired(now + timedelta(minutes=10), now=now)
+        )
+        self.assertTrue(
+            is_speaking_verification_expired(now - timedelta(seconds=1), now=now)
+        )
+
     def test_fcm_token_is_encrypted_and_authenticated(self) -> None:
         cipher = TokenCipher(Fernet.generate_key().decode("ascii"))
         token = "fcm-registration-token-which-must-not-be-stored-in-plain-text"
