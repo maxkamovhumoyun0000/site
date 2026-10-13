@@ -64,6 +64,7 @@ from name_standardization import name_search_terms, normalize_new_latin_name
 from speaking_contract import (
     SPEAKING_APP_LOGIN_TYPE,
     is_speaking_app_account,
+    is_speaking_verification_expired,
     normalize_speaking_voice_guest_name,
     normalize_speaking_link_code,
     normalize_speaking_email,
@@ -19707,7 +19708,7 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
         if not row:
             raise HTTPException(status_code=400, detail="Verification request not found")
         verification = dict(row)
-        if verification.get("consumed_at") or str(verification.get("expires_at") or "") <= _now_utc().isoformat() or int(verification.get("attempts") or 0) >= 5:
+        if verification.get("consumed_at") or is_speaking_verification_expired(verification.get("expires_at"), now=_now_utc()) or int(verification.get("attempts") or 0) >= 5:
             raise HTTPException(status_code=400, detail="Verification code expired. Request a new code.")
         if not hmac.compare_digest(str(verification.get("code_hash") or ""), hashlib.sha256(payload.code.strip().encode()).hexdigest()):
             cur.execute("UPDATE speaking_registration_verifications SET attempts=attempts+1 WHERE id=?", (payload.verification_id,))

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime, timezone
 import hashlib
 import os
 import re
@@ -17,6 +18,29 @@ MIN_BATCH_QUESTIONS_PER_TOPIC = 4
 MAX_CATALOG_TOPIC_COUNT = 30
 MAX_CATALOG_QUESTION_TARGET = 30
 SPEAKING_APP_LOGIN_TYPE = 7
+
+
+def is_speaking_verification_expired(value: Any, *, now: datetime | None = None) -> bool:
+    """Compare verification expiry values as instants, not database strings.
+
+    SQLite returns the stored ISO string while PostgreSQL returns ``datetime``.
+    Lexicographic comparison makes a PostgreSQL value such as
+    ``2026-10-13 10:10:00+00:00`` appear older than an ISO value containing
+    ``T``.  Parsing both forms keeps a fresh email code valid on either DB.
+    """
+    if isinstance(value, datetime):
+        expires_at = value
+    else:
+        try:
+            expires_at = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return expires_at <= current
 
 
 def is_speaking_app_account(value: Any) -> bool:
