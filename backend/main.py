@@ -1406,12 +1406,14 @@ class PublicRegistrationRequest(BaseModel):
 class SpeakingRegistrationRequest(BaseModel):
     """Self-service account for the standalone Diamond Speaking client."""
 
-    login_id: str = Field(min_length=4, max_length=64)
+    login_id: str | None = Field(default=None, max_length=64)
     password: str = Field(min_length=8, max_length=128)
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(default="", max_length=80)
+    phone: str | None = Field(default=None, max_length=32)
     email: str = Field(min_length=5, max_length=254)
     language: Literal["uz", "ru", "en"] = "uz"
+    subjects: Any = None
 
 
 class SpeakingRegistrationVerificationRequest(BaseModel):
@@ -1433,6 +1435,31 @@ class SpeakingLinkCompleteRequest(BaseModel):
     device_id: str = Field(min_length=12, max_length=160)
     device_model: str | None = Field(default=None, max_length=120)
     revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
+
+
+class SpeakingForgotPasswordRequest(BaseModel):
+    login_or_email: str = Field(min_length=3, max_length=254)
+    language: Literal["uz", "ru", "en"] = "uz"
+
+
+class SpeakingForgotPasswordVerifyRequest(BaseModel):
+    verification_id: str = Field(min_length=16, max_length=128)
+    code: str = Field(min_length=6, max_length=6)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class AdminSpeakingUserUpdateRequest(BaseModel):
+    first_name: str | None = None
+    last_name: str | None = None
+    login_id: str | None = None
+    email: str | None = None
+    subjects: Any = None
+    blocked: bool | None = None
+    access_enabled: bool | None = None
+
+
+class AdminSpeakingUserResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=6, max_length=128)
 
 
 class User(UserBase):
@@ -8004,11 +8031,15 @@ def _require_student_learning_access(user: dict) -> None:
 
 
 def _require_student_vocabulary_preview_access(user: dict) -> None:
-    """Allow pending applicants to read/listen to Vocabulary only.
+    """Allow pending applicants and Speaking app users to read/listen to Vocabulary only.
 
     This exception is intentionally narrow: quizzes, progress, rewards and
     every other learning endpoint still call `_require_student_learning_access`.
     """
+    if is_speaking_app_account(user.get("speaking_app_account")):
+        if int(user.get("blocked") or 0) == 1:
+            raise HTTPException(status_code=403, detail="Akkaunt bloklangan")
+        return
     if (
         bool(int(user.get("public_signup") or 0))
         and
@@ -13526,6 +13557,7 @@ def _user_subjects_from_row(user: dict) -> list[str]:
         if not group_subjects and (
             bool(int(user.get("pending_approval") or 0))
             or bool(int(user.get("public_signup") or 0))
+            or is_speaking_app_account(user.get("speaking_app_account"))
         ):
             group_subjects = _normalize_subjects(
                 [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
@@ -13566,6 +13598,7 @@ def _serialize_user_row_light(row: dict) -> dict:
         "login_id": str(row.get("login_id") or ""),
         "telegram_id": row.get("telegram_id"),
         "login_type": int(row.get("login_type") or 1),
+        "email": row.get("contact_email") or row.get("email") or None,
         "phone": row.get("phone"),
         "parent_phone": row.get("parent_phone"),
         "avatar_url": avatar_url,
@@ -16536,7 +16569,11 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
     return out
 
 
-def _media_subject_allowed_for_user(user: dict, row: dict) -> bool:
+def _media_subject_allowed_for_user(user: dict | None, row: dict) -> bool:
+    if not user:
+        return True
+    if is_speaking_app_account(user.get("speaking_app_account")):
+        return True
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     if role in {"admin", "teacher", "support"}:
         return True
@@ -19670,8 +19707,21 @@ def _ensure_speaking_account_schema() -> None:
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS speaking_password_resets (
+            id TEXT PRIMARY KEY,
+            email TEXT NOT NULL,
+            user_id BIGINT NOT NULL,
+            code_hash TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            expires_at TIMESTAMP NOT NULL,
+            consumed_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
         "CREATE INDEX IF NOT EXISTS idx_speaking_verify_email_created ON speaking_registration_verifications(email, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_speaking_link_user_created ON speaking_student_link_requests(user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_speaking_pwd_reset_user ON speaking_password_resets(user_id, created_at DESC)",
     )
     try:
         for statement in statements:
@@ -19681,29 +19731,8 @@ def _ensure_speaking_account_schema() -> None:
         conn.close()
 
 
-def _send_speaking_verification_email(*, recipient: str, code: str, language: str) -> None:
-    """Send a short, aligned HTML code email from the verified domain sender."""
-    copy = {
-        "uz": ("Diamond Speaking tasdiqlash kodi", "Akkauntingizni tasdiqlang", "Tasdiqlash kodingiz", "Kod 10 daqiqa amal qiladi. Agar bu so‘rov sizniki bo‘lmasa, xatni e’tiborsiz qoldiring."),
-        "ru": ("Код подтверждения Diamond Speaking", "Подтвердите аккаунт", "Ваш код подтверждения", "Код действует 10 минут. Если запрос сделали не вы, просто проигнорируйте это письмо."),
-        "en": ("Diamond Speaking verification code", "Confirm your account", "Your verification code", "The code expires in 10 minutes. If you did not request it, you can safely ignore this email."),
-    }.get(language, ("Diamond Speaking verification code", "Confirm your account", "Your verification code", "The code expires in 10 minutes."))
-    subject, heading, label, note = copy
-    escaped_code = html.escape(code)
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
-    message["To"] = recipient
-    # These RFC 5322 headers help receiving providers identify the message as
-    # a normal transactional account email, rather than malformed bulk mail.
-    message["Date"] = formatdate(localtime=False)
-    message["Message-ID"] = make_msgid(domain="diamond-education.uz")
-    message["Auto-Submitted"] = "auto-generated"
-    message.set_content(f"{heading}\n\n{label}: {code}\n\n{note}")
-    message.add_alternative(
-        f"""<!doctype html><html><body style=\"margin:0;background:#f2f6ff;font-family:Arial,sans-serif;color:#102041\"><main style=\"max-width:520px;margin:32px auto;background:#fff;border-radius:20px;padding:36px;text-align:center;border:1px solid #d9e4ff\"><div style=\"font-size:28px\">💎</div><h1 style=\"font-size:24px;margin:12px 0\">{html.escape(heading)}</h1><p style=\"color:#52627d\">{html.escape(label)}</p><div style=\"letter-spacing:8px;font-size:30px;font-weight:800;color:#0b5cff;background:#edf4ff;border-radius:14px;padding:16px;margin:20px 0\">{escaped_code}</div><p style=\"font-size:13px;color:#68758d\">{html.escape(note)}</p><p style=\"font-size:12px;color:#9aa5b7;margin-top:28px\">Diamond Education · Diamond Speaking</p></main></body></html>""",
-        subtype="html",
-    )
+def _deliver_speaking_email(message: EmailMessage, *, err_detail: str) -> None:
+    """Send an email using local Postfix or configured external SMTP."""
     try:
         with smtplib.SMTP("127.0.0.1", 25, timeout=10) as smtp:
             smtp.send_message(message)
@@ -19713,15 +19742,275 @@ def _send_speaking_verification_email(*, recipient: str, code: str, language: st
         smtp_user = os.getenv("SMTP_USER")
         smtp_password = os.getenv("SMTP_PASSWORD")
         if not (smtp_host and smtp_user and smtp_password):
-            raise HTTPException(status_code=503, detail="Tasdiqlash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.")
+            raise HTTPException(status_code=503, detail=err_detail)
         try:
             with smtplib.SMTP(smtp_host, int(os.getenv("SMTP_PORT") or 587), timeout=15) as smtp:
                 smtp.starttls()
                 smtp.login(smtp_user, smtp_password)
                 smtp.send_message(message)
         except Exception as exc:
-            logger.warning("speaking verification email failed error=%s", type(exc).__name__)
-            raise HTTPException(status_code=503, detail="Tasdiqlash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.") from exc
+            logger.warning("speaking email delivery failed error=%s", type(exc).__name__)
+            raise HTTPException(status_code=503, detail=err_detail) from exc
+
+
+def _send_speaking_verification_email(*, recipient: str, code: str, language: str) -> None:
+    """Send a modern, branded HTML verification code email."""
+    copy = {
+        "uz": ("Diamond Speaking tasdiqlash kodi", "Akkauntingizni tasdiqlang", "Quyidagi tasdiqlash kodini ilovaga kiriting:", "Kod 10 daqiqa davomida amal qiladi. Agar ushbu so‘rov siz tomondan yuborilmagan bo‘lsa, xatni e’tiborsiz qoldiring."),
+        "ru": ("Код подтверждения Diamond Speaking", "Подтвердите ваш аккаунт", "Введите следующий код подтверждения в приложении:", "Код действует в течение 10 минут. Если этот запрос сделали не вы, проигнорируйте письмо."),
+        "en": ("Diamond Speaking verification code", "Confirm your account", "Enter the following verification code in the app:", "The code expires in 10 minutes. If you did not make this request, safely ignore this email."),
+    }.get(language, ("Diamond Speaking verification code", "Confirm your account", "Enter the following verification code in the app:", "The code expires in 10 minutes."))
+    subject, heading, label, note = copy
+    escaped_code = html.escape(code)
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
+    message["To"] = recipient
+    message["Date"] = formatdate(localtime=False)
+    message["Message-ID"] = make_msgid(domain="diamond-education.uz")
+    message["Auto-Submitted"] = "auto-generated"
+    message.set_content(f"{heading}\n\n{label} {code}\n\n{note}")
+    message.add_alternative(
+        f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f7ff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0b1030;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f7ff;padding:36px 12px;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:540px;background:#ffffff;border-radius:24px;border:1px solid #dce5fa;box-shadow:0 12px 36px rgba(20,41,242,0.06);overflow:hidden;text-align:center;" cellpadding="0" cellspacing="0">
+        <!-- Brand Header Banner -->
+        <tr>
+          <td style="background:linear-gradient(135deg, #1429F2 0%, #071386 100%);padding:30px 24px;">
+            <img src="https://diamond-education.uz/logo.jpg" alt="Diamond Education" width="56" height="56" style="display:inline-block;border-radius:18px;border:2px solid rgba(255,255,255,0.6);box-shadow:0 4px 14px rgba(0,0,0,0.25);object-fit:cover;" />
+            <h2 style="margin:12px 0 0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.4px;">Diamond Speaking</h2>
+            <p style="margin:4px 0 0;color:rgba(255,255,255,0.85);font-size:13px;font-weight:500;">IELTS & Rus tili so‘zlashuv platformasi</p>
+          </td>
+        </tr>
+        <!-- Content Body -->
+        <tr>
+          <td style="padding:36px 30px;">
+            <h1 style="font-size:22px;font-weight:800;color:#0b1030;margin:0 0 10px;">{html.escape(heading)}</h1>
+            <p style="font-size:14px;color:#5b6280;line-height:1.5;margin:0 0 24px;">{html.escape(label)}</p>
+            <div style="background:linear-gradient(135deg, #edf3ff 0%, #e0ebff 100%);border:2px dashed #1429F2;border-radius:16px;padding:20px;letter-spacing:10px;font-size:34px;font-weight:900;color:#1429F2;display:inline-block;min-width:220px;">
+              {escaped_code}
+            </div>
+            <div style="background:#fff9eb;border:1px solid #fde047;border-radius:12px;padding:12px 16px;margin:28px 0 0;text-align:left;">
+              <p style="margin:0;font-size:12px;color:#854d0e;line-height:1.5;">🔒 <strong>Eslatma:</strong> {html.escape(note)}</p>
+            </div>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f9faff;border-top:1px solid #edf2fc;padding:20px;font-size:12px;color:#8f97b3;">
+            Diamond Education · O‘zbekiston, Toshkent<br>
+            <span style="color:#b2b9ce;">Ushbu xat avtomatik tarzda yaratilgan. Unga javob yozmang.</span>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>""",
+        subtype="html",
+    )
+    _deliver_speaking_email(message, err_detail="Tasdiqlash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.")
+
+
+def _send_speaking_welcome_credentials_email(*, recipient: str, name: str, login_id: str, subjects_str: str, language: str) -> None:
+    """Send account credentials and onboarding instructions upon successful registration."""
+    # Format subjects human-readable
+    sub_labels = []
+    low = subjects_str.lower()
+    if "eng" in low or "ielts" in low:
+        sub_labels.append("🇬🇧 IELTS (Ingliz tili)")
+    if "rus" in low:
+        sub_labels.append("🇷🇺 Rus tili (Разговорный)")
+    display_subjects = ", ".join(sub_labels) if sub_labels else "🇬🇧 IELTS & 🇷🇺 Rus tili"
+
+    subject = "Diamond Speaking — Sizning login ma’lumotlaringiz" if language == "uz" else (
+        "Diamond Speaking — Ваши данные для входа" if language == "ru" else "Diamond Speaking — Your Login Credentials"
+    )
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
+    message["To"] = recipient
+    message["Date"] = formatdate(localtime=False)
+    message["Message-ID"] = make_msgid(domain="diamond-education.uz")
+    message["Auto-Submitted"] = "auto-generated"
+    message.set_content(
+        f"Tabriklaymiz, {name}! Sizning Diamond Speaking hisobingiz faollashtirildi.\n\n"
+        f"Login ID: {login_id}\n"
+        f"Fanlar: {display_subjects}\n"
+        f"Parol: Ro‘yxatdan o‘tishda o‘zingiz kiritgan parol.\n\n"
+        f"Ilovani ochib, ushbu ma’lumotlar bilan kiring."
+    )
+    message.add_alternative(
+        f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f7ff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0b1030;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f7ff;padding:36px 12px;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:540px;background:#ffffff;border-radius:24px;border:1px solid #dce5fa;box-shadow:0 12px 36px rgba(20,41,242,0.06);overflow:hidden;text-align:left;" cellpadding="0" cellspacing="0">
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg, #1429F2 0%, #071386 100%);padding:32px 28px;text-align:center;">
+            <img src="https://diamond-education.uz/logo.jpg" alt="Diamond Education" width="56" height="56" style="display:inline-block;border-radius:18px;border:2px solid rgba(255,255,255,0.6);box-shadow:0 4px 14px rgba(0,0,0,0.25);object-fit:cover;" />
+            <h2 style="margin:12px 0 0;color:#ffffff;font-size:24px;font-weight:800;letter-spacing:-0.4px;">Xush kelibsiz! 🎉</h2>
+            <p style="margin:6px 0 0;color:rgba(255,255,255,0.88);font-size:14px;font-weight:500;">Sizning Diamond Speaking akkauntingiz tayyor</p>
+          </td>
+        </tr>
+        <!-- Credentials Card -->
+        <tr>
+          <td style="padding:32px 28px;">
+            <p style="margin:0 0 18px;font-size:15px;color:#334155;line-height:1.6;">
+              Hurmatli <strong>{html.escape(name)}</strong>, hisobingiz muvaffaqiyatli faollashtirildi. Ilovaga kirish uchun quyidagi ma’lumotlardan foydalaning:
+            </p>
+
+            <table width="100%" style="background:#f6f9ff;border:1px solid #d8e4fd;border-radius:16px;padding:18px;margin:0 0 24px;" cellpadding="0" cellspacing="0">
+              <tr>
+                <td style="padding:8px 12px;font-size:13px;color:#64748b;font-weight:600;width:120px;">Login ID:</td>
+                <td style="padding:8px 12px;font-size:16px;color:#1429F2;font-weight:800;font-family:monospace;">{html.escape(login_id)}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 12px;font-size:13px;color:#64748b;font-weight:600;">Fanlar:</td>
+                <td style="padding:8px 12px;font-size:14px;color:#0b1030;font-weight:700;">{html.escape(display_subjects)}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 12px;font-size:13px;color:#64748b;font-weight:600;">Parol:</td>
+                <td style="padding:8px 12px;font-size:14px;color:#0b1030;font-style:italic;">Ro‘yxatdan o‘tishda o‘zingiz kiritgan parol</td>
+              </tr>
+            </table>
+
+            <div style="background:#eff6ff;border-left:4px solid #1429F2;border-radius:8px;padding:14px 16px;margin:0 0 24px;">
+              <h4 style="margin:0 0 6px;font-size:14px;font-weight:700;color:#1e3a8a;">Keyingi qadamlar:</h4>
+              <ol style="margin:0;padding-left:18px;font-size:13px;color:#3b82f6;line-height:1.7;">
+                <li>Diamond Speaking ilovasini oching.</li>
+                <li>Yuqoridagi <strong>Login ID</strong> va parolingizni kiriting.</li>
+                <li>Mavzular, lug‘at va ovozli mashg‘ulotlardan foydalaning!</li>
+              </ol>
+            </div>
+
+            <p style="margin:0;font-size:12px;color:#64748b;line-height:1.5;">
+              ⚠️ <em>Xavfsizlik eslatmasi: Ushbu ma’lumotlarni begona shaxslarga bermang. Agar parolingizni unutib qo‘ysangiz, ilovadagi "Parolni unutdingizmi?" bo‘limi orqali qayta tiklashingiz mumkin.</em>
+            </p>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f9faff;border-top:1px solid #edf2fc;padding:20px;text-align:center;font-size:12px;color:#8f97b3;">
+            Diamond Education · Diamond Speaking<br>
+            <span style="color:#b2b9ce;">Savollaringiz bo‘lsa, qo‘llab-quvvatlash xizmatiga murojaat qiling.</span>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>""",
+        subtype="html",
+    )
+    _deliver_speaking_email(message, err_detail="Xush kelibsiz xati hozir yetkazilmadi.")
+
+
+def _send_speaking_password_reset_email(*, recipient: str, code: str, language: str) -> None:
+    """Send a password reset verification code email."""
+    copy = {
+        "uz": ("Diamond Speaking — Parolni tiklash", "Parolni tiklash so‘rovi", "Parolni yangilash uchun tasdiqlash kodi:", "Kod 10 daqiqa davomida amal qiladi. Agar parolni tiklashni siz so‘ramagan bo‘lsangiz, bu xatni e’tiborsiz qoldiring — hisobingiz xavfsiz."),
+        "ru": ("Diamond Speaking — Сброс пароля", "Запрос на сброс пароля", "Код для смены пароля:", "Код действует 10 минут. Если вы не запрашивали сброс пароля, проигнорируйте письмо — ваш аккаунт в безопасности."),
+        "en": ("Diamond Speaking — Reset Password", "Password Reset Request", "Your password reset code:", "The code expires in 10 minutes. If you did not request this, you can safely ignore this email."),
+    }.get(language, ("Diamond Speaking — Reset Password", "Password Reset Request", "Your password reset code:", "The code expires in 10 minutes."))
+    subject, heading, label, note = copy
+    escaped_code = html.escape(code)
+
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = 'Diamond Education <no-reply@diamond-education.uz>'
+    message["To"] = recipient
+    message["Date"] = formatdate(localtime=False)
+    message["Message-ID"] = make_msgid(domain="diamond-education.uz")
+    message["Auto-Submitted"] = "auto-generated"
+    message.set_content(f"{heading}\n\n{label} {code}\n\n{note}")
+    message.add_alternative(
+        f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f7ff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0b1030;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f7ff;padding:36px 12px;">
+    <tr><td align="center">
+      <table width="100%" style="max-width:540px;background:#ffffff;border-radius:24px;border:1px solid #dce5fa;box-shadow:0 12px 36px rgba(20,41,242,0.06);overflow:hidden;text-align:center;" cellpadding="0" cellspacing="0">
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg, #1429F2 0%, #071386 100%);padding:28px 24px;">
+            <img src="https://diamond-education.uz/logo.jpg" alt="Diamond Education" width="56" height="56" style="display:inline-block;border-radius:18px;border:2px solid rgba(255,255,255,0.6);box-shadow:0 4px 14px rgba(0,0,0,0.25);object-fit:cover;" />
+            <h2 style="margin:12px 0 0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.4px;">Diamond Speaking</h2>
+            <p style="margin:4px 0 0;color:rgba(255,255,255,0.85);font-size:13px;font-weight:500;">Parolni qayta tiklash</p>
+          </td>
+        </tr>
+        <!-- Content -->
+        <tr>
+          <td style="padding:36px 30px;">
+            <h1 style="font-size:22px;font-weight:800;color:#0b1030;margin:0 0 10px;">{html.escape(heading)}</h1>
+            <p style="font-size:14px;color:#5b6280;line-height:1.5;margin:0 0 24px;">{html.escape(label)}</p>
+            <div style="background:linear-gradient(135deg, #edf3ff 0%, #e0ebff 100%);border:2px dashed #1429F2;border-radius:16px;padding:20px;letter-spacing:10px;font-size:34px;font-weight:900;color:#1429F2;display:inline-block;min-width:220px;">
+              {escaped_code}
+            </div>
+            <div style="background:#fff9eb;border:1px solid #fde047;border-radius:12px;padding:12px 16px;margin:28px 0 0;text-align:left;">
+              <p style="margin:0;font-size:12px;color:#854d0e;line-height:1.5;">🔒 <strong>Eslatma:</strong> {html.escape(note)}</p>
+            </div>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f9faff;border-top:1px solid #edf2fc;padding:20px;font-size:12px;color:#8f97b3;">
+            Diamond Education · O‘zbekiston, Toshkent<br>
+            <span style="color:#b2b9ce;">Xavfsizligingiz uchun kodni hech kimga bermang.</span>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>""",
+        subtype="html",
+    )
+    _deliver_speaking_email(message, err_detail="Parolni tiklash xati hozir yuborilmadi. Keyinroq urinib ko‘ring.")
+
+
+def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
+    """Generate a clean, unique student ID like 'humoyun_4821'."""
+    raw = (first_name or "").strip().lower()
+    translit_map = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+        'ж': 'j', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'x', 'ҳ': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sh',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        'ў': 'o', 'ғ': 'g', 'q': 'q', 'k': 'k'
+    }
+    ascii_chars = []
+    for ch in raw:
+        if ch in translit_map:
+            ascii_chars.append(translit_map[ch])
+        elif ch.isalnum() and ch.isascii():
+            ascii_chars.append(ch)
+    base = "".join(ascii_chars)[:12]
+    if not base or len(base) < 2:
+        base = "student"
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        for _ in range(50):
+            num = secrets.randbelow(9000) + 1000
+            candidate = f"{base}_{num}"
+            cur.execute("SELECT id FROM users WHERE LOWER(login_id)=LOWER(?)", (candidate,))
+            if not cur.fetchone():
+                return candidate
+        return f"{base}_{secrets.randbelow(90000) + 10000}"
+    finally:
+        conn.close()
 
 
 @app.post("/auth/speaking-registration/start")
@@ -19732,23 +20021,46 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
     if throttle_key and is_login_throttled(throttle_key, max_failures=PUBLIC_REGISTRATION_IP_MAX_FAILURES):
         raise HTTPException(status_code=429, detail="Too many registration attempts. Please try again later.")
     try:
-        login_id = _public_registration_login_id(payload.login_id)
         email = normalize_speaking_email(payload.email)
         first_name = " ".join(str(payload.first_name or "").split())
         last_name = " ".join(str(payload.last_name or "").split())
+        phone = "".join(ch for ch in str(payload.phone or "") if ch.isdigit() or ch == "+").strip()
         if not first_name:
-            raise HTTPException(status_code=422, detail="First name is required")
+            raise HTTPException(status_code=422, detail="Ism kiritilishi shart")
+
+        raw_login = (payload.login_id or "").strip()
+        if raw_login and len(raw_login) >= 4:
+            login_id = _public_registration_login_id(raw_login)
+        else:
+            login_id = _generate_speaking_login_id(first_name, last_name)
+
         _ensure_speaking_account_schema()
         existing = get_user_by_login_id(login_id)
         existing_id = int((existing or {}).get("id") or 0)
         if existing and (not is_speaking_app_account(existing.get("speaking_app_account")) or not existing.get("speaking_deleted_at")):
-            raise HTTPException(status_code=409, detail="Login ID already exists")
+            if raw_login:
+                raise HTTPException(status_code=409, detail="Ushbu Login ID allaqachon mavjud.")
+            login_id = _generate_speaking_login_id(first_name, last_name)
+            existing = get_user_by_login_id(login_id)
+            existing_id = int((existing or {}).get("id") or 0)
+
         conn = get_conn(); cur = conn.cursor()
         try:
-            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE email=?", (email,))
-            email_owner = int((cur.fetchone() or {}).get("user_id") or 0)
+            # Check existing email
+            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (email,))
+            email_row = cur.fetchone()
+            email_owner = int(dict(email_row).get("user_id") or 0) if email_row else 0
             if email_owner and email_owner != existing_id:
-                raise HTTPException(status_code=409, detail="Email is already associated with a Speaking account")
+                raise HTTPException(status_code=409, detail="Bu email bilan allaqachon akkaunt ochilgan. Iltimos, profilingizga kiring yoki parolni tiklang.")
+
+            # Check existing phone
+            if phone and len(phone) >= 7:
+                cur.execute("SELECT id FROM users WHERE phone=? AND (speaking_deleted_at IS NULL)", (phone,))
+                phone_row = cur.fetchone()
+                phone_owner = int(dict(phone_row).get("id") or 0) if phone_row else 0
+                if phone_owner and phone_owner != existing_id:
+                    raise HTTPException(status_code=409, detail="Bu telefon raqami bilan allaqachon akkaunt ochilgan. Iltimos, profilingizga kiring.")
+
             if existing_id:
                 cur.execute("SELECT email FROM speaking_account_contacts WHERE user_id=?", (existing_id,))
                 stored = cur.fetchone()
@@ -19763,11 +20075,27 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
         if throttle_key: record_login_failure(throttle_key)
         raise HTTPException(status_code=422, detail="A valid email is required")
 
+    raw_subjects = getattr(payload, "subjects", None)
+    subject_parts = []
+    if isinstance(raw_subjects, str):
+        subject_parts = [p.strip().capitalize() for p in raw_subjects.split(",") if p.strip()]
+    elif isinstance(raw_subjects, (list, tuple)):
+        subject_parts = [str(p).strip().capitalize() for p in raw_subjects if str(p).strip()]
+    valid_subjects = []
+    for s in subject_parts:
+        low = s.lower()
+        if "eng" in low or "ielts" in low:
+            if "English" not in valid_subjects: valid_subjects.append("English")
+        elif "rus" in low:
+            if "Russian" not in valid_subjects: valid_subjects.append("Russian")
+    selected_subject = ",".join(valid_subjects) if valid_subjects else "English,Russian"
+
     code = f"{secrets.randbelow(1_000_000):06d}"
     verification_id = f"sv_{secrets.token_urlsafe(24)}"
     record = {
         "login_id": login_id, "password_hash": hash_password(str(payload.password)),
-        "first_name": first_name, "last_name": last_name, "language": payload.language,
+        "first_name": first_name, "last_name": last_name, "phone": phone,
+        "language": payload.language, "subject": selected_subject,
     }
     conn = get_conn(); cur = conn.cursor()
     try:
@@ -19781,7 +20109,12 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
         conn.close()
     _send_speaking_verification_email(recipient=email, code=code, language=payload.language)
     if throttle_key: clear_login_throttle(throttle_key)
-    return {"verification_id": verification_id, "expires_in_seconds": 600, "message": "Tasdiqlash kodi emailga yuborildi. Spam papkasini ham tekshiring."}
+    return {
+        "verification_id": verification_id,
+        "expires_in_seconds": 600,
+        "login_id": login_id,
+        "message": f"Tasdiqlash kodi emailga yuborildi. Siz uchun yaratilgan Login ID: @{login_id}. Spam papkasini ham tekshiring.",
+    }
 
 
 @app.post("/auth/speaking-registration/verify", response_model=TokenResponse)
@@ -19811,10 +20144,12 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
             raise HTTPException(status_code=400, detail="Verification code is incorrect")
         data = json.loads(str(verification.get("payload_json") or "{}"))
         user_id = int(verification.get("user_id") or 0)
+        user_subject = str(data.get("subject") or "English,Russian")
+        user_phone = data.get("phone") or None
         if user_id:
-            cur.execute("UPDATE users SET password=?,first_name=?,last_name=?,language=?,blocked=0,access_enabled=1,pending_approval=0,speaking_deleted_at=NULL WHERE id=? AND speaking_app_account=1", (data["password_hash"], data["first_name"], data["last_name"], data["language"], user_id))
+            cur.execute("UPDATE users SET password=?,first_name=?,last_name=?,phone=?,subject=?,language=?,blocked=0,access_enabled=1,pending_approval=0,speaking_deleted_at=NULL WHERE id=? AND speaking_app_account=1", (data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, data["language"], user_id))
         else:
-            cur.execute("INSERT INTO users(login_id,password,first_name,last_name,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?, 'English,Russian', ?,0,1,0,0,1,?,0,0) RETURNING id", (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], SPEAKING_APP_LOGIN_TYPE, data["language"]))
+            cur.execute("INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?, ?, ?,0,1,0,0,1,?,0,0) RETURNING id", (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, SPEAKING_APP_LOGIN_TYPE, data["language"]))
             user_id = int((cur.fetchone() or {}).get("id") or 0)
             cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, verification["email"], _now_utc().isoformat()))
         cur.execute(
@@ -19824,6 +20159,7 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
         if int(cur.rowcount or 0) != 1:
             raise HTTPException(status_code=409, detail="Verification code has already been used")
         conn.commit()
+
     except HTTPException:
         with suppress(Exception): conn.rollback()
         raise
@@ -19835,8 +20171,233 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
         conn.close()
     created = get_user_by_id(user_id)
     if not created: raise HTTPException(status_code=500, detail="Account could not be loaded")
+    try:
+        _send_speaking_welcome_credentials_email(
+            recipient=verification["email"],
+            name=f"{data.get('first_name', '')} {data.get('last_name', '')}".strip() or "O‘quvchi",
+            login_id=data["login_id"],
+            subjects_str=user_subject,
+            language=data.get("language") or "uz",
+        )
+    except Exception as exc:
+        logger.warning("speaking welcome credentials email failed error=%s", type(exc).__name__)
     session_id, ttl_hours = _issue_web_session(created, device_id=None, source="speaking_registration")
     return TokenResponse(access_token=_create_access_token(created, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(created))
+
+
+@app.post("/auth/speaking-forgot-password/start")
+async def start_speaking_forgot_password(payload: SpeakingForgotPasswordRequest, req: Request):
+    """Start password recovery by sending a 6-digit code to the user's verified email."""
+    client_ip = _client_ip(req)
+    throttle_key = f"speaking-forgot-pwd:{client_ip}" if client_ip else ""
+    if throttle_key and is_login_throttled(throttle_key, max_failures=10):
+        raise HTTPException(status_code=429, detail="Too many recovery attempts. Please try again later.")
+
+    _ensure_speaking_account_schema()
+    raw = payload.login_or_email.strip()
+    conn = get_conn(); cur = conn.cursor()
+    target_user = None
+    target_email = None
+    try:
+        # Check if entered as email
+        if "@" in raw:
+            norm_email = normalize_speaking_email(raw)
+            cur.execute("SELECT user_id, email FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (norm_email,))
+            contact = cur.fetchone()
+            if contact:
+                target_user = get_user_by_id(int(dict(contact)["user_id"]))
+                target_email = str(dict(contact)["email"])
+        if not target_user:
+            # Check by login_id
+            user_by_login = get_user_by_login_id(raw)
+            if user_by_login:
+                uid = int(user_by_login.get("id") or 0)
+                cur.execute("SELECT email FROM speaking_account_contacts WHERE user_id=?", (uid,))
+                contact = cur.fetchone()
+                if contact:
+                    target_user = user_by_login
+                    target_email = str(dict(contact)["email"])
+
+        if not target_user or not target_email:
+            if throttle_key: record_login_failure(throttle_key)
+            raise HTTPException(status_code=404, detail="Ushbu login yoki emailga bog‘langan Speaking hisobi topilmadi.")
+
+        user_id = int(target_user.get("id") or 0)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        verification_id = f"spw_{secrets.token_urlsafe(24)}"
+
+        cur.execute("DELETE FROM speaking_password_resets WHERE user_id=? AND consumed_at IS NULL", (user_id,))
+        cur.execute(
+            "INSERT INTO speaking_password_resets(id,email,user_id,code_hash,expires_at) VALUES (?,?,?,?,?)",
+            (verification_id, target_email, user_id, hashlib.sha256(code.encode()).hexdigest(), (_now_utc() + timedelta(minutes=10)).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _send_speaking_password_reset_email(recipient=target_email, code=code, language=payload.language)
+    if throttle_key: clear_login_throttle(throttle_key)
+
+    parts = target_email.split("@")
+    masked = parts[0][:1] + "***" + parts[0][-1:] + "@" + parts[1] if len(parts[0]) > 2 else target_email
+    return {
+        "verification_id": verification_id,
+        "masked_email": masked,
+        "expires_in_seconds": 600,
+        "message": f"Tiklash kodi {masked} manziliga yuborildi."
+    }
+
+
+@app.post("/auth/speaking-forgot-password/verify", response_model=TokenResponse)
+async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyRequest):
+    """Verify code and set new password, returning active session token."""
+    _ensure_speaking_account_schema()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM speaking_password_resets WHERE id=?", (payload.verification_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=400, detail="Tiklash so‘rovi topilmadi.")
+        reset = dict(row)
+        if reset.get("consumed_at") or is_speaking_verification_expired(reset.get("expires_at"), now=_now_utc()) or int(reset.get("attempts") or 0) >= 5:
+            raise HTTPException(status_code=400, detail="Tiklash kodi muddati o‘tgan. Qaytadan so‘rang.")
+
+        if not hmac.compare_digest(str(reset.get("code_hash") or ""), hashlib.sha256(payload.code.strip().encode()).hexdigest()):
+            cur.execute("UPDATE speaking_password_resets SET attempts=attempts+1 WHERE id=?", (payload.verification_id,))
+            conn.commit()
+            raise HTTPException(status_code=400, detail="Tasdiqlash kodi noto‘g‘ri.")
+
+        user_id = int(reset.get("user_id") or 0)
+        new_pwd_hash = hash_password(str(payload.new_password))
+
+        cur.execute("UPDATE users SET password=? WHERE id=?", (new_pwd_hash, user_id))
+        cur.execute(
+            "UPDATE speaking_password_resets SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+            (_now_utc().isoformat(), payload.verification_id),
+        )
+        conn.commit()
+    except HTTPException:
+        with suppress(Exception): conn.rollback()
+        raise
+    except Exception as exc:
+        with suppress(Exception): conn.rollback()
+        logger.exception("password reset verify failed error=%s", type(exc).__name__)
+        raise HTTPException(status_code=400, detail="Parolni yangilab bo‘lmadi.") from exc
+    finally:
+        conn.close()
+
+    _revoke_web_sessions(user_id, keep_session_id=None, reason="speaking_forgot_password")
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=500, detail="Foydalanuvchi ma’lumotlarini yuklab bo‘lmadi.")
+
+    session_id, ttl_hours = _issue_web_session(user, device_id=None, source="speaking_forgot_password")
+    return TokenResponse(
+        access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours),
+        token_type="bearer",
+        user=_build_user_payload(user),
+    )
+
+
+@app.patch("/admin/speaking-users/{user_id}")
+async def admin_update_speaking_user(
+    user_id: int,
+    payload: AdminSpeakingUserUpdateRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Update profile details of a Speaking app user, including login ID, names, subjects, and status."""
+    admin_user = _user_row_from_bearer(authorization)
+    _require_role(admin_user, {"admin", "superadmin", "developer"})
+
+    target = get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
+
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        updates = []
+        params = []
+        if payload.first_name is not None:
+            updates.append("first_name=?")
+            params.append(payload.first_name.strip())
+        if payload.last_name is not None:
+            updates.append("last_name=?")
+            params.append(payload.last_name.strip())
+        if payload.login_id is not None and payload.login_id.strip():
+            new_login = payload.login_id.strip()
+            existing = get_user_by_login_id(new_login)
+            if existing and int(existing.get("id") or 0) != user_id:
+                raise HTTPException(status_code=409, detail="Ushbu Login ID allaqachon mavjud.")
+            updates.append("login_id=?")
+            params.append(new_login)
+        if payload.subjects is not None:
+            raw_s = payload.subjects
+            s_list = [str(x).strip().capitalize() for x in (raw_s if isinstance(raw_s, (list, tuple)) else str(raw_s).split(",")) if str(x).strip()]
+            valid = []
+            for item in s_list:
+                low = item.lower()
+                if "eng" in low or "ielts" in low:
+                    if "English" not in valid: valid.append("English")
+                elif "rus" in low:
+                    if "Russian" not in valid: valid.append("Russian")
+            updates.append("subject=?")
+            params.append(",".join(valid) if valid else "English,Russian")
+        if payload.blocked is not None:
+            updates.append("blocked=?")
+            params.append(1 if payload.blocked else 0)
+        if payload.access_enabled is not None:
+            updates.append("access_enabled=?")
+            params.append(1 if payload.access_enabled else 0)
+
+        if updates:
+            params.append(user_id)
+            cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", tuple(params))
+
+        if payload.email is not None and payload.email.strip():
+            norm_email = normalize_speaking_email(payload.email)
+            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE email=?", (norm_email,))
+            email_owner = int((cur.fetchone() or {}).get("user_id") or 0)
+            if email_owner and email_owner != user_id:
+                raise HTTPException(status_code=409, detail="Ushbu email boshqa foydalanuvchiga biriktirilgan.")
+            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE user_id=?", (user_id,))
+            has_contact = cur.fetchone()
+            if has_contact:
+                cur.execute("UPDATE speaking_account_contacts SET email=?, updated_at=? WHERE user_id=?", (norm_email, _now_utc().isoformat(), user_id))
+            else:
+                cur.execute("INSERT INTO speaking_account_contacts(user_id, email, updated_at) VALUES (?, ?, ?)", (user_id, norm_email, _now_utc().isoformat()))
+        conn.commit()
+    finally:
+        conn.close()
+
+    updated = get_user_by_id(user_id)
+    return {"message": "Foydalanuvchi muvaffaqiyatli yangilandi.", "user": _build_user_payload(updated)}
+
+
+@app.post("/admin/speaking-users/{user_id}/reset-password")
+async def admin_reset_speaking_user_password(
+    user_id: int,
+    payload: AdminSpeakingUserResetPasswordRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Admin updates the password for a Speaking user and revokes their active sessions."""
+    admin_user = _user_row_from_bearer(authorization)
+    _require_role(admin_user, {"admin", "superadmin", "developer"})
+
+    target = get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
+
+    new_pwd_hash = hash_password(str(payload.new_password))
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("UPDATE users SET password=? WHERE id=?", (new_pwd_hash, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+    _revoke_web_sessions(user_id, keep_session_id=None, reason="admin_reset_speaking_password")
+    return {"message": "Parol muvaffaqiyatli yangilandi."}
 
 
 def _speaking_link_code() -> str:
@@ -20227,6 +20788,26 @@ async def login(request: LoginRequest, req: Request):
     else:
         user = get_screenshot_demo_user_by_alias(request.login_id, (1, 2))
     user = user or get_user_by_login_id(request.login_id)
+    if not user and "@" in login_id_raw:
+        conn = get_conn(); cur = conn.cursor()
+        try:
+            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (normalize_speaking_email(login_id_raw),))
+            contact = cur.fetchone()
+            if contact:
+                user = get_user_by_id(int(dict(contact)["user_id"]))
+        finally:
+            conn.close()
+    if not user:
+        cleaned_phone = "".join(ch for ch in login_id_raw if ch.isdigit() or ch == "+").strip()
+        if len(cleaned_phone) >= 7:
+            conn = get_conn(); cur = conn.cursor()
+            try:
+                cur.execute("SELECT id FROM users WHERE phone=? AND (speaking_deleted_at IS NULL)", (cleaned_phone,))
+                p_row = cur.fetchone()
+                if p_row:
+                    user = get_user_by_id(int(dict(p_row)["id"]))
+            finally:
+                conn.close()
     if not user:
         if not is_demo_attempt:
             record_login_failure(login_key)
@@ -40167,6 +40748,7 @@ async def admin_users(
             )
             SELECT
                 pu.*,
+                sac.email AS contact_email,
                 COALESCE(NULLIF(pu.profile_image_url, ''), fp.reference_image_url) AS effective_profile_image_url,
                 fp.reference_image_url AS face_reference_image_url,
                 COALESCE(gc.group_count, 0) AS group_count
@@ -40174,6 +40756,7 @@ async def admin_users(
             LEFT JOIN fp_idx ON fp_idx.user_id = pu.id
             LEFT JOIN user_face_profiles fp ON fp.id = fp_idx.profile_id
             LEFT JOIN group_counts gc ON gc.user_id = pu.id
+            LEFT JOIN speaking_account_contacts sac ON sac.user_id = pu.id
             ORDER BY COALESCE(pu.created_at, CURRENT_TIMESTAMP) DESC, pu.id DESC
             """,
             tuple([*params, int(limit), int(offset)]),
@@ -40208,6 +40791,7 @@ async def admin_users(
             )
             SELECT
                 pu.*,
+                sac.email AS contact_email,
                 COALESCE(NULLIF(pu.profile_image_url, ''), fp.reference_image_url) AS effective_profile_image_url,
                 fp.reference_image_url AS face_reference_image_url,
                 COALESCE(gc.group_count, 0) AS group_count
@@ -40215,6 +40799,7 @@ async def admin_users(
             LEFT JOIN fp_idx ON fp_idx.user_id = pu.id
             LEFT JOIN user_face_profiles fp ON fp.id = fp_idx.profile_id
             LEFT JOIN group_counts gc ON gc.user_id = pu.id
+            LEFT JOIN speaking_account_contacts sac ON sac.user_id = pu.id
             ORDER BY COALESCE(pu.created_at, CURRENT_TIMESTAMP) DESC, pu.id DESC
             """,
             tuple([*params, int(limit), int(offset)]),
@@ -56715,11 +57300,24 @@ async def user_get_books(
     authorization: str | None = Header(default=None),
 ):
     started_at = time.perf_counter()
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, {"student", "teacher", "support"})
-    user_id = int(user.get("id") or 0)
-    role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    subjects = _user_subjects_from_row(user)
+    user = None
+    if authorization:
+        try:
+            user = _user_row_from_bearer(authorization)
+        except Exception:
+            user = None
+
+    if user:
+        _require_role(user, {"student", "teacher", "support"})
+        user_id = int(user.get("id") or 0)
+        role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+        subjects = _user_subjects_from_row(user)
+    else:
+        user_id = 0
+        role = "student"
+        subjects = ["English", "Russian"]
+
+    is_speaking = is_speaking_app_account(user.get("speaking_app_account")) if user else True
     selected_subject = _normalize_subject_label(subject)
     selected_level = str(level or "").strip()
     subjects_sig = ",".join(sorted(subjects or []))
@@ -56759,11 +57357,18 @@ async def user_get_books(
         if selected_subject:
             query += " AND b.subject=?"
             params.append(selected_subject)
+    elif is_speaking:
+        if selected_subject:
+            query += " AND (b.subject IS NULL OR b.subject = '' OR b.subject = ?)"
+            params.append(selected_subject)
     elif subjects:
         allowed_subjects = [selected_subject] if selected_subject and selected_subject in subjects else subjects
         qmarks = ",".join(["?"] * len(allowed_subjects))
         query += f" AND (b.subject IS NULL OR b.subject = '' OR b.subject IN ({qmarks}))"
         params.extend(allowed_subjects)
+    elif selected_subject:
+        query += " AND (b.subject IS NULL OR b.subject = '' OR b.subject = ?)"
+        params.append(selected_subject)
     else:
         query += " AND (b.subject IS NULL OR b.subject = '')"
     if selected_level:
@@ -56776,7 +57381,7 @@ async def user_get_books(
     
     purchases = {}
     book_ids = [int(b.get("id") or 0) for b in books if int(b.get("id") or 0) > 0]
-    if role == "student":
+    if role == "student" and user_id > 0 and not is_speaking:
         if book_ids:
             qmarks = ",".join(["?"] * len(book_ids))
             cur.execute(
@@ -56796,7 +57401,7 @@ async def user_get_books(
                 "status": "active"
             }
             
-    wallet = float(user.get("dcoin_balance") if user.get("dcoin_balance") is not None else get_dcoins(user_id)) if role == "student" else 0.0
+    wallet = float(user.get("dcoin_balance") if user and user.get("dcoin_balance") is not None else (get_dcoins(user_id) if user_id > 0 else 0.0)) if role == "student" else 0.0
     conn.close()
     
     items = []
@@ -56820,10 +57425,19 @@ async def user_get_books(
 @app.get("/teacher/books/{book_id}")
 @app.get("/support/books/{book_id}")
 async def user_get_book_detail(book_id: int, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, {"student", "teacher", "support"})
-    user_id = int(user.get("id") or 0)
-    role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+    user = None
+    if authorization:
+        try:
+            user = _user_row_from_bearer(authorization)
+        except Exception:
+            user = None
+    if user:
+        _require_role(user, {"student", "teacher", "support"})
+        user_id = int(user.get("id") or 0)
+        role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+    else:
+        user_id = 0
+        role = "student"
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -56861,7 +57475,7 @@ async def user_get_book_detail(book_id: int, authorization: str | None = Header(
         conn.close()
         raise HTTPException(status_code=403, detail="Sizda bu kitobni ko'rish huquqi yo'q")
         
-    if role == "student":
+    if role == "student" and user_id > 0 and not is_speaking_app_account(user.get("speaking_app_account") if user else None):
         cur.execute("SELECT * FROM student_book_purchases WHERE user_id=? AND book_id=? LIMIT 1", (user_id, int(book_id)))
         purchase_row = cur.fetchone()
     else:
@@ -58074,10 +58688,15 @@ async def delete_voice_room(room_id: int, authorization: str | None = Header(def
 async def get_active_voice_rooms(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     
-    # 1. Get all rooms from DB
+    # 1. Get all rooms from DB (excluding study rooms and private rooms)
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT v.*, COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '') as host_name FROM web_voicerooms v LEFT JOIN users u ON u.id = v.owner_id")
+    cur.execute("""
+        SELECT v.*, COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '') as host_name 
+        FROM web_voicerooms v 
+        LEFT JOIN users u ON u.id = v.owner_id
+        WHERE (v.subject IS NULL OR v.subject NOT LIKE '_study_room_%')
+    """)
     db_rooms = {str(r["id"]): dict(r) for r in cur.fetchall()}
     conn.close()
     
@@ -58093,13 +58712,18 @@ async def get_active_voice_rooms(authorization: str | None = Header(default=None
         if not info_raw: continue
         
         try:
-            listeners = _REDIS_CLIENT.scard(f"voice_room_peers_{room_id}") or 0
             db_room = db_rooms[room_id]
+            if str(db_room.get("subject") or "").startswith("_study_room_"):
+                continue
+                
+            listeners = _REDIS_CLIENT.scard(f"voice_room_peers_{room_id}") or 0
             
             tags = []
             if db_room.get("tags"):
                 try: tags = json.loads(db_room["tags"])
                 except: pass
+            if "private" in tags:
+                continue
                 
             rooms.append({
                 "room_id": room_id,

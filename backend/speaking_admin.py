@@ -486,6 +486,8 @@ async def search_speaking_vocabulary(
     request: Request,
     subject: str = Query(default="english"),
     query: str = Query(default="", max_length=80),
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=40, ge=1, le=100),
 ):
     """Search the shared vocabulary bank for the anonymous Speaking app.
 
@@ -496,8 +498,32 @@ async def search_speaking_vocabulary(
     requested_subject = str(subject or "english").strip().lower()
     selected_subject = "Russian" if requested_subject in {"russian", "ru"} else "English"
     normalized_query = " ".join(str(query or "").split()).strip()
+
+    from backend.main import _vocab_ai_rows_for_words, _vocab_ai_try_add_missing_word, vocab_language_for_subject
+    language = vocab_language_for_subject(selected_subject)
+
     if not normalized_query:
-        return {"items": [], "ai_generated": False, "blocked": False}
+        offset = (max(1, page) - 1) * limit
+        def get_paged_words() -> list[dict[str, Any]]:
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT id, word, subject, language, level, translation_uz,
+                           translation_ru, definition, example
+                    FROM words
+                    WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)
+                    ORDER BY id ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (selected_subject, language, limit, offset),
+                )
+                return [dict(row) for row in (cur.fetchall() or [])]
+            finally:
+                conn.close()
+        return {"items": get_paged_words(), "ai_generated": False, "blocked": False}
+
     if not is_safe_speaking_vocabulary_query(normalized_query):
         return {"items": [], "ai_generated": False, "blocked": True}
 
