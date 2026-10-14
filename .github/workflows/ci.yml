@@ -29,6 +29,12 @@ jobs:
       - name: Run pytest
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # Unit tests mock persistence and must never require production
+          # infrastructure or credentials.
+          REQUIRE_POSTGRES: "false"
+          DATABASE_URL: ""
+          JWT_SECRET: "ci-test-secret-not-used-for-production-0123456789"
+          MEDIA_STREAM_TOKEN_SECRET: "ci-test-media-secret-not-used-0123456789"
         run: pytest -q
 
   frontend-validation:

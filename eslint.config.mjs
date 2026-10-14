@@ -26,6 +26,10 @@ export default [
       "react-hooks/rules-of-hooks": "warn",
       "react-hooks/set-state-in-effect": "warn",
       "react-hooks/use-memo": "warn",
+      // Internal links are migrated opportunistically; existing links remain
+      // visible as warnings while the production build and typecheck gate
+      // releases.
+      "@next/next/no-html-link-for-pages": "warn",
     },
   },
 ];
