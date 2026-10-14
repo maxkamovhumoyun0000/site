@@ -2773,6 +2773,7 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "join_first": "Akkaunt bog‘landi. Endi shu bot ichidagi tugma orqali kanalga a’zo bo‘ling va “A’zolikni tekshirish”ni bosing.",
             "join_channel": "📢 Kanalga a’zo bo‘lish",
             "check_membership": "✅ A’zolikni tekshirish",
+            "open_app": "📱 Ilovani ochish",
             "expired": "Bu akkauntni bog‘lash so‘rovi tugagan. Ilovadan qayta urinib ko‘ring.",
             "in_use": "Bu Telegram profili boshqa akkauntga bog‘langan. Adminga murojaat qiling.",
         },
@@ -2783,6 +2784,7 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "join_first": "Аккаунт привязан. Подпишитесь на канал кнопкой в этом боте и нажмите «Проверить подписку».",
             "join_channel": "📢 Подписаться на канал",
             "check_membership": "✅ Проверить подписку",
+            "open_app": "📱 Открыть приложение",
             "expired": "Запрос на привязку истек. Повторите попытку из приложения.",
             "in_use": "Этот профиль Telegram уже привязан к другому аккаунту. Обратитесь к администратору.",
         },
@@ -2793,6 +2795,7 @@ def _channel_link_copy(lang: str, key: str) -> str:
             "join_first": "Account linked. Join the channel using the button in this bot, then tap “Check membership”.",
             "join_channel": "📢 Join channel",
             "check_membership": "✅ Check membership",
+            "open_app": "📱 Open app",
             "expired": "This account-link request expired. Try again from the app.",
             "in_use": "This Telegram profile is already linked to another account. Contact an administrator.",
         },
@@ -2823,6 +2826,20 @@ def _channel_membership_keyboard(*, request_token: str, lang: str) -> InlineKeyb
                 ),
             ],
         ],
+    )
+
+
+def _channel_link_success_keyboard(lang: str) -> InlineKeyboardMarkup | None:
+    """Open the signed Telegram Mini App directly after membership succeeds.
+
+    This deliberately uses a WebApp button in the current Student Bot chat;
+    no t.me `start` deep-link is emitted, so the user is never prompted to
+    start the bot again after linking their account or joining the channel.
+    """
+    return _miniapp_open_keyboard(
+        _channel_link_copy(lang, "open_app"),
+        "home",
+        extra={"channel_verified": 1},
     )
 
 
@@ -2963,7 +2980,7 @@ async def confirm_student_channel_link(callback: CallbackQuery):
 
     subscribed = await is_user_subscribed(callback.message.bot, callback.from_user.id)
     if subscribed is not False:
-        await callback.message.answer(_channel_link_copy(lang, "approved"))
+        await callback.message.answer(_channel_link_copy(lang, "approved"), reply_markup=_channel_link_success_keyboard(lang))
         return
     await callback.message.answer(
         _channel_link_copy(lang, "join_first"),
@@ -2993,7 +3010,7 @@ async def verify_student_channel_membership(callback: CallbackQuery):
         except Exception:
             pass
         await callback.answer()
-        await callback.message.answer(_channel_link_copy(lang, "approved"))
+        await callback.message.answer(_channel_link_copy(lang, "approved"), reply_markup=_channel_link_success_keyboard(lang))
         return
 
     if subscribed is None:

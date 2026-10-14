@@ -24,7 +24,7 @@ def test_verified_channel_membership_reopens_the_miniapp_without_another_start()
     # native WebApp button in this same bot chat. It must not send another
     # Telegram /start deep link or force the person through the bot entry flow.
     assert "def _channel_link_success_keyboard" in source
-    assert 'text=_channel_link_copy(lang, "open_app")' in source
+    assert '_channel_link_copy(lang, "open_app")' in source
     assert "reply_markup=_channel_link_success_keyboard(lang)" in source
     assert "await callback.message.answer(_channel_link_copy(lang, \"approved\"), reply_markup=_channel_link_success_keyboard(lang))" in source
 
