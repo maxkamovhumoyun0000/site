@@ -16,6 +16,7 @@ def test_release_script_deploys_only_a_clean_origin_main_snapshot() -> None:
     assert 'DEPLOY_COMMIT="${1:-origin/main}"' in source
     assert "git archive --format=tar" in source
     assert ".diamond-deploy/commit" in source
+    assert "lock_acquired" in source
 
 
 def test_release_script_removes_only_previously_managed_stale_source_files() -> None:

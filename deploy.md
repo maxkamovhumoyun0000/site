@@ -89,16 +89,25 @@ odam/IDE o'zgartirgan faylni deploy bilan aralashtirmang. `DEPLOY_COMMIT`
 Lokal project rootdan bajariladi:
 
 ```bash
-git archive --format=tar "$DEPLOY_COMMIT" | \
-  ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
-  'cd /root/diamond-site && tar -xf -'
+scripts/deploy_release_snapshot.sh "$DEPLOY_COMMIT"
 ```
 
-`git archive` faqat commitga kirgan fayllarni yuboradi; `.env`, database,
-`data/`, media/upload, `.venv`, `node_modules/` va `.next/` (gitda
-bo'lmasligi kerak) serverda saqlanib qoladi. `tar -xf -` barcha **relative paths**ni saqlaydi: masalan `app/page.tsx` faqat
-`/root/diamond-site/app/page.tsx`ga yoziladi, hech qachon server rootiga
-`page.tsx` bo'lib tushmaydi. `--delete` ishlatilmaydi.
+Bu script `git archive --format=tar` bilan faqat `origin/main`dagi commitni
+yuboradi, barcha **relative paths**ni saqlaydi va serverda release commit
+stampini yozadi. `app/page.tsx` faqat `/root/diamond-site/app/page.tsx`ga
+yoziladi, hech qachon rootda `page.tsx` bo‘lib tushmaydi.
+
+### Release commit verification
+
+Script tugagach serverdagi `/root/diamond-site/.diamond-deploy/commit`
+qiymati `DEPLOY_COMMIT` bilan bir xil bo‘lishi shart. Script avvalgi muvaffaqiyatli
+release'ning **managed manifest**ini saqlaydi: yangi commitdan o‘chirilgan
+faqat oldin script deploy qilgan kod fayllarini olib tashlaydi. Bu stale
+component/bot fayllari keyingi release’da ishlashini to‘xtatadi.
+
+`.env`, database, `data/`, logs, media/upload, `node_modules`, `.next`,
+`.venv` va secrets manifestga ham, tozalashga ham kirmaydi. `--delete`
+ishlatilmaydi.
 
 ## Serverda Tekshirish
 
