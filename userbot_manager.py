@@ -13,8 +13,23 @@ from db import (
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_event_loop_for_pyrogram_import() -> None:
+    """Support Pyrogram's import-time sync wrapper on Python 3.12+.
+
+    Pyrogram's ``sync`` module calls ``asyncio.get_event_loop()`` while it is
+    imported.  Modern uvloop policies intentionally do not auto-create a loop
+    in the main thread, so import-time initialization must provide one.
+    """
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+
 # Pyrogram import handling
 try:
+    _ensure_event_loop_for_pyrogram_import()
     from pyrogram import Client
     from pyrogram.errors import (
         FloodWait,
