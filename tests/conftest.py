@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 
 # Pyrogram's synchronous compatibility layer calls ``get_event_loop`` while
 # test modules import the application. Python 3.12's loop policy may not
@@ -18,6 +20,9 @@ def _ensure_import_loop() -> None:
 _ensure_import_loop()
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_pycollect_makemodule(module_path, parent):
+    # pytest-asyncio may install its policy in the same collection hook.
+    # Running last ensures the loop belongs to the final active policy.
     _ensure_import_loop()
     return None
