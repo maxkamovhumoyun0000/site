@@ -9495,6 +9495,33 @@ ATTENDANCE_WINDOW_ERROR = (
 )
 
 
+def _attendance_temporary_reopen_active(date_text: str | None) -> bool:
+    """Return whether a deliberately finite attendance timing override applies.
+
+    This only bypasses the normal *time* window.  Callers still validate the
+    lesson schedule, cancellation status, and the student's membership for
+    the requested date before saving any attendance.
+    """
+    raw_date = str(date_text or "").strip()
+    start_raw = str(os.getenv("ATTENDANCE_REOPEN_START_DATE") or "").strip()
+    end_raw = str(os.getenv("ATTENDANCE_REOPEN_END_DATE") or "").strip()
+    until_raw = str(os.getenv("ATTENDANCE_REOPEN_UNTIL") or "").strip()
+    try:
+        target_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+        start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_raw, "%Y-%m-%d").date()
+        expires_at = datetime.fromisoformat(until_raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if start_date > end_date:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = TASHKENT_TZ.localize(expires_at)
+    else:
+        expires_at = expires_at.astimezone(TASHKENT_TZ)
+    return start_date <= target_date <= end_date and datetime.now(TASHKENT_TZ) <= expires_at
+
+
 def _attendance_window_bounds(group: dict | None, date_text: str | None) -> tuple[datetime, datetime] | None:
     if not group:
         return None
@@ -9531,6 +9558,8 @@ def _ensure_attendance_window_open(group: dict | None, date_text: str | None) ->
     bounds = _attendance_window_bounds(group, date_text)
     if not bounds:
         raise HTTPException(status_code=409, detail=ATTENDANCE_WINDOW_ERROR)
+    if _attendance_temporary_reopen_active(date_text):
+        return
     window_start, window_end = bounds
     now_local = datetime.now(TASHKENT_TZ)
     if not (window_start <= now_local <= window_end):
@@ -9668,7 +9697,7 @@ def _attendance_lesson_dates_for_month(group: dict | None, month_text: str | Non
             if bounds and not is_closed:
                 window_start, window_end = bounds
                 now_local = datetime.now(TASHKENT_TZ)
-                open_now = window_start <= now_local <= window_end
+                open_now = _attendance_temporary_reopen_active(day_iso) or window_start <= now_local <= window_end
             rows.append(
                 {
                     "date": day_iso,

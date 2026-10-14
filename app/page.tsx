@@ -1231,6 +1231,22 @@ function lessonWindowFromParts(dateIso?: string, startRaw?: string, endRaw?: str
   };
 }
 
+const TEMPORARY_ATTENDANCE_REOPEN_START_DATE = String(process.env.NEXT_PUBLIC_ATTENDANCE_REOPEN_START_DATE || "").trim();
+const TEMPORARY_ATTENDANCE_REOPEN_END_DATE = String(process.env.NEXT_PUBLIC_ATTENDANCE_REOPEN_END_DATE || "").trim();
+const TEMPORARY_ATTENDANCE_REOPEN_UNTIL = String(process.env.NEXT_PUBLIC_ATTENDANCE_REOPEN_UNTIL || "").trim();
+
+function isTemporaryAttendanceReopenDate(dateRaw?: string) {
+  const date = String(dateRaw || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(TEMPORARY_ATTENDANCE_REOPEN_START_DATE)) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(TEMPORARY_ATTENDANCE_REOPEN_END_DATE)) return false;
+  const expiresAt = new Date(TEMPORARY_ATTENDANCE_REOPEN_UNTIL);
+  if (Number.isNaN(expiresAt.getTime())) return false;
+  return date >= TEMPORARY_ATTENDANCE_REOPEN_START_DATE
+    && date <= TEMPORARY_ATTENDANCE_REOPEN_END_DATE
+    && new Date() <= expiresAt;
+}
+
 function buildUpcomingLessonCards(groups: GenericRow[], take = 40) {
   const now = new Date();
   const cards: Array<{
@@ -1261,8 +1277,8 @@ function buildUpcomingLessonCards(groups: GenericRow[], take = 40) {
     const pushCard = (lessonDate: string) => {
       const window = lessonWindowFromParts(lessonDate, lessonStart, lessonEnd);
       if (!window) return;
-      const isOpen = now >= window.openAt && now <= window.closeAt;
-      const isClosed = now > window.closeAt;
+      const isOpen = isTemporaryAttendanceReopenDate(lessonDate) || (now >= window.openAt && now <= window.closeAt);
+      const isClosed = !isOpen && now > window.closeAt;
       groupCards.push({
         group_id: groupId,
         group_name: String(group.name || `Group #${groupId}`),
@@ -1327,6 +1343,7 @@ function emitUiToast(message: string, tone: "info" | "success" | "error" = "info
 
 function canLoadAttendanceForLesson(card?: { date?: string; start?: string; end?: string } | null) {
   if (!card?.date || !card?.start) return { ok: false, message: "Dars vaqti topilmadi." };
+  if (isTemporaryAttendanceReopenDate(String(card.date))) return { ok: true, message: "" };
   const window = lessonWindowFromParts(card.date, card.start, card.end);
   if (!window) return { ok: false, message: "Dars vaqti topilmadi." };
   const now = new Date();
