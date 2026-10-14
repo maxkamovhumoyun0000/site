@@ -681,17 +681,54 @@ function supportsTelegramBackButton(webApp: TelegramWebApp | undefined): boolean
   return parsed >= 6.1;
 }
 
-// Telegram's WebApp SDK is available before initData on some mobile clients.
-// Treat that interval as a Telegram runtime, never as a public browser.
-function isTelegramRuntime(): boolean {
-  if (typeof window === "undefined") return false;
+type TelegramRuntimeAuth = {
+  isTelegramClient: boolean;
+  telegramId: number;
+  initData: string;
+  webApp?: TelegramWebApp;
+};
+
+// Telegram puts the signed launch data in `tgWebAppData` before (and sometimes
+// without promptly populating) WebApp.initData. Parse that canonical launch
+// payload too, so auth is decided from the Telegram ID rather than a stale
+// browser session or a public-landing fallback.
+function getTelegramRuntimeAuth(): TelegramRuntimeAuth {
+  if (typeof window === "undefined") {
+    return { isTelegramClient: false, telegramId: 0, initData: "" };
+  }
   const webApp = window.Telegram?.WebApp;
-  return Boolean(
-    webApp
-    || /Telegram/i.test(navigator.userAgent)
-    || window.location.hash.includes("tgWebAppData")
-    || window.location.search.includes("tgWebAppPlatform"),
-  );
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const queryParams = new URLSearchParams(window.location.search);
+  const initData = String(
+    webApp?.initData
+    || hashParams.get("tgWebAppData")
+    || queryParams.get("tgWebAppData")
+    || "",
+  ).trim();
+  let telegramId = Number(webApp?.initDataUnsafe?.user?.id || 0);
+  if (!telegramId && initData) {
+    try {
+      const userJson = new URLSearchParams(initData).get("user") || "{}";
+      telegramId = Number(JSON.parse(userJson)?.id || 0);
+    } catch {
+      telegramId = 0;
+    }
+  }
+  return {
+    isTelegramClient: Boolean(
+      webApp
+      || initData
+      || /Telegram/i.test(navigator.userAgent)
+      || window.location.search.includes("tgWebAppPlatform"),
+    ),
+    telegramId: Number.isFinite(telegramId) && telegramId > 0 ? telegramId : 0,
+    initData,
+    webApp,
+  };
+}
+
+function isTelegramRuntime(): boolean {
+  return getTelegramRuntimeAuth().isTelegramClient;
 }
 
 function isAuthErrorMessage(message: string) {
@@ -25989,17 +26026,19 @@ export default function DiamondEducationApp() {
       if (disposed || authAttemptInFlight) return;
       authAttemptInFlight = true;
       // Detect and wait for Telegram WebApp SDK if loading inside Telegram
-      let webApp = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : undefined;
-      const isTgClient = isTelegramRuntime();
+      let telegramRuntime = getTelegramRuntimeAuth();
+      let webApp = telegramRuntime.webApp;
+      const isTgClient = telegramRuntime.isTelegramClient;
       setIsTelegramClient(isTgClient);
 
-      if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
+      if (isTgClient && (!telegramRuntime.initData || !telegramRuntime.telegramId)) {
         for (let i = 0; i < 60; i++) {
-          webApp = (window as any).Telegram?.WebApp;
+          telegramRuntime = getTelegramRuntimeAuth();
+          webApp = telegramRuntime.webApp;
           if (webApp?.ready) {
             try { webApp.ready(); } catch {}
           }
-          if (webApp?.initData && webApp?.initDataUnsafe?.user?.id) {
+          if (telegramRuntime.initData && telegramRuntime.telegramId) {
             break;
           }
           await new Promise((r) => setTimeout(r, 100));
@@ -26009,8 +26048,8 @@ export default function DiamondEducationApp() {
 
       // Do not turn a delayed Telegram SDK into the public landing page. The
       // SDK can inject initData after hydration, especially on Android.
-      if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
-        holdCheckingState("Telegram sessiyasi yuklanmoqda. Iltimos, sahifani yopmang.");
+      if (isTgClient && (!telegramRuntime.initData || !telegramRuntime.telegramId)) {
+        holdCheckingState("Telegram ma'lumoti yuklanmoqda. Iltimos, sahifani yopmang.");
         authAttemptInFlight = false;
         scheduleTelegramSdkRetry();
         return;
@@ -26023,7 +26062,8 @@ export default function DiamondEducationApp() {
         try { webApp.expand(); } catch {}
       }
 
-      const telegramId = webApp?.initDataUnsafe?.user?.id;
+      const telegramId = telegramRuntime.telegramId;
+      const initData = telegramRuntime.initData;
       setIsTelegramMode(Boolean(telegramId));
       if (userRef.current) {
         setAuthResolved(true);
@@ -26057,13 +26097,13 @@ export default function DiamondEducationApp() {
         return current === Number(telegramId);
       };
       const maybeSyncTelegramLink = async (token: string, currentUser: ApiUser): Promise<ApiUser> => {
-        if (!token || !telegramId || !webApp?.initData) return currentUser;
+        if (!token || !telegramId || !initData) return currentUser;
         try {
           const syncBotSession = resolveTelegramBotSyncPreference();
           const synced = await requestJson<ApiUser>("/auth/telegram/sync", {
             method: "POST",
             token,
-            body: { telegram_id: telegramId, init_data: webApp.initData, sync_bot_session: syncBotSession },
+            body: { telegram_id: telegramId, init_data: initData, sync_bot_session: syncBotSession },
             timeoutMs: 30000,
             retries: 0,
           });
@@ -26128,14 +26168,14 @@ export default function DiamondEducationApp() {
           }
         }
 
-        if (TELEGRAM_AUTO_AUTH_ENABLED && telegramId && webApp?.initData && !telegramAutoLoginSuppressed) {
+        if (TELEGRAM_AUTO_AUTH_ENABLED && telegramId && initData && !telegramAutoLoginSuppressed) {
           try {
-            webApp.ready();
+            webApp?.ready?.();
             const deviceId = getOrCreateDeviceId();
             const syncBotSession = resolveTelegramBotSyncPreference();
             const response = await requestJson<{ access_token: string; user: ApiUser }>("/auth/telegram", {
               method: "POST",
-              body: { telegram_id: telegramId, init_data: webApp.initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
+              body: { telegram_id: telegramId, init_data: initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
               timeoutMs: 30000,
               retries: 0,
             });
@@ -26203,14 +26243,14 @@ export default function DiamondEducationApp() {
             }
           }
         }
-        if (TELEGRAM_AUTO_AUTH_ENABLED && telegramId && webApp?.initData && !telegramAutoLoginSuppressed) {
+        if (TELEGRAM_AUTO_AUTH_ENABLED && telegramId && initData && !telegramAutoLoginSuppressed) {
           try {
-            webApp.ready();
+            webApp?.ready?.();
             const deviceId = getOrCreateDeviceId();
             const syncBotSession = resolveTelegramBotSyncPreference();
             const response = await requestJson<{ access_token: string; user: ApiUser }>("/auth/telegram", {
               method: "POST",
-              body: { telegram_id: telegramId, init_data: webApp.initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
+              body: { telegram_id: telegramId, init_data: initData, device_id: deviceId || null, sync_bot_session: syncBotSession },
               timeoutMs: 30000,
               retries: 0,
             });
@@ -26246,18 +26286,19 @@ export default function DiamondEducationApp() {
     const splashFailSafe = window.setTimeout(() => {
       if (disposed || authFinished) return;
       const token = localStorage.getItem("diamond_token");
-      const webApp = window.Telegram?.WebApp;
-      const telegramId = webApp?.initDataUnsafe?.user?.id;
-      const isTgClient = isTelegramRuntime();
+      const telegramRuntime = getTelegramRuntimeAuth();
+      const telegramId = telegramRuntime.telegramId;
+      const initData = telegramRuntime.initData;
+      const isTgClient = telegramRuntime.isTelegramClient;
       const manualTelegramLogoutKey = telegramId ? `${TELEGRAM_MANUAL_LOGOUT_PREFIX}${telegramId}` : "";
       const telegramAutoLoginSuppressed = Boolean(
         manualTelegramLogoutKey && sessionStorage.getItem(manualTelegramLogoutKey) === "1",
       );
-      if (isTgClient && (!webApp?.initData || !telegramId)) {
-        holdCheckingState("Telegram sessiyasi yuklanmoqda. Iltimos, sahifani yopmang.");
+      if (isTgClient && (!initData || !telegramId)) {
+        holdCheckingState("Telegram ma'lumoti yuklanmoqda. Iltimos, sahifani yopmang.");
         return;
       }
-      if (!userRef.current && !token && !(TELEGRAM_AUTO_AUTH_ENABLED && telegramId && webApp?.initData && !telegramAutoLoginSuppressed)) {
+      if (!userRef.current && !token && !(TELEGRAM_AUTO_AUTH_ENABLED && telegramId && initData && !telegramAutoLoginSuppressed)) {
         setAuthStatus("unauthenticated");
         setAuthInitError("");
         setShowAuthRetry(false);
@@ -27118,7 +27159,7 @@ export default function DiamondEducationApp() {
   const hasTelegramSession =
     typeof window !== "undefined" &&
     TELEGRAM_AUTO_AUTH_ENABLED &&
-    Boolean(window.Telegram?.WebApp?.initDataUnsafe?.user?.id && window.Telegram?.WebApp?.initData);
+    Boolean(getTelegramRuntimeAuth().telegramId && getTelegramRuntimeAuth().initData);
   const hasPendingSession = hasStoredSession || hasTelegramSession;
   const isStudentPaymentsSection =
     Boolean(user && roleFromUser(user) === "student" && String(section || "").toLowerCase() === "payments");

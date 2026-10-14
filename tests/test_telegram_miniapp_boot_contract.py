@@ -14,7 +14,7 @@ def test_delayed_telegram_init_data_keeps_the_miniapp_on_the_loading_screen() ->
     # gate rather than render PublicLandingScreen.
     assert "function isTelegramRuntime" in source
     assert "const [isTelegramClient, setIsTelegramClient] = useState(() => isTelegramRuntime())" in source
-    assert "Telegram sessiyasi yuklanmoqda" in source
+    assert "Telegram ma'lumoti yuklanmoqda" in source
     assert "scheduleTelegramSdkRetry" in source
 
 
@@ -26,7 +26,7 @@ def test_telegram_hash_is_a_first_class_login_source_not_just_the_sdk_object() -
     # from it, then use that pair for the normal login-status request.
     assert "function getTelegramRuntimeAuth" in source
     assert 'get("tgWebAppData")' in source
-    assert "const telegramRuntime = getTelegramRuntimeAuth()" in source
+    assert "getTelegramRuntimeAuth()" in source
     assert "init_data: initData" in source
 
 

@@ -4,9 +4,9 @@ Source: user journey derived during this TDD run (no plan file was supplied).
 
 ## User journeys
 
-- As a Telegram Mini App user, I remain on the Telegram loading screen while
-  Telegram injects my signed session, so I never see the public hero page by
-  mistake.
+- As a Telegram Mini App user, I am authenticated from Telegram's signed
+  launch data (including `tgWebAppData` in the URL hash), so I never see the
+  public hero page by mistake while the SDK object is late.
 - As a deployer, I release an exact pushed commit with its directory layout,
   so an IDE's uncommitted changes cannot overwrite or remove a prior fix.
 
@@ -15,6 +15,9 @@ Source: user journey derived during this TDD run (no plan file was supplied).
 - RED: `python3 -c "...test_telegram_miniapp_boot_contract..."` failed with
   `AssertionError` for the missing `isTelegramRuntime` guard.
 - GREEN: the same direct contract test command passed after the implementation.
+- Added: the launch-hash contract passed; it proves that the UI derives the
+  Telegram ID and signed init-data from `tgWebAppData` and sends that pair to
+  the normal Telegram login-status request.
 - Regression: direct execution of
   `tests/test_telegram_handoff_contract.py` passed for the existing Telegram
   channel handoff and terminal-auth-state guarantees.
@@ -25,6 +28,7 @@ Source: user journey derived during this TDD run (no plan file was supplied).
 | Guarantee | Test | Type | Result |
 | --- | --- | --- | --- |
 | Delayed Telegram `initData` stays in loading and retries | `tests/test_telegram_miniapp_boot_contract.py` | source contract | PASS |
+| Telegram hash launch data is used for ID-based login | `tests/test_telegram_miniapp_boot_contract.py` | source contract | PASS |
 | Deployment uses a committed snapshot and preserves relative paths | `tests/test_telegram_miniapp_boot_contract.py` | runbook contract | PASS |
 | Existing channel-handoff and terminal Telegram auth guarantees remain | `tests/test_telegram_handoff_contract.py` | source contract | PASS |
 
