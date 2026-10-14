@@ -4,7 +4,6 @@ import ast
 import os
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import pytz
 
@@ -55,18 +54,17 @@ def test_temporary_reopen_helper_allows_only_configured_dates() -> None:
         "TASHKENT_TZ": pytz.timezone("Asia/Tashkent"),
     }
     exec(compile(ast.Module(body=[helper], type_ignores=[]), "<attendance-helper>", "exec"), namespace)
+    namespace["get_attendance_reopen_settings"] = lambda: {
+        "enabled": True,
+        "start_date": "2026-10-01",
+        "end_date": "2026-10-14",
+        "expires_at": "2026-10-21T23:59:59+05:00",
+    }
 
-    with patch.dict(
-        os.environ,
-        {
-            "ATTENDANCE_REOPEN_START_DATE": "2026-10-01",
-            "ATTENDANCE_REOPEN_END_DATE": "2026-10-14",
-            "ATTENDANCE_REOPEN_UNTIL": "2026-10-21T23:59:59+05:00",
-        },
-        clear=False,
-    ):
-        reopen_active = namespace["_attendance_temporary_reopen_active"]
-        assert reopen_active("2026-10-01") is True
-        assert reopen_active("2026-10-14") is True
-        assert reopen_active("2026-09-30") is False
-        assert reopen_active("2026-10-15") is False
+    reopen_active = namespace["_attendance_temporary_reopen_active"]
+    assert reopen_active("2026-10-01") is True
+    assert reopen_active("2026-10-14") is True
+    assert reopen_active("2026-09-30") is False
+    assert reopen_active("2026-10-15") is False
+    namespace["get_attendance_reopen_settings"] = lambda: {"enabled": False}
+    assert reopen_active("2026-10-14") is False

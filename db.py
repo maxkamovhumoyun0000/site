@@ -8,7 +8,7 @@ import queue
 import re
 import json
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from decimal import Decimal, ROUND_HALF_UP
@@ -25742,3 +25742,88 @@ def update_app_version_settings(fields: dict) -> dict:
             conn.close()
 
     return get_app_version_settings()
+
+
+def ensure_attendance_reopen_settings_schema():
+    """Create the single developer-managed, automatically expiring reopen window."""
+    schema_key = "attendance_reopen_settings"
+    if _schema_ready(schema_key):
+        return
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            timestamp_type = "TIMESTAMPTZ" if _is_postgres_enabled() else "TIMESTAMP"
+            cur.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS attendance_reopen_settings (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    start_date TEXT NOT NULL DEFAULT '',
+                    end_date TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT NOT NULL DEFAULT '',
+                    updated_by BIGINT,
+                    updated_at {timestamp_type} DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.commit()
+            _mark_schema_ready(schema_key)
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+
+
+def get_attendance_reopen_settings() -> dict:
+    ensure_attendance_reopen_settings_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM attendance_reopen_settings WHERE id=1 LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            with DB_WRITE_LOCK:
+                cur.execute("INSERT INTO attendance_reopen_settings (id, enabled) VALUES (1, 0)")
+                conn.commit()
+                cur.execute("SELECT * FROM attendance_reopen_settings WHERE id=1 LIMIT 1")
+                row = cur.fetchone()
+        result = _row_to_dict(row) if row else {}
+        return {
+            "enabled": bool(int(result.get("enabled") or 0)),
+            "start_date": str(result.get("start_date") or ""),
+            "end_date": str(result.get("end_date") or ""),
+            "expires_at": str(result.get("expires_at") or ""),
+            "updated_by": result.get("updated_by"),
+            "updated_at": str(result.get("updated_at") or ""),
+        }
+    finally:
+        conn.close()
+
+
+def update_attendance_reopen_settings(fields: dict) -> dict:
+    """Persist only validated-by-caller reopen-window fields."""
+    ensure_attendance_reopen_settings_schema()
+    get_attendance_reopen_settings()
+    allowed = {"enabled", "start_date", "end_date", "expires_at", "updated_by"}
+    updates = {key: value for key, value in dict(fields or {}).items() if key in allowed}
+    if not updates:
+        return get_attendance_reopen_settings()
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            sets = [f"{key}=?" for key in updates]
+            cur.execute(
+                f"UPDATE attendance_reopen_settings SET {', '.join(sets)} WHERE id=1",
+                tuple(updates.values()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    return get_attendance_reopen_settings()

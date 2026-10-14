@@ -331,6 +331,14 @@ export function DeveloperHomeView({ onNavigate }: { onNavigate: (section: string
       color: "from-amber-600/10 to-orange-600/10 border-amber-500/30 text-amber-600 dark:text-amber-400",
     },
     {
+      id: "developer-attendance",
+      title: "Davomat oynasi",
+      desc: "Eski davomat kunlarini faqat tanlangan muddat va avtomatik yopilish bilan vaqtincha tahrirlashga ochish.",
+      icon: "◷",
+      badge: "Vaqtli ruxsat",
+      color: "from-sky-600/10 to-blue-600/10 border-sky-500/30 text-sky-600 dark:text-sky-400",
+    },
+    {
       id: "developer-flags",
       title: tt("section.developer-flags", "Feature Flags"),
       desc: "Yangi imkoniyatlarni toggle qilish, rol bo'yicha yoki tanlanganlarga ochish.",
@@ -1160,7 +1168,90 @@ export function DeveloperMaintenanceView() {
 }
 
 // ============================================================================
-// 5. DEVELOPER FEATURE FLAGS VIEW
+// 5. DEVELOPER ATTENDANCE REOPEN VIEW
+// ============================================================================
+
+export function DeveloperAttendanceReopenView() {
+  const [settings, setSettings] = useState<GenericRow>({ enabled: false, start_date: "", end_date: "", expires_at: "" });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await requestJson<GenericRow>("/developer/attendance-reopen", { token: localStorage.getItem("diamond_token") || "" });
+      setSettings(result || {});
+      setError("");
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Davomat oynasi sozlamalari yuklanmadi.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const update = (key: string, value: unknown) => {
+    setSettings((previous) => ({ ...previous, [key]: value }));
+    setNotice("");
+  };
+
+  const save = async (enabled = Boolean(settings.enabled)) => {
+    setSaving(true);
+    setError("");
+    setNotice("");
+    try {
+      const expiresRaw = String(settings.expires_at || "");
+      const payload = {
+        enabled,
+        start_date: String(settings.start_date || ""),
+        end_date: String(settings.end_date || ""),
+        expires_at: expiresRaw ? new Date(expiresRaw).toISOString() : "",
+      };
+      const result = await requestJson<GenericRow>("/developer/attendance-reopen", {
+        method: "POST",
+        token: localStorage.getItem("diamond_token") || "",
+        body: payload,
+      });
+      setSettings(result || {});
+      setNotice(enabled ? "Davomat oynasi saqlandi va belgilangan muddatda ochildi." : "Davomat oynasi darhol yopildi.");
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Davomat oynasini saqlab bo‘lmadi.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <div className="flex flex-col gap-6 pb-12 animate-fade-in">
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <SectionTitle kicker="Developer boshqaruvi" title="Davomatni vaqtincha ochish" subtitle="Bu faqat dars jadvali, bayram bekori va o‘quvchining tarixiy guruh a’zoligi tekshiruvlarini saqlagan holda normal vaqt cheklovini vaqtincha ochadi." />
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className="btn btn-soft small" onClick={() => void load()} disabled={loading || saving}>{loading ? "Yuklanmoqda…" : "Yangilash"}</button>
+        <button type="button" className="btn btn-primary small" onClick={() => void save(true)} disabled={loading || saving}>{saving ? "Saqlanmoqda…" : "Ochib saqlash"}</button>
+      </div>
+    </div>
+    {error ? <div className="rounded-2xl border border-red-300 bg-red-50 p-4 text-sm font-bold text-red-800 dark:border-red-500/30 dark:bg-red-950/40 dark:text-red-200">{error}</div> : null}
+    {notice ? <div className="rounded-2xl border border-emerald-300 bg-emerald-50 p-4 text-sm font-bold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</div> : null}
+    <section className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-4 dark:border-white/10">
+        <div><h3 className="text-lg font-black text-navy-900 dark:text-white">Vaqtli davomat oynasi</h3><p className="mt-1 text-sm text-ink-500 dark:text-slate-400">Holat: <strong className={settings.active ? "text-emerald-600" : "text-slate-500"}>{settings.active ? "Hozir ochiq" : "Yopiq"}</strong></p></div>
+        <label className="flex items-center gap-2 text-sm font-bold cursor-pointer"><input type="checkbox" checked={Boolean(settings.enabled)} onChange={(event) => update("enabled", event.target.checked)} /> Rejimni yoqish</label>
+      </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-3">
+        <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Boshlanish sanasi<input type="date" value={String(settings.start_date || "")} onChange={(event) => update("start_date", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 dark:border-white/10 dark:bg-white/[0.04] dark:text-white" /></label>
+        <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Tugash sanasi<input type="date" value={String(settings.end_date || "")} onChange={(event) => update("end_date", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 dark:border-white/10 dark:bg-white/[0.04] dark:text-white" /></label>
+        <label className="text-sm font-bold text-ink-600 dark:text-slate-300">Avtomatik yopilish (Toshkent)<input type="datetime-local" value={datetimeLocalValue(settings.expires_at)} onChange={(event) => update("expires_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 dark:border-white/10 dark:bg-white/[0.04] dark:text-white" /></label>
+      </div>
+      <p className="mt-4 text-sm text-ink-500 dark:text-slate-400">Muddat tugashi bilan ruxsat avtomatik yopiladi. Yopish tugmasi esa istalgan paytda shu zahoti normal 24 soatlik qoidaga qaytaradi.</p>
+      <div className="mt-5"><button type="button" className="btn btn-soft small" onClick={() => void save(false)} disabled={loading || saving || !settings.enabled}>Hozir yopish</button></div>
+    </section>
+  </div>;
+}
+
+// ============================================================================
+// 6. DEVELOPER FEATURE FLAGS VIEW
 // ============================================================================
 
 export function DeveloperFlagsView() {
@@ -1834,6 +1925,8 @@ export function DeveloperWorkspace({
       return <DeveloperServerView />;
     case "developer-maintenance":
       return <DeveloperMaintenanceView />;
+    case "developer-attendance":
+      return <DeveloperAttendanceReopenView />;
     case "developer-flags":
       return <DeveloperFlagsView />;
     case "developer-audit":

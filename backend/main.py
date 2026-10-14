@@ -141,6 +141,8 @@ from db import (
     update_userbot_settings,
     get_app_version_settings,
     update_app_version_settings,
+    get_attendance_reopen_settings,
+    update_attendance_reopen_settings,
     list_userbot_logs,
     ensure_daily_test_attempt_and_items,
     ensure_group_extra_subjects_schema,
@@ -979,6 +981,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "developer-server",
         "developer-deploy",
         "developer-maintenance",
+        "developer-attendance",
         "developer-flags",
         "developer-audit",
         "developer-jobs",
@@ -9503,9 +9506,23 @@ def _attendance_temporary_reopen_active(date_text: str | None) -> bool:
     the requested date before saving any attendance.
     """
     raw_date = str(date_text or "").strip()
-    start_raw = str(os.getenv("ATTENDANCE_REOPEN_START_DATE") or "").strip()
-    end_raw = str(os.getenv("ATTENDANCE_REOPEN_END_DATE") or "").strip()
-    until_raw = str(os.getenv("ATTENDANCE_REOPEN_UNTIL") or "").strip()
+    settings: dict[str, Any] | None
+    try:
+        settings = get_attendance_reopen_settings()
+    except Exception:
+        # The legacy fallback makes an in-flight deployment fail closed only
+        # when the settings table itself is temporarily unreachable.
+        settings = None
+    if settings is not None:
+        if not bool(settings.get("enabled")):
+            return False
+        start_raw = str(settings.get("start_date") or "").strip()
+        end_raw = str(settings.get("end_date") or "").strip()
+        until_raw = str(settings.get("expires_at") or "").strip()
+    else:
+        start_raw = str(os.getenv("ATTENDANCE_REOPEN_START_DATE") or "").strip()
+        end_raw = str(os.getenv("ATTENDANCE_REOPEN_END_DATE") or "").strip()
+        until_raw = str(os.getenv("ATTENDANCE_REOPEN_UNTIL") or "").strip()
     try:
         target_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
         start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
@@ -9520,6 +9537,55 @@ def _attendance_temporary_reopen_active(date_text: str | None) -> bool:
     else:
         expires_at = expires_at.astimezone(TASHKENT_TZ)
     return start_date <= target_date <= end_date and datetime.now(TASHKENT_TZ) <= expires_at
+
+
+def _attendance_reopen_state(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = dict(settings or get_attendance_reopen_settings() or {})
+    enabled = bool(source.get("enabled"))
+    expires_raw = str(source.get("expires_at") or "").strip()
+    expires_at: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+        expires_at = TASHKENT_TZ.localize(parsed) if parsed.tzinfo is None else parsed.astimezone(TASHKENT_TZ)
+    except ValueError:
+        pass
+    return {
+        "enabled": enabled,
+        "start_date": str(source.get("start_date") or ""),
+        "end_date": str(source.get("end_date") or ""),
+        "expires_at": expires_at.isoformat() if expires_at else "",
+        "active": bool(enabled and expires_at and datetime.now(TASHKENT_TZ) <= expires_at),
+        "updated_at": str(source.get("updated_at") or ""),
+    }
+
+
+def _normalize_developer_attendance_reopen_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(payload or {})
+    enabled = bool(raw.get("enabled"))
+    start_date = str(raw.get("start_date") or "").strip()
+    end_date = str(raw.get("end_date") or "").strip()
+    expires_raw = str(raw.get("expires_at") or "").strip()
+    if not enabled:
+        return {"enabled": 0, "start_date": start_date, "end_date": end_date, "expires_at": expires_raw}
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Boshlanish, tugash va avtomatik yopilish vaqti to‘liq kiritilishi kerak.") from exc
+    if start > end:
+        raise HTTPException(status_code=422, detail="Tugash sanasi boshlanish sanasidan oldin bo‘lishi mumkin emas.")
+    if expires_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="Avtomatik yopilish vaqti timezone bilan yuborilishi kerak.")
+    expires_at = expires_at.astimezone(TASHKENT_TZ)
+    if expires_at <= datetime.now(TASHKENT_TZ):
+        raise HTTPException(status_code=422, detail="Avtomatik yopilish vaqti kelajakda bo‘lishi kerak.")
+    return {
+        "enabled": 1,
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "expires_at": expires_at.isoformat(),
+    }
 
 
 def _attendance_window_bounds(group: dict | None, date_text: str | None) -> tuple[datetime, datetime] | None:
@@ -20542,6 +20608,23 @@ async def developer_update_mobile_maintenance(payload: dict, authorization: str 
     _require_developer_access(user)
     updated = update_app_version_settings(_normalize_maintenance_settings_payload(payload))
     return {role: _maintenance_state(updated, role) for role in ("student", "teacher")}
+
+
+@app.get("/developer/attendance-reopen")
+async def developer_get_attendance_reopen(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    return _attendance_reopen_state()
+
+
+@app.post("/developer/attendance-reopen")
+async def developer_update_attendance_reopen(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    normalized = _normalize_developer_attendance_reopen_payload(payload)
+    normalized["updated_by"] = int(user.get("id") or 0) or None
+    updated = update_attendance_reopen_settings(normalized)
+    return _attendance_reopen_state(updated)
 
 
 # ============================================================================

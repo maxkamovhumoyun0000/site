@@ -12524,7 +12524,13 @@ function TeacherSection({
 
   async function bulkAttendance(status: string) {
     const windowCheck = canLoadAttendanceForLesson(activeAttendanceCard);
-    if (!windowCheck.ok) {
+    const serverOpenedDate = attendanceDates.some((item) => (
+      String(item.date || "") === String(activeAttendanceCard?.date || "") && Boolean(item.open)
+    ));
+    // A developer-managed historical window is resolved by the backend and
+    // returned in `attendanceDates`; do not let an old browser-only clock
+    // check block a valid bulk update.
+    if (!windowCheck.ok && !serverOpenedDate) {
       emitUiToast(windowCheck.message, "error");
       return;
     }
@@ -24480,7 +24486,7 @@ function DashboardShell({
   // telefonning pastki navigatsiyasi. Shu elementlar drawer/sidebar ichida
   // qaytarilmaydi.
   const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
-  const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
+  const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
     ? primaryAdminSections
     : activeRole === "developer"

@@ -87,6 +87,7 @@ export function orderSections(sections: string[]) {
                 "developer-server",
                 "developer-deploy",
                 "developer-maintenance",
+                "developer-attendance",
                 "developer-flags",
                 "developer-audit",
                 "developer-jobs",
