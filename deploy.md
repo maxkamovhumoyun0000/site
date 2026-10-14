@@ -97,6 +97,10 @@ yuboradi, barcha **relative paths**ni saqlaydi va serverda release commit
 stampini yozadi. `app/page.tsx` faqat `/root/diamond-site/app/page.tsx`ga
 yoziladi, hech qachon rootda `page.tsx` bo‘lib tushmaydi.
 
+Ichki transfer shakli `git archive --format=tar "$DEPLOY_COMMIT" | ssh ...
+"cd /root/diamond-site && tar -xf -"`; shu sabab tar ichidagi relative paths
+saqlanadi va biror fayl project rootidan tashqariga yozilmaydi.
+
 ### Release commit verification
 
 Script tugagach serverdagi `/root/diamond-site/.diamond-deploy/commit`
