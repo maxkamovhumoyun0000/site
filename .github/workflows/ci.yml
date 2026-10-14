@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Lint frontend
+        run: npm run lint
+
+      - name: Typecheck frontend
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check backend syntax
+        run: |
+          python3 -m py_compile \
+            backend/main.py db.py config.py userbot_manager.py \
+            admin_bot.py student_bot.py teacher_bot.py support_lesson.py
