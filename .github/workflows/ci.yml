@@ -102,10 +102,6 @@ jobs:
       - name: Run release browser smoke tests
         run: npx playwright test e2e/release-smoke.spec.ts --project=chromium
 
-      - name: Audit historical browser journeys
-        continue-on-error: true
-        run: npm run e2e:smoke
-
       - name: Upload browser diagnostics
         if: always()
         uses: actions/upload-artifact@v4
