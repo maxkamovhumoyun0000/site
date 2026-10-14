@@ -3,10 +3,16 @@
 import asyncio
 
 
-# Pyrogram's synchronous compatibility layer calls ``get_event_loop`` while
-# modules are imported. Python 3.12 no longer creates one implicitly in this
-# situation, so create a test-only loop before pytest imports the application.
+# Pyrogram installs uvloop when it is available, then calls ``get_event_loop``
+# while modules are imported. Python 3.12's uvloop policy does not implicitly
+# create a loop, so configure that same policy and install a test-only loop
+# before pytest imports the application.
 try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    import uvloop
+except ImportError:
+    uvloop = None
+
+if uvloop is not None:
+    uvloop.install()
+
+asyncio.set_event_loop(asyncio.new_event_loop())
