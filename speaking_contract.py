@@ -91,8 +91,10 @@ def session_replacements_for_login(
 def normalize_speaking_link_code(value: Any) -> str:
     """Validate a short, user-visible Student-to-Speaking approval code."""
     code = str(value or "").strip().upper().replace(" ", "")
-    if re.fullmatch(r"SPEAK-[A-Z0-9]{8}", code):
+    if re.fullmatch(r"SPEAK-[A-Z0-9]{4,8}", code):
         return code
+    if re.fullmatch(r"[A-Z0-9]{4,8}", code):
+        return f"SPEAK-{code}"
     raise ValueError("invalid_speaking_link_code")
 
 

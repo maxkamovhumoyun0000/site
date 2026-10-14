@@ -1436,11 +1436,11 @@ class SpeakingLinkStartRequest(BaseModel):
 
 
 class SpeakingLinkApproveRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=32)
+    code: str = Field(min_length=4, max_length=32)
 
 
 class SpeakingLinkCompleteRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=32)
+    code: str = Field(min_length=4, max_length=32)
     device_id: str = Field(min_length=12, max_length=160)
     device_model: str | None = Field(default=None, max_length=120)
     revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
@@ -1455,6 +1455,8 @@ class SpeakingForgotPasswordVerifyRequest(BaseModel):
     verification_id: str = Field(min_length=16, max_length=128)
     code: str = Field(min_length=6, max_length=6)
     new_password: str = Field(min_length=8, max_length=128)
+    device_id: str | None = None
+    device_model: str | None = None
 
 
 class AdminSpeakingUserUpdateRequest(BaseModel):
@@ -20160,7 +20162,10 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
         if user_id:
             cur.execute("UPDATE users SET password=?,first_name=?,last_name=?,phone=?,subject=?,language=?,blocked=0,access_enabled=1,pending_approval=0,speaking_deleted_at=NULL WHERE id=? AND speaking_app_account=1", (data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, data["language"], user_id))
         else:
-            cur.execute("INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?, ?, ?,0,1,0,0,1,?,0,0) RETURNING id", (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, SPEAKING_APP_LOGIN_TYPE, data["language"]))
+            cur.execute(
+                "INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,?, 0,1,0,0,1,?,0,0) RETURNING id",
+                (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, SPEAKING_APP_LOGIN_TYPE, data["language"]),
+            )
             user_id = int((cur.fetchone() or {}).get("id") or 0)
             cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, verification["email"], _now_utc().isoformat()))
         cur.execute(
@@ -20211,16 +20216,21 @@ async def start_speaking_forgot_password(payload: SpeakingForgotPasswordRequest,
     target_email = None
     try:
         # Check if entered as email
-        if "@" in raw:
-            norm_email = normalize_speaking_email(raw)
-            cur.execute("SELECT user_id, email FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (norm_email,))
-            contact = cur.fetchone()
-            if contact:
-                target_user = get_user_by_id(int(dict(contact)["user_id"]))
-                target_email = str(dict(contact)["email"])
+        if "@" in raw and "." in raw:
+            with suppress(ValueError):
+                norm_email = normalize_speaking_email(raw)
+                cur.execute("SELECT user_id, email FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (norm_email,))
+                contact = cur.fetchone()
+                if contact:
+                    target_user = get_user_by_id(int(dict(contact)["user_id"]))
+                    target_email = str(dict(contact)["email"])
         if not target_user:
             # Check by login_id
             user_by_login = get_user_by_login_id(raw)
+            if not user_by_login and raw.startswith("@"):
+                user_by_login = get_user_by_login_id(raw.lstrip("@"))
+            if not user_by_login:
+                user_by_login = get_user_by_login_id(f"@{raw}")
             if user_by_login:
                 uid = int(user_by_login.get("id") or 0)
                 cur.execute("SELECT email FROM speaking_account_contacts WHERE user_id=?", (uid,))
@@ -20303,7 +20313,14 @@ async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyR
     if not user:
         raise HTTPException(status_code=500, detail="Foydalanuvchi ma’lumotlarini yuklab bo‘lmadi.")
 
-    session_id, ttl_hours = _issue_web_session(user, device_id=None, source="speaking_forgot_password")
+    device_id = str(payload.device_id or "").strip() or None
+    device_model = str(payload.device_model or "").strip() or None
+    session_id, ttl_hours = _issue_web_session(
+        user,
+        device_id=device_id,
+        device_model=device_model,
+        source="speaking_app",
+    )
     return TokenResponse(
         access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours),
         token_type="bearer",
@@ -20412,8 +20429,7 @@ async def admin_reset_speaking_user_password(
 
 
 def _speaking_link_code() -> str:
-    alphabet = string.ascii_uppercase + string.digits
-    return "SPEAK-" + "".join(secrets.choice(alphabet) for _ in range(8))
+    return f"SPEAK-{secrets.randbelow(10000):04d}"
 
 
 def _require_student_link_user(authorization: str | None) -> dict:
@@ -20799,13 +20815,19 @@ async def login(request: LoginRequest, req: Request):
     else:
         user = get_screenshot_demo_user_by_alias(request.login_id, (1, 2))
     user = user or get_user_by_login_id(request.login_id)
-    if not user and "@" in login_id_raw:
+    if not user and login_id_raw.startswith("@"):
+        user = get_user_by_login_id(login_id_raw.lstrip("@"))
+    if not user:
+        user = get_user_by_login_id(f"@{login_id_raw}")
+    if not user and "@" in login_id_raw and "." in login_id_raw:
         conn = get_conn(); cur = conn.cursor()
         try:
-            cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (normalize_speaking_email(login_id_raw),))
-            contact = cur.fetchone()
-            if contact:
-                user = get_user_by_id(int(dict(contact)["user_id"]))
+            with suppress(ValueError):
+                norm_email = normalize_speaking_email(login_id_raw)
+                cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (norm_email,))
+                contact = cur.fetchone()
+                if contact:
+                    user = get_user_by_id(int(dict(contact)["user_id"]))
         finally:
             conn.close()
     if not user:
@@ -57414,7 +57436,7 @@ async def user_get_books(
             user = None
 
     if user:
-        _require_role(user, {"student", "teacher", "support"})
+        _require_role(user, {"student", "teacher", "support", "admin", "superadmin", "developer"})
         user_id = int(user.get("id") or 0)
         role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
         subjects = _user_subjects_from_row(user)
