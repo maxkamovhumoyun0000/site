@@ -723,10 +723,10 @@ async def block_retired_arena_routes(request: Request, call_next):
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 _RAW_JWT_SECRET = str(os.getenv("JWT_SECRET") or "").strip()
+_is_production = (os.getenv("REQUIRE_POSTGRES", "true").strip().lower() in ("1", "true", "yes", "on")) or (
+    os.getenv("DIAMOND_ENV", "").strip().lower() == "production"
+)
 if not _RAW_JWT_SECRET or _RAW_JWT_SECRET == "change-this-in-production":
-    _is_production = (os.getenv("REQUIRE_POSTGRES", "true").strip().lower() in ("1", "true", "yes", "on")) or (
-        os.getenv("DIAMOND_ENV", "").strip().lower() == "production"
-    )
     if _is_production:
         raise RuntimeError(
             "JWT_SECRET is missing or set to the default value. Refusing to start: "
@@ -734,8 +734,13 @@ if not _RAW_JWT_SECRET or _RAW_JWT_SECRET == "change-this-in-production":
         )
     _RAW_JWT_SECRET = "change-this-in-production"
 if len(_RAW_JWT_SECRET.encode("utf-8")) < 32:
-    # Keep runtime stable if env is misconfigured: derive a strong key from configured
-    # value. This removes insecure key warnings while preserving deterministic behavior.
+    if _is_production:
+        raise RuntimeError(
+            "JWT_SECRET is shorter than 32 bytes. Refusing to start in production; "
+            "set a cryptographically random value (for example `openssl rand -hex 32`)."
+        )
+    # Development stays usable with an explicit warning, but production never
+    # silently derives a signing key from a short human-chosen value.
     SECRET_KEY = hashlib.sha256(_RAW_JWT_SECRET.encode("utf-8")).hexdigest()
     logger.warning(
         "JWT_SECRET is shorter than 32 bytes; using derived SHA-256 key. "
@@ -878,6 +883,10 @@ MEDIA_STREAM_TOKEN_SECRET = (
     or os.getenv("SECRET_KEY")
     or "diamond_media_stream_secret"
 )
+if _is_production and not str(os.getenv("MEDIA_STREAM_TOKEN_SECRET") or "").strip():
+    raise RuntimeError(
+        "MEDIA_STREAM_TOKEN_SECRET is missing. Set a dedicated >=32-byte random value in production."
+    )
 diamondvoy_chat_cleanup_task: asyncio.Task[Any] | None = None
 payment_automation_task: asyncio.Task[Any] | None = None
 lesson_reminders_task: asyncio.Task[Any] | None = None
@@ -19181,9 +19190,14 @@ async def startup_event() -> None:
     def _log_step(label: str, step_started: float) -> None:
         logger.info("startup_step=%s ms=%.2f", str(label), (time.perf_counter() - step_started) * 1000.0)
 
-    step = time.perf_counter()
-    init_db()
-    _log_step("init_db", step)
+    # Uvicorn starts several independent processes.  DDL, seed data, queue
+    # workers and credential maintenance must have exactly one owner; doing
+    # them in every process caused concurrent table locks and slow restarts.
+    scheduler_owner = _acquire_background_scheduler_lock()
+    if scheduler_owner:
+        step = time.perf_counter()
+        init_db()
+        _log_step("init_db", step)
 
     step = time.perf_counter()
     try:
@@ -19192,53 +19206,53 @@ async def startup_event() -> None:
         logger.exception("startup_step=init_firebase failed")
     _log_step("init_firebase", step)
 
-    step = time.perf_counter()
-    try:
-        seed_result = await asyncio.to_thread(lambda: seed(force=False))
-        logger.info("startup_step=placement_tests_seed result=%s", seed_result)
-    except Exception:
-        logger.exception("startup_step=placement_tests_seed failed")
-    _log_step("placement_tests_seed", step)
+    if scheduler_owner:
+        step = time.perf_counter()
+        try:
+            seed_result = await asyncio.to_thread(lambda: seed(force=False))
+            logger.info("startup_step=placement_tests_seed result=%s", seed_result)
+        except Exception:
+            logger.exception("startup_step=placement_tests_seed failed")
+        _log_step("placement_tests_seed", step)
 
-    step = time.perf_counter()
-    ensure_diamondvoy_chat_schema()
-    _log_step("ensure_diamondvoy_chat_schema", step)
+        step = time.perf_counter()
+        ensure_diamondvoy_chat_schema()
+        _log_step("ensure_diamondvoy_chat_schema", step)
 
-    step = time.perf_counter()
-    ensure_universal_chat_schema()
-    _log_step("ensure_universal_chat_schema", step)
+        step = time.perf_counter()
+        ensure_universal_chat_schema()
+        _log_step("ensure_universal_chat_schema", step)
 
-    step = time.perf_counter()
-    ensure_media_assets_schema()
-    _log_step("ensure_media_assets_schema", step)
+        step = time.perf_counter()
+        ensure_media_assets_schema()
+        _log_step("ensure_media_assets_schema", step)
 
-    step = time.perf_counter()
-    _ensure_web_tables()
-    _log_step("ensure_web_tables", step)
+        step = time.perf_counter()
+        _ensure_web_tables()
+        _log_step("ensure_web_tables", step)
 
-    step = time.perf_counter()
-    _ensure_web_duel_runtime_schema()
-    _log_step("ensure_web_duel_runtime_schema", step)
+        step = time.perf_counter()
+        _ensure_web_duel_runtime_schema()
+        _log_step("ensure_web_duel_runtime_schema", step)
 
-    step = time.perf_counter()
-    _ensure_web_competition_runtime_schema()
-    _log_step("ensure_web_competition_runtime_schema", step)
+        step = time.perf_counter()
+        _ensure_web_competition_runtime_schema()
+        _log_step("ensure_web_competition_runtime_schema", step)
 
-    step = time.perf_counter()
-    try:
-        ensure_userbot_schema()
-        userbot_manager.set_main_event_loop(asyncio.get_running_loop())
-        start_userbot_queue_worker()
-        asyncio.create_task(userbot_manager.get_active_pyrogram_client())
-    except Exception:
-        logger.exception("startup_step=userbot_init failed")
-    _log_step("userbot_init", step)
+        step = time.perf_counter()
+        try:
+            ensure_userbot_schema()
+            userbot_manager.set_main_event_loop(asyncio.get_running_loop())
+            start_userbot_queue_worker()
+            asyncio.create_task(userbot_manager.get_active_pyrogram_client())
+        except Exception:
+            logger.exception("startup_step=userbot_init failed")
+        _log_step("userbot_init", step)
 
-    step = time.perf_counter()
-    _ensure_student_quiz_session_schema()
-    _log_step("ensure_student_quiz_session_schema", step)
+        step = time.perf_counter()
+        _ensure_student_quiz_session_schema()
+        _log_step("ensure_student_quiz_session_schema", step)
 
-    scheduler_owner = _acquire_background_scheduler_lock()
     if scheduler_owner:
         step = time.perf_counter()
         _diamondvoy_cleanup_expired_chats()
@@ -19329,31 +19343,28 @@ async def startup_event() -> None:
     else:
         asyncio.create_task(_proctoring_face_engine_warmup(), name="proctoring_face_engine_warmup")
 
-    step = time.perf_counter()
-    _ensure_web_tables()
-    _log_step("ensure_web_tables", step)
-
-    step = time.perf_counter()
-    _ensure_final_chat_schema()
-    _log_step("ensure_final_chat_schema", step)
-
-    step = time.perf_counter()
-    _ensure_payment_automation_schema()
-    _log_step("ensure_payment_automation_schema", step)
-
-    try:
+    if scheduler_owner:
         step = time.perf_counter()
-        seeded_admins = set_standard_admin_account_credentials()
-        _log_step("set_standard_admin_account_credentials", step)
-        logger.info("startup admin credential sync completed: %s rows", len(seeded_admins or []))
-    except Exception:
-        logger.exception("startup admin credential sync failed")
+        _ensure_final_chat_schema()
+        _log_step("ensure_final_chat_schema", step)
 
-    try:
-        developer_account = ensure_developer_account()
-        logger.info("startup developer workspace account ready id=%s created=%s", developer_account.get("id"), developer_account.get("created"))
-    except Exception:
-        logger.exception("startup developer workspace account setup failed")
+        step = time.perf_counter()
+        _ensure_payment_automation_schema()
+        _log_step("ensure_payment_automation_schema", step)
+
+        try:
+            step = time.perf_counter()
+            seeded_admins = set_standard_admin_account_credentials()
+            _log_step("set_standard_admin_account_credentials", step)
+            logger.info("startup admin credential sync completed: %s rows", len(seeded_admins or []))
+        except Exception:
+            logger.exception("startup admin credential sync failed")
+
+        try:
+            developer_account = ensure_developer_account()
+            logger.info("startup developer workspace account ready id=%s created=%s", developer_account.get("id"), developer_account.get("created"))
+        except Exception:
+            logger.exception("startup developer workspace account setup failed")
 
     # Non-critical heavy cleanup/seed should not block API bind.
     async def _maintenance_runner() -> None:
@@ -56163,6 +56174,41 @@ async def transfer_dcoins(
 @app.get("/health")
 async def health_check():
     return {"ok": True}
+
+
+@app.get("/health/ready")
+async def readiness_check():
+    """Readiness probe for deploys and monitoring without exposing secrets."""
+    started = time.perf_counter()
+    try:
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("readiness_check database probe failed")
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "status": "degraded", "checks": {"database": "error"}},
+        )
+
+    release_path = Path(__file__).resolve().parents[1] / ".diamond-deploy" / "commit"
+    release = "unknown"
+    try:
+        if release_path.is_file():
+            release = release_path.read_text(encoding="utf-8").strip()[:64] or "unknown"
+    except OSError:
+        pass
+    return {
+        "ok": True,
+        "status": "ready",
+        "release": release,
+        "checks": {"database": "ok"},
+        "database_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
 
 
 def _ensure_system_metrics_schema() -> None:

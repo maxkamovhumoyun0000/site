@@ -116,7 +116,24 @@ ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root
   'cd /root/diamond-site && python3 -m py_compile admin_bot.py student_bot.py teacher_bot.py support_lesson.py attendance_manager.py payment.py db.py backend/main.py bot_runtime.py'
 ```
 
-## Eski Frontend Build Cache'ini Tozalash
+## Release’ni Aktivlashtirish
+
+Source snapshot serverga yuborilgach, release shu commit bilan build qilinib
+aktivlashtiriladi. Quyidagi buyruq frontendni build vaqtida to‘xtatadi,
+build xato bersa avvalgi `.next` buildini qaytaradi, backend/botlarni qayta
+ishga tushiradi va DB-ready hamda frontend smoke tekshiruvini o‘zi bajaradi.
+Parallel deploy/build bo‘lsa u to‘xtaydi.
+
+```bash
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+  "cd /root/diamond-site && bash scripts/activate_production_release.sh '$DEPLOY_COMMIT'"
+```
+
+Script muvaffaqiyatli tugamasa release muvaffaqiyatli deb hisoblanmaydi.
+Avvalgi frontend build avtomatik qaytariladi; backend source’ni rollback
+qilish kerak bo‘lsa, oldingi Git commit snapshotini alohida release qiling.
+
+## Eski Frontend Build Cache'ini Tozalash (faqat avariya tiklash uchun)
 
 Frontend buildidan **oldin** faqat Next.js'ning `/root/diamond-site/.next/`
 ichidagi eski build artefaktlari va cache'i tozalanadi. Bu buyruq `.env`,

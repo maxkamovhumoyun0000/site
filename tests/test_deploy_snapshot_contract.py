@@ -33,6 +33,8 @@ def test_release_script_removes_only_previously_managed_stale_source_files() -> 
     assert '"media"' in source
     assert '"node_modules"' in source
     assert '".next"' in source
+    assert "legacy_root_prefixes" in source
+    assert "Legacy root script is not deployable" in source
 
 
 def test_deploy_runbook_uses_the_guarded_release_script() -> None:
@@ -41,3 +43,17 @@ def test_deploy_runbook_uses_the_guarded_release_script() -> None:
     assert "scripts/deploy_release_snapshot.sh" in source
     assert "managed manifest" in source
     assert "Release commit verification" in source
+    assert "activate_production_release.sh" in source
+
+
+def test_release_activation_serializes_build_and_restores_frontend_on_failure() -> None:
+    script = ROOT / "scripts" / "activate_production_release.sh"
+    assert script.is_file()
+    source = script.read_text(encoding="utf-8")
+
+    assert ".diamond-deploy/commit" in source
+    assert "diamond-site-release.lock" in source
+    assert "npm ci" in source
+    assert "npm run build" in source
+    assert "restore_previous_frontend" in source
+    assert "/health/ready" in source

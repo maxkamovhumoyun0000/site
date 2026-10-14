@@ -49,12 +49,19 @@ protected_top_levels = {
     ".env", "data", "logs", "media", "uploads", "node_modules", ".next",
     ".venv", "venv", "secrets",
 }
+legacy_root_prefixes = ("fix", "patch", "modify", "migrate_", "test_", "update_")
 for raw in open(sys.argv[1], encoding="utf-8"):
     path = PurePosixPath(raw.strip())
     if not path.parts or path.is_absolute() or ".." in path.parts:
         raise SystemExit(f"Unsafe repository path in deployment manifest: {raw!r}")
     if path.parts[0] in protected_top_levels:
         raise SystemExit(f"Protected production path is tracked by Git: {path}")
+    # One-off repair scripts historically rewrote source files directly and
+    # were easy to execute by mistake.  Production releases must never carry
+    # a root-level fixer/migrator/test script; maintained tools belong below
+    # scripts/ with an explicit name and reviewable call site.
+    if len(path.parts) == 1 and path.name.startswith(legacy_root_prefixes):
+        raise SystemExit(f"Legacy root script is not deployable: {path}")
 PY
 
 release_id="${DEPLOY_COMMIT:0:12}.$$"

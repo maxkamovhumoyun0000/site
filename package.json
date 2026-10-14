@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint app --ext .js,.jsx,.ts,.tsx",
+    "typecheck": "tsc --noEmit",
     "e2e:smoke": "playwright test --project=chromium"
   },
   "dependencies": {
