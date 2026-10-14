@@ -1658,6 +1658,10 @@ class DCoinCalculationResponse(BaseModel):
     wrong_value: float
 
 
+class SpeakingAddSubjectRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=50)
+
+
 class SubjectUpdateRequest(BaseModel):
     subjects: list[str]
 
@@ -13574,6 +13578,14 @@ def _user_subjects_from_row(user: dict) -> list[str]:
                 [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
                 fallback=["English"],
             )
+        else:
+            row_subjects = _normalize_subjects(
+                [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
+                fallback=[],
+            )
+            for s in row_subjects:
+                if s not in group_subjects:
+                    group_subjects.append(s)
         return _short_cache_set(_USER_SUBJECTS_CACHE, cache_key, group_subjects, ttl_seconds=8.0, max_items=8192)
     subjects = _safe_call(lambda: get_user_subjects(user_id), []) or []
     if not subjects and user.get("subject"):
@@ -20543,6 +20555,47 @@ async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
         conn.close()
     session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_student_link")
     return TokenResponse(access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(user))
+
+
+@app.post("/auth/speaking/add-subject")
+@app.post("/api/auth/speaking/add-subject")
+async def add_speaking_subject(
+    payload: SpeakingAddSubjectRequest,
+    authorization: str | None = Header(default=None),
+):
+    user_row = _user_row_from_bearer(authorization)
+    user_id = int(user_row.get("id") or 0)
+    if user_id <= 0:
+        raise HTTPException(status_code=401, detail="User not authenticated")
+
+    raw = str(payload.subject or "").strip()
+    target_subject = "Russian" if "rus" in raw.lower() else "English"
+
+    user = get_user_by_id(user_id) or user_row
+    current_raw = str(user.get("subject") or "").strip()
+    current_parts = [p.strip() for p in current_raw.split(",") if p.strip()]
+
+    normalized_list: list[str] = []
+    for p in current_parts:
+        norm = "Russian" if "rus" in p.lower() else ("English" if ("eng" in p.lower() or "ielts" in p.lower()) else p)
+        if norm not in normalized_list:
+            normalized_list.append(norm)
+
+    if target_subject not in normalized_list:
+        normalized_list.append(target_subject)
+
+    update_user_subjects(user_id, normalized_list)
+    _clear_auth_caches_for_user(user_id)
+    _clear_group_and_student_caches(affected_user_ids=[user_id])
+
+    updated_user = get_user_by_id(user_id) or user
+    user_payload = _build_user_payload(updated_user)
+    return {
+        "status": "ok",
+        "subject": target_subject,
+        "subjects": user_payload.subjects,
+        "user": user_payload,
+    }
 
 
 @app.post("/auth/speaking-registration", response_model=TokenResponse)
