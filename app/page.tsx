@@ -681,6 +681,19 @@ function supportsTelegramBackButton(webApp: TelegramWebApp | undefined): boolean
   return parsed >= 6.1;
 }
 
+// Telegram's WebApp SDK is available before initData on some mobile clients.
+// Treat that interval as a Telegram runtime, never as a public browser.
+function isTelegramRuntime(): boolean {
+  if (typeof window === "undefined") return false;
+  const webApp = window.Telegram?.WebApp;
+  return Boolean(
+    webApp
+    || /Telegram/i.test(navigator.userAgent)
+    || window.location.hash.includes("tgWebAppData")
+    || window.location.search.includes("tgWebAppPlatform"),
+  );
+}
+
 function isAuthErrorMessage(message: string) {
   const lowered = message.toLowerCase();
   return (
@@ -25568,7 +25581,7 @@ export default function DiamondEducationApp() {
   // Telegram can inject initData a moment after Next has hydrated.  Keep this
   // separate from `isTelegramMode` (which means an actual Telegram identity)
   // so a Mini App never briefly falls back to the public hero landing page.
-  const [isTelegramClient, setIsTelegramClient] = useState(false);
+  const [isTelegramClient, setIsTelegramClient] = useState(() => isTelegramRuntime());
   const [isTelegramSubscribed, setIsTelegramSubscribed] = useState<boolean>(true);
   const [notice, setNotice] = useState("");
   const [activeGeneratorJob, setActiveGeneratorJob] = useState<GeneratorJobSnapshot | null>(null);
@@ -25966,18 +25979,18 @@ export default function DiamondEducationApp() {
       setInitialStateReady(false);
     };
 
+    const scheduleTelegramSdkRetry = () => {
+      window.setTimeout(() => {
+        if (!disposed) initAuth().catch(() => null);
+      }, 750);
+    };
+
     async function initAuth() {
       if (disposed || authAttemptInFlight) return;
       authAttemptInFlight = true;
       // Detect and wait for Telegram WebApp SDK if loading inside Telegram
       let webApp = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : undefined;
-      const isTgClient = typeof window !== "undefined" && Boolean(
-        webApp?.initData ||
-        (window as any).Telegram?.WebApp ||
-        /Telegram/i.test(navigator.userAgent) ||
-        window.location.hash.includes("tgWebAppData") ||
-        window.location.search.includes("tgWebAppPlatform")
-      );
+      const isTgClient = isTelegramRuntime();
       setIsTelegramClient(isTgClient);
 
       if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
@@ -25992,6 +26005,15 @@ export default function DiamondEducationApp() {
           await new Promise((r) => setTimeout(r, 100));
           if (disposed) return;
         }
+      }
+
+      // Do not turn a delayed Telegram SDK into the public landing page. The
+      // SDK can inject initData after hydration, especially on Android.
+      if (isTgClient && (!webApp?.initData || !webApp?.initDataUnsafe?.user?.id)) {
+        holdCheckingState("Telegram sessiyasi yuklanmoqda. Iltimos, sahifani yopmang.");
+        authAttemptInFlight = false;
+        scheduleTelegramSdkRetry();
+        return;
       }
 
       if (webApp?.ready) {
@@ -26226,10 +26248,15 @@ export default function DiamondEducationApp() {
       const token = localStorage.getItem("diamond_token");
       const webApp = window.Telegram?.WebApp;
       const telegramId = webApp?.initDataUnsafe?.user?.id;
+      const isTgClient = isTelegramRuntime();
       const manualTelegramLogoutKey = telegramId ? `${TELEGRAM_MANUAL_LOGOUT_PREFIX}${telegramId}` : "";
       const telegramAutoLoginSuppressed = Boolean(
         manualTelegramLogoutKey && sessionStorage.getItem(manualTelegramLogoutKey) === "1",
       );
+      if (isTgClient && (!webApp?.initData || !telegramId)) {
+        holdCheckingState("Telegram sessiyasi yuklanmoqda. Iltimos, sahifani yopmang.");
+        return;
+      }
       if (!userRef.current && !token && !(TELEGRAM_AUTO_AUTH_ENABLED && telegramId && webApp?.initData && !telegramAutoLoginSuppressed)) {
         setAuthStatus("unauthenticated");
         setAuthInitError("");

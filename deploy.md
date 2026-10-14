@@ -62,33 +62,43 @@ bajarilmaydi.
 Bu tozalash faqat yangi backup kamida 1 KB ekanligi tekshirilgandan keyin
 ishlaydi va har doim eng yangi 2 ta backupni saqlab qoladi.
 
+## Qat'iy: Commitdan Deploy Qilish
+
+IDE (shu jumladan Antigravity/Gemini) ochiq bo'lsa, local papkada yarim
+tayyor yoki boshqa vazifaga tegishli o'zgarishlar bo'lishi mumkin. Ularni
+productionga yuborish yoki avvalgi tuzatishni ustidan yozish qat'iyan man
+etiladi. Deploy **faqat Git commit snapshot**idan qilinadi.
+
+Avval local holat va deploy qilinadigan commitni tekshiring:
+
+```bash
+cd /home/xumoyun-maxkamov/Desktop/diamond-site
+git status --short
+git fetch origin
+DEPLOY_COMMIT="$(git rev-parse origin/main)"
+git show --no-patch --oneline "$DEPLOY_COMMIT"
+```
+
+`git status --short` chiqishi bo'sh bo'lishi kerak. Bo'sh bo'lmasa,
+o'zgarishlarni commit/push qiling yoki bu deployni to'xtating — boshqa
+odam/IDE o'zgartirgan faylni deploy bilan aralashtirmang. `DEPLOY_COMMIT`
+`origin/main`ga push qilingan aniq versiya bo'lishi shart.
+
 ## Kodni Serverga Sync Qilish
 
 Lokal project rootdan bajariladi:
 
 ```bash
-cd /home/xumoyun-maxkamov/Desktop/diamond-site
-
-rsync -az --prune-empty-dirs \
-  -e 'ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no' \
-  --exclude='.env' --exclude='.env.*' \
-  --exclude='data/***' --exclude='logs/***' \
-  --exclude='node_modules/***' --exclude='.next/***' \
-  --exclude='.venv/***' --exclude='venv/***' --exclude='__pycache__/***' \
-  --exclude='*.db' --exclude='*.sqlite' --exclude='*.sqlite3' \
-  --exclude='uploads/***' --exclude='media/***' \
-  --exclude='public/uploads/***' --exclude='public/media/***' \
-  --include='*/' \
-  --include='*.py' --include='*.ts' --include='*.tsx' \
-  --include='*.sh' --include='*.ps1' --include='*.cmd' --include='*.bat' \
-  --include='*.js' --include='*.mjs' --include='*.cjs' \
-  --include='*.css' --include='*.json' --include='*.lock' \
-  --include='*.html' --include='*.md' \
-  --include='*.ini' --include='*.yml' --include='*.yaml' \
-  --include='requirements.txt' --include='deploy.md' \
-  --exclude='*' \
-  ./ root@31.220.87.193:/root/diamond-site/
+git archive --format=tar "$DEPLOY_COMMIT" | \
+  ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+  'cd /root/diamond-site && tar -xf -'
 ```
+
+`git archive` faqat commitga kirgan fayllarni yuboradi; `.env`, database,
+`data/`, media/upload, `.venv`, `node_modules/` va `.next/` (gitda
+bo'lmasligi kerak) serverda saqlanib qoladi. `tar -xf -` barcha **relative paths**ni saqlaydi: masalan `app/page.tsx` faqat
+`/root/diamond-site/app/page.tsx`ga yoziladi, hech qachon server rootiga
+`page.tsx` bo'lib tushmaydi. `--delete` ishlatilmaydi.
 
 ## Serverda Tekshirish
 
