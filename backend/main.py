@@ -39777,19 +39777,40 @@ def _delete_replaced_profile_upload(url: str | None, user_id: int) -> None:
     try:
         parsed = urlparse(raw)
         path = str(parsed.path or raw)
-        prefix = "/profile/images/"
-        if not path.startswith(prefix):
-            return
-        filename = Path(path).name
-        expected_prefix = f"profile_{int(user_id)}_"
-        if filename != path[len(prefix):] or not filename.startswith(expected_prefix):
-            return
-        file_path = (PROFILE_UPLOAD_DIR / filename).resolve()
-        if file_path.parent != PROFILE_UPLOAD_DIR.resolve() or not file_path.is_file():
-            return
-        file_path.unlink()
+        for prefix in ("/api/profile/images/", "/profile/images/"):
+            if path.startswith(prefix):
+                filename = path[len(prefix):]
+                expected_prefix = f"profile_{int(user_id)}_"
+                if filename.startswith(expected_prefix) and Path(filename).name == filename:
+                    file_path = (PROFILE_UPLOAD_DIR / filename).resolve()
+                    if file_path.parent == PROFILE_UPLOAD_DIR.resolve() and file_path.is_file():
+                        file_path.unlink()
+                        logger.info("Deleted replaced profile upload: %s", filename)
+                break
     except Exception:
         logger.warning("Could not remove replaced profile avatar for user_id=%s", user_id, exc_info=True)
+
+
+def _delete_old_profile_uploads(user_id: int, current_filename: str | None = None) -> None:
+    """Remove all older local avatar files belonging to this user on the filesystem."""
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return
+    prefix = f"profile_{uid}_"
+    try:
+        resolved_dir = PROFILE_UPLOAD_DIR.resolve()
+        if resolved_dir.is_dir():
+            for candidate in resolved_dir.iterdir():
+                if candidate.is_file() and candidate.name.startswith(prefix):
+                    if current_filename and candidate.name == current_filename:
+                        continue
+                    try:
+                        candidate.unlink(missing_ok=True)
+                        logger.info("Deleted old profile upload on disk: %s", candidate.name)
+                    except Exception:
+                        pass
+    except Exception:
+        logger.warning("Could not clean old profile avatars for user_id=%s", uid, exc_info=True)
 
 
 def _delete_owned_user_uploads(user_id: int) -> None:
@@ -39860,6 +39881,7 @@ async def user_profile_avatar_upload(
         conn.close()
     if previous_url and previous_url != url:
         _delete_replaced_profile_upload(previous_url, user_id)
+    _delete_old_profile_uploads(user_id, current_filename=filename)
     _clear_auth_caches_for_user(user_id)
     _invalidate_student_overview_cache(user_id)
     for key in list(_APP_STATE_BOOT_CACHE.keys()):
@@ -39869,6 +39891,44 @@ async def user_profile_avatar_upload(
         except Exception:
             continue
     return {"message": "Profile avatar updated", "avatar_url": url, "profile_image_url": url}
+
+
+@app.delete("/user/profile/avatar")
+async def user_profile_avatar_delete(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    previous_url = ""
+    try:
+        cur.execute("SELECT profile_image_url FROM users WHERE id=? LIMIT 1", (user_id,))
+        current = cur.fetchone() or {}
+        previous_url = str(current.get("profile_image_url") or "")
+        cur.execute("UPDATE users SET profile_image_url=NULL WHERE id=?", (user_id,))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    if previous_url:
+        _delete_replaced_profile_upload(previous_url, user_id)
+    _delete_old_profile_uploads(user_id)
+    _clear_auth_caches_for_user(user_id)
+    _invalidate_student_overview_cache(user_id)
+    for key in list(_APP_STATE_BOOT_CACHE.keys()):
+        try:
+            if int(key[0] or 0) == user_id:
+                _APP_STATE_BOOT_CACHE.pop(key, None)
+        except Exception:
+            continue
+    return {"message": "Profile avatar deleted", "avatar_url": None, "profile_image_url": None}
 
 
 @app.get("/profile/images/{filename}")
