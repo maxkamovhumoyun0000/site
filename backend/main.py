@@ -6547,10 +6547,10 @@ def _role_from_login_type(login_type: int | None, login_id: str | None = None) -
     lt = int(login_type or 1)
     lid = (login_id or "").strip().upper()
     developer_login = str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper()
-    speaking_admin_login = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "MEDIA-X-01").strip().upper()
+    speaking_admin_login = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "DIAMOND-SP-1").strip().upper()
     if lid == developer_login:
         return "developer"
-    # A dedicated existing staff credential is deliberately narrowed to
+    # The dedicated Speaking staff credential is deliberately narrowed to
     # Speaking management.  It must not inherit the general Admin dashboard.
     if lid == speaking_admin_login:
         return "speaking_admin"
@@ -8015,7 +8015,7 @@ def _is_developer_account(user: dict) -> bool:
 
 
 def _is_speaking_admin_account(user: dict) -> bool:
-    expected = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "MEDIA-X-01").strip().upper()
+    expected = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "DIAMOND-SP-1").strip().upper()
     return str((user or {}).get("login_id") or "").strip().upper() == expected
 
 

@@ -1093,9 +1093,9 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
   if (String(user.login_id || "").trim().toLowerCase() === "developer-x-01") return "developer";
-  // The dedicated Speaking credential remains backed by the existing staff
-  // record, while the client and API limit it to the Speaking workspace.
-  if (String(user.login_id || "").trim().toLowerCase() === "media-x-01") return "speaking_admin";
+  // The dedicated Speaking credential is a restricted staff workspace and
+  // never inherits the general Admin dashboard.
+  if (String(user.login_id || "").trim().toLowerCase() === "diamond-sp-1") return "speaking_admin";
   if (user.role === "speaking_admin") return "speaking_admin";
   if (user.speaking_app_account === true) return "speaking_user";
   if (user.role === "admin" || user.login_type === 4) return "admin";
