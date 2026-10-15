@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 export default function PrivacyPolicyPage() {
-  const lastUpdated = "October 11, 2026";
+  const lastUpdated = "October 15, 2026";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-20">
@@ -125,7 +125,7 @@ export default function PrivacyPolicyPage() {
             <div className="rounded-xl border border-violet-500/20 bg-violet-500/5 p-4 text-sm">
               <h3 className="font-semibold text-white mb-1.5">Diamond IELTS Speaking App uchun alohida izoh</h3>
               <p className="text-slate-300">
-                Speaking App akkaunt, ism, telefon raqami, profil rasmi, mikrofon, kamera yoki galereya ruxsatini so&apos;ramaydi. Ilova savol va mavzularni Diamond Education serveridan HTTPS orqali yuklaydi; qurilmada til va interfeys tanlovlari saqlanishi mumkin. Foydalanuvchi bildirishnomaga ruxsat bersa, Firebase Cloud Messaging tokeni va ilova yaratgan texnik qurilma identifikatori faqat Speaking App push-bildirishnomalarini yetkazish uchun saqlanadi.
+                Speaking App alohida akkaunt, ism, telefon va email ma&apos;lumotlarini foydalanuvchi ro&apos;yxatdan o&apos;tishda kiritgandagina saqlaydi. Savollar, lug&apos;at, saqlangan audio va interfeys tanlovlari qurilmada saqlanishi mumkin. Live video xonaga kirishda mikrofon va kamera faqat foydalanuvchi ularni yoqishni tanlaganida ishlatiladi; video va ovoz oqimi xonadagi boshqa qatnashchilarga uzatiladi, Diamond Education esa uni yozib olmaydi. Foydalanuvchi bildirishnomaga ruxsat bersa, Firebase Cloud Messaging tokeni va ilova yaratgan texnik qurilma identifikatori faqat Speaking App push-bildirishnomalarini yetkazish uchun saqlanadi.
                 Ilovada Google AdMob banner va mukofotli reklamalar ham ko&apos;rsatiladi. Reklama yetkazib berish, xavfsizlik va samaradorlikni o&apos;lchash uchun Google/AdMob rozilik holatiga muvofiq qurilma yoki reklama identifikatorlari, IP manzildan olingan taxminiy joylashuv, reklama ko&apos;rish va o&apos;zaro aloqalar, ilova diagnostikasi hamda ishlash ko&apos;rsatkichlarini qayta ishlashi mumkin.
               </p>
             </div>
@@ -236,6 +236,9 @@ export default function PrivacyPolicyPage() {
               </li>
               <li>
                 <strong className="text-white">Google Mobile Ads / AdMob (Google LLC):</strong> Banner va mukofotli reklamalarni ko&apos;rsatish, reklama xavfsizligi, samaradorligi va foydalanuvchi roziligi boshqaruvi uchun. Bu xizmat qurilma yoki reklama identifikatorlari, IP manzildan olingan taxminiy joylashuv, reklama ma&apos;lumotlari, diagnostika va ilova ichidagi reklama bilan bog&apos;liq o&apos;zaro aloqalarni qayta ishlashi mumkin.
+              </li>
+              <li>
+                <strong className="text-white">LiveKit (self-hosted media service):</strong> Diamond Education serveridagi jonli video xonalarda qatnashchilar o&apos;rtasida kamera va mikrofon oqimini xavfsiz uzatish uchun. Xona tokenlari qisqa muddatli bo&apos;lib, media oqimining o&apos;zi saqlanmaydi yoki yozib olinmaydi.
               </li>
             </ul>
           </section>

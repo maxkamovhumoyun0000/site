@@ -53,7 +53,7 @@ AI_FALLBACK_GENERATION_TIMEOUT_SECONDS = 60
 AI_PRIMARY_RETRY_GENERATION_TIMEOUT_SECONDS = 150
 AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS = 120
 
-MEDIA_STAFF_ROLES = {"media", "media_admin", "admin", "superadmin", "developer", "teacher", "support"}
+MEDIA_STAFF_ROLES = {"media", "media_admin", "speaking_admin", "admin", "superadmin", "developer", "teacher", "support"}
 
 # A deliberately curated first catalogue for the Russian conversation area.
 # The normal media-admin form remains capped at 5 topics / 10 questions so a

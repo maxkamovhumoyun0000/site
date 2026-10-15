@@ -1000,6 +1000,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -6546,8 +6547,13 @@ def _role_from_login_type(login_type: int | None, login_id: str | None = None) -
     lt = int(login_type or 1)
     lid = (login_id or "").strip().upper()
     developer_login = str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper()
+    speaking_admin_login = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "MEDIA-X-01").strip().upper()
     if lid == developer_login:
         return "developer"
+    # A dedicated existing staff credential is deliberately narrowed to
+    # Speaking management.  It must not inherit the general Admin dashboard.
+    if lid == speaking_admin_login:
+        return "speaking_admin"
     if lt in (1, 2):
         return "student"
     # Login type 6 was retired. A legacy row is handled as a student until the
@@ -6696,7 +6702,7 @@ def _web_session_limit_for_user(user: dict) -> int:
         return 3
     if role in {"teacher", "support"}:
         return 5
-    if role == "admin":
+    if role in {"admin", "speaking_admin"}:
         return 0
     return 3
 
@@ -8008,6 +8014,11 @@ def _is_developer_account(user: dict) -> bool:
     return str((user or {}).get("login_id") or "").strip().upper() == expected
 
 
+def _is_speaking_admin_account(user: dict) -> bool:
+    expected = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "MEDIA-X-01").strip().upper()
+    return str((user or {}).get("login_id") or "").strip().upper() == expected
+
+
 _DEVELOPER_WORKSPACE_ALLOWED_PATHS = {
     "/app/state",
     "/auth/me",
@@ -8039,6 +8050,40 @@ async def developer_workspace_access_guard(request: Request, call_next):
         return await call_next(request)
     if _is_developer_account(user) and not _developer_workspace_path_is_allowed(request.url.path):
         return JSONResponse(status_code=403, content={"detail": "Developer account is limited to its workspace"})
+    return await call_next(request)
+
+
+_SPEAKING_ADMIN_WORKSPACE_PATHS = {
+    "/app/state",
+    "/auth/me",
+    "/auth/logout",
+    "/auth/presence/heartbeat",
+    "/user/account",
+    "/user/language",
+    "/notifications",
+    "/notifications/unread-count",
+    "/admin/users",
+}
+
+
+@app.middleware("http")
+async def speaking_admin_workspace_access_guard(request: Request, call_next):
+    """Keep the dedicated Speaking profile out of general Admin APIs."""
+    authorization = request.headers.get("Authorization")
+    if not authorization:
+        return await call_next(request)
+    try:
+        user = _user_row_from_bearer(authorization)
+    except HTTPException:
+        return await call_next(request)
+    path = request.url.path.rstrip("/") or "/"
+    allowed = (
+        path in _SPEAKING_ADMIN_WORKSPACE_PATHS
+        or path.startswith("/staff/speaking/")
+        or path.startswith("/admin/speaking-users/")
+    )
+    if _is_speaking_admin_account(user) and not allowed:
+        return JSONResponse(status_code=403, content={"detail": "Speaking admin account is limited to the Speaking workspace"})
     return await call_next(request)
 
 
@@ -16916,6 +16961,8 @@ def _build_student_dashboard_payload(user: dict, economy_rules_payload: dict[str
 def _build_role_boot_payload(user: dict, role: str, economy_rules_payload: dict[str, Any]) -> dict[str, Any]:
     if role == "developer":
         return {}
+    if role == "speaking_admin":
+        return {"permissions": {"can_generate_ai": True}}
     if role == "student":
         return _build_student_dashboard_payload(user, economy_rules_payload)
     if role == "teacher":
@@ -20384,11 +20431,13 @@ async def admin_update_speaking_user(
 ):
     """Update profile details of a Speaking app user, including login ID, names, subjects, and status."""
     admin_user = _user_row_from_bearer(authorization)
-    _require_role(admin_user, {"admin", "superadmin", "developer"})
+    _require_role(admin_user, {"admin", "superadmin", "developer", "speaking_admin"})
 
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
+    if not is_speaking_app_account(target.get("speaking_app_account")):
+        raise HTTPException(status_code=404, detail="Speaking foydalanuvchisi topilmadi.")
 
     conn = get_conn(); cur = conn.cursor()
     try:
@@ -20458,11 +20507,13 @@ async def admin_reset_speaking_user_password(
 ):
     """Admin updates the password for a Speaking user and revokes their active sessions."""
     admin_user = _user_row_from_bearer(authorization)
-    _require_role(admin_user, {"admin", "superadmin", "developer"})
+    _require_role(admin_user, {"admin", "superadmin", "developer", "speaking_admin"})
 
     target = get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
+    if not is_speaking_app_account(target.get("speaking_app_account")):
+        raise HTTPException(status_code=404, detail="Speaking foydalanuvchisi topilmadi.")
 
     new_pwd_hash = hash_password(str(payload.new_password))
     conn = get_conn(); cur = conn.cursor()
@@ -23657,8 +23708,12 @@ async def app_state(
         base_payload["support"] = _build_support_payload(user)
     elif effective_role == "developer":
         base_payload["developer"] = {}
-    else:
+    elif effective_role == "admin":
         base_payload["admin"] = _build_admin_payload(user)
+    elif effective_role == "speaking_admin":
+        base_payload["speaking_admin"] = _build_role_boot_payload(user, "speaking_admin", economy_rules_payload)
+    else:
+        base_payload[effective_role] = {}
 
     return base_payload
 
@@ -40855,7 +40910,9 @@ async def admin_users(
 ):
     started_at = time.perf_counter()
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
+    requester_role = _require_role(user, {"admin", "speaking_admin"})
+    if requester_role == "speaking_admin" and not speaking_only:
+        raise HTTPException(status_code=403, detail="Speaking admin can view only Speaking App users")
     _ensure_user_web_columns()
     _ensure_admin_perf_indexes()
     _safe_call(_ensure_proctoring_schema_runtime_fast, None)
@@ -58482,6 +58539,11 @@ app.include_router(library_ai_router)
 
 from backend.speaking_admin import router as speaking_admin_router
 app.include_router(speaking_admin_router)
+
+# Live video uses a dedicated SFU token broker.  It does not modify or share
+# the legacy peer-to-peer VoiceRoom signalling channel.
+from backend.speaking_live_video import router as speaking_live_video_router
+app.include_router(speaking_live_video_router)
 
 # Additive personal-learning routes.  The module receives the established
 # authentication/role helpers instead of reimplementing session policy.

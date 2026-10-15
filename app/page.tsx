@@ -179,6 +179,7 @@ type ApiUser = {
   avatar_url?: string | null;
   profile_image_url?: string | null;
   public_offer_agreed?: boolean;
+  speaking_app_account?: boolean;
 };
 
 type PlacementQuestion = {
@@ -963,7 +964,7 @@ function withStudentRuntimeSections(role: Role, sections: string[]) {
 }
 
 function getUserSubjects(role: Role, user: ApiUser | null, appState: GenericRow | null) {
-  if (role === "student") {
+  if (role === "student" || role === "speaking_user") {
     const roleData = appState?.student || {};
     return studentSubjectNames({ ...roleData, user });
   }
@@ -993,7 +994,7 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
   // by every role and must remain reachable for ordinary admins as well.
   const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home" && section !== "profile"));
   const baseSections = DEFAULT_SECTIONS[role] || [];
-  let list = role === "media"
+  let list = role === "media" || role === "speaking_admin" || role === "speaking_user"
     ? [...baseSections]
     : Array.from(new Set([...baseSections, ...(backendSections || [])]));
   if (role === "admin") {
@@ -1092,10 +1093,11 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
   if (String(user.login_id || "").trim().toLowerCase() === "developer-x-01") return "developer";
-  // Media-X-01 is deliberately backed by an ordinary admin account so its
-  // existing token continues to authorize the media tools. The frontend
-  // narrows the visible workspace to the media-only set below.
-  if (String(user.login_id || "").trim().toLowerCase() === "media-x-01") return "media";
+  // The dedicated Speaking credential remains backed by the existing staff
+  // record, while the client and API limit it to the Speaking workspace.
+  if (String(user.login_id || "").trim().toLowerCase() === "media-x-01") return "speaking_admin";
+  if (user.role === "speaking_admin") return "speaking_admin";
+  if (user.speaking_app_account === true) return "speaking_user";
   if (user.role === "admin" || user.login_type === 4) return "admin";
   if (user.role === "support" || user.login_type === 5) return "support";
   if (user.role === "teacher" || user.login_type === 3) return "teacher";
@@ -22155,6 +22157,48 @@ function MediaWorkspaceHome({ onNavigate }: { onNavigate: (section: string) => v
   </div>;
 }
 
+function SpeakingUserWorkspace({ user, onNavigate }: { user: ApiUser; onNavigate: (section: string) => void }) {
+  return (
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-3 pb-12 pt-5 sm:px-6">
+      <section className="overflow-hidden rounded-3xl border border-cyan-400/25 bg-gradient-to-br from-blue-700 via-blue-800 to-navy-950 p-7 text-white shadow-xl">
+        <p className="text-xs font-black uppercase tracking-[0.18em] text-cyan-200">Diamond Speaking</p>
+        <h1 className="mt-2 text-3xl font-black tracking-tight">Speaking akkaunti</h1>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-blue-100">
+          Xush kelibsiz, {userName(user)}. Ushbu tasdiqlangan akkaunt Diamond Speaking ilovasi va saytida bir xil ishlaydi.
+        </p>
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2">
+        <article className="rounded-3xl border border-line bg-surface p-6 shadow-sm dark:border-white/10 dark:bg-navy-950">
+          <div className="text-3xl" aria-hidden="true">📱</div>
+          <h2 className="mt-3 text-lg font-black text-navy-950 dark:text-white">Mobil ilova</h2>
+          <p className="mt-2 text-sm leading-6 text-ink-600 dark:text-slate-300">
+            IELTS va rus tili savollari, audio mashq, saqlangan javoblar hamda live xonalar ilovada ochiladi.
+          </p>
+          <span className="mt-4 inline-flex rounded-full bg-cyan-500/10 px-3 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">
+            Shu login va parol bilan kiring
+          </span>
+        </article>
+        <article className="rounded-3xl border border-line bg-surface p-6 shadow-sm dark:border-white/10 dark:bg-navy-950">
+          <div className="text-3xl" aria-hidden="true">🔐</div>
+          <h2 className="mt-3 text-lg font-black text-navy-950 dark:text-white">Akkaunt sozlamalari</h2>
+          <p className="mt-2 text-sm leading-6 text-ink-600 dark:text-slate-300">
+            Profil, til va xavfsizlik ma&apos;lumotlarini bu yerdan boshqaring. Akkauntni o&apos;chirish faqat Speaking akkaunti uchun profil ichida ko&apos;rinadi.
+          </p>
+          <button type="button" className="btn btn-primary mt-4" onClick={() => onNavigate("profile")}>
+            Profilni ochish
+          </button>
+        </article>
+      </section>
+
+      <section className="rounded-3xl border border-blue-500/20 bg-blue-500/[0.05] p-5 text-sm leading-6 text-ink-700 dark:text-blue-100">
+        <strong className="block text-navy-950 dark:text-white">Bir akkaunt — ikki qurilma</strong>
+        Saytda yaratilgan akkauntni ilovada, ilovada yaratilgan akkauntni esa saytda o&apos;sha Login ID va parol bilan ishlatishingiz mumkin.
+      </section>
+    </div>
+  );
+}
+
 function SupportSection({
   section,
   data,
@@ -24516,8 +24560,14 @@ function DashboardShell({
     (appState?.sections?.[activeRole] as string[] | undefined),
     getUserSubjects(activeRole, user, appState),
   );
-  const rawRoleData = activeRole === "media" ? (appState?.admin || {}) : (appState?.[activeRole] || {});
-  const roleData = activeRole === "student" ? { ...rawRoleData, user } : rawRoleData;
+  const rawRoleData = activeRole === "media"
+    ? (appState?.admin || {})
+    : activeRole === "speaking_admin"
+      ? (appState?.speaking_admin || {})
+      : activeRole === "speaking_user"
+        ? (appState?.student || {})
+        : (appState?.[activeRole] || {});
+  const roleData = activeRole === "student" || activeRole === "speaking_user" ? { ...rawRoleData, user } : rawRoleData;
   const effectiveSections = activeRole === "support" && Array.isArray(roleData.groups) && roleData.groups.length
     ? Array.from(new Set([...sections, "groups", "group-attendance", "arena", "performance", "dcoin"]))
     : sections;
@@ -25110,6 +25160,12 @@ function DashboardShell({
     content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
   } else if (currentSection === "study-room") {
     content = <StudyRoomChat apiFetch={authedApiFetch} role={activeRole} userId={Number(user?.id || 0)} />;
+  } else if (activeRole === "speaking_user") {
+    if (currentSection === "profile") {
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="SPEAKING" />;
+    } else {
+      content = <SpeakingUserWorkspace user={user} onNavigate={handleNavigate} />;
+    }
   } else if (activeRole === "student") {
     if (currentSection === "personal-plan") content = <WeeklyStudyPlan apiFetch={authedApiFetch} />;
     else if (currentSection === "learning-paths") content = <StudentLearningPaths apiFetch={authedApiFetch} />;
@@ -25172,10 +25228,10 @@ function DashboardShell({
     }
   } else {
     if (currentSection === "profile") {
-      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "speaking_admin" ? "SPEAKING ADMIN" : activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
-    } else if (currentSection === "speaking-users" && activeRole === "admin") {
+    } else if (currentSection === "speaking-users" && activeRole === "speaking_admin") {
       content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
     } else {
       content = (
@@ -26351,7 +26407,7 @@ export default function DiamondEducationApp() {
           setAppState((prev) => prev || cached);
           setInitialStateReady(true);
           const cachedRole = cached?.effective_role as Role | undefined;
-          if (!(["media", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
+          if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
           }
         }
@@ -26448,10 +26504,9 @@ export default function DiamondEducationApp() {
           // Ignore storage pressure/private mode.
         }
         const effective = payload?.effective_role as Role | undefined;
-        // The media account uses the existing admin API authorization but has
-        // a separate, frontend-only workspace. Never replace it with the
-        // backend's broad `admin` role after refreshing app state.
-        if (!(["media", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {
+        // The Speaking account has a separate restricted workspace. Never
+        // replace it with a broad backend role after refreshing app state.
+        if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {
           setActiveRole(effective);
         }
       } catch (error) {
