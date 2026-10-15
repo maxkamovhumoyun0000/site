@@ -6842,6 +6842,42 @@ def _revoke_web_sessions(user_id: int, keep_session_id: str | None = None, reaso
     return revoked_count
 
 
+def _revoke_current_web_session(user_id: int, session_id: str | None, reason: str = "logout") -> int:
+    """Revoke exactly one authenticated browser/app session.
+
+    A learner may have up to three active devices.  The normal ``/auth/logout``
+    action therefore must not sign the learner out of every other device.  The
+    all-session helper above is intentionally retained for password resets and
+    account-security events, where ending every session is the expected
+    behaviour.
+    """
+    uid = int(user_id or 0)
+    sid = str(session_id or "").strip()
+    if uid <= 0 or not sid:
+        return 0
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE web_user_sessions
+            SET revoked_at=?, revoked_reason=?
+            WHERE user_id=?
+              AND session_id=?
+              AND revoked_at IS NULL
+            """,
+            (_now_utc().isoformat(), str(reason or "logout").strip() or "logout", uid, sid),
+        )
+        conn.commit()
+        revoked_count = int(cur.rowcount or 0)
+    finally:
+        conn.close()
+    if not _has_active_web_sessions(uid):
+        _sync_bot_logout_state(uid)
+    _clear_auth_caches_for_user(uid)
+    return revoked_count
+
+
 def _clear_auth_caches_for_user(user_id: int) -> None:
     uid = int(user_id or 0)
     if uid <= 0:
@@ -22182,8 +22218,12 @@ async def logout(authorization: str | None = Header(default=None)):
     user_id = int(user.get("id") or 0)
     if user_id <= 0:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    _revoke_web_sessions(user_id, keep_session_id=None, reason="logout")
-    _sync_bot_logout_state(user_id)
+    # Logout is device-specific.  Password changes and explicit account
+    # security actions still use _revoke_web_sessions() to end every device.
+    # Older pre-session JWTs are only removed from the client; deliberately do
+    # not turn one old browser's logout into a global sign-out.
+    payload = _decode_bearer_payload(authorization)
+    _revoke_current_web_session(user_id, str(payload.get("sid") or ""), reason="logout")
     return {"message": "Logged out successfully"}
 
 
