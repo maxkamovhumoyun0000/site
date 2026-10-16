@@ -7,23 +7,21 @@ every other device.
 
 ## Before enabling it
 
-1. Add DNS `A` records: `live.diamond-education.uz` and
-   `turn.live.diamond-education.uz` → the current Diamond server public IP.
-2. Install the LiveKit media service on the same server.  Do **not** replace
-   the existing Caddy or coturn service: Caddy continues to own HTTPS for the
-   website and coturn continues to own `3478`.
-3. Proxy `https://live.diamond-education.uz` to LiveKit's local `7880` port
-   in the existing Caddy configuration.
-4. Open only these additional firewall/provider ports:
-   - `7881/tcp` for TCP WebRTC fallback;
-   - `50000-51000/udp` for WebRTC media.
-   - `5349/tcp` and `5349/udp` for TURN/TLS on restrictive networks.
+1. Provision a **dedicated public media VM/IP** for LiveKit. Do not put it on
+   the current web VM: the website Caddy already owns TCP 443, while reliable
+   TURN/TLS must own TCP 443 for restrictive networks.
+2. Add DNS `A` records: `live.diamond-education.uz` and
+   `turn.live.diamond-education.uz` → the dedicated media VM public IP.
+3. Generate the official LiveKit Docker Compose/Caddy/Redis package on that
+   VM. It owns its own ports and does not replace the website Caddy or coturn.
+4. Open media-VM firewall/provider ports: `80/tcp`, `443/tcp+udp`,
+   `3478/udp`, `7881/tcp`, and `50000-60000/udp`.
 5. Create a high-entropy LiveKit API key and secret, then set these server-only
    variables in the backend service environment:
 
    ```ini
    LIVEKIT_URL=wss://live.diamond-education.uz
-   LIVEKIT_INTERNAL_URL=http://127.0.0.1:7880
+LIVEKIT_INTERNAL_URL=https://live.diamond-education.uz
    LIVEKIT_API_KEY=...
    LIVEKIT_API_SECRET=...
    ```
@@ -46,36 +44,16 @@ backend issues each signed join token for only ten minutes.
   is not a safe capacity guarantee for 1,000 simultaneous camera publishers;
   load-test and scale the SFU before enabling that mode.
 
-## Caddy fragment
+## Generated LiveKit configuration
 
-Add this **as an additional site block** to the existing Caddy configuration;
-do not overwrite the Diamond Education site block:
+Use the official generator rather than manually mixing the website Caddy with
+the LiveKit media edge. It produces a matched Caddy, Docker Compose, Redis,
+LiveKit configuration and systemd service. The pinned media-server image should
+be `livekit/livekit-server:v1.13.10` or a later reviewed patch release.
 
-```caddy
-live.diamond-education.uz {
-    reverse_proxy 127.0.0.1:7880
-}
-```
-
-## LiveKit server configuration
-
-Use a fixed, reviewed image/version and create a configuration equivalent to:
-
-```yaml
-port: 7880
-log_level: info
-rtc:
-  tcp_port: 7881
-  port_range_start: 50000
-  port_range_end: 51000
-  use_external_ip: true
-turn:
-  enabled: true
-  domain: turn.live.diamond-education.uz
-  tls_port: 5349
-keys:
-  <LIVEKIT_API_KEY>: <LIVEKIT_API_SECRET>
-```
+The deployment contract is documented in
+[`ops/livekit/README.md`](../../ops/livekit/README.md), and the read-only
+preflight script refuses to start or alter any service.
 
 Validate from an authenticated test account: create a room, join from Android
 and iOS, enable microphone, then enable camera.  Verify camera permission,

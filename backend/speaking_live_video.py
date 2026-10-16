@@ -106,7 +106,13 @@ def _livekit_control_token(api_key: str, api_secret: str) -> str:
     )
 
 
-def _livekit_room_request(action: str, payload: dict[str, Any], *, ignore_exists: bool = False) -> None:
+def _livekit_room_request(
+    action: str,
+    payload: dict[str, Any],
+    *,
+    ignore_exists: bool = False,
+    ignore_not_found: bool = False,
+) -> None:
     """Call the LiveKit RoomService without exposing its control credentials."""
     public_url, api_key, api_secret = _livekit_config()
     endpoint = f"{_livekit_control_url(public_url)}/twirp/livekit.RoomService/{action}"
@@ -127,6 +133,11 @@ def _livekit_room_request(action: str, payload: dict[str, Any], *, ignore_exists
         # CreateRoom is idempotent for this use: a room can already exist if
         # the backend restarted between its database write and the request.
         if ignore_exists and exc.code in {400, 409}:
+            return
+        # Deleting a room is also idempotent.  LiveKit can have already
+        # removed an empty room or restarted after the application persisted
+        # its lobby row; that must not prevent the host from ending the room.
+        if ignore_not_found and exc.code == 404:
             return
     except (OSError, ValueError):
         pass
@@ -489,10 +500,9 @@ async def leave_live_video_room(room_id: str, authorization: str | None = Header
         conn.commit()
     finally:
         conn.close()
-    # Ending the backend lobby must also close the SFU room immediately.  A
-    # temporary SFU failure is not hidden: keeping the database lobby active
-    # lets the host retry rather than reporting a false successful end.
-    _livekit_room_request("DeleteRoom", {"room": room_id})
+    # Leaving is per participant.  Deleting the SFU room here would disconnect
+    # every other learner whenever one person presses the normal leave button.
+    # Only the host-only end endpoint below may close a room for everybody.
     return {"ok": True}
 
 
@@ -507,8 +517,14 @@ async def end_live_video_room(room_id: str, authorization: str | None = Header(d
         room = _active_room_or_error(cur, room_id)
         if int(room.get("host_user_id") or 0) != int(user.get("id") or 0):
             raise HTTPException(status_code=403, detail="Only the host can end this live video room")
-        cur.execute("UPDATE speaking_live_video_rooms SET status='ended', ended_at=?, last_activity_at=? WHERE id=?", (_iso(), _iso(), room_id))
-        cur.execute("UPDATE speaking_live_video_presences SET left_at=?, last_seen_at=? WHERE room_id=? AND left_at IS NULL", (_iso(), _iso(), room_id))
+        # Block new application joins before the SFU is closed.  This avoids a
+        # token request recreating the room in the small interval around
+        # DeleteRoom, while still allowing us to roll back cleanly if the SFU
+        # cannot be reached.
+        cur.execute(
+            "UPDATE speaking_live_video_rooms SET status='ending', last_activity_at=? WHERE id=?",
+            (_iso(), room_id),
+        )
         conn.commit()
     except HTTPException:
         with suppress(Exception):
@@ -516,6 +532,41 @@ async def end_live_video_room(room_id: str, authorization: str | None = Header(d
         raise
     finally:
         conn.close()
+    try:
+        _livekit_room_request(
+            "DeleteRoom",
+            {"room": room_id},
+            ignore_not_found=True,
+        )
+    except HTTPException:
+        # A failed delete remains retryable: restore the active lobby instead
+        # of reporting a false successful end or orphaning the room forever.
+        restore_conn = get_conn()
+        restore_cur = restore_conn.cursor()
+        try:
+            restore_cur.execute(
+                "UPDATE speaking_live_video_rooms SET status='active', last_activity_at=? WHERE id=? AND status='ending'",
+                (_iso(), room_id),
+            )
+            restore_conn.commit()
+        finally:
+            restore_conn.close()
+        raise
+
+    finish_conn = get_conn()
+    finish_cur = finish_conn.cursor()
+    try:
+        finish_cur.execute(
+            "UPDATE speaking_live_video_rooms SET status='ended', ended_at=?, last_activity_at=? WHERE id=? AND status='ending'",
+            (_iso(), _iso(), room_id),
+        )
+        finish_cur.execute(
+            "UPDATE speaking_live_video_presences SET left_at=?, last_seen_at=? WHERE room_id=? AND left_at IS NULL",
+            (_iso(), _iso(), room_id),
+        )
+        finish_conn.commit()
+    finally:
+        finish_conn.close()
     return {"ok": True}
 
 
