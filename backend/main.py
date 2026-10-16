@@ -51296,6 +51296,14 @@ async def admin_update_user(user_id: int, payload: AdminUserUpdateRequest, autho
         set_user_login_type(int(user_id), 1)
         disable_access(int(user_id))
     elif payload.placement_required is False:
+        # A placement flag can be turned off by an administrator while the
+        # student still has an in-progress attempt stored on the account.
+        # Leaving that state behind makes an older mobile cache reopen the
+        # placement screen and then receive a confusing "test is not
+        # required" error when it tries to continue. Clear the attempt and
+        # invalidate the short-lived bearer cache as one transition.
+        clear_placement_session(int(user_id))
+        _clear_auth_caches_for_user(int(user_id))
         current = _safe_call(lambda: get_user_by_id(int(user_id)), None) or {}
         if int(current.get("login_type") or 0) == 1:
             set_user_login_type(int(user_id), 2)
