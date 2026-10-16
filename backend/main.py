@@ -21298,6 +21298,18 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
                 raise HTTPException(status_code=422, detail=f"{ends_key} must be after {starts_key}")
     if "platform_maintenance_enabled" in normalized:
         normalized["platform_maintenance_enabled"] = 1 if bool(normalized["platform_maintenance_enabled"]) else 0
+    if "platform_maintenance_ends_at" in normalized:
+        raw_value = str(normalized["platform_maintenance_ends_at"] or "").strip()
+        if not raw_value:
+            normalized["platform_maintenance_ends_at"] = ""
+        else:
+            try:
+                parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=422, detail="platform_maintenance_ends_at must be an ISO-8601 timestamp")
+            if parsed.tzinfo is None:
+                raise HTTPException(status_code=422, detail="platform_maintenance_ends_at must include a timezone")
+            normalized["platform_maintenance_ends_at"] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     for key in ("platform_maintenance_message_uz", "platform_maintenance_message_ru", "platform_maintenance_message_en"):
         if key in normalized:
             normalized[key] = str(normalized[key] or "").strip()[:500]
@@ -21324,6 +21336,13 @@ def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | 
     end = parse(ends_at)
     active = enabled and (start is None or current >= start) and (end is None or current < end)
     platform_active = bool(int(settings.get("platform_maintenance_enabled") or 0))
+    if platform_active:
+        platform_end = parse(str(settings.get("platform_maintenance_ends_at") or "").strip())
+        # Old maintenance records can contain a stale student/teacher ETA.
+        # Never show a past estimate while the global maintenance flag is on.
+        if platform_end is None or platform_end <= current:
+            platform_end = current + timedelta(minutes=30)
+        ends_at = platform_end.isoformat().replace("+00:00", "Z")
     return {
         "enabled": enabled or platform_active,
         "active": active or platform_active,
@@ -21344,6 +21363,7 @@ def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> d
     }
     maintenance_keys.update({
         "platform_maintenance_enabled",
+        "platform_maintenance_ends_at",
         "platform_maintenance_message_uz",
         "platform_maintenance_message_ru",
         "platform_maintenance_message_en",
@@ -21441,7 +21461,7 @@ async def developer_update_mobile_maintenance(payload: dict, authorization: str 
 async def platform_maintenance_status():
     """Public, cache-free maintenance state for web and all mobile apps."""
     state = _maintenance_state(get_app_version_settings(), "speaking")
-    return {"active": state["active"], "message_uz": state["message_uz"], "message_ru": state["message_ru"], "message_en": state["message_en"]}
+    return {"active": state["active"], "ends_at": state["ends_at"], "message_uz": state["message_uz"], "message_ru": state["message_ru"], "message_en": state["message_en"]}
 
 
 @app.get("/developer/attendance-reopen")

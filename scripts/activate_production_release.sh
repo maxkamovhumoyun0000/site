@@ -44,10 +44,13 @@ set_platform_maintenance() {
   local enabled="$1"
   .venv/bin/python - "$enabled" <<'PY'
 import sys
+from datetime import datetime, timedelta, timezone
 from db import update_app_version_settings
 enabled = 1 if sys.argv[1] == "1" else 0
+ends_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z") if enabled else ""
 update_app_version_settings({
     "platform_maintenance_enabled": enabled,
+    "platform_maintenance_ends_at": ends_at,
     "platform_maintenance_message_uz": "Texnik ishlar olib borilmoqda. Taxminan 30 daqiqa ichida qaytamiz.",
     "platform_maintenance_message_ru": "Проводятся технические работы. Ориентировочно вернёмся через 30 минут.",
     "platform_maintenance_message_en": "Technical work is in progress. We expect to be back in about 30 minutes.",

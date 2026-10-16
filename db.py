@@ -25664,6 +25664,7 @@ def ensure_app_version_settings_schema():
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_ends_at TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_enabled INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_ends_at TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_ru TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_en TEXT NOT NULL DEFAULT ''",
@@ -25717,6 +25718,7 @@ def get_app_version_settings() -> dict:
             "teacher_maintenance_ends_at": "",
             "teacher_maintenance_message_uz": "",
             "platform_maintenance_enabled": 0,
+            "platform_maintenance_ends_at": "",
             "platform_maintenance_message_uz": "",
             "platform_maintenance_message_ru": "",
             "platform_maintenance_message_en": "",
@@ -25743,6 +25745,7 @@ def update_app_version_settings(fields: dict) -> dict:
         "student_maintenance_enabled", "student_maintenance_starts_at", "student_maintenance_ends_at", "student_maintenance_message_uz",
         "teacher_maintenance_enabled", "teacher_maintenance_starts_at", "teacher_maintenance_ends_at", "teacher_maintenance_message_uz",
         "platform_maintenance_enabled", "platform_maintenance_message_uz", "platform_maintenance_message_ru", "platform_maintenance_message_en",
+        "platform_maintenance_ends_at",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
