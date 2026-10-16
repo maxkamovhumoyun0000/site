@@ -81,11 +81,13 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
+lines = source.splitlines(keepends=True)
 anchor = "diamond-education.uz {\n"
-if source.count(anchor) != 1:
+if lines.count(anchor) != 1:
     raise SystemExit("Expected exactly one diamond-education.uz Caddy site block")
-replacement = anchor + "\timport /etc/caddy/diamond-site-maintenance.caddy\n"
-source = source.replace(anchor, replacement, 1)
+index = lines.index(anchor)
+lines.insert(index + 1, "\timport /etc/caddy/diamond-site-maintenance.caddy\n")
+source = "".join(lines)
 temporary = path.with_name(path.name + ".diamond-tmp")
 temporary.write_text(source, encoding="utf-8")
 temporary.chmod(path.stat().st_mode)
