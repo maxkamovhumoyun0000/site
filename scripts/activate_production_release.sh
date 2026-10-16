@@ -45,7 +45,7 @@ set_platform_maintenance() {
   .venv/bin/python - "$enabled" <<'PY'
 import sys
 from db import update_app_version_settings
-enabled = sys.argv[1] == "1"
+enabled = 1 if sys.argv[1] == "1" else 0
 update_app_version_settings({
     "platform_maintenance_enabled": enabled,
     "platform_maintenance_message_uz": "Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.",
