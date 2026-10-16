@@ -2026,7 +2026,8 @@ class PaymentConfirmRequest(BaseModel):
     ym: str
     group_id: int
     amount: float
-    payment_method: Literal["cash", "card"] = "cash"
+    # The cashier must explicitly choose how the payment was received.
+    payment_method: Literal["cash", "card"]
     card_id: int | None = None
     note: str | None = None
     is_advance: bool = False
@@ -47395,7 +47396,7 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     details = [
         ("O'quvchi", snapshot.get("student_name")), ("Guruh", snapshot.get("group_name")),
         ("Oy uchun", f"{_receipt_month_label(snapshot.get('payment_month'))} uchun"),
-        ("Fan", snapshot.get("subject_name")), ("O'qituvchi", teachers), ("To'lov usuli", method),
+        ("Fan", snapshot.get("subject_name")), ("O'qituvchi", teachers), ("To'lov turi", method),
         ("Tasdiqladi", snapshot.get("confirmed_by_name")), ("Sana", _receipt_timestamp_tashkent(snapshot.get("confirmed_at"))),
         *([("Izoh", snapshot.get("refund_note"))] if is_refund and snapshot.get("refund_note") else []),
         ("Chek ID", receipt.get("receipt_id")),
@@ -47458,7 +47459,7 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         f"Oy uchun: {_receipt_month_label(snapshot.get('payment_month'))} uchun", f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
         f"JAMI TO'LANGAN: {float(snapshot.get('total_paid_amount') or 0):,.2f} so'm",
         f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
-        f"To'lov usuli: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",
+        f"To'lov turi: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",
         f"Sana: {_receipt_timestamp_tashkent(snapshot.get('confirmed_at'))}",
         f"Chek ID: {receipt.get('receipt_id') or '-'}",
         *([f"Izoh: {snapshot.get('refund_note')}"] if is_refund and snapshot.get("refund_note") else []),
@@ -47938,7 +47939,16 @@ async def admin_payments_stats(
 
     paid_students = [row for row in student_rows if str(row.get("status") or "") in {PAYMENT_STATUS_PAID, PAYMENT_STATUS_OVERPAY}]
     unpaid_students = [row for row in student_rows if str(row.get("status") or "") == PAYMENT_STATUS_UNPAID]
-    partial_students = [row for row in student_rows if str(row.get("status") or "") == PAYMENT_STATUS_PARTIAL]
+    # Keep partially paid students visible even if their unpaid remainder has
+    # become overdue. The two payment-state filters intentionally overlap.
+    partial_student_ids = {
+        int(row.get("user_id") or 0)
+        for row in filtered
+        if int(row.get("user_id") or 0) > 0
+        and float(row.get("paid_amount") or 0.0) > 1e-9
+        and float(row.get("debt_amount") or 0.0) > 1e-9
+    }
+    partial_students = [row for row in student_rows if int(row.get("id") or 0) in partial_student_ids]
     late_students = [row for row in student_rows if str(row.get("status") or "") == PAYMENT_STATUS_OVERDUE]
     overpay_students = [row for row in student_rows if str(row.get("status") or "") == PAYMENT_STATUS_OVERPAY]
 
@@ -48364,9 +48374,11 @@ async def admin_payments_dashboard(
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
     month_key = _payment_validate_ym(ym) if str(ym or "").strip() else _payment_ym_now()
-    # Keep dashboard opens fast: use already materialized obligations here.
-    # Detailed stats/detail/payment actions still recalculate where needed.
+    # Keep dashboard opens fast, but refresh an expired materialization before
+    # its status counters are shown. Otherwise a partial payment can exist in
+    # the ledger while this dashboard still says zero.
     _ensure_payment_automation_schema()
+    _payment_recalc_for_view_if_stale({month_key}, trigger_source="payments_dashboard", freshness_seconds=900)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -48435,7 +48447,13 @@ async def admin_payments_dashboard(
     total_refund = sum(abs(float(row.get("amount") or 0.0)) for row in filtered_refunds)
     paid_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_PAID]
     unpaid_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_UNPAID]
-    partial_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_PARTIAL]
+    # "Qisman" means a real partial payment exists. After the due date the
+    # obligation status is also "Kechikkan", but it must not disappear from
+    # the partial-payment filter/count just because the remaining debt is late.
+    partial_rows = [
+        row for row in filtered
+        if float(row.get("paid_amount") or 0.0) > 1e-9 and float(row.get("debt_amount") or 0.0) > 1e-9
+    ]
     overdue_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_OVERDUE]
     overpay_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_OVERPAY]
     group_map: dict[int, dict[str, Any]] = {}
@@ -48614,7 +48632,9 @@ async def admin_payments_students(
             SUM(o.debt_amount) AS debt_amount,
             SUM(o.overpayment_amount) AS overpayment_amount,
             string_agg(g.name, ', ' ORDER BY g.name) AS group_names,
+            BOOL_OR(COALESCE(o.paid_amount, 0) > 0 AND COALESCE(o.debt_amount, 0) > 0) AS has_partial_payment,
             CASE 
+                WHEN BOOL_OR(COALESCE(o.paid_amount, 0) > 0 AND COALESCE(o.debt_amount, 0) > 0) THEN 'Qisman to''langan'
                 WHEN 'kechikkan' = ANY(array_agg(LOWER(o.status))) THEN 'Kechikkan'
                 WHEN 'qisman to''langan' = ANY(array_agg(LOWER(o.status))) THEN 'Qisman to''langan'
                 WHEN 'to''lanmagan' = ANY(array_agg(LOWER(o.status))) THEN 'To''lanmagan'

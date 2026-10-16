@@ -93,14 +93,14 @@ export default function AdminStudentPaymentDetailPage() {
     ym: string;
     groupId: number;
     amount: string;
-    paymentMethod: "cash" | "card";
+    paymentMethod: "" | "cash" | "card";
     cardId: number;
     note: string;
   }>({
     ym: queryYm || currentMonthKey(),
     groupId: queryGroupId > 0 ? queryGroupId : 0,
     amount: "",
-    paymentMethod: "cash",
+    paymentMethod: "",
     cardId: 0,
     note: "",
   });
@@ -276,6 +276,10 @@ export default function AdminStudentPaymentDetailPage() {
     }
     if (!Number.isFinite(amount) || amount <= 0) {
       setErrorText("To'lov summasi musbat bo'lishi kerak.");
+      return;
+    }
+    if (!form.paymentMethod) {
+      setErrorText("To'lov turini tanlang.");
       return;
     }
     if (form.paymentMethod === "card" && Number(form.cardId || 0) <= 0) {
@@ -494,7 +498,7 @@ export default function AdminStudentPaymentDetailPage() {
             <select
               value={form.paymentMethod}
               onChange={(event) => {
-                const method = event.target.value === "card" ? "card" : "cash";
+                const method = event.target.value === "card" ? "card" : event.target.value === "cash" ? "cash" : "";
                 setForm((prev) => ({
                   ...prev,
                   paymentMethod: method,
@@ -502,6 +506,7 @@ export default function AdminStudentPaymentDetailPage() {
                 }));
               }}
             >
+              <option value="" disabled>To&apos;lov turini tanlang</option>
               <option value="cash">Naqd</option>
               <option value="card">Plastik karta</option>
             </select>
@@ -566,7 +571,7 @@ export default function AdminStudentPaymentDetailPage() {
           <button
             className="btn btn-primary"
             type="button"
-            disabled={!hasGroup || submitting || !form.groupId || remainingDebt <= 0 || (form.paymentMethod === "card" && Number(form.cardId || 0) <= 0)}
+            disabled={!hasGroup || submitting || !form.groupId || !form.paymentMethod || remainingDebt <= 0 || (form.paymentMethod === "card" && Number(form.cardId || 0) <= 0)}
             onClick={() => {
               setForm((prev) => ({ ...prev, amount: Number(remainingDebt || 0).toFixed(2) }));
               submitPayment("full").catch(() => null);

@@ -185,6 +185,32 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         self.assertIn('(\"Oy uchun\", f\"{_receipt_month_label(snapshot.get(\'payment_month\'))} uchun\")', thermal)
         self.assertIn('f"Oy uchun: {_receipt_month_label(snapshot.get(\'payment_month\'))} uchun"', pdf)
 
+    def test_receipts_name_the_selected_cash_or_card_payment_type(self) -> None:
+        """Cash/card selection must survive both printable receipt formats."""
+        thermal = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
+        self.assertIn('(\"To\'lov turi\", method)', thermal)
+        self.assertIn('f"To\'lov turi: {method}"', pdf)
+
+    def test_payment_method_is_explicit_in_dashboard_confirmation(self) -> None:
+        """The dashboard cannot silently submit an omitted payment method as cash."""
+        schema = BACKEND.split("class PaymentConfirmRequest", 1)[1].split("class PaymentRefundRequest", 1)[0]
+        confirm = SOURCE.split("async function confirmStudentPayment", 1)[1].split("function refundSelectedPayment", 1)[0]
+        self.assertIn('payment_method: Literal["cash", "card"]', schema)
+        self.assertNotIn('payment_method: Literal["cash", "card"] = "cash"', schema)
+        self.assertIn('paymentMethod: "" | "cash" | "card"', SOURCE)
+        self.assertIn('To\'lov turini tanlang', SOURCE)
+        self.assertIn('!userId || !groupId || !monthKey || !paymentMethod', confirm)
+
+    def test_partial_filter_keeps_students_with_an_overdue_remainder(self) -> None:
+        """A late remaining balance must not erase the fact that it was paid in part."""
+        dashboard = BACKEND.split('async def admin_payments_dashboard', 1)[1].split('@app.get("/admin/payments/students")', 1)[0]
+        student_list = BACKEND.split('async def admin_payments_students', 1)[1].split('@app.get("/admin/payments/groups/', 1)[0]
+        stats = BACKEND.split('async def admin_payments_stats', 1)[1].split('@app.get("/admin/payments/calculate")', 1)[0]
+        self.assertIn('float(row.get("paid_amount") or 0.0) > 1e-9', dashboard)
+        self.assertIn('BOOL_OR(COALESCE(o.paid_amount, 0) > 0 AND COALESCE(o.debt_amount, 0) > 0)', student_list)
+        self.assertIn('partial_student_ids = {', stats)
+
     def test_payment_modal_loads_month_history_for_manual_selection(self) -> None:
         """Staff can deliberately choose an older unpaid obligation without an automatic field value."""
         self.assertIn("&include_history=true", SOURCE)

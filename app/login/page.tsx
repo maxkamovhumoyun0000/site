@@ -440,13 +440,6 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <a
-          href="/speaking"
-          className="mt-5 text-center text-sm font-bold text-cyan-200 underline decoration-cyan-300/60 underline-offset-4 transition hover:text-white"
-        >
-          Diamond Speaking akkaunti bilan kirish yoki akkaunt ochish
-        </a>
-
         <div className="flex items-center w-full gap-4 my-8 opacity-60">
           <div className="flex-1 h-px bg-cyan-200/20" />
           <span className="text-xs font-bold text-cyan-100 uppercase tracking-widest">yoki</span>
