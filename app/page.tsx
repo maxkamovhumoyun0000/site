@@ -796,6 +796,9 @@ function friendlyHttpError(status: number, fallback?: string) {
       ? t(locale, "errors.invalidRequest", "So'rov formati noto'g'ri. Ma'lumotlarni tekshirib qayta urinib ko'ring.")
       : cleanFallback || t(locale, "errors.invalidRequest", "So'rov formati noto'g'ri. Ma'lumotlarni tekshirib qayta urinib ko'ring.");
   }
+  if (status === 503 && /live video service is not configured/i.test(cleanFallback)) {
+    return t(locale, "errors.liveVideoNotConfigured", "Live video xizmati hali sozlanmagan. Administratorga murojaat qiling.");
+  }
   if (status >= 500 || unsafeFallback) {
     return t(locale, "errors.server", "Serverda xatolik yuz berdi. Qayta urinib ko'ring.");
   }

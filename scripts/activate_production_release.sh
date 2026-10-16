@@ -48,9 +48,9 @@ from db import update_app_version_settings
 enabled = 1 if sys.argv[1] == "1" else 0
 update_app_version_settings({
     "platform_maintenance_enabled": enabled,
-    "platform_maintenance_message_uz": "Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.",
-    "platform_maintenance_message_ru": "Проводятся технические работы. Мы скоро вернёмся.",
-    "platform_maintenance_message_en": "Technical work is in progress. We will be back shortly.",
+    "platform_maintenance_message_uz": "Texnik ishlar olib borilmoqda. Taxminan 30 daqiqa ichida qaytamiz.",
+    "platform_maintenance_message_ru": "Проводятся технические работы. Ориентировочно вернёмся через 30 минут.",
+    "platform_maintenance_message_en": "Technical work is in progress. We expect to be back in about 30 minutes.",
 })
 PY
 }

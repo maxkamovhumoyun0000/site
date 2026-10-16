@@ -21,16 +21,16 @@
   <main role="status" aria-live="polite">
     <div class="mark" aria-hidden="true">⚙</div>
     <h1 id="title">Texnik ishlar olib borilmoqda</h1>
-    <p id="message">Sayt va ilovalar yangilanmoqda. Iltimos, birozdan so‘ng qayta urinib ko‘ring.</p>
+    <p id="message">Sayt va ilovalar yangilanmoqda. Taxminan 30 daqiqa ichida qaytamiz.</p>
     <div class="brand">Diamond Education</div>
   </main>
   <script>
     (() => {
       const lang = (navigator.language || "uz").toLowerCase().slice(0, 2);
       const copy = {
-        uz: ["Texnik ishlar olib borilmoqda", "Sayt va ilovalar yangilanmoqda. Iltimos, birozdan so‘ng qayta urinib ko‘ring."],
-        ru: ["Проводятся технические работы", "Сайт и приложения обновляются. Пожалуйста, попробуйте снова немного позже."],
-        en: ["We’re doing some maintenance", "The website and apps are being updated. Please try again shortly."]
+        uz: ["Texnik ishlar olib borilmoqda", "Sayt va ilovalar yangilanmoqda. Taxminan 30 daqiqa ichida qaytamiz."],
+        ru: ["Проводятся технические работы", "Сайт и приложения обновляются. Ориентировочно вернёмся через 30 минут."],
+        en: ["We’re doing some maintenance", "The website and apps are being updated. We expect to be back in about 30 minutes."]
       };
       const text = copy[lang] || copy.en;
       document.documentElement.lang = copy[lang] ? lang : "en";

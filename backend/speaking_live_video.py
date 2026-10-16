@@ -71,7 +71,9 @@ def _livekit_config() -> tuple[str, str, str]:
     api_key = str(os.getenv("LIVEKIT_API_KEY") or "").strip()
     api_secret = str(os.getenv("LIVEKIT_API_SECRET") or "").strip()
     if not (url.startswith(("wss://", "ws://")) and api_key and api_secret):
-        raise HTTPException(status_code=503, detail="Live video is being prepared. Please try again shortly.")
+        # This is an expected configuration state, not an unexpected backend
+        # crash. The UI maps this safe detail to a localized setup message.
+        raise HTTPException(status_code=503, detail="Live video service is not configured yet.")
     return url, api_key, api_secret
 
 
