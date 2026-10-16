@@ -137,6 +137,22 @@ Script muvaffaqiyatli tugamasa release muvaffaqiyatli deb hisoblanmaydi.
 Avvalgi frontend build avtomatik qaytariladi; backend source’ni rollback
 qilish kerak bo‘lsa, oldingi Git commit snapshotini alohida release qiling.
 
+### Majburiy maintenance oynasi
+
+`activate_production_release.sh` build boshlanishidan avval umumiy platforma
+maintenance flagini yoqadi. Nginx sayt sahifalarida lokal statik, o‘zbek/rus/
+ingliz tilidagi maintenance oynasini beradi; `/api/app-version-check` va
+`/api/platform-maintenance` ham flag yoqilgan davrda ilovalarga shu holatni
+qaytaradi, backend restart vaqtida ham. Student, Teacher va Speaking
+iOS/Android ilovalari foydalanuvchining tilida maintenance ekranini ko‘rsatadi.
+Flag faqat backend-ready va frontend smoke test muvaffaqiyatli tugagach o‘chadi.
+Activation xato bersa, avvalgi `.next` buildi qaytarilib frontend health-check
+tekshiriladi; frontend tiklanmasa maintenance o‘chirilmaydi. Shu sabab deploy paytida
+flagni qo‘lda o‘chirish yoki `npm run build`ni lokal kompyuterda ishga tushirish
+taqiqlanadi. Birinchi activation Nginx konfiguratsiyasiga idempotent maintenance
+fallback qo‘shadi, `nginx -t` bilan tekshiradi va faqat `systemctl reload nginx`
+qiladi; to‘liq server reboot qilinmaydi.
+
 ## Eski Frontend Build Cache'ini Tozalash (faqat avariya tiklash uchun)
 
 Frontend buildidan **oldin** faqat Next.js'ning `/root/diamond-site/.next/`

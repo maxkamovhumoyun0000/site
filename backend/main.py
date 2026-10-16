@@ -1000,7 +1000,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-live", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -8091,6 +8091,7 @@ async def speaking_admin_workspace_access_guard(request: Request, call_next):
     allowed = (
         path in _SPEAKING_ADMIN_WORKSPACE_PATHS
         or path.startswith("/staff/speaking/")
+        or path.startswith("/api/speaking/live-video/")
         or path.startswith("/admin/speaking-users/")
     )
     if _is_speaking_admin_account(user) and not allowed:
@@ -21284,6 +21285,11 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
             ends_at = datetime.fromisoformat(str(normalized[ends_key]).replace("Z", "+00:00"))
             if ends_at <= starts_at:
                 raise HTTPException(status_code=422, detail=f"{ends_key} must be after {starts_key}")
+    if "platform_maintenance_enabled" in normalized:
+        normalized["platform_maintenance_enabled"] = 1 if bool(normalized["platform_maintenance_enabled"]) else 0
+    for key in ("platform_maintenance_message_uz", "platform_maintenance_message_ru", "platform_maintenance_message_en"):
+        if key in normalized:
+            normalized[key] = str(normalized[key] or "").strip()[:500]
     return normalized
 
 
@@ -21306,12 +21312,15 @@ def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | 
     start = parse(starts_at)
     end = parse(ends_at)
     active = enabled and (start is None or current >= start) and (end is None or current < end)
+    platform_active = bool(int(settings.get("platform_maintenance_enabled") or 0))
     return {
-        "enabled": enabled,
-        "active": active,
+        "enabled": enabled or platform_active,
+        "active": active or platform_active,
         "starts_at": starts_at,
         "ends_at": ends_at,
-        "message_uz": str(settings.get(f"{role}_maintenance_message_uz") or "").strip(),
+        "message_uz": str(settings.get("platform_maintenance_message_uz") or settings.get(f"{role}_maintenance_message_uz") or "").strip(),
+        "message_ru": str(settings.get("platform_maintenance_message_ru") or "Технические работы ведутся. Мы скоро вернёмся.").strip(),
+        "message_en": str(settings.get("platform_maintenance_message_en") or "Technical work is in progress. We will be back shortly.").strip(),
     }
 
 
@@ -21322,6 +21331,12 @@ def _normalize_maintenance_settings_payload(payload: dict[str, Any] | None) -> d
         for role in ("student", "teacher")
         for field in ("enabled", "starts_at", "ends_at", "message_uz")
     }
+    maintenance_keys.update({
+        "platform_maintenance_enabled",
+        "platform_maintenance_message_uz",
+        "platform_maintenance_message_ru",
+        "platform_maintenance_message_en",
+    })
     return {key: value for key, value in normalized.items() if key in maintenance_keys}
 
 
@@ -21394,7 +21409,10 @@ async def developer_get_mobile_maintenance(authorization: str | None = Header(de
     user = _user_row_from_bearer(authorization)
     _require_developer_access(user)
     settings = get_app_version_settings()
-    return {role: _maintenance_state(settings, role) for role in ("student", "teacher")}
+    return {
+        **{role: _maintenance_state(settings, role) for role in ("student", "teacher", "speaking")},
+        "platform": _maintenance_state(settings, "speaking"),
+    }
 
 
 @app.post("/developer/mobile-maintenance")
@@ -21402,7 +21420,17 @@ async def developer_update_mobile_maintenance(payload: dict, authorization: str 
     user = _user_row_from_bearer(authorization)
     _require_developer_access(user)
     updated = update_app_version_settings(_normalize_maintenance_settings_payload(payload))
-    return {role: _maintenance_state(updated, role) for role in ("student", "teacher")}
+    return {
+        **{role: _maintenance_state(updated, role) for role in ("student", "teacher", "speaking")},
+        "platform": _maintenance_state(updated, "speaking"),
+    }
+
+
+@app.get("/api/platform-maintenance")
+async def platform_maintenance_status():
+    """Public, cache-free maintenance state for web and all mobile apps."""
+    state = _maintenance_state(get_app_version_settings(), "speaking")
+    return {"active": state["active"], "message_uz": state["message_uz"], "message_ru": state["message_ru"], "message_en": state["message_en"]}
 
 
 @app.get("/developer/attendance-reopen")
@@ -49353,8 +49381,6 @@ async def admin_payments_student_confirm(
     selected_card_row: dict[str, Any] | None = None
     if payment_method == "card":
         cards = _payment_card_rows(active_only=True)
-        if not cards:
-            raise HTTPException(status_code=400, detail="No active payment cards available")
         if selected_card_id > 0:
             selected_card_row = next((row for row in cards if int(row.get("id") or 0) == selected_card_id), None)
             if not selected_card_row:

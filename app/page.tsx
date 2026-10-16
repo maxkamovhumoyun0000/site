@@ -44,6 +44,7 @@ import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
+import { SpeakingAdminHome, SpeakingAdminProfile, SpeakingLiveManagement } from "./ui/speaking-live-management";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import AdminUserbot from "./ui/admin-userbot";
@@ -16369,7 +16370,6 @@ function AdminSection({
     groupId: number;
     amount: string;
     paymentMethod: "" | "cash" | "card";
-    cardId: number;
     note: string;
     isAdvance: boolean;
   }>({
@@ -16377,7 +16377,6 @@ function AdminSection({
     groupId: 0,
     amount: "",
     paymentMethod: "",
-    cardId: 0,
     note: "",
     isAdvance: false,
   });
@@ -17250,10 +17249,6 @@ function AdminSection({
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(String(payload?.detail || "Payment method o'chirilmadi"));
       setPaymentMethods((payload.items || []) as GenericRow[]);
-      setPaymentsConfirmDraft((prev) => {
-        if (Number(prev.cardId || 0) !== Number(methodId || 0)) return prev;
-        return { ...prev, cardId: 0 };
-      });
     } finally {
       setPaymentMethodsSaving(false);
     }
@@ -17620,7 +17615,6 @@ function AdminSection({
       monthKey,
       amount: Number(amountNumber.toFixed(2)),
       method: paymentMethod,
-      cardId: Number(paymentsConfirmDraft.cardId || 0),
       note: String(paymentsConfirmDraft.note || "").trim(),
       isAdvance: Boolean(paymentsConfirmDraft.isAdvance),
     });
@@ -17642,7 +17636,7 @@ function AdminSection({
           group_id: groupId,
           amount: Number(amountNumber.toFixed(2)),
           payment_method: paymentMethod,
-          card_id: paymentMethod === "card" && Number(paymentsConfirmDraft.cardId || 0) > 0 ? Number(paymentsConfirmDraft.cardId) : null,
+          card_id: null,
           note: String(paymentsConfirmDraft.note || "").trim() || null,
           is_advance: Boolean(paymentsConfirmDraft.isAdvance),
           idempotency_key: requestKey,
@@ -18032,16 +18026,6 @@ function AdminSection({
     }, 100);
     return () => window.clearTimeout(timer);
   }, [section, loadPaymentsStudentsList]);
-
-  useEffect(() => {
-    if (section !== "payments") return;
-    if (paymentsConfirmDraft.paymentMethod !== "card") return;
-    if (Number(paymentsConfirmDraft.cardId || 0) > 0) return;
-    const activeCards = (paymentMethods || []).filter((row) => Number(row.active ?? 1) === 1);
-    const defaultCard = activeCards.find((row) => Number(row.is_default || 0) === 1) || activeCards[0] || null;
-    if (!defaultCard) return;
-    setPaymentsConfirmDraft((prev) => ({ ...prev, cardId: Number(defaultCard.id || 0) }));
-  }, [section, paymentMethods, paymentsConfirmDraft.paymentMethod, paymentsConfirmDraft.cardId]);
 
   useEffect(() => {
     const source = {
@@ -20586,7 +20570,6 @@ function AdminSection({
                           setPaymentsConfirmDraft((prev) => ({
                             ...prev,
                             paymentMethod: method,
-                            cardId: method === "card" ? Number(prev.cardId || 0) : 0,
                           }));
                         }}
                       >
@@ -20595,22 +20578,6 @@ function AdminSection({
                         <option value="card">{pt("paymentCard", "Karta orqali")}</option>
                       </select>
                     </label>
-                    {paymentsConfirmDraft.paymentMethod === "card" ? (
-                      <label className="pmc-field">
-                        <span>{pt("card", "Karta")}</span>
-                        <select
-                          value={Number(paymentsConfirmDraft.cardId || 0)}
-                          onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, cardId: Number(event.target.value || 0) }))}
-                        >
-                          <option value={0} disabled>{pt("selectCard", "Kartani tanlang")}</option>
-                          {paymentMethods.filter((row) => Number(row.active ?? 1) === 1).map((row) => (
-                            <option key={`pay-confirm-card-${row.id}`} value={Number(row.id || 0)}>
-                              {String(row.owner_first_name || "").trim()} {String(row.owner_last_name || "").trim()} · {String(row.card_number_masked || row.card_number || "-")}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
                     <label className="pmc-field pmc-field-full">
                       <span>{pt("note", "Izoh")} {refundableAmountForConfirm > 0 ? pt("noteRefundRequired", "(qaytarish uchun majburiy)") : pt("optional", "(ixtiyoriy)")}</span>
                       <input
@@ -25267,12 +25234,18 @@ function DashboardShell({
       content = <DeveloperWorkspace section={currentSection} onNavigate={handleNavigate} />;
     }
   } else {
-    if (currentSection === "profile") {
+    if (currentSection === "profile" && activeRole === "speaking_admin") {
+      content = <SpeakingAdminProfile apiFetch={authedApiFetch} user={user} onNavigate={handleNavigate} />;
+    } else if (currentSection === "home" && activeRole === "speaking_admin") {
+      content = <SpeakingAdminHome apiFetch={authedApiFetch} user={user} onNavigate={handleNavigate} />;
+    } else if (currentSection === "profile") {
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "speaking_admin" ? "SPEAKING ADMIN" : activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
     } else if (currentSection === "speaking-users" && activeRole === "speaking_admin") {
       content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
+    } else if (currentSection === "speaking-live" && activeRole === "speaking_admin") {
+      content = <SpeakingLiveManagement apiFetch={authedApiFetch} currentUserId={Number(user?.id || 0)} />;
     } else {
       content = (
         <AdminSection
@@ -25722,6 +25695,8 @@ export default function DiamondEducationApp() {
   const refreshTimerRef = useRef<number | null>(null);
   const generatorAnnouncedDoneRef = useRef<string>("");
   const [locale, setLocale] = useState<Locale>("uz");
+  const [platformMaintenance, setPlatformMaintenance] = useState<{ active: boolean; message_uz: string; message_ru: string; message_en: string }>({ active: false, message_uz: "", message_ru: "", message_en: "" });
+  useEffect(() => { let cancelled = false; const load = () => fetch("/api/platform-maintenance", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((value) => { if (!cancelled && value) setPlatformMaintenance({ active: value.active === true, message_uz: String(value.message_uz || ""), message_ru: String(value.message_ru || ""), message_en: String(value.message_en || "") }); }).catch(() => null); void load(); const timer = window.setInterval(load, 15000); return () => { cancelled = true; window.clearInterval(timer); }; }, []);
   const isStudentRole = roleFromUser(user) === "student";
   const shouldLoadStudentProctoring = Boolean(user && isStudentRole);
   const {
@@ -27262,6 +27237,11 @@ export default function DiamondEducationApp() {
     (hasPendingSession && !authResolved) ||
     (user && !initialStateReady && !isStudentPaymentsSection),
   );
+
+  if (platformMaintenance.active) {
+    const message = locale === "ru" ? platformMaintenance.message_ru : locale === "en" ? platformMaintenance.message_en : platformMaintenance.message_uz;
+    content = <main className="min-h-screen grid place-items-center bg-slate-950 p-6 text-center text-white"><section className="max-w-lg rounded-3xl border border-cyan-300/25 bg-white/10 p-8 shadow-2xl"><div className="text-5xl">🛠️</div><h1 className="mt-5 text-2xl font-black">{locale === "ru" ? "Проводятся технические работы" : locale === "en" ? "Technical work is in progress" : "Texnik ishlar olib borilmoqda"}</h1><p className="mt-3 text-sm leading-6 text-slate-200">{message || (locale === "ru" ? "Мы скоро вернёмся." : locale === "en" ? "We will be back shortly." : "Tez orada ishga tushamiz.")}</p></section></main>;
+  }
 
   return (
     <WebLocaleProvider locale={locale}>

@@ -51,7 +51,9 @@ def _main_helpers():
 def _require_user(authorization: str | None) -> dict[str, Any]:
     _, require_role, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
-    require_role(user, {"student", "teacher", "support", "admin", "developer"})
+    # The dedicated Speaking administrator can start, join and finish their
+    # own rooms from the Speaking workspace just like an ordinary host.
+    require_role(user, {"student", "teacher", "support", "admin", "developer", "media", "speaking_admin"})
     if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
         raise HTTPException(status_code=403, detail="Live video is not available for this account")
     return user

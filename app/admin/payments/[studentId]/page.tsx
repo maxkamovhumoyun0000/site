@@ -94,14 +94,12 @@ export default function AdminStudentPaymentDetailPage() {
     groupId: number;
     amount: string;
     paymentMethod: "" | "cash" | "card";
-    cardId: number;
     note: string;
   }>({
     ym: queryYm || currentMonthKey(),
     groupId: queryGroupId > 0 ? queryGroupId : 0,
     amount: "",
     paymentMethod: "",
-    cardId: 0,
     note: "",
   });
   const [refundDraft, setRefundDraft] = useState<{
@@ -137,8 +135,6 @@ export default function AdminStudentPaymentDetailPage() {
   const refunds = ((detail?.overview?.refunds || []) as GenericRow[]).slice(0, 100);
   const bonusHistory = ((detail?.overview?.bonus_history || []) as GenericRow[]).slice(0, 100);
   const referralStatus = (detail?.referral_status || detail?.overview?.referral_status || null) as GenericRow | null;
-  const paymentMethods = ((detail?.overview?.payment_methods || []) as GenericRow[]).filter((row) => Number(row.id || 0) > 0);
-  const defaultCard = paymentMethods.find((row) => Boolean(row.is_default)) || paymentMethods[0] || null;
   const quickRefundTx = transactions.find((tx) => {
     if (Number(form.groupId || 0) > 0 && Number(tx.group_id || 0) !== Number(form.groupId || 0)) return false;
     const total = Number(tx.amount || tx.payment_dcoin_amount || tx.paid_amount || 0);
@@ -173,7 +169,6 @@ export default function AdminStudentPaymentDetailPage() {
       ym: monthKey,
       groupId: nextGroupId,
       amount: nextDebt > 0 ? nextDebt.toFixed(2) : "",
-      cardId: prev.paymentMethod === "card" && Number(prev.cardId || 0) > 0 ? prev.cardId : Number(defaultCard?.id || 0),
     }));
     if (!keepNotice) setNoticeText("");
   }
@@ -214,7 +209,6 @@ export default function AdminStudentPaymentDetailPage() {
           ym: monthKey,
           groupId: nextGroupId,
           amount: nextDebt > 0 ? nextDebt.toFixed(2) : "",
-          cardId: prev.paymentMethod === "card" && Number(prev.cardId || 0) > 0 ? prev.cardId : Number(defaultCard?.id || 0),
         }));
       })
       .catch((error) => {
@@ -228,13 +222,6 @@ export default function AdminStudentPaymentDetailPage() {
       alive = false;
     };
   }, [studentId, monthKey, monthTouched, queryGroupId]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (form.paymentMethod !== "card") return;
-    if (Number(form.cardId || 0) > 0) return;
-    if (!defaultCard) return;
-    setForm((prev) => ({ ...prev, cardId: Number(defaultCard.id || 0) }));
-  }, [form.paymentMethod, form.cardId, defaultCard]);
 
   useEffect(() => {
     const token = localStorage.getItem("diamond_token");
@@ -282,10 +269,6 @@ export default function AdminStudentPaymentDetailPage() {
       setErrorText("To'lov turini tanlang.");
       return;
     }
-    if (form.paymentMethod === "card" && Number(form.cardId || 0) <= 0) {
-      setErrorText("Karta tanlang.");
-      return;
-    }
     if (penaltyPreview?.will_apply) {
       const ok = window.confirm(
         `Bu to'lov KECHIKKAN.\n-5% D'coin jarima qo'llanadi.\nBalans: ${asMoney(penaltyPreview.current_dcoin_balance)}\nJarima: ${asMoney(penaltyPreview.penalty_amount)}\nQoladi: ${asMoney(penaltyPreview.remaining_dcoin_after_penalty)}\n\nTasdiqlaysizmi?`,
@@ -303,7 +286,7 @@ export default function AdminStudentPaymentDetailPage() {
           group_id: groupId,
           amount: Number(amount.toFixed(2)),
           payment_method: form.paymentMethod,
-          card_id: form.paymentMethod === "card" ? Number(form.cardId || 0) : null,
+          card_id: null,
           note: String(form.note || "").trim() || null,
           is_advance: false,
         },
@@ -502,7 +485,6 @@ export default function AdminStudentPaymentDetailPage() {
                 setForm((prev) => ({
                   ...prev,
                   paymentMethod: method,
-                  cardId: method === "card" ? Number(defaultCard?.id || 0) : 0,
                 }));
               }}
             >
@@ -511,23 +493,6 @@ export default function AdminStudentPaymentDetailPage() {
               <option value="card">Plastik karta</option>
             </select>
           </label>
-          {form.paymentMethod === "card" ? (
-            <label>
-              Card
-              <select
-                value={Number(form.cardId || 0)}
-                onChange={(event) => setForm((prev) => ({ ...prev, cardId: Number(event.target.value || 0) }))}
-              >
-                <option value={0} disabled>Select card</option>
-                {paymentMethods.map((row) => (
-                  <option key={`pay-card-${row.id}`} value={Number(row.id || 0)}>
-                    {String(row.owner_first_name || "").trim()} {String(row.owner_last_name || "").trim()} · {String(row.card_number_masked || row.card_number || "-")}
-                    {Boolean(row.is_default) ? " (default)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
           <label>
             Amount
             <input
@@ -571,7 +536,7 @@ export default function AdminStudentPaymentDetailPage() {
           <button
             className="btn btn-primary"
             type="button"
-            disabled={!hasGroup || submitting || !form.groupId || !form.paymentMethod || remainingDebt <= 0 || (form.paymentMethod === "card" && Number(form.cardId || 0) <= 0)}
+            disabled={!hasGroup || submitting || !form.groupId || !form.paymentMethod || remainingDebt <= 0}
             onClick={() => {
               setForm((prev) => ({ ...prev, amount: Number(remainingDebt || 0).toFixed(2) }));
               submitPayment("full").catch(() => null);

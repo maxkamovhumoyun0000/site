@@ -25663,6 +25663,10 @@ def ensure_app_version_settings_schema():
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_starts_at TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_ends_at TEXT NOT NULL DEFAULT ''",
                 "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS teacher_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_enabled INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_uz TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_ru TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE app_version_settings ADD COLUMN IF NOT EXISTS platform_maintenance_message_en TEXT NOT NULL DEFAULT ''",
             ):
                 cur.execute(statement)
             conn.commit()
@@ -25712,6 +25716,10 @@ def get_app_version_settings() -> dict:
             "teacher_maintenance_starts_at": "",
             "teacher_maintenance_ends_at": "",
             "teacher_maintenance_message_uz": "",
+            "platform_maintenance_enabled": 0,
+            "platform_maintenance_message_uz": "",
+            "platform_maintenance_message_ru": "",
+            "platform_maintenance_message_en": "",
         }
         # The previous template used an unrelated third-party App Store ID.
         # Never direct a forced update to another developer's app. The admin
@@ -25734,6 +25742,7 @@ def update_app_version_settings(fields: dict) -> dict:
         "min_teacher_version", "min_teacher_build", "teacher_play_store_url", "teacher_app_store_url",
         "student_maintenance_enabled", "student_maintenance_starts_at", "student_maintenance_ends_at", "student_maintenance_message_uz",
         "teacher_maintenance_enabled", "teacher_maintenance_starts_at", "teacher_maintenance_ends_at", "teacher_maintenance_message_uz",
+        "platform_maintenance_enabled", "platform_maintenance_message_uz", "platform_maintenance_message_ru", "platform_maintenance_message_en",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
