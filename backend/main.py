@@ -12852,6 +12852,10 @@ def _diamondvoy_apply_usage(user: dict, role: str, *, has_images: bool, has_text
     try:
         cur.execute("SELECT user_id, window_start, free_count_used, dcoin_spent FROM diamondvoy_usage WHERE user_id=? LIMIT 1", (user_id,))
         row = dict(cur.fetchone() or {})
+        # Existing usage rows do not enter the reset branch below, so their
+        # counter must be initialised before the limit comparison. Otherwise
+        # Diamondvoy raises UnboundLocalError instead of returning a response.
+        free_used = max(0, int(row.get("free_count_used") or 0))
         window_start = _parse_utc_timestamp(str(row.get("window_start") or "")) if row.get("window_start") else None
         now_local = datetime.now(TASHKENT_TZ)
         is_new_day = False
