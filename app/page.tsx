@@ -17513,6 +17513,10 @@ function AdminSection({
             overdue: Number(stats.late_students || 0),
             overpayment: Number(stats.overpayment_students || 0),
           },
+          // The fast dashboard now returns the same semantic status lists as
+          // the full statistics endpoint, so unpaid/partial pills remain
+          // actionable even after due-date status changes.
+          status_lists: (dashboard.status_lists || {}) as GenericRow,
           chart_data: {
             series: [{
               month: dashboard.ym || paymentsMonthFilter,

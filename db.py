@@ -10498,12 +10498,25 @@ def hard_delete_user_profile(user_id: int, *, preserve_groups: bool = False) -> 
         cur = conn.cursor()
         try:
             uid = int(user_id)
-            cur.execute("SELECT telegram_id, login_type FROM users WHERE id=?", (uid,))
+            cur.execute(
+                """
+                SELECT telegram_id, login_type,
+                       COALESCE(screenshot_demo, 0) AS screenshot_demo
+                FROM users
+                WHERE id=?
+                """,
+                (uid,),
+            )
             urow = cur.fetchone()
             if not urow:
                 return False
 
             ukeys = set(urow.keys()) if hasattr(urow, "keys") else set()
+            if bool(int((urow["screenshot_demo"] if "screenshot_demo" in ukeys else 0) or 0)):
+                # Fixed Student/Teacher review fixtures must survive every
+                # deletion path, including admin and bot cleanup tools.
+                logger.warning("hard_delete_user_profile refused screenshot demo uid=%s", uid)
+                return False
             telegram_id = urow["telegram_id"] if "telegram_id" in ukeys else None
             telegram_id_s = str(telegram_id) if telegram_id is not None else None
             login_type = int((urow["login_type"] if "login_type" in ukeys else 0) or 0)

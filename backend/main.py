@@ -20520,7 +20520,7 @@ async def admin_reset_speaking_user_password(
     payload: AdminSpeakingUserResetPasswordRequest,
     authorization: str | None = Header(default=None),
 ):
-    """Admin updates the password for a Speaking user and revokes their active sessions."""
+    """Admin updates the password for future Speaking logins only."""
     admin_user = _user_row_from_bearer(authorization)
     _require_role(admin_user, {"admin", "superadmin", "developer", "speaking_admin"})
 
@@ -20538,7 +20538,6 @@ async def admin_reset_speaking_user_password(
     finally:
         conn.close()
 
-    _revoke_web_sessions(user_id, keep_session_id=None, reason="admin_reset_speaking_password")
     return {"message": "Parol muvaffaqiyatli yangilandi."}
 
 
@@ -47835,7 +47834,17 @@ async def admin_payments_stats(
             if subject_filter not in str(row.get("group_subject") or "").lower():
                 return False
         if status_filter and status_filter != "all" and status_key:
-            if status_filter not in str(row.get(status_key) or "").lower():
+            paid_amount = float(row.get("paid_amount") or 0.0)
+            debt_amount = float(row.get("debt_amount") or 0.0)
+            row_status = str(row.get(status_key) or "").lower()
+            if status_filter == PAYMENT_STATUS_PARTIAL.lower():
+                if not (paid_amount > 1e-9 and debt_amount > 1e-9):
+                    return False
+            elif status_filter == PAYMENT_STATUS_UNPAID.lower():
+                # A zero-payment debt remains unpaid after it becomes overdue.
+                if not (paid_amount <= 1e-9 and debt_amount > 1e-9):
+                    return False
+            elif status_filter not in row_status:
                 return False
         if str(row.get("discount_type") or "") == "free_access":
             return False
@@ -47938,7 +47947,11 @@ async def admin_payments_stats(
         )
 
     paid_students = [row for row in student_rows if str(row.get("status") or "") in {PAYMENT_STATUS_PAID, PAYMENT_STATUS_OVERPAY}]
-    unpaid_students = [row for row in student_rows if str(row.get("status") or "") == PAYMENT_STATUS_UNPAID]
+    unpaid_students = [
+        row for row in student_rows
+        if float(row.get("paid_amount") or 0.0) <= 1e-9
+        and float(row.get("debt_amount") or 0.0) > 1e-9
+    ]
     # Keep partially paid students visible even if their unpaid remainder has
     # become overdue. The two payment-state filters intentionally overlap.
     partial_student_ids = {
@@ -48384,10 +48397,13 @@ async def admin_payments_dashboard(
     cur.execute(
         """
         SELECT o.*, g.name AS group_name, g.teacher_id,
-               TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
+               TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name,
+               TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
+               u.phone AS student_phone
         FROM payment_monthly_obligations o
         LEFT JOIN groups g ON g.id = o.group_id
         LEFT JOIN users t ON t.id = g.teacher_id
+        LEFT JOIN users u ON u.id = o.user_id
         WHERE o.ym=?
         ORDER BY o.updated_at DESC, o.id DESC
         """,
@@ -48445,17 +48461,71 @@ async def admin_payments_dashboard(
     total_expected = sum(0.0 if str(row.get("discount_type") or "") == "free_access" else float(row.get("original_amount") or 0.0) for row in filtered)
     total_final = sum(float(row.get("final_amount") or 0.0) for row in filtered)
     total_refund = sum(abs(float(row.get("amount") or 0.0)) for row in filtered_refunds)
-    paid_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_PAID]
-    unpaid_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_UNPAID]
-    # "Qisman" means a real partial payment exists. After the due date the
-    # obligation status is also "Kechikkan", but it must not disappear from
-    # the partial-payment filter/count just because the remaining debt is late.
-    partial_rows = [
-        row for row in filtered
-        if float(row.get("paid_amount") or 0.0) > 1e-9 and float(row.get("debt_amount") or 0.0) > 1e-9
-    ]
-    overdue_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_OVERDUE]
-    overpay_rows = [row for row in filtered if str(row.get("status") or "") == PAYMENT_STATUS_OVERPAY]
+    # Aggregate by learner before producing the status counters/lists. A debt
+    # can become "Kechikkan" after its due date, but it is still unpaid; a
+    # partially paid debt must similarly stay visible in the partial filter.
+    student_status_map: dict[int, dict[str, Any]] = {}
+    for row in filtered:
+        uid = int(row.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        item = student_status_map.get(uid)
+        if not item:
+            item = {
+                "id": uid,
+                "user_id": uid,
+                "full_name": str(row.get("student_name") or "").strip() or f"User #{uid}",
+                "phone": str(row.get("student_phone") or "").strip(),
+                "group_names": set(),
+                "final_payable_amount": 0.0,
+                "paid_amount": 0.0,
+                "debt_amount": 0.0,
+                "overpayment_amount": 0.0,
+                "has_overdue": False,
+            }
+            student_status_map[uid] = item
+        group_name = str(row.get("group_name") or "").strip()
+        if group_name:
+            item["group_names"].add(group_name)
+        item["final_payable_amount"] += float(row.get("final_amount") or 0.0)
+        item["paid_amount"] += float(row.get("paid_amount") or 0.0)
+        item["debt_amount"] += float(row.get("debt_amount") or 0.0)
+        item["overpayment_amount"] += float(row.get("overpayment_amount") or 0.0)
+        item["has_overdue"] = bool(item["has_overdue"]) or str(row.get("status") or "") == PAYMENT_STATUS_OVERDUE
+
+    paid_rows: list[dict[str, Any]] = []
+    unpaid_rows: list[dict[str, Any]] = []
+    partial_rows: list[dict[str, Any]] = []
+    overdue_rows: list[dict[str, Any]] = []
+    overpay_rows: list[dict[str, Any]] = []
+    for item in student_status_map.values():
+        paid_amount = float(item.get("paid_amount") or 0.0)
+        debt_amount = float(item.get("debt_amount") or 0.0)
+        overpayment_amount = float(item.get("overpayment_amount") or 0.0)
+        is_partial = paid_amount > 1e-9 and debt_amount > 1e-9
+        is_unpaid = paid_amount <= 1e-9 and debt_amount > 1e-9
+        is_overdue = bool(item.get("has_overdue"))
+        is_overpay = overpayment_amount > 1e-9
+        if is_partial:
+            item["status"] = PAYMENT_STATUS_PARTIAL
+            partial_rows.append(item)
+        elif is_overdue:
+            item["status"] = PAYMENT_STATUS_OVERDUE
+        elif is_unpaid:
+            item["status"] = PAYMENT_STATUS_UNPAID
+        elif is_overpay:
+            item["status"] = PAYMENT_STATUS_OVERPAY
+            overpay_rows.append(item)
+        else:
+            item["status"] = PAYMENT_STATUS_PAID
+            paid_rows.append(item)
+        if is_unpaid:
+            unpaid_rows.append(item)
+        if is_overdue:
+            overdue_rows.append(item)
+        item["group_names"] = sorted(item["group_names"])
+        for key in ("final_payable_amount", "paid_amount", "debt_amount", "overpayment_amount"):
+            item[key] = round(float(item[key]), 2)
     group_map: dict[int, dict[str, Any]] = {}
     teacher_map: dict[int, dict[str, Any]] = {}
     for row in filtered:
@@ -48570,11 +48640,11 @@ async def admin_payments_dashboard(
         "ym": month_key,
         "stats": {
             "student_count": len({int(row.get("user_id") or 0) for row in filtered if int(row.get("user_id") or 0) > 0}),
-            "paid_students": len({int(row.get("user_id") or 0) for row in paid_rows}),
-            "unpaid_students": len({int(row.get("user_id") or 0) for row in unpaid_rows}),
-            "partial_students": len({int(row.get("user_id") or 0) for row in partial_rows}),
-            "late_students": len({int(row.get("user_id") or 0) for row in overdue_rows}),
-            "overpayment_students": len({int(row.get("user_id") or 0) for row in overpay_rows}),
+            "paid_students": len(paid_rows),
+            "unpaid_students": len(unpaid_rows),
+            "partial_students": len(partial_rows),
+            "late_students": len(overdue_rows),
+            "overpayment_students": len(overpay_rows),
             "total_paid_amount": round(total_paid, 2),
             "total_debt_amount": round(total_debt, 2),
             "total_expected_amount": round(total_expected, 2),
@@ -48585,6 +48655,13 @@ async def admin_payments_dashboard(
         },
         "group_comparison": group_comparison[:500],
         "teacher_comparison": teacher_comparison[:500],
+        "status_lists": {
+            "paid": paid_rows[:800],
+            "unpaid": unpaid_rows[:800],
+            "partial": partial_rows[:800],
+            "overdue": overdue_rows[:800],
+            "overpayment": overpay_rows[:800],
+        },
         "items": filtered[:800] if include_items else [],
         "jobs": job_rows,
         "last_calc_run": next((job for job in job_rows if str(job.get("job_name") or "") == "payment_recalculation"), None),
@@ -48686,9 +48763,20 @@ async def admin_payments_students(
         if status_val == "to'langan":
             where_clauses.append("sa.status = 'To''langan'")
         elif status_val == "qisman to'langan":
-            where_clauses.append("sa.status = 'Qisman to''langan'")
+            # Once the due date passes, the display label becomes
+            # "Kechikkan" even though a payment has been made.  Keep that
+            # learner in the partial-payment result set while debt remains.
+            where_clauses.append(
+                "COALESCE(sa.paid_amount, 0) > 0.000000001 "
+                "AND COALESCE(sa.debt_amount, 0) > 0.000000001"
+            )
         elif status_val == "to'lanmagan":
-            where_clauses.append("sa.status = 'To''lanmagan'")
+            # The due date can change the display label to "Kechikkan";
+            # it is still an unpaid obligation until any payment is made.
+            where_clauses.append(
+                "COALESCE(sa.paid_amount, 0) <= 0.000000001 "
+                "AND COALESCE(sa.debt_amount, 0) > 0.000000001"
+            )
         elif status_val == "kechikkan":
             where_clauses.append("sa.status = 'Kechikkan'")
         elif status_val == "ortiqcha to'lov":
@@ -48921,7 +49009,20 @@ async def admin_payments_group_students(
         ]
     status_norm = str(status or "").strip().lower()
     if status_norm and status_norm != "all":
-        rows = [row for row in rows if status_norm in str(row.get("status") or "").strip().lower()]
+        if status_norm == PAYMENT_STATUS_UNPAID.lower():
+            rows = [
+                row for row in rows
+                if float(row.get("paid_amount") or 0.0) <= 1e-9
+                and float(row.get("debt_amount") or 0.0) > 1e-9
+            ]
+        elif status_norm == PAYMENT_STATUS_PARTIAL.lower():
+            rows = [
+                row for row in rows
+                if float(row.get("paid_amount") or 0.0) > 1e-9
+                and float(row.get("debt_amount") or 0.0) > 1e-9
+            ]
+        else:
+            rows = [row for row in rows if status_norm in str(row.get("status") or "").strip().lower()]
 
     status_rank = {
         "kechikkan": 1,
@@ -51458,19 +51559,8 @@ async def admin_reset_password(user_id: int, payload: AdminPasswordResetRequest,
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     reset_user_password(int(user_id), password)
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE users
-        SET session_version=COALESCE(session_version, 1) + 1
-        WHERE id=?
-        """,
-        (int(user_id),),
-    )
-    conn.commit()
-    conn.close()
-    _revoke_web_sessions(int(user_id), keep_session_id=None, reason="admin_reset_password")
+    # An administrator changes the credential for future logins only. Existing
+    # learner device sessions remain user-controlled through the device limit.
     refreshed = _safe_call(lambda: get_user_by_id(int(user_id)), None) or target
     qr_generated = _safe_call(lambda: _generate_qr_login_token(int(user_id), WEB_QR_LOGIN_TTL_SECONDS), {}) or {}
     return {
@@ -51641,6 +51731,7 @@ def _find_inactive_students(months: int = 2) -> list[dict]:
                u.created_at
         FROM users u
         WHERE u.login_type IN (1, 6)
+          AND COALESCE(u.screenshot_demo, 0)=0
           AND (u.blocked IS NULL OR u.blocked != 0)
         """
     )
@@ -59921,21 +60012,7 @@ async def teacher_reset_student_password(student_id: int, authorization: str | N
 
     password = generate_password(6)
     reset_user_password(int(student_id), password)
-    
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE users
-        SET session_version=COALESCE(session_version, 1) + 1
-        WHERE id=?
-        """,
-        (int(student_id),),
-    )
-    conn.commit()
-    conn.close()
-
-    _revoke_web_sessions(int(student_id), keep_session_id=None, reason="teacher_reset_password")
+    # A teacher-assisted reset must not unexpectedly sign a student out.
     refreshed = _safe_call(lambda: get_user_by_id(int(student_id)), None) or target
     qr_generated = _safe_call(lambda: _generate_qr_login_token(int(student_id), WEB_QR_LOGIN_TTL_SECONDS), {}) or {}
 
