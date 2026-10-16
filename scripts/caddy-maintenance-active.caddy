@@ -1,0 +1,13 @@
+handle /api/platform-maintenance {
+	respond `{"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}` 200
+}
+
+handle /api/app-version-check {
+	respond `{"force_update":false,"maintenance":{"enabled":true,"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}}` 200
+}
+
+handle {
+	root * /var/www
+	rewrite * /diamond-site-maintenance.html
+	file_server
+}

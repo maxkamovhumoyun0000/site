@@ -11,9 +11,9 @@ PROJECT_ROOT="${DIAMOND_RELEASE_ROOT:-/root/diamond-site}"
 EXPECTED_COMMIT="${1:-}"
 LOCK_PATH="/tmp/diamond-site-release.lock"
 FRONTEND_SERVICE="diamond-site-frontend"
-NGINX_SITE_CONFIG="/etc/nginx/sites-enabled/default"
-NGINX_MAINTENANCE_FLAG="/run/diamond-site-maintenance.flag"
-NGINX_MAINTENANCE_PAGE="/var/www/diamond-site-maintenance.html"
+CADDY_CONFIG="/etc/caddy/Caddyfile"
+CADDY_MAINTENANCE_ROUTE="/etc/caddy/diamond-site-maintenance.caddy"
+CADDY_MAINTENANCE_PAGE="/var/www/diamond-site-maintenance.html"
 BACKEND_SERVICES=(
   diamond-site-backend
   diamond-site-admin-bot
@@ -57,82 +57,51 @@ PY
 set_site_maintenance() {
   local enabled="$1"
   if [[ "$enabled" == "1" ]]; then
-    install -D -m 0644 scripts/maintenance.html "$NGINX_MAINTENANCE_PAGE"
-    touch "$NGINX_MAINTENANCE_FLAG"
+    install -D -m 0644 scripts/maintenance.html "$CADDY_MAINTENANCE_PAGE"
+    install -m 0644 scripts/caddy-maintenance-active.caddy "$CADDY_MAINTENANCE_ROUTE"
   else
-    rm -f -- "$NGINX_MAINTENANCE_FLAG"
+    install -m 0644 scripts/caddy-maintenance-inactive.caddy "$CADDY_MAINTENANCE_ROUTE"
   fi
+  caddy validate --config "$CADDY_CONFIG" --adapter caddyfile
+  caddy reload --config "$CADDY_CONFIG" --adapter caddyfile
 }
-ensure_nginx_maintenance_route() {
-  if [[ ! -f "$NGINX_SITE_CONFIG" ]]; then
-    echo "Nginx site config not found: $NGINX_SITE_CONFIG" >&2
+ensure_caddy_maintenance_route() {
+  if [[ ! -f "$CADDY_CONFIG" ]]; then
+    echo "Caddy config not found: $CADDY_CONFIG" >&2
     return 1
   fi
-  local config_path
-  config_path="$(readlink -f "$NGINX_SITE_CONFIG")"
-  if ! grep -q 'diamond-site-maintenance.flag' "$config_path"; then
-    local backup="${config_path}.diamond-maintenance.bak"
+  if ! grep -q 'diamond-site-maintenance.caddy' "$CADDY_CONFIG"; then
+    local backup="${CADDY_CONFIG}.diamond-maintenance.bak"
     if [[ ! -f "$backup" ]]; then
-      cp -a -- "$config_path" "$backup"
+      cp -a -- "$CADDY_CONFIG" "$backup"
     fi
-    .venv/bin/python - "$config_path" <<'PY'
+    .venv/bin/python - "$CADDY_CONFIG" <<'PY'
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
-anchor = "    location / {\n"
+anchor = "diamond-education.uz {\n"
 if source.count(anchor) != 1:
-    raise SystemExit("Expected exactly one Nginx frontend location / block")
-route = '''    location = /__diamond_maintenance {
-        internal;
-        default_type text/html;
-        alias /var/www/diamond-site-maintenance.html;
-        add_header Cache-Control "no-store, no-cache, must-revalidate";
-    }
-
-    location = /api/platform-maintenance {
-        default_type application/json;
-        if (-f /run/diamond-site-maintenance.flag) {
-            return 200 '{"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}';
-        }
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    location = /api/app-version-check {
-        default_type application/json;
-        if (-f /run/diamond-site-maintenance.flag) {
-            return 200 '{"force_update":false,"maintenance":{"enabled":true,"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}}';
-        }
-        proxy_pass http://127.0.0.1:3001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-'''
-replacement = anchor + '''        if (-f /run/diamond-site-maintenance.flag) { return 503; }
-        error_page 503 =200 /__diamond_maintenance;
-'''
-source = source.replace(anchor, route + replacement, 1)
+    raise SystemExit("Expected exactly one diamond-education.uz Caddy site block")
+replacement = anchor + "\timport /etc/caddy/diamond-site-maintenance.caddy\n"
+source = source.replace(anchor, replacement, 1)
 temporary = path.with_name(path.name + ".diamond-tmp")
 temporary.write_text(source, encoding="utf-8")
 temporary.chmod(path.stat().st_mode)
 temporary.replace(path)
 PY
+    install -D -m 0644 scripts/caddy-maintenance-inactive.caddy "$CADDY_MAINTENANCE_ROUTE"
   fi
-  if ! nginx -t; then
-    local backup="${config_path}.diamond-maintenance.bak"
+  if ! caddy validate --config "$CADDY_CONFIG" --adapter caddyfile; then
+    local backup="${CADDY_CONFIG}.diamond-maintenance.bak"
     if [[ -f "$backup" ]]; then
-      cp -a -- "$backup" "$config_path"
-      nginx -t || true
+      cp -a -- "$backup" "$CADDY_CONFIG"
+      caddy validate --config "$CADDY_CONFIG" --adapter caddyfile || true
     fi
     return 1
   fi
-  systemctl reload nginx
+  caddy reload --config "$CADDY_CONFIG" --adapter caddyfile
 }
 restore_previous_frontend() {
   if [[ "$had_previous_next" == "1" && -n "$previous_next" && -d "$previous_next" ]]; then
@@ -190,7 +159,7 @@ npm ci
 
 # Install the reverse-proxy fallback before stopping Next.js so website
 # visitors get a real localized page throughout the frontend build/restart.
-ensure_nginx_maintenance_route
+ensure_caddy_maintenance_route
 maintenance_enabled=1
 set_site_maintenance 1
 set_platform_maintenance 1

@@ -140,7 +140,7 @@ qilish kerak bo‘lsa, oldingi Git commit snapshotini alohida release qiling.
 ### Majburiy maintenance oynasi
 
 `activate_production_release.sh` build boshlanishidan avval umumiy platforma
-maintenance flagini yoqadi. Nginx sayt sahifalarida lokal statik, o‘zbek/rus/
+maintenance flagini yoqadi. Caddy sayt sahifalarida lokal statik, o‘zbek/rus/
 ingliz tilidagi maintenance oynasini beradi; `/api/app-version-check` va
 `/api/platform-maintenance` ham flag yoqilgan davrda ilovalarga shu holatni
 qaytaradi, backend restart vaqtida ham. Student, Teacher va Speaking
@@ -149,9 +149,9 @@ Flag faqat backend-ready va frontend smoke test muvaffaqiyatli tugagach o‘chad
 Activation xato bersa, avvalgi `.next` buildi qaytarilib frontend health-check
 tekshiriladi; frontend tiklanmasa maintenance o‘chirilmaydi. Shu sabab deploy paytida
 flagni qo‘lda o‘chirish yoki `npm run build`ni lokal kompyuterda ishga tushirish
-taqiqlanadi. Birinchi activation Nginx konfiguratsiyasiga idempotent maintenance
-fallback qo‘shadi, `nginx -t` bilan tekshiradi va faqat `systemctl reload nginx`
-qiladi; to‘liq server reboot qilinmaydi.
+taqiqlanadi. Birinchi activation Caddy konfiguratsiyasiga idempotent import
+qo‘shadi, `caddy validate` bilan tekshiradi va `caddy reload` bilan qo‘llaydi;
+to‘liq server reboot qilinmaydi.
 
 ## Eski Frontend Build Cache'ini Tozalash (faqat avariya tiklash uchun)
 
