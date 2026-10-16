@@ -7800,7 +7800,12 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
         token = authorization.split(" ", 1)[1].strip()
         cached = _AUTH_USER_ROW_CACHE.get(token)
         if cached and cached[0] > time.time():
-            return dict(cached[1])
+            cached_row = dict(cached[1])
+            if int(cached_row.get("blocked") or 0) == 1:
+                raise HTTPException(status_code=403, detail="Account is blocked")
+            if is_speaking_app_account(cached_row.get("speaking_app_account")) and cached_row.get("speaking_deleted_at"):
+                raise HTTPException(status_code=401, detail="Session expired. Please login again")
+            return cached_row
     payload = _decode_bearer_payload(authorization)
     user_id = payload.get("sub")
     if not user_id or str(user_id).strip() == "" or str(user_id).strip().lower() == "none":
@@ -7812,7 +7817,13 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
 
     row = _auth_user_row_cached(user_id_int)
     if not row:
-        raise HTTPException(status_code=404, detail="User not found")
+        # A bearer token whose account was removed is an expired session, not
+        # a missing resource. All app clients treat 401 as a logout signal.
+        raise HTTPException(status_code=401, detail="Session expired. Please login again")
+    if int(row.get("blocked") or 0) == 1:
+        raise HTTPException(status_code=403, detail="Account is blocked")
+    if is_speaking_app_account(row.get("speaking_app_account")) and row.get("speaking_deleted_at"):
+        raise HTTPException(status_code=401, detail="Session expired. Please login again")
     token_telegram_id = str(payload.get("telegram_id") or "").strip()
     if token_telegram_id and _telegram_id_is_env_admin(token_telegram_id):
         token_role = _role_from_login_type(int(row.get("login_type") or 0), str(row.get("login_id") or ""))

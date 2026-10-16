@@ -147,14 +147,12 @@ type SpeakingAdminPersonalProps = {
   apiFetch: Props["apiFetch"];
   user: SpeakingAdminIdentity;
   onNavigate: (section: string) => void;
-  profileMode?: boolean;
 };
 
 function SpeakingAdminPersonalPanel({
   apiFetch,
   user,
   onNavigate,
-  profileMode = false,
 }: SpeakingAdminPersonalProps) {
   const [rooms, setRooms] = useState<LiveRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -181,40 +179,48 @@ function SpeakingAdminPersonalPanel({
   const ownRooms = rooms.filter((room) => Number(room.host_user_id) === userId);
   const activeRooms = ownRooms.filter((room) => room.status === "active" || room.status === "ending");
   const participantTotal = ownRooms.reduce((total, room) => total + Number(room.participant_count || 0), 0);
-  const title = profileMode ? "Speaking admin profili" : "Speaking admin bosh sahifasi";
 
   return (
-    <section className="mx-auto w-full max-w-6xl space-y-5 px-3 py-5 pb-24 sm:px-6">
-      <header className="rounded-3xl border border-cyan-400/25 bg-gradient-to-br from-cyan-500/10 via-white to-blue-500/10 p-6 shadow-sm dark:from-cyan-400/10 dark:via-navy-950 dark:to-blue-500/10">
-        <span className="inline-flex rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-black uppercase tracking-wide text-cyan-700 dark:text-cyan-300">Diamond Speaking Admin</span>
-        <h1 className="mt-3 text-2xl font-black tracking-tight text-navy-950 dark:text-white">{title}</h1>
-        <p className="mt-1 max-w-3xl text-sm text-ink-600 dark:text-slate-300">Bu sahifa faqat sizning Speaking administrator akkauntingiz, xonalaringiz va Speaking App boshqaruvlaringizni ko‘rsatadi.</p>
+    <div className="flex flex-col gap-5 pb-10 animate-fade-in">
+      <header className="admin-page-header">
+        <div>
+          <p className="admin-page-kicker">Speaking App</p>
+          <h1>Speaking boshqaruv paneli</h1>
+          <p>Speaking admin akkauntingiz va live xonalar bo‘yicha qisqa ma’lumot.</p>
+        </div>
       </header>
 
       {error ? <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm font-semibold text-red-700 dark:text-red-300">⚠ {error}</div> : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <article className="rounded-2xl border border-line bg-surface p-4 shadow-sm dark:border-white/10 dark:bg-navy-950"><p className="text-xs font-bold uppercase tracking-wide text-ink-500 dark:text-slate-400">Login ID</p><p className="mt-2 break-all text-lg font-black text-navy-950 dark:text-white">{user.login_id || "—"}</p></article>
-        <article className="rounded-2xl border border-line bg-surface p-4 shadow-sm dark:border-white/10 dark:bg-navy-950"><p className="text-xs font-bold uppercase tracking-wide text-ink-500 dark:text-slate-400">Mening live xonalarim</p><p className="mt-2 text-2xl font-black text-cyan-700 dark:text-cyan-300">{loading ? "…" : ownRooms.length}</p></article>
-        <article className="rounded-2xl border border-line bg-surface p-4 shadow-sm dark:border-white/10 dark:bg-navy-950"><p className="text-xs font-bold uppercase tracking-wide text-ink-500 dark:text-slate-400">Hozir jonli</p><p className="mt-2 text-2xl font-black text-emerald-700 dark:text-emerald-300">{loading ? "…" : activeRooms.length}</p></article>
-        <article className="rounded-2xl border border-line bg-surface p-4 shadow-sm dark:border-white/10 dark:bg-navy-950"><p className="text-xs font-bold uppercase tracking-wide text-ink-500 dark:text-slate-400">Qatnashchilar</p><p className="mt-2 text-2xl font-black text-navy-950 dark:text-white">{loading ? "…" : participantTotal}</p></article>
+      <div className="admin-hero-stats">
+        <article className="admin-stat-card asc-indigo"><div className="asc-bg-blob" /><div className="asc-icon">🛡️</div><div className="asc-value">{user.login_id || "—"}</div><div className="asc-label">Speaking admin</div></article>
+        <article className="admin-stat-card asc-cyan"><div className="asc-bg-blob" /><div className="asc-icon">🎥</div><div className="asc-value">{loading ? "…" : ownRooms.length}</div><div className="asc-label">Mening live xonalarim</div></article>
+        <article className="admin-stat-card asc-emerald"><div className="asc-bg-blob" /><div className="asc-icon">🔴</div><div className="asc-value">{loading ? "…" : activeRooms.length}</div><div className="asc-label">Hozir jonli</div></article>
+        <article className="admin-stat-card asc-amber"><div className="asc-bg-blob" /><div className="asc-icon">👥</div><div className="asc-value">{loading ? "…" : participantTotal}</div><div className="asc-label">Qatnashchilar</div></article>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1.25fr_0.75fr]">
-        <article className="rounded-2xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-navy-950">
-          <h2 className="text-lg font-black text-navy-950 dark:text-white">Mening akkauntim</h2>
-          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2"><div><dt className="font-bold text-ink-500 dark:text-slate-400">Ism</dt><dd className="mt-1 font-black text-navy-950 dark:text-white">{user.full_name || "Speaking administrator"}</dd></div><div><dt className="font-bold text-ink-500 dark:text-slate-400">Telefon</dt><dd className="mt-1 font-black text-navy-950 dark:text-white">{user.phone || "—"}</dd></div><div><dt className="font-bold text-ink-500 dark:text-slate-400">Ruxsat</dt><dd className="mt-1 font-black text-emerald-700 dark:text-emerald-300">Speaking App boshqaruvi</dd></div><div><dt className="font-bold text-ink-500 dark:text-slate-400">Fanlar</dt><dd className="mt-1 font-black text-navy-950 dark:text-white">{Array.isArray(user.subjects) && user.subjects.length ? user.subjects.join(", ") : "English / Russian"}</dd></div></dl>
-        </article>
-        <article className="rounded-2xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-navy-950"><h2 className="text-lg font-black text-navy-950 dark:text-white">Tezkor amallar</h2><div className="mt-4 grid gap-2"><button type="button" onClick={() => onNavigate("speaking-live")} className="rounded-xl bg-cyan-600 px-4 py-3 text-left text-sm font-black text-white transition hover:bg-cyan-500">Live video boshqaruvi</button><button type="button" onClick={() => onNavigate("speaking-topics")} className="rounded-xl border border-line px-4 py-3 text-left text-sm font-black text-ink-700 transition hover:bg-surface-soft dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10">Mavzu va savollar</button><button type="button" onClick={() => onNavigate("speaking-users")} className="rounded-xl border border-line px-4 py-3 text-left text-sm font-black text-ink-700 transition hover:bg-surface-soft dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10">Speaking foydalanuvchilari</button><button type="button" onClick={() => void load()} className="rounded-xl border border-line px-4 py-3 text-left text-sm font-black text-ink-700 transition hover:bg-surface-soft dark:border-white/15 dark:text-slate-200 dark:hover:bg-white/10">Shaxsiy ma’lumotlarni yangilash</button></div></article>
+      <div className="admin-dash-panels">
+        <section className="admin-dash-panel">
+          <div className="admin-dash-panel-head"><span className="admin-dash-panel-title">🛡️ Akkaunt ma’lumotlari</span></div>
+          <div className="admin-user-item"><div className="admin-user-avatar">{String(user.full_name || "S").charAt(0).toUpperCase()}</div><div className="min-w-0"><div className="admin-user-name">{user.full_name || "Speaking administrator"}</div><div className="admin-user-sub">{user.login_id || "—"}</div></div></div>
+          <div className="admin-alert-item"><span>Telefon</span><strong>{user.phone || "—"}</strong></div>
+          <div className="admin-alert-item"><span>Ruxsat</span><strong>Speaking App boshqaruvi</strong></div>
+          <div className="admin-alert-item"><span>Fanlar</span><strong>{Array.isArray(user.subjects) && user.subjects.length ? user.subjects.join(", ") : "English / Russian"}</strong></div>
+        </section>
+        <section className="admin-dash-panel">
+          <div className="admin-dash-panel-head"><span className="admin-dash-panel-title">⚡ Tezkor amallar</span></div>
+          {[
+            ["speaking-live", "🎥", "Live video boshqaruvi"],
+            ["speaking-topics", "📝", "Mavzu va savollar"],
+            ["speaking-users", "👥", "Speaking foydalanuvchilari"],
+          ].map(([section, icon, label]) => <button key={section} type="button" onClick={() => onNavigate(section)} className="admin-user-item w-full cursor-pointer text-left transition-opacity hover:opacity-75"><div className="admin-user-avatar">{icon}</div><div className="min-w-0 flex-1"><div className="admin-user-name">{label}</div><div className="admin-user-sub">Boshqaruv sahifasini ochish</div></div></button>)}
+          <button type="button" onClick={() => void load()} disabled={loading} className="btn btn-soft small mt-3">{loading ? "Yangilanmoqda…" : "Ma’lumotlarni yangilash"}</button>
+        </section>
       </div>
-    </section>
+    </div>
   );
 }
 
 export function SpeakingAdminHome(props: Omit<SpeakingAdminPersonalProps, "profileMode">) {
   return <SpeakingAdminPersonalPanel {...props} />;
-}
-
-export function SpeakingAdminProfile(props: Omit<SpeakingAdminPersonalProps, "profileMode">) {
-  return <SpeakingAdminPersonalPanel {...props} profileMode />;
 }

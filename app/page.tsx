@@ -44,7 +44,7 @@ import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
-import { SpeakingAdminHome, SpeakingAdminProfile, SpeakingLiveManagement } from "./ui/speaking-live-management";
+import { SpeakingAdminHome, SpeakingLiveManagement } from "./ui/speaking-live-management";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import AdminUserbot from "./ui/admin-userbot";
@@ -750,6 +750,11 @@ function isAuthErrorMessage(message: string) {
   );
 }
 
+function isBlockedAccountMessage(message: string) {
+  const lowered = String(message || "").toLowerCase();
+  return lowered.includes("account is blocked") || lowered.includes("akkauntingiz bloklangan") || lowered.includes("аккаунт заблокирован");
+}
+
 function isTerminalTelegramAuthError(message: string) {
   const lowered = String(message || "").toLowerCase();
   // These are completed server decisions (including failed initData
@@ -781,6 +786,9 @@ function friendlyHttpError(status: number, fallback?: string) {
     return t(locale, "errors.fileTooLarge", "Fayl hajmi juda katta. Iltimos kichikroq fayl yuklang.");
   }
   if (status === 403) {
+    if (/account is blocked|akkaunt bloklangan|аккаунт заблокирован/i.test(cleanFallback)) {
+      return t(locale, "auth.accountBlocked", "Akkauntingiz bloklangan.");
+    }
     return t(locale, "errors.permission", "Sizda bu ma'lumotni ko'rish huquqi yo'q");
   }
   if (status === 422) {
@@ -902,6 +910,9 @@ async function requestJson<T>(path: string, options?: {
     if (!response.ok) {
       if (response.status === 401 && options?.token) {
         localStorage.removeItem("diamond_token");
+        if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+          window.location.replace("/login?reason=session_expired");
+        }
         throw new Error("Invalid token");
       }
       const text = await response.text().catch(() => "");
@@ -933,6 +944,12 @@ async function requestJson<T>(path: string, options?: {
                 : String(parsed?.message || parsed?.error || "").trim();
         } catch {
           detail = trimmed;
+        }
+        if (response.status === 403 && options?.token && isBlockedAccountMessage(detail)) {
+          localStorage.removeItem("diamond_token");
+          if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+            window.location.replace("/login?reason=account_blocked");
+          }
         }
         throw new Error(friendlyHttpError(response.status, detail || undefined));
       }
@@ -25235,7 +25252,7 @@ function DashboardShell({
     }
   } else {
     if (currentSection === "profile" && activeRole === "speaking_admin") {
-      content = <SpeakingAdminProfile apiFetch={authedApiFetch} user={user} onNavigate={handleNavigate} />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="SPEAKING ADMIN" />;
     } else if (currentSection === "home" && activeRole === "speaking_admin") {
       content = <SpeakingAdminHome apiFetch={authedApiFetch} user={user} onNavigate={handleNavigate} />;
     } else if (currentSection === "profile") {
@@ -26229,8 +26246,15 @@ export default function DiamondEducationApp() {
             }
           } catch (authErr) {
             const message = authErr instanceof Error ? authErr.message : "Request failed";
+            if (isBlockedAccountMessage(message)) {
+              localStorage.removeItem("diamond_token");
+              router.replace("/login?reason=account_blocked");
+              return;
+            }
             if (isAuthErrorMessage(message)) {
               localStorage.removeItem("diamond_token");
+              router.replace("/login?reason=session_expired");
+              return;
             } else {
               setAuthStatus("checking");
               scheduleRetry();
@@ -26266,6 +26290,10 @@ export default function DiamondEducationApp() {
             return;
           } catch (tgErr: any) {
             const msg = tgErr instanceof Error ? tgErr.message : String(tgErr || "");
+            if (isBlockedAccountMessage(msg)) {
+              router.replace("/login?reason=account_blocked");
+              return;
+            }
             if (isTerminalTelegramAuthError(msg)) {
               setAuthStatus("telegram-unregistered");
               setInitialStateReady(true);
@@ -26305,8 +26333,15 @@ export default function DiamondEducationApp() {
             }
           } catch (retryErr) {
             const message = retryErr instanceof Error ? retryErr.message : "Request failed";
+            if (isBlockedAccountMessage(message)) {
+              localStorage.removeItem("diamond_token");
+              router.replace("/login?reason=account_blocked");
+              return;
+            }
             if (isAuthErrorMessage(message)) {
               localStorage.removeItem("diamond_token");
+              router.replace("/login?reason=session_expired");
+              return;
             } else {
               setAuthStatus("checking");
               scheduleRetry();

@@ -110,6 +110,17 @@ export default function LoginPage() {
   }, []);
 
   useEffect(() => {
+    const reason = new URLSearchParams(window.location.search).get("reason");
+    if (reason === "account_blocked") {
+      const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+      setError(locale.startsWith("ru") ? "Ваш аккаунт заблокирован. Обратитесь к администратору." : locale.startsWith("en") ? "Your account is blocked. Please contact the administrator." : "Akkauntingiz bloklangan. Administratorga murojaat qiling.");
+    } else if (reason === "session_expired") {
+      const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+      setError(locale.startsWith("ru") ? "Сессия завершена или аккаунт удалён. Войдите снова." : locale.startsWith("en") ? "Your session ended or the account was removed. Please log in again." : "Sessiya tugadi yoki akkaunt o‘chirilgan. Qayta kiring.");
+    }
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     async function checkToken() {
       const token = localStorage.getItem("diamond_token");
@@ -121,7 +132,21 @@ export default function LoginPage() {
             Authorization: `Bearer ${token}`,
           },
         });
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 404) {
+            localStorage.removeItem("diamond_token");
+            const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+            setError(locale.startsWith("ru") ? "Сессия завершена или аккаунт удалён. Войдите снова." : locale.startsWith("en") ? "Your session ended or the account was removed. Please log in again." : "Sessiya tugadi yoki akkaunt o‘chirilgan. Qayta kiring.");
+          } else if (response.status === 403) {
+            const body = await response.json().catch(() => ({}));
+            if (String(body?.detail || "").toLowerCase().includes("account is blocked")) {
+              localStorage.removeItem("diamond_token");
+              const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+              setError(locale.startsWith("ru") ? "Ваш аккаунт заблокирован. Обратитесь к администратору." : locale.startsWith("en") ? "Your account is blocked. Please contact the administrator." : "Akkauntingiz bloklangan. Administratorga murojaat qiling.");
+            }
+          }
+          return;
+        }
         const me = await response.json().catch(() => ({} as Record<string, unknown>));
         if (telegramAuthPayload) {
           const meTelegramId = Number((me as any)?.telegram_id || 0);
@@ -178,7 +203,13 @@ export default function LoginPage() {
           window.clearTimeout(timeout);
         }
         const body = await response.json().catch(() => ({}));
-        if (!response.ok) return;
+        if (!response.ok) {
+          if (response.status === 403 && String(body?.detail || "").toLowerCase().includes("account is blocked")) {
+            const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+            setError(locale.startsWith("ru") ? "Ваш аккаунт заблокирован. Обратитесь к администратору." : locale.startsWith("en") ? "Your account is blocked. Please contact the administrator." : "Akkauntingiz bloklangan. Administratorga murojaat qiling.");
+          }
+          return;
+        }
         const token = String(body.access_token || "");
         if (!token) return;
         if (!cancelled) completeLogin(token);
@@ -368,7 +399,12 @@ export default function LoginPage() {
       }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(String(body.detail || "Kirish amalga oshmadi"));
+        const detail = String(body.detail || "Kirish amalga oshmadi");
+        if (response.status === 403 && detail.toLowerCase().includes("account is blocked")) {
+          const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
+          throw new Error(locale.startsWith("ru") ? "Ваш аккаунт заблокирован. Обратитесь к администратору." : locale.startsWith("en") ? "Your account is blocked. Please contact the administrator." : "Akkauntingiz bloklangan. Administratorga murojaat qiling.");
+        }
+        throw new Error(detail);
       }
       const token = String(body.access_token || "");
       if (!token) throw new Error("Token qaytmadi");
