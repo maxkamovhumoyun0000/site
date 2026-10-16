@@ -142,8 +142,9 @@ qilish kerak bo‘lsa, oldingi Git commit snapshotini alohida release qiling.
 `activate_production_release.sh` build boshlanishidan avval umumiy platforma
 maintenance flagini yoqadi. Caddy sayt sahifalarida lokal statik, o‘zbek/rus/
 ingliz tilidagi maintenance oynasini beradi; `/api/app-version-check` va
-`/api/platform-maintenance` ham flag yoqilgan davrda ilovalarga shu holatni
-qaytaradi, backend restart vaqtida ham. Student, Teacher va Speaking
+`/api/platform-maintenance` backend restart vaqtida ham lokal maintenance
+holatini qaytaradi va maintenance o‘chiq paytda ham `/api` prefiksi bilan
+backendga to‘g‘ri yo‘naltiriladi. Student, Teacher va Speaking
 iOS/Android ilovalari foydalanuvchining tilida maintenance ekranini ko‘rsatadi.
 Flag faqat backend-ready va frontend smoke test muvaffaqiyatli tugagach o‘chadi.
 Activation xato bersa, avvalgi `.next` buildi qaytarilib frontend health-check

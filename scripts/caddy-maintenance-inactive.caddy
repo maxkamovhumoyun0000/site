@@ -1,1 +1,12 @@
 # Maintenance mode is currently off.
+
+# These two endpoints have an /api prefix in FastAPI itself. Keep the prefix
+# when proxying them; the general handle_path /api/* route intentionally strips
+# that prefix for the rest of the legacy API surface.
+handle /api/platform-maintenance {
+	reverse_proxy 127.0.0.1:3001
+}
+
+handle /api/app-version-check {
+	reverse_proxy 127.0.0.1:3001
+}
