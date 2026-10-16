@@ -394,9 +394,6 @@ export default function LoginPage() {
       <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-sky-500/20 blur-[120px] pointer-events-none" />
 
       <section className="relative w-full max-w-[420px] p-8 md:p-10 bg-white/10 backdrop-blur-2xl border border-white/20 rounded-[2.5rem] shadow-[0_0_60px_rgba(34,211,238,0.15)] flex flex-col items-center animate-fade-in z-10 transition-transform duration-500 hover:scale-[1.01]">
-        <div className="flex items-center justify-center w-20 h-20 mb-5 bg-gradient-to-br from-white/20 to-white/5 border border-white/20 rounded-2xl shadow-[0_0_20px_rgba(34,211,238,0.3)] overflow-hidden">
-          <img src="/logo.jpg" alt="Diamond Education" className="object-cover w-full h-full hover:scale-110 transition-transform duration-500" />
-        </div>
         <h1 className="mb-8 text-3xl font-black text-white font-display tracking-tight text-center drop-shadow-lg">Tizimga kirish</h1>
         
         <form className="flex flex-col w-full gap-5" onSubmit={submit}>
