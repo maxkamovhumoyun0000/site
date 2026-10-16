@@ -21343,6 +21343,10 @@ def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | 
         if platform_end is None or platform_end <= current:
             platform_end = current + timedelta(minutes=30)
         ends_at = platform_end.isoformat().replace("+00:00", "Z")
+    elif not active:
+        # Do not leave a disabled/scheduled maintenance window's old timestamp
+        # visible to clients as if it were the current completion estimate.
+        ends_at = ""
     return {
         "enabled": enabled or platform_active,
         "active": active or platform_active,
