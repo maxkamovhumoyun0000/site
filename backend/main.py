@@ -6708,13 +6708,14 @@ def _web_session_limit_for_user(user: dict) -> int:
     return 3
 
 
-def _active_web_sessions_for_user(user_id: int) -> list[dict[str, Any]]:
+def _active_web_sessions_for_user(user_id: int, *, conn: Any | None = None) -> list[dict[str, Any]]:
     """Return only the caller's still-valid sessions, newest first."""
     uid = int(user_id or 0)
     if uid <= 0:
         return []
-    conn = get_conn()
-    cur = conn.cursor()
+    owns_connection = conn is None
+    connection = conn or get_conn()
+    cur = connection.cursor()
     try:
         cur.execute(
             """
@@ -6729,7 +6730,8 @@ def _active_web_sessions_for_user(user_id: int) -> list[dict[str, Any]]:
         )
         return [dict(row) for row in (cur.fetchall() or [])]
     finally:
-        conn.close()
+        if owns_connection:
+            connection.close()
 
 
 def _public_session_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -6753,6 +6755,7 @@ def _reserve_web_session_slot(
     *,
     device_id: str | None,
     requested_session_ids: list[str] | None,
+    conn: Any | None = None,
 ) -> None:
     """End selected old sessions before issuing a new student session.
 
@@ -6764,7 +6767,10 @@ def _reserve_web_session_slot(
     if limit <= 0:
         return
     uid = int(user.get("id") or 0)
-    active = _active_web_sessions_for_user(uid)
+    # Link approval/consumption can already hold FOR UPDATE on a one-time
+    # code.  Reuse that connection so session replacement is atomic and does
+    # not wait on a second PostgreSQL connection under load.
+    active = _active_web_sessions_for_user(uid, conn=conn)
     try:
         replacements = session_replacements_for_login(
             active,
@@ -6786,8 +6792,9 @@ def _reserve_web_session_slot(
         raise
     if not replacements:
         return
-    conn = get_conn()
-    cur = conn.cursor()
+    owns_connection = conn is None
+    connection = conn or get_conn()
+    cur = connection.cursor()
     try:
         placeholders = ",".join(["?"] * len(replacements))
         cur.execute(
@@ -6800,9 +6807,11 @@ def _reserve_web_session_slot(
             """,
             (_now_utc().isoformat(), "session_replaced_by_learner", uid, *replacements),
         )
-        conn.commit()
+        if owns_connection:
+            connection.commit()
     finally:
-        conn.close()
+        if owns_connection:
+            connection.close()
     _clear_auth_caches_for_user(uid)
 
 
@@ -20604,6 +20613,7 @@ async def approve_speaking_student_link(
             user,
             device_id=str(link.get("device_id") or "").strip() or None,
             requested_session_ids=payload.revoke_session_ids,
+            conn=conn,
         )
         cur.execute(
             """
@@ -20649,7 +20659,12 @@ async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
         user = get_user_by_id(user_id)
         if not user:
             raise HTTPException(status_code=404, detail="Student account not found")
-        _reserve_web_session_slot(user, device_id=payload.device_id, requested_session_ids=payload.revoke_session_ids)
+        _reserve_web_session_slot(
+            user,
+            device_id=payload.device_id,
+            requested_session_ids=payload.revoke_session_ids,
+            conn=conn,
+        )
         cur.execute(
             "UPDATE speaking_student_link_requests SET consumed_at=? WHERE code=? AND consumed_at IS NULL",
             (_now_utc().isoformat(), code),
