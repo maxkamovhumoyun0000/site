@@ -1438,6 +1438,7 @@ class SpeakingLinkStartRequest(BaseModel):
 
 class SpeakingLinkApproveRequest(BaseModel):
     code: str = Field(min_length=4, max_length=32)
+    revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
 
 
 class SpeakingLinkCompleteRequest(BaseModel):
@@ -20583,14 +20584,35 @@ async def approve_speaking_student_link(
     _ensure_speaking_account_schema()
     conn = get_conn(); cur = conn.cursor()
     try:
+        try:
+            cur.execute("SELECT * FROM speaking_student_link_requests WHERE code=? FOR UPDATE", (code,))
+        except Exception:
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM speaking_student_link_requests WHERE code=?", (code,))
+        link = dict(cur.fetchone() or {})
+        if not link or link.get("consumed_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
+            raise HTTPException(status_code=400, detail="Speaking link code is invalid or expired")
+        linked_user_id = int(link.get("user_id") or 0)
+        current_user_id = int(user.get("id") or 0)
+        if linked_user_id and linked_user_id != current_user_id:
+            raise HTTPException(status_code=403, detail="This Speaking link belongs to another Student App account")
+        # The Student App owns this consent screen, so session replacement is
+        # selected here as well.  A full three-device account never leaves the
+        # Speaking app spinning while it waits for a hidden 409 response.
+        _reserve_web_session_slot(
+            user,
+            device_id=str(link.get("device_id") or "").strip() or None,
+            requested_session_ids=payload.revoke_session_ids,
+        )
         cur.execute(
             """
             UPDATE speaking_student_link_requests
             SET approved_at=?, user_id=?
-            WHERE code=? AND user_id IS NULL AND consumed_at IS NULL
+            WHERE code=? AND (user_id IS NULL OR user_id=?) AND consumed_at IS NULL
               AND expires_at>?
             """,
-            (_now_utc().isoformat(), int(user.get("id") or 0), code, _now_utc().isoformat()),
+            (_now_utc().isoformat(), current_user_id, code, current_user_id, _now_utc().isoformat()),
         )
         if int(cur.rowcount or 0) != 1:
             raise HTTPException(status_code=400, detail="Speaking link code is invalid or expired")
