@@ -14,12 +14,14 @@ function ModeratorParticipantTile({
   participant,
   local,
   refreshKey,
+  cameraRotation,
   onMuteTrack,
   onRemove,
 }: {
   participant: any;
   local: boolean;
   refreshKey: number;
+  cameraRotation: number;
   onMuteTrack?: (identity: string, trackSid: string, muted: boolean) => void;
   onRemove?: (identity: string) => void;
 }) {
@@ -39,12 +41,17 @@ function ModeratorParticipantTile({
         video.autoplay = true;
         video.playsInline = true;
         video.muted = participant.isLocal === true;
-        video.className = "h-full max-h-[34rem] min-h-48 w-full rounded-xl bg-black object-contain";
+        video.className = "h-full max-h-[34rem] min-h-48 w-full rounded-xl bg-black object-contain transition-transform duration-200";
+        if (publication.source === "camera" && cameraRotation) {
+          video.style.transform = `rotate(${cameraRotation}deg)`;
+        }
       } else {
         const audio = element as HTMLAudioElement;
         audio.autoplay = true;
         audio.controls = false;
         audio.className = "hidden";
+        audio.playsInline = true;
+        void audio.play().catch(() => undefined);
       }
       container.appendChild(element);
       attached.push({ track, element });
@@ -55,11 +62,12 @@ function ModeratorParticipantTile({
         element.remove();
       }
     };
-  }, [participant, refreshKey]);
+  }, [participant, refreshKey, cameraRotation]);
 
   const identity = String(participant.identity || "");
   const visibleTracks = publications.filter((publication) => publication.kind === "audio" || publication.kind === "video");
   const hasVideo = visibleTracks.some((publication) => publication.kind === "video" && !publication.isMuted);
+  const isModerator = identity.startsWith("speaking-admin-");
 
   return (
     <article className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-xl">
@@ -68,7 +76,7 @@ function ModeratorParticipantTile({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-white">
         <div className="min-w-0"><p className="truncate text-sm font-bold">{participant.name || identity}{local ? " · Siz (moderator)" : ""}</p><p className="text-xs text-slate-400">{visibleTracks.length ? `${visibleTracks.filter((item) => !item.isMuted).length} media oqimi faol` : "Kamera/mikrofon o‘chiq"}</p></div>
-        {!local && onMuteTrack && onRemove ? <div className="flex gap-2">
+        {!local && !isModerator && onMuteTrack && onRemove ? <div className="flex gap-2">
           {visibleTracks.map((publication) => <button key={publication.trackSid} type="button" onClick={() => onMuteTrack(identity, String(publication.trackSid), !publication.isMuted)} className="rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-bold hover:bg-white/10">{publication.kind === "audio" ? (publication.isMuted ? "Ovozni yoqish" : "Ovozni o‘chirish") : (publication.isMuted ? "Kamerani yoqish" : "Kamerani o‘chirish")}</button>)}
           <button type="button" onClick={() => onRemove(identity)} className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-bold hover:bg-red-500">Xonadan chiqarish</button>
         </div> : null}
@@ -98,9 +106,18 @@ export function LiveKitModeratorRoom({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [portalReady, setPortalReady] = useState(false);
+  const [sessionId, setSessionId] = useState("");
+  const [deviceName, setDeviceName] = useState("Browser");
+  const [cameraRotation, setCameraRotation] = useState(0);
+  const [audioEnabled, setAudioEnabled] = useState(false);
 
   useEffect(() => {
     setPortalReady(true);
+    setSessionId(globalThis.crypto?.randomUUID?.().replaceAll("-", "").slice(0, 24) || `${Date.now()}${Math.random().toString(36).slice(2, 10)}`);
+    const ua = navigator.userAgent;
+    const platform = /Android/i.test(ua) ? "Android" : /iPhone|iPad|iPod/i.test(ua) ? "iPhone/iPad" : /Windows/i.test(ua) ? "Windows" : /Macintosh|Mac OS/i.test(ua) ? "Mac" : /Linux/i.test(ua) ? "Linux" : "Browser";
+    const browser = /Edg\//i.test(ua) ? "Edge" : /Firefox\//i.test(ua) ? "Firefox" : /Chrome\//i.test(ua) ? "Chrome" : /Safari\//i.test(ua) ? "Safari" : "Browser";
+    setDeviceName(`${platform} · ${browser}`);
   }, []);
 
   const refreshParticipants = useCallback(() => {
@@ -111,13 +128,14 @@ export function LiveKitModeratorRoom({
   }, []);
 
   useEffect(() => {
+    if (!sessionId) return;
     let disposed = false;
     let createdRoom: any = null;
     const connect = async () => {
       try {
         setConnecting(true);
         setError("");
-        const payload = await apiFetch(`/staff/speaking/live-video/rooms/${encodeURIComponent(roomId)}/moderator-token`, { method: "POST" }) as JoinPayload;
+        const payload = await apiFetch(`/staff/speaking/live-video/rooms/${encodeURIComponent(roomId)}/moderator-token`, { method: "POST", body: { session_id: sessionId, device_name: deviceName } }) as JoinPayload;
         if (!payload?.url || !payload?.token) throw new Error("Moderator ulanish tokeni olinmadi.");
         const { Room, RoomEvent } = await import("livekit-client");
         createdRoom = new Room({ adaptiveStream: true, dynacast: true });
@@ -126,10 +144,11 @@ export function LiveKitModeratorRoom({
           if (!disposed) {
             setRoom(createdRoom);
             setParticipants([createdRoom!.localParticipant, ...createdRoom!.remoteParticipants.values()]);
+          setAudioEnabled(Boolean(createdRoom!.canPlaybackAudio));
             setRefreshKey((value) => value + 1);
           }
         };
-        for (const event of [RoomEvent.Connected, RoomEvent.Disconnected, RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected, RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackMuted, RoomEvent.TrackUnmuted, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished]) {
+        for (const event of [RoomEvent.Connected, RoomEvent.Disconnected, RoomEvent.ParticipantConnected, RoomEvent.ParticipantDisconnected, RoomEvent.TrackSubscribed, RoomEvent.TrackUnsubscribed, RoomEvent.TrackMuted, RoomEvent.TrackUnmuted, RoomEvent.LocalTrackPublished, RoomEvent.LocalTrackUnpublished, RoomEvent.AudioPlaybackStatusChanged]) {
           createdRoom.on(event as any, refresh as any);
         }
         await createdRoom.connect(payload.url, payload.token);
@@ -139,6 +158,7 @@ export function LiveKitModeratorRoom({
         }
         setRoom(createdRoom);
         setParticipants([createdRoom.localParticipant, ...createdRoom.remoteParticipants.values()]);
+        setAudioEnabled(Boolean(createdRoom.canPlaybackAudio));
         setRefreshKey((value) => value + 1);
       } catch (cause) {
         if (!disposed) setError(cause instanceof Error ? cause.message : "Live xonaga ulanishda xatolik yuz berdi.");
@@ -153,7 +173,7 @@ export function LiveKitModeratorRoom({
       if (createdRoom) void createdRoom.disconnect();
       void apiFetch(`/api/speaking/live-video/rooms/${encodeURIComponent(roomId)}/leave`, { method: "POST" }).catch(() => undefined);
     };
-  }, [apiFetch, roomId]);
+  }, [apiFetch, roomId, sessionId, deviceName]);
 
   async function toggleMedia(kind: "microphone" | "camera" | "screen") {
     if (!room) return;
@@ -166,6 +186,20 @@ export function LiveKitModeratorRoom({
       refreshParticipants();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Qurilma ruxsati olinmadi.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function enableAudioPlayback() {
+    if (!room) return;
+    setBusy("audio");
+    setError("");
+    try {
+      await room.startAudio();
+      setAudioEnabled(true);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Ovoz ijrosiga ruxsat berilmadi. Sahifada ovozni yoqishga ruxsat bering.");
     } finally {
       setBusy("");
     }
@@ -219,6 +253,8 @@ export function LiveKitModeratorRoom({
         <div className="flex flex-wrap gap-2">
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("microphone")} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">{local?.isMicrophoneEnabled ? "Mikrofonni o‘chirish" : "Mikrofonni yoqish"}</button>
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("camera")} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">{local?.isCameraEnabled ? "Kamerani o‘chirish" : "Kamerani yoqish"}</button>
+          <button type="button" disabled={!room || !!busy || !local?.isCameraEnabled} onClick={() => setCameraRotation((value) => (value + 90) % 360)} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">Kamerani aylantirish ↻</button>
+          <button type="button" disabled={!room || !!busy || audioEnabled} onClick={() => void enableAudioPlayback()} className="rounded-xl border border-emerald-300/40 px-3 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-400/10 disabled:opacity-50">{audioEnabled ? "Ovoz yoqilgan" : "Ovozni yoqish"}</button>
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("screen")} className="rounded-xl border border-cyan-300/40 px-3 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-400/10 disabled:opacity-50">{local?.isScreenShareEnabled ? "Ekran ulashishni to‘xtatish" : "Ekran ulashish"}</button>
           <button type="button" disabled={!!busy} onClick={() => void leaveRoom()} className="rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold hover:bg-slate-600 disabled:opacity-50">{room ? "Xonadan chiqish" : "Yopish"}</button>
           <button type="button" disabled={!!busy} onClick={() => void endLive()} className="rounded-xl bg-red-600 px-3 py-2 text-sm font-bold hover:bg-red-500 disabled:opacity-50">Live’ni tugatish</button>
@@ -229,7 +265,7 @@ export function LiveKitModeratorRoom({
         {error ? <div role="alert" className="rounded-xl border border-red-400/40 bg-red-950/70 p-3 text-sm text-red-100">{error}</div> : null}
         {!connecting && !error && participants.length <= 1 ? <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">Xona ochiq. Qatnashchilar Speaking ilovasidagi Live video bo‘limidan qo‘shilganda shu yerda ko‘rinadi.</div> : null}
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {participants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}
+          {participants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} cameraRotation={participant.isLocal === true ? cameraRotation : 0} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}
         </section>
       </main>
     </div>,

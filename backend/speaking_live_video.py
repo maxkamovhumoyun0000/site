@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -50,6 +50,11 @@ class LiveVideoMuteTrackRequest(BaseModel):
     identity: str = Field(min_length=1, max_length=128)
     track_sid: str = Field(min_length=1, max_length=128)
     muted: bool
+
+
+class LiveVideoModeratorTokenRequest(BaseModel):
+    session_id: str = Field(default="", max_length=40)
+    device_name: str = Field(default="", max_length=40)
 
 
 def _main_helpers():
@@ -495,15 +500,25 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
 
 
 @router.post("/staff/speaking/live-video/rooms/{room_id}/moderator-token")
-async def staff_live_video_moderator_token(room_id: str, authorization: str | None = Header(default=None)):
+async def staff_live_video_moderator_token(
+    room_id: str,
+    payload: LiveVideoModeratorTokenRequest | None = Body(default=None),
+    authorization: str | None = Header(default=None),
+):
     user = _require_active_staff(authorization)
     ensure_live_video_schema()
     url, api_key, api_secret = _livekit_config()
     room_id = _room_id(room_id)
     user_id = int(user.get("id") or 0)
-    identity = f"speaking-admin-{user_id}"
+    session_id = str(payload.session_id if payload else "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,40}", session_id):
+        session_id = secrets.token_hex(8)
+    identity = f"speaking-admin-{user_id}-{session_id}"
     display_name, _, _ = _main_helpers()
     name = " ".join(str(display_name(user)).split())[:80] or "Speaking moderator"
+    device_name = " ".join(str(payload.device_name if payload else "").split())[:40]
+    if device_name:
+        name = f"{name} · {device_name}"[:120]
     now = _now()
     conn = get_conn()
     cur = conn.cursor()

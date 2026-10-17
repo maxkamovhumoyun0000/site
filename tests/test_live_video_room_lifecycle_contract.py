@@ -62,6 +62,18 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         self.assertIn('"roomAdmin": True', endpoint)
         self.assertIn('"is_moderator": True', endpoint)
 
+    def test_moderator_tokens_are_unique_per_device_session(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def staff_live_video_moderator_token(")
+        end = source.index("@router.post(\"/staff/speaking/live-video/rooms/{room_id}/participants/remove\")", start)
+        endpoint = source[start:end]
+
+        self.assertIn("payload: LiveVideoModeratorTokenRequest | None", endpoint)
+        self.assertIn('identity = f"speaking-admin-{user_id}-{session_id}"', endpoint)
+        self.assertIn("device_name", endpoint)
+
     def test_regular_speaking_app_token_never_gets_moderator_grant(self) -> None:
         source = (ROOT / "backend" / "speaking_live_video.py").read_text(
             encoding="utf-8"
