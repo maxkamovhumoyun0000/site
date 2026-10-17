@@ -8,6 +8,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
+    def test_room_list_serializes_active_status(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        serializer_start = source.index("def _serialize_room(")
+        serializer_end = source.index("\n\ndef _active_room_or_error", serializer_start)
+        serializer = source[serializer_start:serializer_end]
+
+        self.assertIn('"status": str(row.get("status") or "")', serializer)
+
     def test_only_host_end_deletes_the_sfu_room(self) -> None:
         source = (ROOT / "backend" / "speaking_live_video.py").read_text(
             encoding="utf-8"
