@@ -109,6 +109,7 @@ export function LiveKitModeratorRoom({
   const [deviceName, setDeviceName] = useState("Browser");
   const [cameraRotation, setCameraRotation] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
 
   useEffect(() => {
     setPortalReady(true);
@@ -158,6 +159,8 @@ export function LiveKitModeratorRoom({
         setRoom(createdRoom);
         setParticipants([createdRoom.localParticipant, ...createdRoom.remoteParticipants.values()]);
         setAudioEnabled(Boolean(createdRoom.canPlaybackAudio));
+        const devices = await navigator.mediaDevices?.enumerateDevices().catch(() => []) || [];
+        setCameraDevices(devices.filter((device) => device.kind === "videoinput"));
         setRefreshKey((value) => value + 1);
       } catch (cause) {
         if (!disposed) setError(cause instanceof Error ? cause.message : "Live xonaga ulanishda xatolik yuz berdi.");
@@ -199,6 +202,23 @@ export function LiveKitModeratorRoom({
       setAudioEnabled(true);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Ovoz ijrosiga ruxsat berilmadi. Sahifada ovozni yoqishga ruxsat bering.");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function switchCamera() {
+    if (!room || cameraDevices.length < 2) return;
+    setBusy("camera");
+    setError("");
+    try {
+      const active = await room.getActiveDevice("videoinput");
+      const activeIndex = cameraDevices.findIndex((device) => device.deviceId === active);
+      const next = cameraDevices[(activeIndex + 1 + cameraDevices.length) % cameraDevices.length];
+      await room.switchActiveDevice("videoinput", next.deviceId);
+      setCameraRotation(0);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Kamerani almashtirib bo‘lmadi.");
     } finally {
       setBusy("");
     }
@@ -252,8 +272,9 @@ export function LiveKitModeratorRoom({
         <div className="flex flex-wrap gap-2">
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("microphone")} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">{local?.isMicrophoneEnabled ? "Mikrofonni o‘chirish" : "Mikrofonni yoqish"}</button>
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("camera")} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">{local?.isCameraEnabled ? "Kamerani o‘chirish" : "Kamerani yoqish"}</button>
-          <button type="button" disabled={!room || !!busy || !local?.isCameraEnabled} onClick={() => setCameraRotation((value) => (value + 90) % 360)} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">Kamerani aylantirish ↻</button>
-          <button type="button" disabled={!room || !!busy || audioEnabled} onClick={() => void enableAudioPlayback()} className="rounded-xl border border-emerald-300/40 px-3 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-400/10 disabled:opacity-50">{audioEnabled ? "Ovoz yoqilgan" : "Ovozni yoqish"}</button>
+          <button type="button" disabled={!room || !!busy || !local?.isCameraEnabled} onClick={() => setCameraRotation((value) => (value + 90) % 360)} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">Tasvirni burish ↻</button>
+          {cameraDevices.length > 1 ? <button type="button" disabled={!room || !!busy || !local?.isCameraEnabled} onClick={() => void switchCamera()} className="rounded-xl border border-white/15 px-3 py-2 text-sm font-bold hover:bg-white/10 disabled:opacity-50">Kamerani almashtirish</button> : null}
+          <button type="button" disabled={!room || !!busy} onClick={() => void enableAudioPlayback()} className="rounded-xl border border-emerald-300/40 px-3 py-2 text-sm font-bold text-emerald-100 hover:bg-emerald-400/10 disabled:opacity-50">{audioEnabled ? "Ovozni qayta yoqish" : "Ovozni yoqish"}</button>
           <button type="button" disabled={!room || !!busy} onClick={() => void toggleMedia("screen")} className="rounded-xl border border-cyan-300/40 px-3 py-2 text-sm font-bold text-cyan-100 hover:bg-cyan-400/10 disabled:opacity-50">{local?.isScreenShareEnabled ? "Ekran ulashishni to‘xtatish" : "Ekran ulashish"}</button>
           <button type="button" disabled={!!busy} onClick={() => void leaveRoom()} className="rounded-xl bg-slate-700 px-3 py-2 text-sm font-bold hover:bg-slate-600 disabled:opacity-50">{room ? "Xonadan chiqish" : "Yopish"}</button>
           <button type="button" disabled={!!busy} onClick={() => void endLive()} className="rounded-xl bg-red-600 px-3 py-2 text-sm font-bold hover:bg-red-500 disabled:opacity-50">Live’ni tugatish</button>
