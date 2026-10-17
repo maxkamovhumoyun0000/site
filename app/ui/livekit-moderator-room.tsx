@@ -50,7 +50,6 @@ function ModeratorParticipantTile({
         audio.autoplay = true;
         audio.controls = false;
         audio.className = "hidden";
-        audio.playsInline = true;
         void audio.play().catch(() => undefined);
       }
       container.appendChild(element);
