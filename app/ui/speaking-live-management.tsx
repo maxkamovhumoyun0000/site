@@ -27,6 +27,18 @@ function roomDate(value?: string | null) {
   return date ? date.toLocaleString("uz-UZ") : value;
 }
 
+function requestModeratorFullscreen() {
+  if (typeof document === "undefined" || document.fullscreenElement) return;
+  const request = document.documentElement.requestFullscreen?.();
+  if (request) void request.catch(() => undefined);
+}
+
+function exitModeratorFullscreen() {
+  if (typeof document === "undefined" || !document.fullscreenElement) return;
+  const exit = document.exitFullscreen?.();
+  if (exit) void exit.catch(() => undefined);
+}
+
 export function SpeakingLiveManagement({ apiFetch, currentUserId }: Props) {
   const [rooms, setRooms] = useState<LiveRoom[]>([]);
   const [title, setTitle] = useState("IELTS Speaking Live Practice");
@@ -62,6 +74,8 @@ export function SpeakingLiveManagement({ apiFetch, currentUserId }: Props) {
       setError("Xona nomi kamida 3 ta belgidan iborat bo‘lsin.");
       return;
     }
+    // Ask while the submit gesture is still active; browsers require user activation.
+    requestModeratorFullscreen();
     setSaving(true);
     setMessage("");
     setError("");
@@ -132,10 +146,10 @@ export function SpeakingLiveManagement({ apiFetch, currentUserId }: Props) {
         {loading ? <div className="p-10 text-center text-sm text-ink-500 dark:text-slate-400">Yuklanmoqda…</div> : rooms.length === 0 ? <div className="p-10 text-center text-sm text-ink-500 dark:text-slate-400">Hozircha live video xonasi yo‘q.</div> : <div className="divide-y divide-line dark:divide-white/10">{rooms.map((room) => {
           const active = room.status === "active" || room.status === "ending";
           const ownRoom = Number(room.host_user_id) === currentUserId;
-          return <article key={room.id} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-black text-navy-950 dark:text-white">{room.title}</h3><span className={`rounded-full px-2.5 py-1 text-xs font-black ${active ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-slate-500/10 text-slate-700 dark:text-slate-300"}`}>{active ? "Jonli" : "Tugagan"}</span>{ownRoom ? <span className="rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">Sizning xonangiz</span> : null}</div><p className="mt-1 text-xs text-ink-500 dark:text-slate-400">{room.subject === "russian" ? "Rus tili" : "English / IELTS"} · {Number(room.participant_count || 0)} / {Number(room.max_participants || 1000)} qatnashchi · {roomDate(room.created_at)}</p></div>{active ? <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setModeratingRoom(room)} className="rounded-xl bg-cyan-700 px-4 py-2.5 text-sm font-black text-white transition hover:bg-cyan-600">Moderator sifatida kirish</button>{ownRoom ? <button type="button" disabled={endingId === room.id} onClick={() => void endRoom(room)} className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-red-500 disabled:opacity-60">{endingId === room.id ? "Tugatilyapti…" : "Live’ni tugatish"}</button> : null}</div> : null}</article>;
+          return <article key={room.id} className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="flex flex-wrap items-center gap-2"><h3 className="font-black text-navy-950 dark:text-white">{room.title}</h3><span className={`rounded-full px-2.5 py-1 text-xs font-black ${active ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-slate-500/10 text-slate-700 dark:text-slate-300"}`}>{active ? "Jonli" : "Tugagan"}</span>{ownRoom ? <span className="rounded-full bg-cyan-500/10 px-2.5 py-1 text-xs font-black text-cyan-700 dark:text-cyan-300">Sizning xonangiz</span> : null}</div><p className="mt-1 text-xs text-ink-500 dark:text-slate-400">{room.subject === "russian" ? "Rus tili" : "English / IELTS"} · {Number(room.participant_count || 0)} / {Number(room.max_participants || 1000)} qatnashchi · {roomDate(room.created_at)}</p></div>{active ? <div className="flex flex-wrap gap-2"><button type="button" onClick={() => { requestModeratorFullscreen(); setModeratingRoom(room); }} className="rounded-xl bg-cyan-700 px-4 py-2.5 text-sm font-black text-white transition hover:bg-cyan-600">Moderator sifatida kirish</button>{ownRoom ? <button type="button" disabled={endingId === room.id} onClick={() => void endRoom(room)} className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-black text-white transition hover:bg-red-500 disabled:opacity-60">{endingId === room.id ? "Tugatilyapti…" : "Live’ni tugatish"}</button> : null}</div> : null}</article>;
         })}</div>}
       </div>
-      {moderatingRoom ? <LiveKitModeratorRoom roomId={moderatingRoom.id} title={moderatingRoom.title} apiFetch={apiFetch} onClose={() => setModeratingRoom(null)} onRoomEnded={() => { setModeratingRoom(null); setMessage(`“${moderatingRoom.title}” live’i tugatildi.`); void load(); }} /> : null}
+      {moderatingRoom ? <LiveKitModeratorRoom roomId={moderatingRoom.id} title={moderatingRoom.title} apiFetch={apiFetch} onClose={() => { setModeratingRoom(null); exitModeratorFullscreen(); }} onRoomEnded={() => { setModeratingRoom(null); exitModeratorFullscreen(); setMessage(`“${moderatingRoom.title}” live’i tugatildi.`); void load(); }} /> : null}
     </section>
   );
 }

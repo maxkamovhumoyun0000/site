@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type ApiFetch = (path: string, options?: { method?: string; body?: unknown }) => Promise<unknown>;
 type JoinPayload = { url: string; token: string; room?: { title?: string } };
@@ -96,6 +97,11 @@ export function LiveKitModeratorRoom({
   const [connecting, setConnecting] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [portalReady, setPortalReady] = useState(false);
+
+  useEffect(() => {
+    setPortalReady(true);
+  }, []);
 
   const refreshParticipants = useCallback(() => {
     const current = roomRef.current;
@@ -204,8 +210,10 @@ export function LiveKitModeratorRoom({
 
   const local = room?.localParticipant;
 
-  return (
-    <div className="fixed inset-0 z-[100] overflow-y-auto bg-slate-950 text-white" role="dialog" aria-modal="true" aria-label="Live video moderator">
+  if (!portalReady) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[2147483000] h-[100dvh] w-screen overflow-y-auto overscroll-contain bg-slate-950 text-white" role="dialog" aria-modal="true" aria-label="Live video moderator">
       <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-slate-950/95 px-4 py-3 backdrop-blur sm:px-6">
         <div className="min-w-0"><p className="text-xs font-black uppercase tracking-wider text-cyan-300">Diamond Speaking · Moderator</p><h1 className="truncate text-lg font-black">{title}</h1></div>
         <div className="flex flex-wrap gap-2">
@@ -224,6 +232,7 @@ export function LiveKitModeratorRoom({
           {participants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}
         </section>
       </main>
-    </div>
+    </div>,
+    document.body,
   );
 }
