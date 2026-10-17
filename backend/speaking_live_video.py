@@ -57,6 +57,16 @@ class LiveVideoModeratorTokenRequest(BaseModel):
     device_name: str = Field(default="", max_length=40)
 
 
+class LiveVideoMediaPermissionRequest(BaseModel):
+    media_kind: str = Field(min_length=3, max_length=16)
+
+
+class LiveVideoMediaPermissionDecision(BaseModel):
+    user_id: int = Field(gt=0)
+    media_kind: str = Field(min_length=3, max_length=16)
+    approved: bool
+
+
 def _main_helpers():
     # Late import avoids an import cycle: main includes this router.
     from backend.main import _display_name, _require_role, _user_row_from_bearer
@@ -259,10 +269,27 @@ def ensure_live_video_schema() -> None:
             """
         )
         cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speaking_live_video_media_permissions (
+                room_id TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                media_kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                decided_at TIMESTAMP,
+                decided_by INTEGER,
+                PRIMARY KEY (room_id, user_id, media_kind)
+            )
+            """
+        )
+        cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_speaking_live_video_rooms_active ON speaking_live_video_rooms(status, created_at DESC)"
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_speaking_live_video_presences_active ON speaking_live_video_presences(room_id, last_seen_at)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_speaking_live_video_media_permissions_pending ON speaking_live_video_media_permissions(room_id, status, requested_at)"
         )
         # Upgrade older pilot rows.  The product policy is now 1,000 signed-in
         # listeners per room; this is a capacity limit, not a promise that a
@@ -319,6 +346,46 @@ def _active_room_or_error(cur: Any, room_id: str) -> dict[str, Any]:
         cur.execute("UPDATE speaking_live_video_rooms SET status='ended', ended_at=?, last_activity_at=? WHERE id=?", (_iso(), _iso(), room_id))
         raise HTTPException(status_code=410, detail="This live video room has ended")
     return room
+
+
+def _media_kind(value: str) -> str:
+    kind = str(value or "").strip().lower()
+    if kind not in {"camera", "microphone"}:
+        raise HTTPException(status_code=422, detail="Media kind must be camera or microphone")
+    return kind
+
+
+def _participant_publish_sources(cur: Any, room_id: str, user_id: int) -> list[str]:
+    cur.execute(
+        "SELECT media_kind FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=? AND status='approved'",
+        (room_id, user_id),
+    )
+    values = {str(dict(row).get("media_kind") or "").lower() for row in (cur.fetchall() or [])}
+    # Screen share has its own explicit OS confirmation and remains available
+    # to learners. Camera and microphone require moderator approval.
+    return ["SCREEN_SHARE", *[source for source in ("MICROPHONE", "CAMERA") if source.lower() in values]]
+
+
+def _sync_livekit_publish_permissions(room_id: str, identity: str, sources: list[str]) -> None:
+    """Apply per-source approval to an already-connected LiveKit participant."""
+    participants = _livekit_room_request("ListParticipants", {"room": room_id}).get("participants", [])
+    if not any(str(row.get("identity") or "") == identity for row in participants if isinstance(row, dict)):
+        # A grant is persisted even if the learner is temporarily disconnected;
+        # the next join token will contain the approved source list.
+        return
+    _livekit_room_request(
+        "UpdateParticipant",
+        {
+            "room": room_id,
+            "identity": identity,
+            "permission": {
+                "canSubscribe": True,
+                "canPublish": bool(sources),
+                "canPublishData": True,
+                "canPublishSources": sources,
+            },
+        },
+    )
 
 
 @router.get("/api/speaking/live-video/rooms")
@@ -420,6 +487,7 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
     now = _now()
     conn = get_conn()
     cur = conn.cursor()
+    publish_sources: list[str] = []
     try:
         # The room row is locked while a new presence is reserved.  This makes
         # the 1,000-seat limit authoritative even when several join requests hit
@@ -464,6 +532,7 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
         else:
             cur.execute("UPDATE speaking_live_video_presences SET identity=?, display_name=?, last_seen_at=?, left_at=NULL WHERE room_id=? AND user_id=?", (identity, name, _iso(now), room_id, user_id))
         cur.execute("UPDATE speaking_live_video_rooms SET last_activity_at=? WHERE id=?", (_iso(now), room_id))
+        publish_sources = _participant_publish_sources(cur, room_id, user_id)
         conn.commit()
         room_count = _active_presence_count(cur, room_id, now)
     except HTTPException:
@@ -482,7 +551,10 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
         "video": {
             "roomJoin": True,
             "room": room_id,
-            "canPublish": True,
+            # Learners join as listeners. Each source remains server-denied
+            # until a moderator approves its separate request.
+            "canPublish": bool(publish_sources),
+            "canPublishSources": publish_sources,
             "canSubscribe": True,
             "canPublishData": True,
             "roomAdmin": False,
@@ -568,6 +640,152 @@ async def staff_live_video_moderator_token(
         "is_moderator": True,
         "expires_in_seconds": TOKEN_LIFETIME_SECONDS,
     }
+
+
+@router.get("/api/speaking/live-video/rooms/{room_id}/media-permissions")
+async def live_video_media_permissions(room_id: str, authorization: str | None = Header(default=None)):
+    user = _require_user(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+        cur.execute(
+            "SELECT media_kind,status,requested_at,decided_at FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=?",
+            (room_id, int(user.get("id") or 0)),
+        )
+        states = {str(dict(row).get("media_kind")): dict(row) for row in (cur.fetchall() or [])}
+        return {
+            "permissions": {
+                kind: {
+                    "status": str(states.get(kind, {}).get("status") or "not_requested"),
+                    "requested_at": states.get(kind, {}).get("requested_at"),
+                    "decided_at": states.get(kind, {}).get("decided_at"),
+                }
+                for kind in ("camera", "microphone")
+            }
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/api/speaking/live-video/rooms/{room_id}/media-permissions/request")
+async def request_live_video_media_permission(
+    room_id: str,
+    payload: LiveVideoMediaPermissionRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_user(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    kind = _media_kind(payload.media_kind)
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+        cur.execute(
+            "SELECT 1 FROM speaking_live_video_presences WHERE room_id=? AND user_id=? AND left_at IS NULL AND last_seen_at>=?",
+            (room_id, user_id, _iso(_now() - timedelta(seconds=PRESENCE_TTL_SECONDS))),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=409, detail="Join the live room before requesting media access")
+        cur.execute(
+            "SELECT status,requested_at FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=? AND media_kind=?",
+            (room_id, user_id, kind),
+        )
+        existing = cur.fetchone()
+        if existing:
+            existing = dict(existing)
+            status = str(existing.get("status") or "")
+            if status in {"pending", "approved"}:
+                return {"media_kind": kind, "status": status}
+            last_request = _safe_datetime(existing.get("requested_at"))
+            if last_request and _now() - last_request < timedelta(seconds=15):
+                raise HTTPException(status_code=429, detail="Please wait before requesting this permission again")
+            cur.execute(
+                "UPDATE speaking_live_video_media_permissions SET status='pending',requested_at=?,decided_at=NULL,decided_by=NULL WHERE room_id=? AND user_id=? AND media_kind=?",
+                (_iso(), room_id, user_id, kind),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO speaking_live_video_media_permissions(room_id,user_id,media_kind,status,requested_at) VALUES (?,?,?,'pending',?)",
+                (room_id, user_id, kind, _iso()),
+            )
+        conn.commit()
+        return {"media_kind": kind, "status": "pending"}
+    except HTTPException:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+@router.get("/staff/speaking/live-video/rooms/{room_id}/media-permissions")
+async def staff_live_video_media_permission_queue(room_id: str, authorization: str | None = Header(default=None)):
+    _require_active_staff(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+        cur.execute(
+            """
+            SELECT p.user_id,p.media_kind,p.status,p.requested_at,x.display_name,x.identity
+            FROM speaking_live_video_media_permissions p
+            JOIN speaking_live_video_presences x ON x.room_id=p.room_id AND x.user_id=p.user_id
+            WHERE p.room_id=? AND p.status='pending'
+              AND x.left_at IS NULL AND x.last_seen_at>=?
+            ORDER BY p.requested_at ASC
+            LIMIT 200
+            """,
+            (room_id, _iso(_now() - timedelta(seconds=PRESENCE_TTL_SECONDS))),
+        )
+        return {"requests": [dict(row) for row in (cur.fetchall() or [])]}
+    finally:
+        conn.close()
+
+
+@router.post("/staff/speaking/live-video/rooms/{room_id}/media-permissions/decide")
+async def decide_live_video_media_permission(
+    room_id: str,
+    payload: LiveVideoMediaPermissionDecision,
+    authorization: str | None = Header(default=None),
+):
+    moderator = _require_active_staff(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    kind = _media_kind(payload.media_kind)
+    identity = f"speaking-{payload.user_id}"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+        cur.execute(
+            "SELECT status FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=? AND media_kind=?",
+            (room_id, payload.user_id, kind),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Permission request was not found")
+        next_status = "approved" if payload.approved else "denied"
+        cur.execute(
+            "UPDATE speaking_live_video_media_permissions SET status=?,decided_at=?,decided_by=? WHERE room_id=? AND user_id=? AND media_kind=?",
+            (next_status, _iso(), int(moderator.get("id") or 0), room_id, payload.user_id, kind),
+        )
+        cur.execute("SELECT media_kind FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=? AND status='approved'", (room_id, payload.user_id))
+        sources = ["SCREEN_SHARE", *[str(dict(row).get("media_kind") or "").upper() for row in (cur.fetchall() or [])]]
+        _sync_livekit_publish_permissions(room_id, identity, sources)
+        conn.commit()
+        return {"user_id": payload.user_id, "media_kind": kind, "status": next_status}
+    except HTTPException:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 @router.post("/staff/speaking/live-video/rooms/{room_id}/participants/remove")

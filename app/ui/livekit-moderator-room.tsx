@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useWebT } from "./web-i18n";
 
 type ApiFetch = (path: string, options?: { method?: string; body?: unknown }) => Promise<unknown>;
 type JoinPayload = { url: string; token: string; room?: { title?: string } };
+type MediaRequest = { user_id: number; media_kind: "camera" | "microphone" | string; requested_at?: string; display_name?: string | null };
 
 function mediaPublications(participant: any) {
   return Array.from(participant.trackPublications?.values?.() || []) as any[];
@@ -97,6 +99,7 @@ export function LiveKitModeratorRoom({
   onClose: () => void;
   onRoomEnded: () => void;
 }) {
+  const t = useWebT();
   const roomRef = useRef<any>(null);
   const [room, setRoom] = useState<any>(null);
   const [participants, setParticipants] = useState<any[]>([]);
@@ -110,6 +113,7 @@ export function LiveKitModeratorRoom({
   const [cameraRotation, setCameraRotation] = useState(0);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [mediaRequests, setMediaRequests] = useState<MediaRequest[]>([]);
 
   useEffect(() => {
     setPortalReady(true);
@@ -176,6 +180,37 @@ export function LiveKitModeratorRoom({
       void apiFetch(`/api/speaking/live-video/rooms/${encodeURIComponent(roomId)}/leave`, { method: "POST" }).catch(() => undefined);
     };
   }, [apiFetch, roomId, sessionId, deviceName]);
+
+  const refreshMediaRequests = useCallback(async () => {
+    try {
+      const payload = await apiFetch(`/staff/speaking/live-video/rooms/${encodeURIComponent(roomId)}/media-permissions`, { method: "GET" }) as { requests?: MediaRequest[] };
+      setMediaRequests(Array.isArray(payload.requests) ? payload.requests : []);
+    } catch {
+      // Queue polling must not interrupt the live room if the API is briefly unavailable.
+    }
+  }, [apiFetch, roomId]);
+
+  useEffect(() => {
+    void refreshMediaRequests();
+    const timer = window.setInterval(() => void refreshMediaRequests(), 2500);
+    return () => window.clearInterval(timer);
+  }, [refreshMediaRequests]);
+
+  async function decideMediaRequest(request: MediaRequest, approved: boolean) {
+    setBusy(`${request.user_id}:${request.media_kind}`);
+    setError("");
+    try {
+      await apiFetch(`/staff/speaking/live-video/rooms/${encodeURIComponent(roomId)}/media-permissions/decide`, {
+        method: "POST",
+        body: { user_id: request.user_id, media_kind: request.media_kind, approved },
+      });
+      await refreshMediaRequests();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t("speaking.live.permissions.error"));
+    } finally {
+      setBusy("");
+    }
+  }
 
   async function toggleMedia(kind: "microphone" | "camera" | "screen") {
     if (!room) return;
@@ -283,6 +318,10 @@ export function LiveKitModeratorRoom({
       <main className="mx-auto max-w-[1600px] space-y-4 p-4 sm:p-6">
         {connecting ? <div className="rounded-2xl border border-white/10 bg-white/5 p-8 text-center">Moderator sifatida ulanmoqda…</div> : null}
         {error ? <div role="alert" className="rounded-xl border border-red-400/40 bg-red-950/70 p-3 text-sm text-red-100">{error}</div> : null}
+        <section className="rounded-2xl border border-amber-300/25 bg-amber-300/5 p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-black">{t("speaking.live.permissions.title")}</h2><p className="mt-1 text-xs text-slate-300">{t("speaking.live.permissions.help")}</p></div><span className="rounded-full bg-amber-300/15 px-3 py-1 text-xs font-black text-amber-100">{mediaRequests.length} {t("speaking.live.permissions.waiting")}</span></div>
+          {mediaRequests.length === 0 ? <p className="rounded-xl bg-white/5 p-4 text-sm text-slate-300">{t("speaking.live.permissions.empty")}</p> : <div className="grid gap-2 md:grid-cols-2">{mediaRequests.map((request) => <article key={`${request.user_id}:${request.media_kind}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-900/80 p-3"><div className="min-w-0"><p className="truncate text-sm font-bold">{request.display_name || `Qatnashchi ${request.user_id}`}</p><p className="text-xs text-slate-400">{request.media_kind === "camera" ? t("speaking.live.permissions.camera") : t("speaking.live.permissions.microphone")} {t("speaking.live.permissions.request")}</p></div><div className="flex gap-2"><button type="button" disabled={!!busy} onClick={() => void decideMediaRequest(request, false)} className="rounded-lg border border-white/15 px-3 py-2 text-xs font-bold hover:bg-white/10 disabled:opacity-50">{t("speaking.live.permissions.deny")}</button><button type="button" disabled={!!busy} onClick={() => void decideMediaRequest(request, true)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black hover:bg-emerald-500 disabled:opacity-50">{t("speaking.live.permissions.approve")}</button></div></article>)}</div>}
+        </section>
         {!connecting && !error && participants.length <= 1 ? <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">Xona ochiq. Qatnashchilar Speaking ilovasidagi Live video bo‘limidan qo‘shilganda shu yerda ko‘rinadi.</div> : null}
         <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {participants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} cameraRotation={participant.isLocal === true ? cameraRotation : 0} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}

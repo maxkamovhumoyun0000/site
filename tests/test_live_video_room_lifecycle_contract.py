@@ -83,3 +83,35 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         endpoint = source[start:end]
 
         self.assertIn('"roomAdmin": False', endpoint)
+
+    def test_student_media_publish_is_source_scoped_and_not_enabled_on_join(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def live_video_room_token(")
+        end = source.index(
+            '@router.post("/staff/speaking/live-video/rooms/{room_id}/moderator-token")',
+            start,
+        )
+        endpoint = source[start:end]
+
+        self.assertIn('"canPublish": bool(publish_sources)', endpoint)
+        self.assertIn('"canPublishSources": publish_sources', endpoint)
+        self.assertNotIn('"canPublish": True', endpoint)
+        self.assertIn('return ["SCREEN_SHARE", *[source for source in ("MICROPHONE", "CAMERA")', source)
+
+    def test_moderator_permission_decision_updates_livekit_server_permissions(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def decide_live_video_media_permission(")
+        end = source.index(
+            '@router.post("/staff/speaking/live-video/rooms/{room_id}/participants/remove")',
+            start,
+        )
+        endpoint = source[start:end]
+
+        self.assertIn("_require_active_staff(authorization)", endpoint)
+        self.assertIn("_sync_livekit_publish_permissions(room_id, identity, sources)", endpoint)
+        self.assertIn("status='approved'", endpoint)
+        self.assertIn('"canPublishSources": sources', source)

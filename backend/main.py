@@ -1431,6 +1431,13 @@ class SpeakingRegistrationVerificationRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
 
 
+class SpeakingGoogleLoginRequest(BaseModel):
+    id_token: str = Field(min_length=100, max_length=8192)
+    device_id: str | None = Field(default=None, max_length=160)
+    device_model: str | None = Field(default=None, max_length=120)
+    revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
+
+
 class SpeakingLinkStartRequest(BaseModel):
     device_id: str = Field(min_length=12, max_length=160)
     device_model: str | None = Field(default=None, max_length=120)
@@ -19950,6 +19957,13 @@ def _ensure_speaking_account_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS speaking_google_identities (
+            google_subject TEXT PRIMARY KEY,
+            user_id BIGINT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS speaking_student_link_requests (
             code TEXT PRIMARY KEY,
             user_id BIGINT,
@@ -20265,6 +20279,99 @@ def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
         return f"{base}_{secrets.randbelow(90000) + 10000}"
     finally:
         conn.close()
+
+
+@app.post("/auth/speaking-google", response_model=TokenResponse)
+async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Request):
+    """Exchange a verified Google ID token for a normal Speaking session."""
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
+
+    client_ip = _client_ip(req)
+    throttle_key = f"speaking-google:{client_ip}" if client_ip else ""
+    if throttle_key and is_login_throttled(throttle_key, max_failures=20):
+        raise HTTPException(status_code=429, detail="Too many sign-in attempts. Please try again later.")
+    audience = (os.getenv("SPEAKING_GOOGLE_WEB_CLIENT_ID") or
+                "956229422440-mrk4gdhhapnp594gmnlnij2d8m39p9us.apps.googleusercontent.com").strip()
+    try:
+        claims = await asyncio.wait_for(
+            asyncio.to_thread(
+                google_id_token.verify_oauth2_token,
+                payload.id_token,
+                google_requests.Request(),
+                audience,
+            ),
+            timeout=15,
+        )
+    except Exception as exc:
+        if throttle_key: record_login_failure(throttle_key)
+        logger.info("speaking Google token verification rejected: %s", type(exc).__name__)
+        raise HTTPException(status_code=401, detail="Google sign-in could not be verified") from exc
+    if claims.get("email_verified") not in (True, "true"):
+        raise HTTPException(status_code=403, detail="Google email must be verified")
+    google_subject = str(claims.get("sub") or "").strip()
+    if not google_subject:
+        raise HTTPException(status_code=401, detail="Google identity is missing")
+    try:
+        email = normalize_speaking_email(str(claims.get("email") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Google email is invalid") from exc
+    if throttle_key: clear_login_throttle(throttle_key)
+
+    _ensure_speaking_account_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    user_id = 0
+    try:
+        cur.execute("SELECT user_id FROM speaking_google_identities WHERE google_subject=?", (google_subject,))
+        identity_row = cur.fetchone()
+        bound_id = int(dict(identity_row).get("user_id") or 0) if identity_row else 0
+        cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (email,))
+        contact_row = cur.fetchone()
+        email_id = int(dict(contact_row).get("user_id") or 0) if contact_row else 0
+        if bound_id and email_id and bound_id != email_id:
+            raise HTTPException(status_code=409, detail="Google account is linked to another Speaking profile")
+        user_id = bound_id or email_id
+        if not user_id:
+            display_name = " ".join(str(claims.get("name") or "").split())[:160]
+            name_parts = display_name.split(" ", 1) if display_name else ["Speaker"]
+            first_name = name_parts[0][:80]
+            last_name = (name_parts[1] if len(name_parts) > 1 else "")[:80]
+            login_id = _generate_speaking_login_id(first_name, last_name)
+            cur.execute(
+                "INSERT INTO users(login_id,password,first_name,last_name,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,0,1,0,0,1,'uz',0,0) RETURNING id",
+                (login_id, hash_password(secrets.token_urlsafe(32)), first_name, last_name, "English,Russian", SPEAKING_APP_LOGIN_TYPE),
+            )
+            user_id = int(dict(cur.fetchone() or {}).get("id") or 0)
+            cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, email, _now_utc().isoformat()))
+        cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
+        user_row = cur.fetchone()
+        user = dict(user_row) if user_row else None
+        if not user or not is_speaking_app_account(user.get("speaking_app_account")):
+            raise HTTPException(status_code=403, detail="This Google email is not a Speaking account")
+        if user.get("speaking_deleted_at"):
+            raise HTTPException(status_code=403, detail="Speaking account is inactive")
+        if int(user.get("blocked") or 0) == 1:
+            raise HTTPException(status_code=403, detail="Account is blocked")
+        if not bound_id:
+            cur.execute("SELECT user_id FROM speaking_google_identities WHERE user_id=?", (user_id,))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="Speaking account is already linked to another Google identity")
+            cur.execute("INSERT INTO speaking_google_identities(google_subject,user_id) VALUES (?,?)", (google_subject, user_id))
+        conn.commit()
+    except Exception:
+        with suppress(Exception): conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    user = get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=500, detail="Speaking account could not be loaded")
+    _reserve_web_session_slot(user, device_id=payload.device_id, requested_session_ids=payload.revoke_session_ids)
+    session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_google")
+    token = _create_access_token(user, session_id=session_id, ttl_hours=ttl_hours)
+    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
 
 
 @app.post("/auth/speaking-registration/start")
@@ -57992,7 +58099,10 @@ async def user_get_books(
     
     purchases = {}
     book_ids = [int(b.get("id") or 0) for b in books if int(b.get("id") or 0) > 0]
-    if role == "student" and user_id > 0 and not is_speaking:
+    if user is None:
+        # The catalogue is public, but a guest has no reading entitlement.
+        purchases = {}
+    elif role == "student" and user_id > 0 and not is_speaking:
         if book_ids:
             qmarks = ",".join(["?"] * len(book_ids))
             cur.execute(
@@ -58018,7 +58128,12 @@ async def user_get_books(
     items = []
     for row in books:
         book_id = int(row.get("id") or 0)
-        items.append(_serialize_book_list_row(row, purchases.get(book_id), include_purchase=True))
+        item = _serialize_book_list_row(row, purchases.get(book_id), include_purchase=True)
+        if user is None:
+            # Guests may browse the catalogue, but must not receive a usable
+            # PDF/media URL before authenticating.
+            item["pdf_url"] = None
+        items.append(item)
     elapsed_ms = (time.perf_counter() - started_at) * 1000.0
     if elapsed_ms > 750:
         logger.info("perf media.books.list role=%s total_ms=%.2f rows=%s", role, elapsed_ms, len(books))
