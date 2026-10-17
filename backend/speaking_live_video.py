@@ -42,6 +42,16 @@ class LiveVideoRoomCreateRequest(BaseModel):
     subject: str = Field(default="english", min_length=2, max_length=20)
 
 
+class LiveVideoRemoveParticipantRequest(BaseModel):
+    identity: str = Field(min_length=1, max_length=128)
+
+
+class LiveVideoMuteTrackRequest(BaseModel):
+    identity: str = Field(min_length=1, max_length=128)
+    track_sid: str = Field(min_length=1, max_length=128)
+    muted: bool
+
+
 def _main_helpers():
     # Late import avoids an import cycle: main includes this router.
     from backend.main import _display_name, _require_role, _user_row_from_bearer
@@ -51,8 +61,8 @@ def _main_helpers():
 def _require_user(authorization: str | None) -> dict[str, Any]:
     _, require_role, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
-    # The dedicated Speaking administrator can start, join and finish their
-    # own rooms from the Speaking workspace just like an ordinary host.
+    # Staff identities may use participant endpoints too; moderator-only
+    # controls are issued separately by staff-authenticated endpoints.
     require_role(user, {"student", "teacher", "support", "admin", "developer", "media", "speaking_admin"})
     if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
         raise HTTPException(status_code=403, detail="Live video is not available for this account")
@@ -63,6 +73,13 @@ def _require_staff(authorization: str | None) -> dict[str, Any]:
     _, require_role, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
     require_role(user, {"admin", "superadmin", "developer", "media", "media_admin", "speaking_admin"})
+    return user
+
+
+def _require_active_staff(authorization: str | None) -> dict[str, Any]:
+    user = _require_staff(authorization)
+    if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
+        raise HTTPException(status_code=403, detail="Live video is not available for this account")
     return user
 
 
@@ -116,7 +133,7 @@ def _livekit_room_request(
     *,
     ignore_exists: bool = False,
     ignore_not_found: bool = False,
-) -> None:
+) -> dict[str, Any]:
     """Call the LiveKit RoomService without exposing its control credentials."""
     public_url, api_key, api_secret = _livekit_config()
     endpoint = f"{_livekit_control_url(public_url)}/twirp/livekit.RoomService/{action}"
@@ -131,18 +148,25 @@ def _livekit_room_request(
         },
     )
     try:
-        with urlrequest.urlopen(req, timeout=6):
-            return
+        with urlrequest.urlopen(req, timeout=6) as response:
+            body = response.read()
+            if not body:
+                return {}
+            try:
+                payload = json.loads(body.decode("utf-8"))
+                return payload if isinstance(payload, dict) else {}
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return {}
     except urlerror.HTTPError as exc:
         # CreateRoom is idempotent for this use: a room can already exist if
         # the backend restarted between its database write and the request.
         if ignore_exists and exc.code in {400, 409}:
-            return
+            return {}
         # Deleting a room is also idempotent.  LiveKit can have already
         # removed an empty room or restarted after the application persisted
         # its lobby row; that must not prevent the host from ending the room.
         if ignore_not_found and exc.code == 404:
-            return
+            return {}
     except (OSError, ValueError):
         pass
     raise HTTPException(status_code=503, detail="Live video is temporarily unavailable. Please try again shortly.")
@@ -153,9 +177,9 @@ def _ensure_livekit_room(room_id: str) -> None:
         "CreateRoom",
         {
             "name": room_id,
-            "empty_timeout": ROOM_LIFETIME_HOURS * 60 * 60,
-            "departure_timeout": 120,
-            "max_participants": MAX_ROOM_PARTICIPANTS,
+            "emptyTimeout": ROOM_LIFETIME_HOURS * 60 * 60,
+            "departureTimeout": 120,
+            "maxParticipants": MAX_ROOM_PARTICIPANTS,
         },
         ignore_exists=True,
     )
@@ -470,6 +494,122 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
     }
 
 
+@router.post("/staff/speaking/live-video/rooms/{room_id}/moderator-token")
+async def staff_live_video_moderator_token(room_id: str, authorization: str | None = Header(default=None)):
+    user = _require_active_staff(authorization)
+    ensure_live_video_schema()
+    url, api_key, api_secret = _livekit_config()
+    room_id = _room_id(room_id)
+    user_id = int(user.get("id") or 0)
+    identity = f"speaking-admin-{user_id}"
+    display_name, _, _ = _main_helpers()
+    name = " ".join(str(display_name(user)).split())[:80] or "Speaking moderator"
+    now = _now()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        room = _active_room_or_error(cur, room_id)
+        cur.execute("SELECT user_id FROM speaking_live_video_presences WHERE room_id=? AND user_id=?", (room_id, user_id))
+        if cur.fetchone():
+            cur.execute(
+                "UPDATE speaking_live_video_presences SET identity=?, display_name=?, last_seen_at=?, left_at=NULL WHERE room_id=? AND user_id=?",
+                (identity, name, _iso(now), room_id, user_id),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO speaking_live_video_presences(room_id,user_id,identity,display_name,joined_at,last_seen_at,left_at) VALUES (?,?,?,?,?,?,NULL)",
+                (room_id, user_id, identity, name, _iso(now), _iso(now)),
+            )
+        cur.execute("UPDATE speaking_live_video_rooms SET last_activity_at=? WHERE id=?", (_iso(now), room_id))
+        conn.commit()
+        room_count = _active_presence_count(cur, room_id, now)
+    except HTTPException:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    claims = {
+        "iss": api_key,
+        "sub": identity,
+        "name": name,
+        "nbf": int(now.timestamp()) - 5,
+        "exp": int((now + timedelta(seconds=TOKEN_LIFETIME_SECONDS)).timestamp()),
+        "video": {
+            "roomJoin": True,
+            "room": room_id,
+            "canPublish": True,
+            "canSubscribe": True,
+            "canPublishData": True,
+            "roomAdmin": True,
+        },
+    }
+    return {
+        "url": url,
+        "token": jwt.encode(claims, api_secret, algorithm="HS256"),
+        "room": _serialize_room(room, room_count),
+        "is_host": True,
+        "is_moderator": True,
+        "expires_in_seconds": TOKEN_LIFETIME_SECONDS,
+    }
+
+
+@router.post("/staff/speaking/live-video/rooms/{room_id}/participants/remove")
+async def staff_remove_live_video_participant(
+    room_id: str,
+    payload: LiveVideoRemoveParticipantRequest,
+    authorization: str | None = Header(default=None),
+):
+    _require_active_staff(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    identity = payload.identity.strip()
+    if not re.fullmatch(r"speaking-[0-9]+", identity):
+        raise HTTPException(status_code=422, detail="Moderators cannot remove another moderator")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+    finally:
+        conn.close()
+    response = _livekit_room_request("RemoveParticipant", {"room": room_id, "identity": identity})
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("UPDATE speaking_live_video_presences SET left_at=?, last_seen_at=? WHERE room_id=? AND identity=? AND left_at IS NULL", (_iso(), _iso(), room_id, identity))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "participant": response}
+
+
+@router.post("/staff/speaking/live-video/rooms/{room_id}/tracks/mute")
+async def staff_mute_live_video_track(
+    room_id: str,
+    payload: LiveVideoMuteTrackRequest,
+    authorization: str | None = Header(default=None),
+):
+    _require_active_staff(authorization)
+    ensure_live_video_schema()
+    room_id = _room_id(room_id)
+    identity = payload.identity.strip()
+    track_sid = payload.track_sid.strip()
+    if not re.fullmatch(r"speaking-[0-9]+", identity) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", track_sid):
+        raise HTTPException(status_code=422, detail="Invalid participant track")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _active_room_or_error(cur, room_id)
+    finally:
+        conn.close()
+    response = _livekit_room_request(
+        "MutePublishedTrack",
+        {"room": room_id, "identity": identity, "trackSid": track_sid, "muted": payload.muted},
+    )
+    return {"ok": True, "track": response}
+
+
 @router.post("/api/speaking/live-video/rooms/{room_id}/heartbeat")
 async def live_video_room_heartbeat(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -523,7 +663,7 @@ async def end_live_video_room(room_id: str, authorization: str | None = Header(d
     try:
         room = _active_room_or_error(cur, room_id)
         if int(room.get("host_user_id") or 0) != int(user.get("id") or 0):
-            raise HTTPException(status_code=403, detail="Only the host can end this live video room")
+            _require_active_staff(authorization)
         # Block new application joins before the SFU is closed.  This avoids a
         # token request recreating the room in the small interval around
         # DeleteRoom, while still allowing us to roll back cleanly if the SFU

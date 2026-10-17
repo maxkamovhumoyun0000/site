@@ -28,7 +28,7 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
 
         self.assertIn("_require_staff(authorization)", create_endpoint)
 
-    def test_only_host_end_deletes_the_sfu_room(self) -> None:
+    def test_host_or_authorized_staff_end_deletes_the_sfu_room(self) -> None:
         source = (ROOT / "backend" / "speaking_live_video.py").read_text(
             encoding="utf-8"
         )
@@ -43,8 +43,31 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         self.assertIn('_livekit_room_request(', end)
         self.assertIn('"DeleteRoom",', end)
         self.assertIn('{"room": room_id},', end)
-        self.assertIn("Only the host can end this live video room", end)
+        self.assertIn("_require_active_staff(authorization)", end)
         self.assertIn("status='ending'", end)
         self.assertIn("status='active'", end)
         self.assertIn("status='ended'", end)
         self.assertIn("ignore_not_found=True", end)
+
+    def test_web_moderator_token_is_staff_only_and_room_scoped(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def staff_live_video_moderator_token(")
+        end = source.index("@router.post(\"/staff/speaking/live-video/rooms/{room_id}/participants/remove\")", start)
+        endpoint = source[start:end]
+
+        self.assertIn("_require_active_staff(authorization)", endpoint)
+        self.assertIn('"room": room_id', endpoint)
+        self.assertIn('"roomAdmin": True', endpoint)
+        self.assertIn('"is_moderator": True', endpoint)
+
+    def test_regular_speaking_app_token_never_gets_moderator_grant(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        start = source.index("async def live_video_room_token(")
+        end = source.index("@router.post(\"/staff/speaking/live-video/rooms/{room_id}/moderator-token\")", start)
+        endpoint = source[start:end]
+
+        self.assertIn('"roomAdmin": False', endpoint)
