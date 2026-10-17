@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { parseLiveRoomDate } from "./live-room-date.js";
 
 type LiveRoom = {
   id: string;
@@ -21,8 +22,8 @@ type Props = {
 
 function roomDate(value?: string | null) {
   if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("uz-UZ");
+  const date = parseLiveRoomDate(value);
+  return date ? date.toLocaleString("uz-UZ") : value;
 }
 
 export function SpeakingLiveManagement({ apiFetch, currentUserId }: Props) {

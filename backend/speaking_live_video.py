@@ -270,6 +270,7 @@ def _serialize_room(row: dict[str, Any], participants: int) -> dict[str, Any]:
         "title": str(row.get("title") or "Live speaking room"),
         "subject": str(row.get("subject") or "english"),
         "host_user_id": int(row.get("host_user_id") or 0),
+        "status": str(row.get("status") or ""),
         "max_participants": min(MAX_ROOM_PARTICIPANTS, max(1, int(row.get("max_participants") or MAX_ROOM_PARTICIPANTS))),
         "participant_count": max(0, int(participants)),
         "created_at": row.get("created_at"),
@@ -328,7 +329,9 @@ async def create_live_video_room(
     payload: LiveVideoRoomCreateRequest,
     authorization: str | None = Header(default=None),
 ):
-    user = _require_user(authorization)
+    # Room creation is a web staff action. The Speaking app is a participant
+    # client and must only join an already-created room.
+    user = _require_staff(authorization)
     ensure_live_video_schema()
     title = " ".join(payload.title.split())
     if len(title) < 3:
@@ -441,7 +444,6 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
     finally:
         conn.close()
 
-    is_host = int(room.get("host_user_id") or 0) == user_id
     claims = {
         "iss": api_key,
         "sub": identity,
@@ -454,7 +456,7 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
             "canPublish": True,
             "canSubscribe": True,
             "canPublishData": True,
-            "roomAdmin": is_host,
+            "roomAdmin": False,
         },
     }
     token = jwt.encode(claims, api_secret, algorithm="HS256")
@@ -462,7 +464,8 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
         "url": url,
         "token": token,
         "room": _serialize_room(room, room_count),
-        "is_host": is_host,
+        # Mobile participants never receive LiveKit room-admin privileges.
+        "is_host": False,
         "expires_in_seconds": TOKEN_LIFETIME_SECONDS,
     }
 
