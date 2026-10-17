@@ -115,3 +115,12 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         self.assertIn("_sync_livekit_publish_permissions(room_id, identity, sources)", endpoint)
         self.assertIn("status='approved'", endpoint)
         self.assertIn('"canPublishSources": sources', source)
+
+    def test_moderator_screen_is_primary_and_not_cropped(self) -> None:
+        source = (ROOT / "app" / "ui" / "livekit-moderator-room.tsx").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('if (isModerator(participant)) return hasScreenShare(participant) ? 0 : 1;', source)
+        self.assertIn('const primaryParticipant = orderedParticipants[0]', source)
+        self.assertIn('publication.source || "").toLowerCase().includes("screen")', source)
+        self.assertIn('object-contain', source)

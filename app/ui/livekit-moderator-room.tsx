@@ -12,11 +12,27 @@ function mediaPublications(participant: any) {
   return Array.from(participant.trackPublications?.values?.() || []) as any[];
 }
 
+function isModerator(participant: any) {
+  return String(participant.identity || "").startsWith("speaking-admin-");
+}
+
+function hasScreenShare(participant: any) {
+  return mediaPublications(participant).some((publication) =>
+    publication.track?.kind === "video" && !publication.isMuted &&
+    String(publication.source || "").toLowerCase().includes("screen"));
+}
+
+function stagePriority(participant: any) {
+  if (isModerator(participant)) return hasScreenShare(participant) ? 0 : 1;
+  return hasScreenShare(participant) ? 2 : 3;
+}
+
 function ModeratorParticipantTile({
   participant,
   local,
   refreshKey,
   cameraRotation,
+  primary = false,
   onMuteTrack,
   onRemove,
 }: {
@@ -24,11 +40,14 @@ function ModeratorParticipantTile({
   local: boolean;
   refreshKey: number;
   cameraRotation: number;
+  primary?: boolean;
   onMuteTrack?: (identity: string, trackSid: string, muted: boolean) => void;
   onRemove?: (identity: string) => void;
 }) {
   const mediaRef = useRef<HTMLDivElement>(null);
   const publications = mediaPublications(participant);
+  const videos = publications.filter((publication) => publication.track?.kind === "video" && !publication.isMuted);
+  const shownVideo = videos.find((publication) => String(publication.source || "").toLowerCase().includes("screen")) || videos[0];
 
   useEffect(() => {
     const container = mediaRef.current;
@@ -36,14 +55,14 @@ function ModeratorParticipantTile({
     const attached: Array<{ track: any; element: HTMLElement }> = [];
     for (const publication of publications) {
       const track = publication.track;
-      if (!track || (participant.isLocal && track.kind === "audio")) continue;
+      if (!track || (participant.isLocal && track.kind === "audio") || (track.kind === "video" && publication !== shownVideo)) continue;
       const element = track.attach() as HTMLElement;
       if (track.kind === "video") {
         const video = element as HTMLVideoElement;
         video.autoplay = true;
         video.playsInline = true;
         video.muted = participant.isLocal === true;
-        video.className = "h-full max-h-[34rem] min-h-48 w-full rounded-xl bg-black object-contain transition-transform duration-200";
+        video.className = "h-full w-full rounded-xl bg-black object-contain transition-transform duration-200";
         if (publication.source === "camera" && cameraRotation) {
           video.style.transform = `rotate(${cameraRotation}deg)`;
         }
@@ -63,21 +82,21 @@ function ModeratorParticipantTile({
         element.remove();
       }
     };
-  }, [participant, refreshKey, cameraRotation]);
+  }, [participant, refreshKey, cameraRotation, shownVideo]);
 
   const identity = String(participant.identity || "");
   const visibleTracks = publications.filter((publication) => publication.kind === "audio" || publication.kind === "video");
   const hasVideo = visibleTracks.some((publication) => publication.kind === "video" && !publication.isMuted);
-  const isModerator = identity.startsWith("speaking-admin-");
+  const moderator = isModerator(participant);
 
   return (
     <article className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-xl">
-      <div ref={mediaRef} className={`relative grid min-h-48 place-items-center gap-1 bg-black p-1 ${hasVideo ? "" : "aspect-video"}`}>
+      <div ref={mediaRef} className={`relative grid place-items-center bg-black p-1 ${primary ? "min-h-64" : "aspect-video min-h-40"}`} style={primary ? { height: "min(68dvh, 760px)" } : undefined}>
         {!hasVideo ? <div className="absolute inset-0 grid place-items-center text-center text-white"><div><div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-cyan-800 text-xl font-black">{String(participant.name || identity || "?").slice(0, 1).toUpperCase()}</div><p className="mt-3 max-w-48 truncate text-sm font-bold">{participant.name || identity}</p></div></div> : null}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 p-3 text-white">
         <div className="min-w-0"><p className="truncate text-sm font-bold">{participant.name || identity}{local ? " · Siz (moderator)" : ""}</p><p className="text-xs text-slate-400">{visibleTracks.length ? `${visibleTracks.filter((item) => !item.isMuted).length} media oqimi faol` : "Kamera/mikrofon o‘chiq"}</p></div>
-        {!local && !isModerator && onMuteTrack && onRemove ? <div className="flex gap-2">
+        {!local && !moderator && onMuteTrack && onRemove ? <div className="flex gap-2">
           {visibleTracks.map((publication) => <button key={publication.trackSid} type="button" onClick={() => onMuteTrack(identity, String(publication.trackSid), !publication.isMuted)} className="rounded-lg border border-white/15 px-2.5 py-1.5 text-xs font-bold hover:bg-white/10">{publication.kind === "audio" ? (publication.isMuted ? "Ovozni yoqish" : "Ovozni o‘chirish") : (publication.isMuted ? "Kamerani yoqish" : "Kamerani o‘chirish")}</button>)}
           <button type="button" onClick={() => onRemove(identity)} className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-bold hover:bg-red-500">Xonadan chiqarish</button>
         </div> : null}
@@ -297,6 +316,11 @@ export function LiveKitModeratorRoom({
   }
 
   const local = room?.localParticipant;
+  const orderedParticipants = [...participants].sort((left, right) =>
+    stagePriority(left) - stagePriority(right) ||
+    String(left.identity || "").localeCompare(String(right.identity || "")));
+  const primaryParticipant = orderedParticipants[0];
+  const secondaryParticipants = orderedParticipants.slice(1);
 
   if (!portalReady) return null;
 
@@ -318,14 +342,13 @@ export function LiveKitModeratorRoom({
       <main className="mx-auto max-w-[1600px] space-y-4 p-4 sm:p-6">
         {connecting ? <div className="rounded-2xl border border-white/10 bg-white/5 p-8 text-center">Moderator sifatida ulanmoqda…</div> : null}
         {error ? <div role="alert" className="rounded-xl border border-red-400/40 bg-red-950/70 p-3 text-sm text-red-100">{error}</div> : null}
+        {primaryParticipant ? <section aria-label="Asosiy live ekran"><ModeratorParticipantTile key={primaryParticipant.identity} participant={primaryParticipant} primary local={primaryParticipant.isLocal === true} refreshKey={refreshKey} cameraRotation={primaryParticipant.isLocal === true ? cameraRotation : 0} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} /></section> : null}
+        {secondaryParticipants.length > 0 ? <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-label="Boshqa qatnashchilar">{secondaryParticipants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} cameraRotation={participant.isLocal === true ? cameraRotation : 0} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}</section> : null}
         <section className="rounded-2xl border border-amber-300/25 bg-amber-300/5 p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h2 className="font-black">{t("speaking.live.permissions.title")}</h2><p className="mt-1 text-xs text-slate-300">{t("speaking.live.permissions.help")}</p></div><span className="rounded-full bg-amber-300/15 px-3 py-1 text-xs font-black text-amber-100">{mediaRequests.length} {t("speaking.live.permissions.waiting")}</span></div>
           {mediaRequests.length === 0 ? <p className="rounded-xl bg-white/5 p-4 text-sm text-slate-300">{t("speaking.live.permissions.empty")}</p> : <div className="grid gap-2 md:grid-cols-2">{mediaRequests.map((request) => <article key={`${request.user_id}:${request.media_kind}`} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-900/80 p-3"><div className="min-w-0"><p className="truncate text-sm font-bold">{request.display_name || `Qatnashchi ${request.user_id}`}</p><p className="text-xs text-slate-400">{request.media_kind === "camera" ? t("speaking.live.permissions.camera") : t("speaking.live.permissions.microphone")} {t("speaking.live.permissions.request")}</p></div><div className="flex gap-2"><button type="button" disabled={!!busy} onClick={() => void decideMediaRequest(request, false)} className="rounded-lg border border-white/15 px-3 py-2 text-xs font-bold hover:bg-white/10 disabled:opacity-50">{t("speaking.live.permissions.deny")}</button><button type="button" disabled={!!busy} onClick={() => void decideMediaRequest(request, true)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-black hover:bg-emerald-500 disabled:opacity-50">{t("speaking.live.permissions.approve")}</button></div></article>)}</div>}
         </section>
         {!connecting && !error && participants.length <= 1 ? <div className="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">Xona ochiq. Qatnashchilar Speaking ilovasidagi Live video bo‘limidan qo‘shilganda shu yerda ko‘rinadi.</div> : null}
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {participants.map((participant) => <ModeratorParticipantTile key={participant.identity} participant={participant} local={participant.isLocal === true} refreshKey={refreshKey} cameraRotation={participant.isLocal === true ? cameraRotation : 0} onMuteTrack={(identity, trackSid, muted) => void moderate("mute", identity, trackSid, muted)} onRemove={(identity) => void moderate("remove", identity)} />)}
-        </section>
       </main>
     </div>,
     document.body,

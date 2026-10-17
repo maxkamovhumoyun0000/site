@@ -9,9 +9,21 @@ def test_speaking_learning_has_isolated_storage_and_namespaced_routes():
     assert "speaking_learning_tracks" in source
     assert "speaking_learning_modules" in source
     assert "speaking_learning_questions" in source
-    assert '"/api/speaking/learning/tracks"' in source
+    # Caddy strips /api before forwarding to FastAPI.
+    assert '"/speaking/learning/tracks"' in source
+    assert '"/api/speaking/learning/tracks"' not in source
     assert '"/staff/speaking-learning/tracks"' in source
     assert "learning_tracks" not in source.replace("speaking_learning_tracks", "")
+
+
+def test_speaking_learning_is_test_only_and_requires_progression():
+    source = (ROOT / "backend" / "speaking_learning.py").read_text()
+    admin = (ROOT / "app" / "ui" / "speaking-learning-paths.tsx").read_text()
+    assert 'pattern="^(multiple_choice|true_false|short_answer)$"' in source
+    assert "_require_unlocked_module" in source
+    assert "speaking_learning_attempts" in source
+    assert "speaking_prompt" not in admin
+    assert "speaking_learning_tracks" in source
 
 
 def test_speaking_admin_gets_a_distinct_learning_management_page():

@@ -66,7 +66,7 @@ def _translation_rate_allowed(request: Request) -> bool:
         return True
 
 
-@router.post("/api/speaking/translate")
+@router.post("/speaking/translate")
 async def translate_speaking_text(
     payload: TranslationRequest,
     request: Request,

@@ -14,6 +14,9 @@ Bu loyiha production serverda ishlaydi:
 - `--delete` ishlatilmasin.
 - `.env`, `data/`, upload/media papkalar, `.venv/`, `node_modules/`, `.next/` serverda o'z holicha qolsin.
 - Deploy faqat kod fayllarni serverga yuborish uchun ishlatiladi.
+- PC'ga bog'langan staging/canary yo'nalishi ishlatilmaydi. Bu runbook faqat
+  production release uchun; sinovni productiondan alohida marshrutga avtomatik
+  yo'naltirmang.
 
 ## Majburiy: Deploydan Oldin Database Backup
 

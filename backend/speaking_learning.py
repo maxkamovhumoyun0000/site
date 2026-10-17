@@ -62,7 +62,7 @@ class ModuleInput(BaseModel):
 
 class QuestionInput(BaseModel):
     prompt: str = Field(min_length=1, max_length=2000)
-    question_type: str = Field(default="multiple_choice", pattern="^(multiple_choice|true_false|short_answer|speaking_prompt)$")
+    question_type: str = Field(default="multiple_choice", pattern="^(multiple_choice|true_false|short_answer)$")
     options: list[Any] = Field(default_factory=list, max_length=20)
     answer: Any = None
     explanation: str = Field(default="", max_length=2000)
@@ -70,6 +70,19 @@ class QuestionInput(BaseModel):
 
 class SubmitInput(BaseModel):
     answers: dict[str, Any] = Field(default_factory=dict)
+
+
+def _validate_question(payload: QuestionInput) -> None:
+    if payload.question_type == "multiple_choice":
+        options = [str(value).strip() for value in payload.options]
+        if len(options) < 2 or len(set(options)) != len(options) or not all(options):
+            raise HTTPException(422, "Provide at least two distinct answer options")
+        if not isinstance(payload.answer, str) or payload.answer.strip() not in options:
+            raise HTTPException(422, "The correct answer must match one of the options")
+    elif payload.question_type == "true_false" and not isinstance(payload.answer, bool):
+        raise HTTPException(422, "The correct answer must be true or false")
+    elif payload.question_type == "short_answer" and not str(payload.answer or "").strip():
+        raise HTTPException(422, "Provide a correct answer")
 
 
 @router.get("/staff/speaking-learning/tracks")
@@ -97,11 +110,37 @@ def create_track(payload: TrackInput, authorization: str | None = Header(default
         cur.close(); conn.close()
 
 
+@router.patch("/staff/speaking-learning/tracks/{track_id}")
+def update_track(track_id: int, payload: TrackInput, authorization: str | None = Header(default=None)):
+    _user(authorization, staff=True); ensure_tables()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("""UPDATE speaking_learning_tracks SET title=%s,description=%s,subject=%s,
+            updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING id""",
+            (payload.title.strip(), payload.description.strip(), payload.subject, track_id))
+        if not cur.fetchone():
+            raise HTTPException(404, "Speaking learning track not found")
+        conn.commit()
+        return {"id": track_id}
+    finally:
+        cur.close(); conn.close()
+
+
 @router.post("/staff/speaking-learning/tracks/{track_id}/publish")
 def publish_track(track_id: int, payload: dict[str, bool], authorization: str | None = Header(default=None)):
     _user(authorization, staff=True); ensure_tables()
     conn = get_conn(); cur = conn.cursor()
     try:
+        if bool(payload.get("is_published")):
+            cur.execute("""SELECT COUNT(*), COUNT(*) FILTER (WHERE EXISTS (
+                SELECT 1 FROM speaking_learning_questions q WHERE q.module_id=m.id
+                AND q.question_type IN ('multiple_choice','true_false','short_answer')
+            )) FROM speaking_learning_modules m WHERE m.track_id=%s""", (track_id,))
+            readiness = cur.fetchone()
+            total = readiness[0] if not hasattr(readiness, "keys") else list(readiness.values())[0]
+            ready = readiness[1] if not hasattr(readiness, "keys") else list(readiness.values())[1]
+            if not total or ready != total:
+                raise HTTPException(422, "Every module needs at least one test before publication")
         cur.execute("UPDATE speaking_learning_tracks SET is_published=%s,updated_at=CURRENT_TIMESTAMP WHERE id=%s RETURNING id,is_published", (bool(payload.get("is_published")), track_id))
         row=cur.fetchone()
         if not row: raise HTTPException(404, "Speaking learning track not found")
@@ -144,6 +183,21 @@ def create_module(track_id: int, payload: ModuleInput, authorization: str | None
         cur.close(); conn.close()
 
 
+@router.patch("/staff/speaking-learning/modules/{module_id}")
+def update_module(module_id: int, payload: ModuleInput, authorization: str | None = Header(default=None)):
+    _user(authorization, staff=True); ensure_tables()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("UPDATE speaking_learning_modules SET title=%s,description=%s WHERE id=%s RETURNING id",
+                    (payload.title.strip(), payload.description.strip(), module_id))
+        if not cur.fetchone():
+            raise HTTPException(404, "Speaking learning module not found")
+        conn.commit()
+        return {"id": module_id}
+    finally:
+        cur.close(); conn.close()
+
+
 @router.delete("/staff/speaking-learning/modules/{module_id}")
 def delete_module(module_id: int, authorization: str | None = Header(default=None)):
     _user(authorization, staff=True); ensure_tables(); conn=get_conn(); cur=conn.cursor()
@@ -175,12 +229,32 @@ def staff_questions(module_id: int, authorization: str | None = Header(default=N
 @router.post("/staff/speaking-learning/modules/{module_id}/questions")
 def create_question(module_id: int, payload: QuestionInput, authorization: str | None = Header(default=None)):
     _user(authorization, staff=True); ensure_tables()
+    _validate_question(payload)
     conn = get_conn(); cur = conn.cursor()
     try:
         cur.execute("INSERT INTO speaking_learning_questions(module_id,prompt,question_type,options_json,answer_json,explanation) SELECT id,%s,%s,%s,%s,%s FROM speaking_learning_modules WHERE id=%s RETURNING id", (payload.prompt.strip(), payload.question_type, json.dumps(payload.options, ensure_ascii=False), json.dumps(payload.answer, ensure_ascii=False), payload.explanation, module_id))
         row=cur.fetchone()
         if not row: raise HTTPException(404, "Speaking learning module not found")
         conn.commit(); return {"id": row[0]}
+    finally:
+        cur.close(); conn.close()
+
+
+@router.patch("/staff/speaking-learning/questions/{question_id}")
+def update_question(question_id: int, payload: QuestionInput, authorization: str | None = Header(default=None)):
+    _user(authorization, staff=True); _validate_question(payload); ensure_tables()
+    conn = get_conn(); cur = conn.cursor()
+    try:
+        cur.execute("""UPDATE speaking_learning_questions SET prompt=%s,question_type=%s,
+            options_json=%s,answer_json=%s,explanation=%s WHERE id=%s RETURNING id""",
+            (payload.prompt.strip(), payload.question_type,
+             json.dumps(payload.options, ensure_ascii=False),
+             json.dumps(payload.answer, ensure_ascii=False),
+             payload.explanation.strip(), question_id))
+        if not cur.fetchone():
+            raise HTTPException(404, "Speaking learning question not found")
+        conn.commit()
+        return {"id": question_id}
     finally:
         cur.close(); conn.close()
 
@@ -195,7 +269,7 @@ def delete_question(question_id: int, authorization: str | None = Header(default
     finally: cur.close(); conn.close()
 
 
-@router.get("/api/speaking/learning/tracks")
+@router.get("/speaking/learning/tracks")
 def public_tracks(authorization: str | None = Header(default=None)):
     _user(authorization); ensure_tables()
     conn=get_conn(); cur=conn.cursor()
@@ -206,24 +280,63 @@ def public_tracks(authorization: str | None = Header(default=None)):
     finally: cur.close(); conn.close()
 
 
-@router.get("/api/speaking/learning/tracks/{track_id}/modules")
+def _module_progress(cur: Any, track_id: int, user_id: int) -> list[dict[str, Any]]:
+    cur.execute("""SELECT m.id,m.title,m.description,m.sort_order,
+        (SELECT COUNT(*) FROM speaking_learning_questions q WHERE q.module_id=m.id
+            AND q.question_type IN ('multiple_choice','true_false','short_answer')) AS question_count,
+        (SELECT MAX(a.score) FROM speaking_learning_attempts a WHERE a.module_id=m.id AND a.user_id=%s) AS best_score,
+        EXISTS(SELECT 1 FROM speaking_learning_attempts a WHERE a.module_id=m.id AND a.user_id=%s AND a.passed=TRUE) AS passed
+        FROM speaking_learning_modules m WHERE m.track_id=%s ORDER BY m.sort_order,m.id""",
+        (user_id, user_id, track_id))
+    fields = ("id", "title", "description", "sort_order", "question_count", "best_score", "passed")
+    modules = [dict(row) if hasattr(row, "keys") else dict(zip(fields, row)) for row in cur.fetchall()]
+    previous_passed = True
+    for module in modules:
+        module["locked"] = not previous_passed
+        previous_passed = bool(module["passed"])
+    return modules
+
+
+def _require_unlocked_module(cur: Any, module_id: int, user_id: int) -> None:
+    cur.execute("""SELECT m.track_id,t.is_published FROM speaking_learning_modules m
+        JOIN speaking_learning_tracks t ON t.id=m.track_id WHERE m.id=%s""", (module_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Speaking learning module not found")
+    track_id, published = (row["track_id"], row["is_published"]) if hasattr(row, "keys") else row
+    if not published:
+        raise HTTPException(404, "Speaking learning module not found")
+    modules = _module_progress(cur, track_id, user_id)
+    module = next((item for item in modules if item["id"] == module_id), None)
+    if module is None:
+        raise HTTPException(404, "Speaking learning module not found")
+    if module["locked"]:
+        raise HTTPException(403, "Complete the previous module first")
+
+
+@router.get("/speaking/learning/tracks/{track_id}/modules")
 def public_modules(track_id: int, authorization: str | None = Header(default=None)):
-    _user(authorization); ensure_tables()
+    user = _user(authorization); ensure_tables()
     conn=get_conn(); cur=conn.cursor()
     try:
-        cur.execute("SELECT id,title,description,sort_order FROM speaking_learning_modules WHERE track_id=%s AND EXISTS(SELECT 1 FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE) ORDER BY sort_order,id", (track_id,track_id))
-        return {"items": [dict(row) if hasattr(row,"keys") else dict(zip(("id","title","description","sort_order"),row)) for row in cur.fetchall()]}
+        cur.execute("SELECT 1 FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE", (track_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, "Speaking learning track not found")
+        return {"items": _module_progress(cur, track_id, int(user.get("id") or 0))}
     finally: cur.close(); conn.close()
 
 
-@router.get("/api/speaking/learning/modules/{module_id}/questions")
+@router.get("/speaking/learning/modules/{module_id}/questions")
 def public_questions(module_id: int, authorization: str | None = Header(default=None)):
-    _user(authorization); ensure_tables()
+    user = _user(authorization); ensure_tables()
     conn=get_conn(); cur=conn.cursor()
     try:
+        _require_unlocked_module(cur, module_id, int(user.get("id") or 0))
         cur.execute("""SELECT q.id,q.prompt,q.question_type,q.options_json,q.sort_order FROM speaking_learning_questions q
             JOIN speaking_learning_modules m ON m.id=q.module_id JOIN speaking_learning_tracks t ON t.id=m.track_id
-            WHERE q.module_id=%s AND t.is_published=TRUE ORDER BY q.sort_order,q.id""", (module_id,))
+            WHERE q.module_id=%s AND t.is_published=TRUE
+            AND q.question_type IN ('multiple_choice','true_false','short_answer')
+            ORDER BY q.sort_order,q.id""", (module_id,))
         rows=cur.fetchall(); items=[]
         for row in rows:
             d=dict(row) if hasattr(row,"keys") else dict(zip(("id","prompt","question_type","options_json","sort_order"),row))
@@ -232,13 +345,16 @@ def public_questions(module_id: int, authorization: str | None = Header(default=
     finally: cur.close(); conn.close()
 
 
-@router.post("/api/speaking/learning/modules/{module_id}/submit")
+@router.post("/speaking/learning/modules/{module_id}/submit")
 def submit_module(module_id: int, payload: SubmitInput, authorization: str | None = Header(default=None)):
     user=_user(authorization); ensure_tables(); conn=get_conn(); cur=conn.cursor()
     try:
+        _require_unlocked_module(cur, module_id, int(user.get("id") or 0))
         cur.execute("""SELECT q.id,q.question_type,q.answer_json FROM speaking_learning_questions q
             JOIN speaking_learning_modules m ON m.id=q.module_id JOIN speaking_learning_tracks t ON t.id=m.track_id
-            WHERE q.module_id=%s AND t.is_published=TRUE ORDER BY q.sort_order,q.id""", (module_id,))
+            WHERE q.module_id=%s AND t.is_published=TRUE
+            AND q.question_type IN ('multiple_choice','true_false','short_answer')
+            ORDER BY q.sort_order,q.id""", (module_id,))
         rows=cur.fetchall()
         if not rows: raise HTTPException(404,"Speaking learning module not found")
         correct=0

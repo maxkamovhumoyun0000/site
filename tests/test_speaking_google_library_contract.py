@@ -9,6 +9,13 @@ SOURCE = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
 
 
 class SpeakingGoogleLibraryContractTests(unittest.TestCase):
+    def test_translation_route_uses_backend_path_after_proxy_strips_api(self) -> None:
+        translation = (ROOT / "backend" / "speaking_translation.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('@router.post("/speaking/translate")', translation)
+        self.assertNotIn('@router.post("/api/speaking/translate")', translation)
+
     def test_google_sign_in_verifies_id_token_and_uses_normal_session_limit(self) -> None:
         endpoint = SOURCE.split('async def speaking_google_login(', 1)[1].split(
             '@app.post("/auth/speaking-registration/start")', 1
