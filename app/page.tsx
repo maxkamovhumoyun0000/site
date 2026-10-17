@@ -42,6 +42,7 @@ import { AdminBooks } from "./ui/admin-books";
 import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
+import { SpeakingLearningPaths } from "./ui/speaking-learning-paths";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { SpeakingAdminHome, SpeakingLiveManagement } from "./ui/speaking-live-management";
@@ -25264,6 +25265,8 @@ function DashboardShell({
       content = <ModeratorVoiceRoom role="admin" />;
     } else if (currentSection === "speaking-users" && activeRole === "speaking_admin") {
       content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
+    } else if (currentSection === "speaking-learning-paths" && activeRole === "speaking_admin") {
+      content = <SpeakingLearningPaths apiFetch={authedApiFetch} />;
     } else if (currentSection === "speaking-live" && activeRole === "speaking_admin") {
       content = <SpeakingLiveManagement apiFetch={authedApiFetch} currentUserId={Number(user?.id || 0)} />;
     } else {

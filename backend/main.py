@@ -1000,7 +1000,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-live", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -2556,6 +2556,7 @@ class CommunityChatMessageRequest(BaseModel):
     reply_to_message_id: int | None = Field(default=None, ge=1)
     client_message_id: str | None = Field(default=None, min_length=3, max_length=120)
     attachments: list[CommunityChatAttachmentRequest] = Field(default_factory=list, max_length=5)
+    channel: str = Field(default="general", max_length=20)
 
 
 class ChatReadRequest(BaseModel):
@@ -7393,6 +7394,21 @@ def _apply_web_login_policy(user: dict, device_id: str | None) -> dict:
     if uid <= 0:
         return user
     device = str(device_id or "").strip()
+    role = _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+    bound_device = str(user.get("initial_password_device_id") or "").strip()
+    if (
+        role == "student"
+        and not is_speaking_app_account(user.get("speaking_app_account"))
+        and int(user.get("password_used") or 0) == 1
+        and bound_device
+        and device != bound_device
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Bu boshlang‘ich parol boshqa qurilmada ishlatilgan. Boshqa qurilmada kirish uchun parolni o‘qituvchi yoki administratordan tiklashni so‘rang.",
+        )
     if not device:
         return user
     conn = get_conn()
@@ -7416,6 +7432,97 @@ def _apply_web_login_policy(user: dict, device_id: str | None) -> dict:
         conn.close()
     refreshed = _safe_call(lambda: get_user_by_id(uid), None)
     return refreshed or user
+
+
+def _bind_initial_student_password_device(user: dict, device_id: str | None) -> dict:
+    """Bind school-issued initial student passwords to their first device.
+
+    Speaking accounts, public self-registrations, and demo users are excluded:
+    their credentials are user-chosen or not school-issued initial passwords.
+    A conditional update makes simultaneous first logins deterministic.
+    """
+    if not user:
+        return user
+    uid = int(user.get("id") or 0)
+    login_type = int(user.get("login_type") or 0)
+    if (
+        uid <= 0
+        or login_type not in (1, 2)
+        or bool(int(user.get("screenshot_demo") or 0))
+        or bool(int(user.get("public_signup") or 0))
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
+        return user
+
+    device = str(device_id or "").strip()
+    used = int(user.get("password_used") or 0) == 1
+    bound = str(user.get("initial_password_device_id") or "").strip()
+    if not device:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu o‘quvchi paroli qurilmaga bog‘lanadi. Loginni ilovaning o‘zidan qayta bajaring.",
+        )
+    if bound and bound != device:
+        raise HTTPException(
+            status_code=403,
+            detail="Bu boshlang‘ich parol boshqa qurilmada ishlatilgan. Boshqa qurilmada kirish uchun parolni o‘qituvchi yoki administratordan tiklashni so‘rang.",
+        )
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if used and not bound:
+            # For older consumed passwords, the former active-device record is
+            # the best available evidence of the device that first used it.
+            # If no device was recorded, bind the first post-migration login.
+            candidate = str(user.get("active_device_id") or "").strip() or device
+            cur.execute(
+                """
+                UPDATE users SET initial_password_device_id=?
+                WHERE id=? AND COALESCE(password_used, 0)=1
+                  AND (initial_password_device_id IS NULL OR initial_password_device_id='')
+                """,
+                (candidate, uid),
+            )
+        else:
+            candidate = device
+            cur.execute(
+                """
+                UPDATE users
+                SET initial_password_device_id=?, password_used=1
+                WHERE id=?
+                  AND COALESCE(password_used, 0)=0
+                  AND (initial_password_device_id IS NULL OR initial_password_device_id='')
+                """,
+                (candidate, uid),
+            )
+        claimed_first_device = int(cur.rowcount or 0) > 0
+        if claimed_first_device:
+            cur.execute(
+                """
+                UPDATE web_user_sessions
+                SET revoked_at=?, revoked_reason='initial_password_device_binding'
+                WHERE user_id=?
+                  AND COALESCE(device_id, '')<>?
+                  AND revoked_at IS NULL
+                """,
+                (_now_utc().isoformat(), uid, candidate),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    refreshed = _safe_call(lambda: get_user_by_id(uid), None) or user
+    refreshed_device = str(refreshed.get("initial_password_device_id") or "").strip()
+    if refreshed_device and refreshed_device != device:
+        raise HTTPException(
+            status_code=403,
+            detail="Bu boshlang‘ich parol boshqa qurilmada ishlatilgan. Boshqa qurilmada kirish uchun parolni o‘qituvchi yoki administratordan tiklashni so‘rang.",
+        )
+    if not refreshed_device:
+        raise HTTPException(status_code=503, detail="Parol qurilmaga bog‘lanmadi. Qayta urinib ko‘ring.")
+    _clear_auth_caches_for_user(uid)
+    return refreshed
 
 
 def _create_access_token(
@@ -10347,6 +10454,7 @@ def _ensure_user_web_columns() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS can_upload_books INTEGER DEFAULT 0",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INTEGER DEFAULT 1",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_device_id TEXT",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS initial_password_device_id TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_image_url TEXT",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS vocabulary_translation_language TEXT",
         "ALTER TABLE web_user_sessions ADD COLUMN IF NOT EXISTS device_model TEXT",
@@ -18404,6 +18512,8 @@ def _ensure_student_diamondvoy_default_chat(user_id: int) -> int:
 
 _COMMUNITY_CHAT_DIRECT_KEY = "diamond_education_community_v1"
 _COMMUNITY_CHAT_TITLE = "Diamond Education umumiy chat"
+_SPEAKING_COMMUNITY_CHAT_DIRECT_KEY = "diamond_speaking_community_v1"
+_SPEAKING_COMMUNITY_CHAT_TITLE = "Diamond Speaking hamjamiyati"
 COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024
 COMMUNITY_CHAT_ATTACHMENT_MIME_BY_EXT = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
@@ -18484,8 +18594,17 @@ def _ensure_community_chat_schema() -> None:
         _community_chat_schema_lock.release()
 
 
-def _community_chat_thread_for_user(user: dict, role: str) -> dict:
-    """Find/create the single center-wide community thread and enroll viewer."""
+def _community_chat_thread_for_user(user: dict, role: str, channel: str = "general") -> dict:
+    """Find/create one shared community thread and enroll its viewer."""
+    normalized_channel = str(channel or "general").strip().lower()
+    if normalized_channel not in {"general", "speaking"}:
+        raise HTTPException(status_code=422, detail="Invalid community channel")
+    direct_key = (
+        _SPEAKING_COMMUNITY_CHAT_DIRECT_KEY
+        if normalized_channel == "speaking"
+        else _COMMUNITY_CHAT_DIRECT_KEY
+    )
+    title = _SPEAKING_COMMUNITY_CHAT_TITLE if normalized_channel == "speaking" else _COMMUNITY_CHAT_TITLE
     _ensure_community_chat_schema()
     user_id = int(user.get("id") or 0)
     if user_id <= 0:
@@ -18500,7 +18619,7 @@ def _community_chat_thread_for_user(user: dict, role: str) -> dict:
             WHERE direct_key=? AND thread_type='community'
             LIMIT 1
             """,
-            (_COMMUNITY_CHAT_DIRECT_KEY,),
+            (direct_key,),
         )
         row = dict(cur.fetchone() or {})
         thread_id = int(row.get("id") or 0)
@@ -18510,7 +18629,7 @@ def _community_chat_thread_for_user(user: dict, role: str) -> dict:
                 INSERT INTO chat_threads(thread_type, direct_key, title, created_by, updated_at)
                 VALUES ('community', ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
-                (_COMMUNITY_CHAT_DIRECT_KEY, _COMMUNITY_CHAT_TITLE, user_id),
+                (direct_key, title, user_id),
             )
             thread_id = int(getattr(cur, "lastrowid", 0) or 0)
             if thread_id <= 0:
@@ -21067,20 +21186,11 @@ async def login(request: LoginRequest, req: Request):
     if int(user.get("blocked") or 0) == 1:
         raise HTTPException(status_code=403, detail="Account is blocked")
 
-    # Invalidate student OTP immediately upon successful verification
-    if (
-        int(user.get("login_type") or 0) in (1, 2)
-        and not bool(int(user.get("screenshot_demo") or 0))
-        # Public self-service accounts must retain the password they chose;
-        # silently rotating it after the first login would strand a pending
-        # applicant the next time they open the app.
-        and not bool(int(user.get("public_signup") or 0))
-    ):
-        new_pw = generate_password(16)
-        try:
-            reset_user_password(int(user["id"]), new_pw)
-        except Exception:
-            logger.exception("Failed to reset student password to invalidate OTP")
+    # School-issued student passwords are consumed on first use, then remain
+    # valid only on the device that used them. An admin/teacher password reset
+    # clears the binding and permits a new device to claim the replacement.
+    device_id = (request.device_id or "").strip() or None
+    user = _bind_initial_student_password_device(user, device_id)
 
     user_role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
     requested_telegram_id = int(request.telegram_id or 0)
@@ -21110,7 +21220,6 @@ async def login(request: LoginRequest, req: Request):
             if refreshed:
                 user = refreshed
 
-    device_id = (request.device_id or "").strip() or None
     user = _apply_web_login_policy(user, device_id)
     if requested_telegram_id > 0 and bool(request.sync_bot_session):
         _sync_bot_login_state(int(user.get("id") or 0), requested_telegram_id)
@@ -23884,6 +23993,7 @@ async def chat_thread_messages(
 async def community_chat_messages(
     after_id: int = Query(default=0, ge=0),
     limit: int = Query(default=120, ge=1, le=300),
+    channel: str = Query(default="general", max_length=20),
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
@@ -23891,7 +24001,7 @@ async def community_chat_messages(
     if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
         raise HTTPException(status_code=403, detail="Student access is blocked")
     _community_chat_cleanup_expired_messages_if_due()
-    thread = _community_chat_thread_for_user(user, role)
+    thread = _community_chat_thread_for_user(user, role, channel)
     user_id = int(user.get("id") or 0)
     items = _community_chat_messages(
         int(thread.get("id") or 0),
@@ -23902,7 +24012,7 @@ async def community_chat_messages(
     return {
         "thread": {
             "id": int(thread.get("id") or 0),
-            "title": _COMMUNITY_CHAT_TITLE,
+            "title": str(thread.get("title") or _COMMUNITY_CHAT_TITLE),
             "subtitle": "Diamond Education hamjamiyati",
         },
         "items": items,
@@ -23975,7 +24085,7 @@ async def community_chat_send_message(
     if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
         raise HTTPException(status_code=403, detail="Student access is blocked")
     _community_chat_cleanup_expired_messages_if_due()
-    thread = _community_chat_thread_for_user(user, role)
+    thread = _community_chat_thread_for_user(user, role, payload.channel)
     thread_id = int(thread.get("id") or 0)
     user_id = int(user.get("id") or 0)
     attachments = _validate_community_chat_attachments(payload.attachments)
@@ -50781,6 +50891,7 @@ async def admin_convert_accountless_student(
         SET login_id=?,
             password=?,
             password_used=0,
+            initial_password_device_id=NULL,
             login_type=?,
             blocked=0,
             access_enabled=1,
@@ -51619,6 +51730,7 @@ async def admin_reset_password(user_id: int, payload: AdminPasswordResetRequest,
         password = generate_password(6)
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    _ensure_user_web_columns()
     reset_user_password(int(user_id), password)
     # An administrator changes the credential for future logins only. Existing
     # learner device sessions remain user-controlled through the device limit.
@@ -58761,10 +58873,18 @@ app.include_router(library_ai_router)
 from backend.speaking_admin import router as speaking_admin_router
 app.include_router(speaking_admin_router)
 
+from backend.speaking_learning import router as speaking_learning_router
+app.include_router(speaking_learning_router)
+
+from backend.speaking_translation import router as speaking_translation_router
+app.include_router(speaking_translation_router)
+
 # Live video uses a dedicated SFU token broker.  It does not modify or share
 # the legacy peer-to-peer VoiceRoom signalling channel.
 from backend.speaking_live_video import router as speaking_live_video_router
 app.include_router(speaking_live_video_router)
+from backend.speaking_chats import router as speaking_chats_router
+app.include_router(speaking_chats_router)
 
 # Additive personal-learning routes.  The module receives the established
 # authentication/role helpers instead of reimplementing session policy.
@@ -60072,6 +60192,7 @@ async def teacher_reset_student_password(student_id: int, authorization: str | N
         raise HTTPException(status_code=404, detail="Student not found")
 
     password = generate_password(6)
+    _ensure_user_web_columns()
     reset_user_password(int(student_id), password)
     # A teacher-assisted reset must not unexpectedly sign a student out.
     refreshed = _safe_call(lambda: get_user_by_id(int(student_id)), None) or target

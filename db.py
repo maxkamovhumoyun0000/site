@@ -10220,7 +10220,8 @@ def prepare_user_for_new_test(user_id, subject):
         cur = conn.cursor()
         cur.execute('''
             UPDATE users
-            SET subject=?, login_type=1, access_enabled=0, password_used=0
+            SET subject=?, login_type=1, access_enabled=0, password_used=0,
+                initial_password_device_id=NULL
             WHERE id=?
         ''', (subject, user_id))
         conn.commit()
@@ -11166,7 +11167,19 @@ def reset_user_password(user_id, password):
     logger.info(f"db.reset_user_password(user_id={user_id})")
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET password=?, password_used=0 WHERE id=?", (hash_password(password), user_id))
+    try:
+        cur.execute(
+            "UPDATE users SET password=?, password_used=0, initial_password_device_id=NULL WHERE id=?",
+            (hash_password(password), user_id),
+        )
+    except Exception:
+        # Older bot processes may run before the API applies its additive
+        # schema migration. In that case the binding column does not exist yet.
+        conn.rollback()
+        cur.execute(
+            "UPDATE users SET password=?, password_used=0 WHERE id=?",
+            (hash_password(password), user_id),
+        )
     conn.commit()
     conn.close()
 
@@ -18269,6 +18282,7 @@ def set_standard_admin_account_credentials(*args: Any, **kwargs: Any) -> list[di
                         blocked=0,
                         access_enabled=1,
                         password_used=0,
+                        initial_password_device_id=NULL,
                         first_name=COALESCE(NULLIF(first_name, ''), ?),
                         last_name=COALESCE(NULLIF(last_name, ''), ?),
                         subject=COALESCE(NULLIF(subject, ''), 'English')
