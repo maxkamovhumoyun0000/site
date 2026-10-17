@@ -18,6 +18,16 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
 
         self.assertIn('"status": str(row.get("status") or "")', serializer)
 
+    def test_room_creation_is_staff_only(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(
+            encoding="utf-8"
+        )
+        create_start = source.index("async def create_live_video_room(")
+        token_start = source.index("async def live_video_room_token(", create_start)
+        create_endpoint = source[create_start:token_start]
+
+        self.assertIn("_require_staff(authorization)", create_endpoint)
+
     def test_only_host_end_deletes_the_sfu_room(self) -> None:
         source = (ROOT / "backend" / "speaking_live_video.py").read_text(
             encoding="utf-8"
