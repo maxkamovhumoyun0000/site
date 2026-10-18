@@ -1115,13 +1115,16 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
   const declaredRole = String(user.role || "").trim().toLowerCase();
+  const loginId = String(user.login_id || "").trim().toLowerCase();
   // Media accounts are backed by the admin API, but their workspace must stay
   // restricted to the Media allow-list instead of falling through to Admin.
-  if (declaredRole === "media" || declaredRole === "media_admin") return "media";
-  if (String(user.login_id || "").trim().toLowerCase() === "developer-x-01") return "developer";
+  // MEDIA-X-01 is a web-only media staff account whose backend login_type is
+  // still 4 (admin), so the dedicated login ID is the reliable role marker.
+  if (declaredRole === "media" || declaredRole === "media_admin" || loginId === "media-x-01") return "media";
+  if (loginId === "developer-x-01") return "developer";
   // The dedicated Speaking credential is a restricted staff workspace and
   // never inherits the general Admin dashboard.
-  if (String(user.login_id || "").trim().toLowerCase() === "diamond-sp-1") return "speaking_admin";
+  if (loginId === "diamond-sp-1") return "speaking_admin";
   if (user.role === "speaking_admin") return "speaking_admin";
   if (user.speaking_app_account === true) return "speaking_user";
   if (user.role === "admin" || user.login_type === 4) return "admin";
