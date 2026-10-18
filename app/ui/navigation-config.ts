@@ -72,7 +72,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
-  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-users", "speaking-notifications", "profile"],
+  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-schedule", "speaking-users", "speaking-notifications", "profile"],
   developer: [
     "home",
     "developer-server",
@@ -145,6 +145,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "speaking-topics": "Speaking App Mavzular & Savollar",
   "speaking-learning-paths": "Speaking Learning Path testlari",
   "speaking-live": "Live boshqaruvi",
+  "speaking-schedule": "Live darslar jadvali",
   "speaking-notifications": "Speaking App Notification",
   videos: "Video Darslar",
   books: "Kutubxona",

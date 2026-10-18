@@ -898,6 +898,7 @@ weekly_personal_plan_task: asyncio.Task[Any] | None = None
 competition_stale_lobbies_task: asyncio.Task[Any] | None = None
 study_room_presence_task: asyncio.Task[Any] | None = None
 system_metrics_task: asyncio.Task[Any] | None = None
+speaking_live_lesson_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
 
 background_scheduler_lock_file: Any | None = None
@@ -19458,7 +19459,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task, system_metrics_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task, system_metrics_task, speaking_live_lesson_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -19541,6 +19542,12 @@ async def startup_event() -> None:
             lesson_reminders_task = asyncio.create_task(
                 _lesson_reminders_worker(),
                 name="lesson_reminders_worker",
+            )
+        if speaking_live_lesson_task is None or speaking_live_lesson_task.done():
+            from backend.speaking_live_lessons import speaking_live_lesson_reminder_worker
+            speaking_live_lesson_task = asyncio.create_task(
+                speaking_live_lesson_reminder_worker(),
+                name="speaking_live_lesson_reminder_worker",
             )
         if domain_email_cleanup_task is None or domain_email_cleanup_task.done():
             domain_email_cleanup_task = asyncio.create_task(
@@ -19679,7 +19686,7 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, system_metrics_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, system_metrics_task, speaking_live_lesson_task
     task = diamondvoy_chat_cleanup_task
     diamondvoy_chat_cleanup_task = None
     ptask = payment_automation_task
@@ -19721,6 +19728,14 @@ async def shutdown_event() -> None:
         ltask.cancel()
         try:
             await ltask
+        except asyncio.CancelledError:
+            pass
+    sltask = speaking_live_lesson_task
+    speaking_live_lesson_task = None
+    if sltask:
+        sltask.cancel()
+        try:
+            await sltask
         except asyncio.CancelledError:
             pass
     if etask:
@@ -59060,6 +59075,8 @@ app.include_router(speaking_translation_router)
 # the legacy peer-to-peer VoiceRoom signalling channel.
 from backend.speaking_live_video import router as speaking_live_video_router
 app.include_router(speaking_live_video_router)
+from backend.speaking_live_lessons import router as speaking_live_lessons_router
+app.include_router(speaking_live_lessons_router)
 from backend.speaking_chats import router as speaking_chats_router
 app.include_router(speaking_chats_router)
 

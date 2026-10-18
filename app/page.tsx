@@ -46,6 +46,7 @@ import { SpeakingLearningPaths } from "./ui/speaking-learning-paths";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { SpeakingAdminHome, SpeakingLiveManagement } from "./ui/speaking-live-management";
+import { SpeakingLiveLessons } from "./ui/speaking-live-lessons";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
 import AdminUserbot from "./ui/admin-userbot";
@@ -25355,6 +25356,8 @@ function DashboardShell({
       content = <SpeakingLearningPaths apiFetch={authedApiFetch} />;
     } else if (currentSection === "speaking-live" && activeRole === "speaking_admin") {
       content = <SpeakingLiveManagement apiFetch={authedApiFetch} currentUserId={Number(user?.id || 0)} />;
+    } else if (currentSection === "speaking-schedule" && activeRole === "speaking_admin") {
+      content = <SpeakingLiveLessons apiFetch={authedApiFetch} />;
     } else {
       content = (
         <AdminSection
