@@ -22076,7 +22076,7 @@ function AdminSection({
 }
 
 const MEDIA_WORKSPACE_SECTIONS = [
-  "speaking-topics", "speaking-notifications", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts",
+  "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts",
   "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot",
 ] as const;
 
