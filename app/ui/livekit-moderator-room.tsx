@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { useWebLocale } from "./web-i18n";
 
 type ApiFetch = (path: string, options?: { method?: string; body?: unknown }) => Promise<unknown>;
-type JoinPayload = { url: string; token: string; room_state?: RoomState };
+type JoinPayload = { url: string; token: string; room_state?: RoomState; recording_status?: string };
 type MediaRequest = { user_id: number; media_kind: string; display_name?: string | null };
 type Hand = { user_id: number; display_name: string };
 type ChatMessage = { id: number; display_name: string; is_moderator: boolean; text: string; created_at: string };
@@ -37,7 +37,36 @@ const COPY = {
 } as const;
 
 function symbol(name: string, size = 18) {
-  return <span aria-hidden="true" className="material-symbols-outlined inline-flex shrink-0 align-middle" style={{ fontSize: size, lineHeight: 1 }}>{name}</span>;
+  // Inline icons do not depend on Google's icon font being reachable. A
+  // blocked font used to expose ligature names ("mic_off", "groups", …) in
+  // the moderator controls instead of drawing the icons.
+  const shape = (() => {
+    switch (name) {
+      case "groups": return <><circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M17 5a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 5v1"/></>;
+      case "volume_off": return <><path d="M11 5 6 9H3v6h3l5 4V5ZM17 9l5 6m0-6-5 6"/><path d="M2 2l20 20"/></>;
+      case "volume_up": return <><path d="M11 5 6 9H3v6h3l5 4V5ZM15 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/></>;
+      case "call_end": return <path d="M4 13c4.7-3.4 11.3-3.4 16 0l1 3-4 2-2-3a12 12 0 0 0-6 0l-2 3-4-2 1-3Z"/>;
+      case "close": return <path d="M5 5l14 14M19 5 5 19"/>;
+      case "fit_screen": return <><path d="M8 3H4v4m12-4h4v4M4 17v4h4m12-4v4h-4"/><rect x="8" y="8" width="8" height="8" rx="1"/></>;
+      case "fullscreen": return <path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/>;
+      case "article": return <><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></>;
+      case "mic": return <><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0m-7 7v3m-4 0h8"/></>;
+      case "mic_off": return <><path d="M9 7v5a3 3 0 0 0 5 2m1-5V6a3 3 0 0 0-5-2M5 11a7 7 0 0 0 12 5m2-5a7 7 0 0 1-1 4m-6 4v2m-4 0h8M3 3l18 18"/></>;
+      case "videocam": return <><rect x="3" y="6" width="13" height="12" rx="2"/><path d="m16 10 5-3v10l-5-3"/></>;
+      case "videocam_off": return <><path d="M10 6h4a2 2 0 0 1 2 2v2l5-3v10l-3-2M16 17a2 2 0 0 1-2 1H5a2 2 0 0 1-2-2V8a2 2 0 0 1 1-2M3 3l18 18"/></>;
+      case "screen_share": return <><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8m-4-4v4m-2-9 4-4m-3 0h3v3"/></>;
+      case "stop_screen_share": return <><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8m-4-4v4M3 3l18 18"/></>;
+      case "draw": return <><path d="m4 18 1-4L17 2l5 5-12 12-4 1-2-2Zm10-13 5 5M3 22h18"/></>;
+      case "campaign": return <><path d="M3 10v4a2 2 0 0 0 2 2h3l2 5h3l-2-5h2l7 4V4l-7 4H5a2 2 0 0 0-2 2Z"/></>;
+      case "power_settings_new": return <><path d="M12 2v10m-5-7a9 9 0 1 0 10 0"/></>;
+      case "lock": return <><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>;
+      case "lock_open": return <><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9-3"/></>;
+      case "chat": return <path d="M4 4h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H8l-5 3V6a2 2 0 0 1 1-2Z"/>;
+      case "send": return <><path d="m22 2-7 20-4-9-9-4 20-7ZM11 13 22 2"/></>;
+      default: return <circle cx="12" cy="12" r="8"/>;
+    }
+  })();
+  return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="inline-block shrink-0 align-middle">{shape}</svg>;
 }
 
 function publications(participant: any): any[] {
@@ -249,6 +278,7 @@ export function LiveKitModeratorRoom({ roomId, title, apiFetch, onClose, onRoomE
         });
         await liveRoom.connect(payload.url, payload.token);
         if (disposed) { await liveRoom.disconnect(); return; }
+        if (payload.recording_status === "failed") setError(lang === "ru" ? "Запись урока не началась. Проверьте службу записи." : lang === "en" ? "Lesson recording did not start. Check the recording service." : "Dars yozuvi boshlanmadi. Yozuv xizmatini tekshiring.");
         setRoom(liveRoom);
         setRoomState(parseRoomState(liveRoom.metadata || payload.room_state));
         refreshParticipants();

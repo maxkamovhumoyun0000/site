@@ -1,0 +1,13 @@
+[Unit]
+Description=Private Redis tunnel for Diamond Speaking LiveKit Egress
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -i /root/.ssh/livekit-egress-oracle -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=accept-new -L 127.0.0.1:16379:127.0.0.1:6379 ubuntu@140.238.65.148
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

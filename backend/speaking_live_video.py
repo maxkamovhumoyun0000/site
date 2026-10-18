@@ -9,6 +9,8 @@ are configured, and no API secret is ever returned to a client.
 from __future__ import annotations
 
 import os
+import asyncio
+import logging
 import re
 import secrets
 import json
@@ -28,6 +30,7 @@ from db import get_conn
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # A room can contain up to 1,000 signed-in listeners.  The mobile client is a
 # stage UI: it only renders/subscribes to the small visible set of cameras, so
@@ -708,6 +711,16 @@ async def staff_live_video_moderator_token(
     finally:
         conn.close()
 
+    recording_status = "none"
+    try:
+        from backend.speaking_live_recordings import start_recording_for_room
+        recording_status = await asyncio.to_thread(start_recording_for_room, room_id)
+    except Exception:
+        # A recording outage must be visible to the moderator, but must not
+        # prevent the class from meeting or strand participants in the lobby.
+        recording_status = "failed"
+        logger.exception("Could not start recording for scheduled room %s", room_id)
+
     claims = {
         "iss": api_key,
         "sub": identity,
@@ -730,6 +743,7 @@ async def staff_live_video_moderator_token(
         "room_state": _room_state(room),
         "is_host": True,
         "is_moderator": True,
+        "recording_status": recording_status,
         "expires_in_seconds": TOKEN_LIFETIME_SECONDS,
     }
 
@@ -1225,6 +1239,11 @@ async def end_live_video_room(room_id: str, authorization: str | None = Header(d
     finally:
         conn.close()
     try:
+        try:
+            from backend.speaking_live_recordings import stop_recording_for_room
+            await asyncio.to_thread(stop_recording_for_room, room_id)
+        except Exception:
+            logger.exception("Could not finalize recording before closing room %s", room_id)
         _livekit_room_request(
             "DeleteRoom",
             {"room": room_id},

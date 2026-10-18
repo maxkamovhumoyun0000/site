@@ -1,0 +1,17 @@
+[Unit]
+Description=Diamond Speaking LiveKit Egress recorder
+Requires=docker.service diamond-livekit-redis-tunnel.service
+After=docker.service diamond-livekit-redis-tunnel.service network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f diamond-livekit-egress
+ExecStart=/usr/bin/docker run --rm --name diamond-livekit-egress --network host --cap-add SYS_ADMIN --shm-size 1g --memory 5g --cpus 4 --env EGRESS_CONFIG_FILE=/etc/diamond-livekit-egress.json --mount type=bind,src=/etc/diamond-livekit-egress.json,dst=/etc/diamond-livekit-egress.json,readonly --mount type=bind,src=/srv/diamond-live-recordings,dst=/recordings livekit/egress@sha256:ac244a40268ce1dd1510fbff6eb529609ec68aceff1602343f79be8ca08c355b
+ExecStop=/usr/bin/docker stop -t 30 diamond-livekit-egress
+Restart=always
+RestartSec=10
+TimeoutStartSec=90
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

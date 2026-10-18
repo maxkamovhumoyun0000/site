@@ -122,6 +122,10 @@ def ensure_live_lessons_schema() -> None:
                 room_id TEXT,
                 recording_url TEXT,
                 recording_expires_at TIMESTAMPTZ,
+                recording_egress_id TEXT,
+                recording_status TEXT NOT NULL DEFAULT 'none',
+                recording_file_path TEXT,
+                recording_token TEXT,
                 reminder_minutes TEXT NOT NULL DEFAULT '[1440,60,15]',
                 created_by INTEGER NOT NULL DEFAULT 0,
                 updated_by INTEGER NOT NULL DEFAULT 0,
@@ -132,6 +136,10 @@ def ensure_live_lessons_schema() -> None:
             """
         )
         cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS auto_open_video_room BOOLEAN NOT NULL DEFAULT TRUE")
+        cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_egress_id TEXT")
+        cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_status TEXT NOT NULL DEFAULT 'none'")
+        cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_file_path TEXT")
+        cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_token TEXT")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS speaking_live_lesson_notifications (
@@ -199,6 +207,7 @@ def _lesson(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, An
         "cancellation_reason": str(item.get("cancellation_reason") or ""),
         "room_id": str(item.get("room_id") or ""),
         "recording_url": "" if expired else str(item.get("recording_url") or ""),
+        "recording_status": "expired" if expired else str(item.get("recording_status") or "none"),
         "recording_expired": expired,
         "recording_expires_at": "" if expired or not expiry else expiry.isoformat(),
         "recording_days_left": 0 if expired or not expiry else max(0, (expiry.date() - current.date()).days),
@@ -537,10 +546,15 @@ async def reopen_live_lesson(lesson_id: int, authorization: str | None = Header(
 
 async def speaking_live_lesson_reminder_worker() -> None:
     await asyncio.sleep(10)
+    last_recording_cleanup = datetime.min.replace(tzinfo=timezone.utc)
     while True:
         try:
             ensure_live_lessons_schema()
             now = datetime.now(timezone.utc)
+            if now - last_recording_cleanup >= timedelta(hours=1):
+                from backend.speaking_live_recordings import expire_recordings
+                await asyncio.to_thread(expire_recordings)
+                last_recording_cleanup = now
             conn = get_conn()
             cur = conn.cursor()
             try:

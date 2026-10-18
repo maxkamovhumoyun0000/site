@@ -18,6 +18,29 @@ Bu loyiha production serverda ishlaydi:
   production release uchun; sinovni productiondan alohida marshrutga avtomatik
   yo'naltirmang.
 
+## Speaking live yozuv xizmati
+
+Rejalashtirilgan Speaking live darslari uchun LiveKit Egress **asosiy serverda**
+alohida systemd xizmati sifatida ishlaydi. Oracle live serverida yozuv fayli
+saqlanmaydi; uning Redis porti internetga ochilmagan. Asosiy serverdagi
+`diamond-livekit-redis-tunnel.service` maxsus cheklangan SSH kaliti orqali
+Oracle `127.0.0.1:6379` ga ulanadi. `diamond-livekit-egress.service` Docker
+image digestiga biriktirilgan va yozuvlarni
+`/srv/diamond-live-recordings/` ga saqlaydi. Bu katalog, SSH kalit va
+`/etc/diamond-livekit-egress.json` **kod deployida o‘chirilmaydi**.
+
+Kod release'ini aktivlashtirishdan oldin `systemctl is-active
+diamond-livekit-redis-tunnel.service diamond-livekit-egress.service`,
+`redis-cli -p 16379 PING`, `docker logs --tail 20 diamond-livekit-egress`
+orqali xizmatlar sog‘lomligini tekshiring. Egress konfiguratsiyasini `.env`
+kalitlari o‘zgargandagina serverda
+`DIAMOND_SITE_ENV=/root/diamond-site/.env /root/diamond-site/.venv/bin/python
+scripts/configure_livekit_egress.py` orqali qayta yarating va faqat Egress
+xizmatini restart qiling. `scripts/smoke_livekit_egress.py` real MP4 yaratib
+tekshiradi va faqat o‘zining `smoke-*` vaqtinchalik faylini tozalaydi. Dars
+yozuvi moderator biriktirmaguncha xususiy qoladi; biriktirilgach 30 kunlik
+havola orqali ochiladi. Eski yozuvlar background worker tomonidan o‘chiriladi.
+
 ## Majburiy: Deploydan Oldin Database Backup
 
 Saytda kod, dizayn yoki API bilan bog'liq istalgan o'zgarishni productionga

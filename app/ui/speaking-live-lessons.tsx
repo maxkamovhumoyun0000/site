@@ -25,6 +25,7 @@ type Lesson = {
   cancellation_reason: string;
   room_id: string;
   recording_url: string;
+  recording_status: string;
   recording_expires_at: string;
   recording_days_left: number;
   recording_expired: boolean;
@@ -34,6 +35,7 @@ type LiveRoom = {
   id: string;
   title: string;
   status: string;
+  lessonId?: number;
   participant_count?: number;
 };
 type Props = {
@@ -144,6 +146,12 @@ const TEXT = {
     editTitle: "Live darsni tahrirlash",
     recordingUrl: "Yozuvning HTTPS havolasi",
     addRecording: "Yozuv havolasini biriktirish",
+    recordingDecision: "Dars yozuvini biriktirasizmi?",
+    recordingProcessing: "Yozuv tayyorlanmoqda. Iltimos, kuting.",
+    recordingFailed: "Yozuvni saqlab bo‘lmadi. Yozuv xizmati holatini tekshiring.",
+    recordingReady: "Yozuv tayyor. Uni o‘quvchilarga 30 kunga ochasizmi?",
+    recordingYes: "Ha, biriktirish",
+    recordingNo: "Yo‘q, biriktirmaslik",
     reason: "Bekor qilish sababi",
     changed: "Jadval yangilandi",
     noDevices:
@@ -229,6 +237,12 @@ const TEXT = {
     editTitle: "Edit live lesson",
     recordingUrl: "Recording HTTPS link",
     addRecording: "Attach recording link",
+    recordingDecision: "Attach this lesson recording?",
+    recordingProcessing: "The recording is being finalized. Please wait.",
+    recordingFailed: "The recording could not be saved. Check the recording service.",
+    recordingReady: "The recording is ready. Make it available to learners for 30 days?",
+    recordingYes: "Yes, attach",
+    recordingNo: "No, do not attach",
     reason: "Cancellation reason",
     changed: "Schedule updated",
     noDevices: "Notice queued; check delivery status in history.",
@@ -313,6 +327,12 @@ const TEXT = {
     editTitle: "Изменить live-урок",
     recordingUrl: "HTTPS-ссылка на запись",
     addRecording: "Добавить ссылку на запись",
+    recordingDecision: "Прикрепить запись урока?",
+    recordingProcessing: "Запись обрабатывается. Пожалуйста, подождите.",
+    recordingFailed: "Не удалось сохранить запись. Проверьте службу записи.",
+    recordingReady: "Запись готова. Открыть её ученикам на 30 дней?",
+    recordingYes: "Да, прикрепить",
+    recordingNo: "Нет, не прикреплять",
     reason: "Причина отмены",
     changed: "Расписание обновлено",
     noDevices:
@@ -352,11 +372,30 @@ function localDate(
 function dateInput(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  // The schedule is edited in Tashkent time, regardless of the admin's device zone.
+  const shifted = new Date(date.getTime() + 5 * 60 * 60000);
   return shifted.toISOString().slice(0, 16);
 }
 function toIso(value: string) {
-  return new Date(value).toISOString();
+  return new Date(`${value}:00+05:00`).toISOString();
+}
+const HISTORY_COPY = {
+  uz: { created: "Dars rejalashtirildi", updated: "Dars ma’lumotlari yangilandi", cancelled: "Dars bekor qilindi", notification_resent: "Bildirishnoma qayta yuborildi", started: "Jonli dars boshlandi", recording_attached: "Yozuv darsga biriktirildi", completed: "Dars tugatildi", reopened: "Dars qayta ochildi", live_video_room_auto_opened: "Jonli xona avtomatik ochildi", room: "Xona", sent: "Yuborilgan bildirishnomalar", reason: "Sabab", previous: "Avvalgi vaqt", next: "Yangi vaqt", expires: "Yozuv muddati", changed: "Dars vaqti o‘zgardi" },
+  ru: { created: "Урок запланирован", updated: "Данные урока обновлены", cancelled: "Урок отменён", notification_resent: "Уведомление отправлено повторно", started: "Прямой эфир начался", recording_attached: "Запись прикреплена к уроку", completed: "Урок завершён", reopened: "Урок открыт повторно", live_video_room_auto_opened: "Комната открыта автоматически", room: "Комната", sent: "Отправлено уведомлений", reason: "Причина", previous: "Прежнее время", next: "Новое время", expires: "Срок записи", changed: "Время урока изменено" },
+  en: { created: "Lesson scheduled", updated: "Lesson details updated", cancelled: "Lesson cancelled", notification_resent: "Notification resent", started: "Live lesson started", recording_attached: "Recording attached to lesson", completed: "Lesson ended", reopened: "Lesson reopened", live_video_room_auto_opened: "Live room opened automatically", room: "Room", sent: "Notifications sent", reason: "Reason", previous: "Previous time", next: "New time", expires: "Recording expires", changed: "Lesson time changed" },
+} as const;
+function historyDetails(action: string, details: Record<string, unknown>, lang: keyof typeof HISTORY_COPY, locale: string) {
+  const copy = HISTORY_COPY[lang];
+  if (action === "cancelled" && details.reason) return `${copy.reason}: ${String(details.reason)}`;
+  if (action === "notification_resent") return `${copy.sent}: ${Number(details.sent_count || 0)}`;
+  if (action === "updated" && details.schedule_changed) {
+    const oldTime = details.old_starts_at ? localDate(String(details.old_starts_at), locale, { dateStyle: "medium", timeStyle: "short" }) : "—";
+    const newTime = details.new_starts_at ? localDate(String(details.new_starts_at), locale, { dateStyle: "medium", timeStyle: "short" }) : "—";
+    return `${copy.changed}: ${copy.previous} ${oldTime} → ${copy.next} ${newTime}`;
+  }
+  if (action === "recording_attached" && details.recording_expires_at) return `${copy.expires}: ${localDate(String(details.recording_expires_at), locale, { dateStyle: "medium", timeStyle: "short" })}`;
+  if (action === "started" || action === "completed" || action === "live_video_room_auto_opened") return details.room_id ? `${copy.room}: ${String(details.room_id)}` : "";
+  return "";
 }
 export function SpeakingLiveLessons({ apiFetch }: Props) {
   const locale = useWebLocale();
@@ -386,11 +425,12 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   const [page, setPage] = useState(0);
   const [form, setForm] = useState<FormValue>(emptyForm());
   const [editing, setEditing] = useState<Lesson | null>(null);
-  const [modal, setModal] = useState<"form" | "recording" | "history" | null>(
+  const [modal, setModal] = useState<"form" | "recording" | "history" | "recordingDecision" | null>(
     null,
   );
   const [recordingLesson, setRecordingLesson] = useState<Lesson | null>(null);
   const [recordingUrl, setRecordingUrl] = useState("");
+  const [recordingStatus, setRecordingStatus] = useState("processing");
   const [history, setHistory] = useState<
     Array<{
       action: string;
@@ -414,6 +454,22 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [modal]);
+
+  useEffect(() => {
+    if (modal !== "recordingDecision" || !recordingLesson) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const result = await apiFetch(`/staff/speaking/live-lessons/${recordingLesson.id}/recording-status`, { method: "GET" }) as { status?: string };
+        if (!cancelled) setRecordingStatus(result.status || "none");
+      } catch {
+        if (!cancelled) setRecordingStatus("failed");
+      }
+    };
+    void check();
+    const interval = window.setInterval(() => { if (recordingStatus === "processing" || recordingStatus === "recording" || recordingStatus === "starting") void check(); }, 3000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [apiFetch, modal, recordingLesson, recordingStatus]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -617,7 +673,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       )) as { room_id?: string; lesson?: Lesson };
       const roomId = result.room_id || result.lesson?.room_id;
       if (!roomId) throw new Error("Live room ID was not returned.");
-      setModeratingRoom({ id: roomId, title: lesson.title, status: "active" });
+      setModeratingRoom({ id: roomId, title: lesson.title, status: "active", lessonId: lesson.id });
       await load();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t.error);
@@ -652,6 +708,21 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     });
     setModal(null);
     setRecordingUrl("");
+  }
+  async function decideRecording(attach: boolean) {
+    if (!recordingLesson) return;
+    setBusy("recordingDecision");
+    setError("");
+    try {
+      await apiFetch(`/staff/speaking/live-lessons/${recordingLesson.id}/recording-decision`, { method: "POST", body: { attach } });
+      setModal(null);
+      setNotice(t.saved);
+      await load();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t.error);
+    } finally {
+      setBusy("");
+    }
   }
   function exportCsv() {
     const rows = [
@@ -993,12 +1064,13 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                             onClick={() => {
                               setRecordingLesson(lesson);
                               setRecordingUrl("");
-                              setModal("recording");
+                              setRecordingStatus(lesson.recording_status || "none");
+                              setModal(["starting", "recording", "processing", "ready"].includes(lesson.recording_status) ? "recordingDecision" : "recording");
                             }}
                             className="font-semibold text-primary disabled:text-text-muted-light"
                           >
                             {lesson.status === "completed" || active
-                              ? t.addRecording
+                              ? ["starting", "recording", "processing", "ready"].includes(lesson.recording_status) ? t.recordingDecision : t.addRecording
                               : t.noRecording}
                           </button>
                         )}
@@ -1026,6 +1098,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                                       id: lesson.room_id,
                                       title: lesson.title,
                                       status: "active",
+                                      lessonId: lesson.id,
                                     })
                                   : void beginLive(lesson)
                               }
@@ -1107,7 +1180,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                                   onClick={() => {
                                     setRecordingLesson(lesson);
                                     setRecordingUrl(lesson.recording_url || "");
-                                    setModal("recording");
+                                    setRecordingStatus(lesson.recording_status || "none");
+                                    setModal(["starting", "recording", "processing", "ready"].includes(lesson.recording_status) ? "recordingDecision" : "recording");
                                     setMenu(null);
                                   }}
                                   className="rounded-lg px-3 py-2 text-left hover:bg-surface-canvas-light"
@@ -1182,6 +1256,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                       : t.createTitle
                     : modal === "recording"
                       ? t.addRecording
+                      : modal === "recordingDecision"
+                        ? t.recordingDecision
                       : t.history}
                 </h2>
                 <p className="mt-1 text-xs text-text-secondary-light">
@@ -1350,6 +1426,18 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                   </button>
                 </div>
               </form>
+            ) : modal === "recordingDecision" ? (
+              <div className="space-y-4 p-5">
+                <p className="text-sm text-text-secondary-light">
+                  {recordingStatus === "ready" ? t.recordingReady : recordingStatus === "failed" || recordingStatus === "none" ? t.recordingFailed : t.recordingProcessing}
+                </p>
+                {recordingStatus === "ready" ? (
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button type="button" disabled={Boolean(busy)} onClick={() => void decideRecording(false)} className="rounded-xl border border-border-subtle-light px-4 py-2.5 text-sm font-bold text-on-surface">{t.recordingNo}</button>
+                    <button type="button" disabled={Boolean(busy)} onClick={() => void decideRecording(true)} className="rounded-xl bg-[#1736E8] px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50">{t.recordingYes}</button>
+                  </div>
+                ) : null}
+              </div>
             ) : modal === "recording" ? (
               <form onSubmit={attachRecording} className="grid min-h-0 gap-4 overflow-y-auto p-5">
                 <label className="grid gap-2 text-sm font-bold text-on-surface">
@@ -1387,7 +1475,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                         className="rounded-xl border border-border-subtle-light bg-surface-canvas-light p-3"
                       >
                         <div className="flex justify-between gap-3 text-sm font-bold text-on-surface">
-                          <span>{item.action}</span>
+                          <span>{HISTORY_COPY[lang][item.action as keyof typeof HISTORY_COPY[typeof lang]] || item.action.replaceAll("_", " ")}</span>
                           <time className="text-xs font-normal text-text-secondary-light">
                             {localDate(item.created_at, locale, {
                               dateStyle: "medium",
@@ -1395,9 +1483,11 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                             })}
                           </time>
                         </div>
-                        <pre className="mt-2 whitespace-pre-wrap text-xs text-text-secondary-light">
-                          {JSON.stringify(item.details || {}, null, 2)}
-                        </pre>
+                        {historyDetails(item.action, item.details || {}, lang, locale) ? (
+                          <p className="mt-2 text-xs leading-5 text-text-secondary-light">
+                            {historyDetails(item.action, item.details || {}, lang, locale)}
+                          </p>
+                        ) : null}
                       </li>
                     ))}
                   </ol>
@@ -1416,7 +1506,13 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
           apiFetch={apiFetch}
           onClose={() => setModeratingRoom(null)}
           onRoomEnded={() => {
+            const lesson = lessons.find((item) => item.id === moderatingRoom.lessonId || item.room_id === moderatingRoom.id);
             setModeratingRoom(null);
+            if (lesson) {
+              setRecordingLesson(lesson);
+              setRecordingStatus("processing");
+              setModal("recordingDecision");
+            }
             void load();
           }}
         />

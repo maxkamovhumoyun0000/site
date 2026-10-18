@@ -59077,6 +59077,8 @@ from backend.speaking_live_video import router as speaking_live_video_router
 app.include_router(speaking_live_video_router)
 from backend.speaking_live_lessons import router as speaking_live_lessons_router
 app.include_router(speaking_live_lessons_router)
+from backend.speaking_live_recordings import router as speaking_live_recordings_router
+app.include_router(speaking_live_recordings_router)
 from backend.speaking_chats import router as speaking_chats_router
 app.include_router(speaking_chats_router)
 
