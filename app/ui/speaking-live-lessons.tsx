@@ -7,6 +7,7 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import { useWebLocale } from "./web-i18n";
 import { LiveKitModeratorRoom } from "./livekit-moderator-room";
 
@@ -400,6 +401,20 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   const [menu, setMenu] = useState<number | null>(null);
   const [moderatingRoom, setModeratingRoom] = useState<LiveRoom | null>(null);
 
+  useEffect(() => {
+    if (!modal) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModal(null);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [modal]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -770,8 +785,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
           </article>
         ))}
       </section>
-      <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border-subtle-light bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
+      <section className="grid grid-cols-1 items-center gap-4 rounded-2xl border border-border-subtle-light bg-white p-3 shadow-sm xl:grid-cols-[minmax(330px,auto)_minmax(0,1fr)]">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
           <div className="flex gap-1 rounded-xl border border-border-subtle-light bg-surface-canvas-light p-1">
             {(["month", "week", "day", "list"] as const).map((key) => (
               <button
@@ -804,7 +819,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
             </button>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4 xl:grid-cols-[minmax(150px,1.35fr)_minmax(125px,1fr)_minmax(125px,1fr)_minmax(135px,1.1fr)_auto]">
           <input
             value={query}
             onChange={(event) => {
@@ -812,13 +827,13 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
               setPage(0);
             }}
             placeholder={t.name}
-            className="w-40 rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs outline-none focus:border-primary sm:w-48"
+            className="col-span-2 min-w-0 rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs outline-none focus:border-primary sm:col-span-1"
           />
           <select
             value={subjectFilter}
             onChange={(event) => setSubjectFilter(event.target.value)}
             aria-label={t.subject}
-            className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
+            className="min-w-0 rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
           >
             <option value="all">
               {t.subject}: {t.all}
@@ -830,7 +845,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
             value={statusFilter}
             onChange={(event) => setStatusFilter(event.target.value)}
             aria-label={t.status}
-            className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
+            className="min-w-0 rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
           >
             <option value="all">{t.allStatus}</option>
             <option value="live">{t.onair}</option>
@@ -842,7 +857,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
             value={recordingFilter}
             onChange={(event) => setRecordingFilter(event.target.value)}
             aria-label={t.recording}
-            className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
+            className="min-w-0 rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2 text-xs"
           >
             <option value="all">{t.allRecording}</option>
             <option value="available">{t.recordingAvailable}</option>
@@ -857,7 +872,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
               setQuery("");
               setPage(0);
             }}
-            className="rounded-xl border border-border-subtle-light px-3 py-2 text-sm text-text-secondary-light"
+            className="justify-self-start rounded-xl border border-border-subtle-light px-3 py-2 text-sm text-text-secondary-light xl:justify-self-center"
           >
             ⟲
           </button>
@@ -1144,17 +1159,23 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
           </div>
         </div>
       </section>
-      {modal ? (
-        <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+      {modal && typeof document !== "undefined"
+        ? createPortal(<div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-sm sm:p-4"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget) setModal(null);
           }}
+          role="presentation"
         >
-          <div className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-border-subtle-light bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-border-subtle-light bg-surface-canvas-light/50 px-5 py-4">
+          <div
+            className="flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-border-subtle-light bg-white shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="speaking-live-lesson-dialog-title"
+          >
+            <div className="flex shrink-0 items-center justify-between border-b border-border-subtle-light bg-surface-canvas-light/50 px-5 py-4">
               <div>
-                <h2 className="font-extrabold text-on-surface">
+                <h2 id="speaking-live-lesson-dialog-title" className="font-extrabold text-on-surface">
                   {modal === "form"
                     ? editing
                       ? t.editTitle
@@ -1177,8 +1198,9 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
             {modal === "form" ? (
               <form
                 onSubmit={saveLesson}
-                className="grid gap-4 p-5 sm:grid-cols-2"
+                className="flex min-h-0 flex-1 flex-col overflow-hidden"
               >
+                <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 sm:grid-cols-2">
                 <label className="grid gap-1.5 text-xs font-bold text-on-surface sm:col-span-2">
                   {t.lessonTitle} *
                   <input
@@ -1317,14 +1339,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                     </label>
                   ))}
                 </fieldset>
-                <div className="flex justify-end gap-2 sm:col-span-2">
-                  <button
-                    type="button"
-                    onClick={() => setModal(null)}
-                    className="rounded-xl border border-border-subtle-light px-4 py-2.5 text-sm font-bold"
-                  >
-                    {t.close}
-                  </button>
+                </div>
+                <div className="flex shrink-0 justify-end border-t border-border-subtle-light bg-white px-5 py-4">
                   <button
                     disabled={busy === "save"}
                     type="submit"
@@ -1335,7 +1351,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                 </div>
               </form>
             ) : modal === "recording" ? (
-              <form onSubmit={attachRecording} className="grid gap-4 p-5">
+              <form onSubmit={attachRecording} className="grid min-h-0 gap-4 overflow-y-auto p-5">
                 <label className="grid gap-2 text-sm font-bold text-on-surface">
                   {t.recordingUrl}
                   <input
@@ -1352,14 +1368,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                   {t.recent}: yozuv dars tugaganidan keyin 30 kun davomida ochiq
                   bo‘ladi.
                 </p>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setModal(null)}
-                    className="rounded-xl border border-border-subtle-light px-4 py-2.5 text-sm font-bold"
-                  >
-                    {t.close}
-                  </button>
+                <div className="flex justify-end">
                   <button
                     disabled={Boolean(busy)}
                     className="rounded-xl bg-primary-container px-5 py-2.5 text-sm font-bold text-white"
@@ -1369,7 +1378,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                 </div>
               </form>
             ) : (
-              <div className="p-5">
+              <div className="min-h-0 overflow-y-auto p-5">
                 {history.length ? (
                   <ol className="space-y-3">
                     {history.map((item, index) => (
@@ -1395,19 +1404,11 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                 ) : (
                   <p className="text-sm text-text-secondary-light">{t.none}</p>
                 )}
-                <div className="mt-4 flex justify-end">
-                  <button
-                    onClick={() => setModal(null)}
-                    className="rounded-xl border border-border-subtle-light px-4 py-2 text-sm font-bold"
-                  >
-                    {t.close}
-                  </button>
-                </div>
               </div>
             )}
           </div>
-        </div>
-      ) : null}
+        </div>, document.body)
+        : null}
       {moderatingRoom ? (
         <LiveKitModeratorRoom
           roomId={moderatingRoom.id}

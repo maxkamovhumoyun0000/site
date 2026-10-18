@@ -24702,11 +24702,17 @@ function DashboardShell({
   // qaytarilmaydi.
   const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
   const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
+  const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-schedule"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
     ? primaryAdminSections
     : activeRole === "developer"
     ? primaryDeveloperSections
+    : activeRole === "speaking_admin"
+      ? primarySpeakingAdminSections
     : orderedSections.slice(0, 5);
+  const topbarLabelFor = (item: string) => activeRole === "speaking_admin"
+    ? t(locale, `section.${item}.short`, labelFor(item, locale))
+    : labelFor(item, locale);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
   const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
     ? "home"
@@ -25525,7 +25531,7 @@ function DashboardShell({
                           handleNavigate(item);
                         }}
                       >
-                        {labelFor(item, locale)}
+                        {topbarLabelFor(item)}
                       </button>
                     );
                   })}

@@ -18754,6 +18754,17 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   box-shadow: 0 4px 12px rgba(51, 119, 255, 0.05);
 }
 
+/* Keep the Speaking admin's five primary destinations readable in the header. */
+.app-shell[data-app-role="speaking_admin"] .topbar-desktop-nav {
+  gap: 2px;
+  margin-left: 10px;
+}
+
+.app-shell[data-app-role="speaking_admin"] .topbar-nav-link {
+  padding: 8px 11px;
+  font-size: 12px;
+}
+
 /* Dark mode overrides for active link */
 [data-theme="dark"] .topbar-nav-link {
   color: var(--ink-300);
