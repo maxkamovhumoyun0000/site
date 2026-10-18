@@ -24,6 +24,14 @@ class SpeakingLiveRecordingContractTests(unittest.TestCase):
         self.assertIn('recording_status=\'expired\'', source)
         self.assertIn('status_code=409, detail="The recording is not ready yet"', source)
 
+    def test_recording_finalizes_before_livekit_room_is_deleted(self):
+        source = (ROOT / "backend/speaking_live_recordings.py").read_text()
+        stopping = source.split("def stop_recording_for_room(", 1)[1].split("def _refresh_status(", 1)[0]
+        self.assertLess(stopping.index('"StopEgress"'), stopping.index('"ListEgress"'))
+        self.assertIn("time.monotonic() + 20", stopping)
+        self.assertIn("remote_status in _TERMINAL", stopping)
+        self.assertIn('next_status = "ready" if path.is_file()', stopping)
+
     def test_schedule_prompts_in_three_languages_and_hides_raw_audit_json(self):
         source = (ROOT / "app/ui/speaking-live-lessons.tsx").read_text()
         self.assertEqual(source.count('recordingDecision:'), 3)

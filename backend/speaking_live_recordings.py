@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib import error as urlerror
@@ -152,9 +153,23 @@ def stop_recording_for_room(room_id: str) -> None:
     if not lesson or lesson.get("recording_status") not in {"recording", "starting"}:
         return
     egress_id = str(lesson.get("recording_egress_id") or "")
+    next_status = "processing"
     if egress_id:
         try:
             _egress_request("StopEgress", {"egress_id": egress_id}, timeout=12)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                result = _egress_request("ListEgress", {"egress_id": egress_id}, timeout=6)
+                items = result.get("items") or result.get("egresses") or []
+                remote_status = items[0].get("status") if items else None
+                if remote_status in _TERMINAL:
+                    path = _safe_file(str(lesson.get("recording_file_path") or ""))
+                    next_status = "ready" if path.is_file() and path.stat().st_size > 1024 else "failed"
+                    break
+                if remote_status in _FAILED:
+                    next_status = "failed"
+                    break
+                time.sleep(1)
         except HTTPException:
             # Deleting the room also stops Egress. Preserve the private file for
             # reconciliation instead of failing the lesson-end operation.
@@ -162,7 +177,7 @@ def stop_recording_for_room(room_id: str) -> None:
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE speaking_live_lessons SET recording_status='processing' WHERE id=? AND recording_status IN ('recording','starting')", (lesson["id"],))
+        cur.execute("UPDATE speaking_live_lessons SET recording_status=? WHERE id=? AND recording_status IN ('recording','starting')", (next_status, lesson["id"]))
         conn.commit()
     finally:
         conn.close()
