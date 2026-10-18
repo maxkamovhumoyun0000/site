@@ -1416,12 +1416,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
           apiFetch={apiFetch}
           onClose={() => setModeratingRoom(null)}
           onRoomEnded={() => {
-            const lesson = lessons.find(
-              (item) => item.room_id === moderatingRoom.id,
-            );
             setModeratingRoom(null);
-            if (lesson) void action(lesson.id, "complete", "complete");
-            else void load();
+            void load();
           }}
         />
       ) : null}

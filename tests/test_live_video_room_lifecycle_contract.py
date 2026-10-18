@@ -120,7 +120,16 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         source = (ROOT / "app" / "ui" / "livekit-moderator-room.tsx").read_text(
             encoding="utf-8"
         )
-        self.assertIn('if (isModerator(participant)) return hasScreenShare(participant) ? 0 : 1;', source)
-        self.assertIn('const primaryParticipant = orderedParticipants[0]', source)
-        self.assertIn('publication.source || "").toLowerCase().includes("screen")', source)
-        self.assertIn('object-contain', source)
+        self.assertIn('moderator(feed.participant) ? feed.source === "screen" ? 0 : 1', source)
+        self.assertIn('roomState.primary_identity', source)
+        self.assertIn('roomState.primary_source', source)
+        self.assertIn('const selectedFeed = videoFeeds.find', source)
+        self.assertIn('video.style.objectFit = "contain"', source)
+
+    def test_scheduled_lesson_room_ids_and_end_state_are_connected(self) -> None:
+        video = (ROOT / "backend" / "speaking_live_video.py").read_text(encoding="utf-8")
+        lessons = (ROOT / "backend" / "speaking_live_lessons.py").read_text(encoding="utf-8")
+        self.assertIn('lesson-[0-9]{1,18}', video)
+        self.assertIn('f"spk-live-lesson-{lesson_id}"', lessons)
+        self.assertIn('end_live_video_room(str(lesson["room_id"]), authorization)', lessons)
+        self.assertIn("UPDATE speaking_live_lessons SET status='completed'", video)

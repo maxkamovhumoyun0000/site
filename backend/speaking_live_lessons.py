@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -99,6 +100,7 @@ def _normalise_payload(payload: LessonPayload) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=1)
 def ensure_live_lessons_schema() -> None:
     conn = get_conn()
     cur = conn.cursor()
@@ -443,12 +445,13 @@ def _open_live_video_room(lesson_id: int, actor_id: int) -> tuple[dict[str, Any]
     public_url, _, _ = _livekit_config()
     ensure_live_video_schema()
     room_id = str(lesson.get("room_id") or f"spk-live-lesson-{lesson_id}")[:40]
-    _ensure_livekit_room(room_id)
+    initial_state = json.dumps({"topic": str(lesson.get("topic") or "")}, ensure_ascii=False)
+    _ensure_livekit_room(room_id, initial_state)
     now_iso = _iso()
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("INSERT INTO speaking_live_video_rooms (id,host_user_id,title,subject,max_participants,status,created_at,last_activity_at) VALUES (?,?,?,?,?,'active',?,?) ON CONFLICT (id) DO NOTHING", (room_id, int(actor_id or lesson.get("created_by") or 0), lesson["title"], lesson["subject"], MAX_ROOM_PARTICIPANTS, now_iso, now_iso))
+        cur.execute("INSERT INTO speaking_live_video_rooms (id,host_user_id,title,subject,max_participants,status,created_at,last_activity_at,room_state) VALUES (?,?,?,?,?,'active',?,?,?) ON CONFLICT (id) DO NOTHING", (room_id, int(actor_id or lesson.get("created_by") or 0), lesson["title"], lesson["subject"], MAX_ROOM_PARTICIPANTS, now_iso, now_iso, initial_state))
         cur.execute("UPDATE speaking_live_lessons SET room_id=?,status='live',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='scheduled' RETURNING *", (room_id, int(actor_id or lesson.get("created_by") or 0), lesson_id))
         updated_row = cur.fetchone()
         if not updated_row:
@@ -495,8 +498,12 @@ async def complete_live_lesson(lesson_id: int, authorization: str | None = Heade
     if lesson.get("status") not in {"live", "scheduled"}:
         raise HTTPException(status_code=409, detail="This lesson is already closed")
     if lesson.get("room_id"):
-        from backend.speaking_live_video import _livekit_room_request
-        _livekit_room_request("DeleteRoom", {"room": lesson["room_id"]}, ignore_not_found=True)
+        from backend.speaking_live_video import end_live_video_room
+        try:
+            await end_live_video_room(str(lesson["room_id"]), authorization)
+        except HTTPException as exc:
+            if exc.status_code != 410:
+                raise
     conn = get_conn()
     cur = conn.cursor()
     try:
