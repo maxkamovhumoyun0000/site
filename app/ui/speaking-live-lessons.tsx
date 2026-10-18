@@ -728,7 +728,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
           </button>
           <button
             onClick={openCreate}
-            className="rounded-xl bg-primary-container px-4 py-2.5 text-sm font-black text-white shadow-md"
+            className="rounded-xl bg-[#1736E8] px-4 py-2.5 text-sm font-black text-white shadow-md transition-colors hover:bg-[#1029B9] active:bg-[#0D238F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1736E8] focus-visible:ring-offset-2"
           >
             ＋ {t.create}
           </button>
@@ -1029,7 +1029,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                                     })
                                   : void beginLive(lesson)
                               }
-                              className="rounded-lg bg-primary-container px-3 py-2 font-bold text-white disabled:opacity-50"
+                              className="rounded-lg bg-[#1736E8] px-3 py-2 font-bold text-white transition-colors hover:bg-[#1029B9] active:bg-[#0D238F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1736E8] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {busy === `${lesson.id}:start`
                                 ? "…"
@@ -1344,7 +1344,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                   <button
                     disabled={busy === "save"}
                     type="submit"
-                    className="rounded-xl bg-primary-container px-5 py-2.5 text-sm font-bold text-white disabled:opacity-50"
+                    className="rounded-xl bg-[#1736E8] px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#1029B9] active:bg-[#0D238F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1736E8] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {busy === "save" ? "…" : t.save}
                   </button>
@@ -1371,7 +1371,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                 <div className="flex justify-end">
                   <button
                     disabled={Boolean(busy)}
-                    className="rounded-xl bg-primary-container px-5 py-2.5 text-sm font-bold text-white"
+                    className="rounded-xl bg-[#1736E8] px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-[#1029B9] active:bg-[#0D238F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1736E8] focus-visible:ring-offset-2"
                   >
                     {t.save}
                   </button>
