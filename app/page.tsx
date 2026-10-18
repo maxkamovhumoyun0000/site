@@ -128,6 +128,85 @@ function DiamondWordmark({
   );
 }
 
+function PlatformMaintenanceScreen({
+  locale,
+  message,
+  onLocaleChange,
+}: {
+  locale: Locale;
+  message: string;
+  onLocaleChange: (locale: Locale) => void;
+}) {
+  const [dark, setDark] = useState(false);
+  const localeOrder: Locale[] = ["uz", "ru", "en"];
+
+  useEffect(() => {
+    setDark(localStorage.getItem("diamond_theme") === "dark");
+  }, []);
+
+  const title = locale === "ru"
+    ? "Проводятся технические работы"
+    : locale === "en"
+      ? "Technical work is in progress"
+      : "Texnik ishlar olib borilmoqda";
+  const fallback = locale === "ru"
+    ? "Сайт и приложения обновляются. Ориентировочно вернёмся через 30 минут."
+    : locale === "en"
+      ? "The website and apps are being updated. We expect to be back in about 30 minutes."
+      : "Sayt va ilovalar yangilanmoqda. Taxminan 30 daqiqa ichida qaytamiz.";
+
+  function toggleTheme() {
+    const next = !dark;
+    setDark(next);
+    localStorage.setItem("diamond_theme", next ? "dark" : "light");
+  }
+
+  function cycleLocale() {
+    const index = localeOrder.indexOf(locale);
+    const next = localeOrder[(index + 1) % localeOrder.length] || "uz";
+    localStorage.setItem("diamond_locale", next);
+    document.documentElement.lang = next;
+    onLocaleChange(next);
+  }
+
+  return (
+    <main
+      className={`fixed inset-0 z-[10000] grid min-h-screen place-items-center p-6 text-center transition-colors ${dark ? "bg-[radial-gradient(ellipse_at_top,#18366f_0%,#071126_70%)] text-white" : "bg-[radial-gradient(ellipse_at_top,#dce7ff_0%,#f4f7ff_70%)] text-[#101938]"}`}
+      role="status"
+      aria-live="polite"
+    >
+      <section className={`relative w-full max-w-[504px] rounded-[24px] border px-8 pb-12 pt-[58px] shadow-[0_28px_90px_rgba(16,34,74,0.12)] sm:px-12 ${dark ? "border-white/15 bg-[#14264b]/95" : "border-white/80 bg-white"}`}>
+        <div className="absolute right-3 top-3 flex gap-2 sm:right-4 sm:top-3">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
+            title={dark ? "Switch to light theme" : "Switch to dark theme"}
+            className={`grid h-9 w-9 place-items-center rounded-xl border text-base ${dark ? "border-white/15 bg-white/10" : "border-[#dce4f4] bg-white"}`}
+          >
+            {dark ? "🌙" : "☀️"}
+          </button>
+          <button
+            type="button"
+            onClick={cycleLocale}
+            aria-label="Change language"
+            title="Change language"
+            className={`h-9 min-w-9 rounded-xl border px-2 text-xs font-bold uppercase ${dark ? "border-white/15 bg-white/10" : "border-[#dce4f4] bg-white"}`}
+          >
+            {locale}
+          </button>
+        </div>
+        <div className={`mx-auto mb-5 grid h-[60px] w-[60px] place-items-center rounded-[18px] text-[26px] ${dark ? "bg-blue-400/15 text-blue-300" : "bg-[#2157f3]/10 text-[#1429f2]"}`} aria-hidden="true">⚙</div>
+        <h1 className="text-[25px] font-extrabold leading-tight tracking-[-0.03em] sm:text-[30px]">{title}</h1>
+        <p className={`mt-3 text-[14px] leading-6 sm:text-[15px] ${dark ? "text-slate-300" : "text-[#5c6680]"}`}>
+          {message || fallback}
+        </p>
+        <div className={`mt-7 text-[11px] font-extrabold tracking-[0.16em] ${dark ? "text-slate-400" : "text-[#5c6680]"}`}>DIAMOND EDUCATION</div>
+      </section>
+    </main>
+  );
+}
+
 type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "telegram-unregistered";
 type GenericRow = Record<string, any>;
 
@@ -27296,7 +27375,7 @@ export default function DiamondEducationApp() {
 
   if (platformMaintenance.active) {
     const message = locale === "ru" ? platformMaintenance.message_ru : locale === "en" ? platformMaintenance.message_en : platformMaintenance.message_uz;
-    content = <main className="min-h-screen grid place-items-center bg-slate-950 p-6 text-center text-white"><section className="max-w-lg rounded-3xl border border-cyan-300/25 bg-white/10 p-8 shadow-2xl"><div className="text-5xl">🛠️</div><h1 className="mt-5 text-2xl font-black">{locale === "ru" ? "Проводятся технические работы" : locale === "en" ? "Technical work is in progress" : "Texnik ishlar olib borilmoqda"}</h1><p className="mt-3 text-sm leading-6 text-slate-200">{message || (locale === "ru" ? "Мы скоро вернёмся." : locale === "en" ? "We will be back shortly." : "Tez orada ishga tushamiz.")}</p></section></main>;
+    content = <PlatformMaintenanceScreen locale={locale} message={message} onLocaleChange={setLocale} />;
   }
 
   return (
