@@ -7395,7 +7395,9 @@ def _consume_qr_login_token(raw_token: str, used_device_id: str | None = None) -
     return user
 
 
-def _apply_web_login_policy(user: dict, device_id: str | None) -> dict:
+def _apply_web_login_policy(
+    user: dict, device_id: str | None, *, enforce_password_device: bool = True
+) -> dict:
     if not user:
         return user
     uid = int(user.get("id") or 0)
@@ -7407,7 +7409,8 @@ def _apply_web_login_policy(user: dict, device_id: str | None) -> dict:
     )
     bound_device = str(user.get("initial_password_device_id") or "").strip()
     if (
-        role == "student"
+        enforce_password_device
+        and role == "student"
         and not is_speaking_app_account(user.get("speaking_app_account"))
         and int(user.get("password_used") or 0) == 1
         and bound_device
@@ -22476,7 +22479,9 @@ async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteReq
     if int(user.get("blocked") or 0) == 1:
         raise HTTPException(status_code=403, detail="Account is blocked")
 
-    user = _apply_web_login_policy(user, device_id)
+    # The one-time school password is bound to its first device. A separately
+    # approved Telegram bot login proves identity without that password.
+    user = _apply_web_login_policy(user, device_id, enforce_password_device=False)
     session_id, ttl_hours = _issue_web_session(
         user,
         device_id=device_id,
@@ -22512,7 +22517,9 @@ async def telegram_login(request: TelegramLoginRequest):
         raise HTTPException(status_code=403, detail="Account is blocked")
 
     device_id = (request.device_id or "").strip() or None
-    user = _apply_web_login_policy(user, device_id)
+    # Signed Telegram initData is an independent login method. Do not apply
+    # the initial-password device binding to the Telegram Mini App.
+    user = _apply_web_login_policy(user, device_id, enforce_password_device=False)
     if bool(request.sync_bot_session):
         _sync_bot_login_state(int(user.get("id") or 0), request.telegram_id)
     session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="telegram")

@@ -45,7 +45,7 @@ import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { SpeakingLearningPaths } from "./ui/speaking-learning-paths";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
-import { SpeakingAdminHome, SpeakingLiveManagement } from "./ui/speaking-live-management";
+import { SpeakingAdminHome } from "./ui/speaking-live-management";
 import { SpeakingLiveLessons } from "./ui/speaking-live-lessons";
 import { AdminCompetitions } from "./ui/admin-competitions";
 import { AdminPurchases } from "./ui/admin-purchases";
@@ -208,7 +208,7 @@ function PlatformMaintenanceScreen({
   );
 }
 
-type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "telegram-unregistered";
+type AuthStatus = "checking" | "authenticated" | "unauthenticated" | "telegram-unregistered" | "telegram-unavailable";
 type GenericRow = Record<string, any>;
 
 function adminGroupFromCreateResult(result: GenericRow): GenericRow | null {
@@ -788,8 +788,8 @@ function getTelegramRuntimeAuth(): TelegramRuntimeAuth {
     || queryParams.get("tgWebAppData")
     || "",
   ).trim();
-  let telegramId = Number(webApp?.initDataUnsafe?.user?.id || 0);
-  if (!telegramId && initData) {
+  let telegramId = 0;
+  if (initData) {
     try {
       const userJson = new URLSearchParams(initData).get("user") || "{}";
       telegramId = Number(JSON.parse(userJson)?.id || 0);
@@ -797,12 +797,13 @@ function getTelegramRuntimeAuth(): TelegramRuntimeAuth {
       telegramId = 0;
     }
   }
+  if (!telegramId) telegramId = Number(webApp?.initDataUnsafe?.user?.id || 0);
   return {
     isTelegramClient: Boolean(
-      webApp
-      || initData
+      initData
       || /Telegram/i.test(navigator.userAgent)
-      || window.location.search.includes("tgWebAppPlatform"),
+      || hashParams.has("tgWebAppPlatform")
+      || queryParams.has("tgWebAppPlatform"),
     ),
     telegramId: Number.isFinite(telegramId) && telegramId > 0 ? telegramId : 0,
     initData,
@@ -941,6 +942,7 @@ async function requestJson<T>(path: string, options?: {
   timeoutMs?: number;
   retries?: number;
   signal?: AbortSignal;
+  suppressAuthRedirect?: boolean;
 }): Promise<T> {
   const language = resolveLocale(typeof window === "undefined" ? "uz" : localStorage.getItem(LOCALE_KEY));
   const attempts = Math.max(1, Number(options?.retries || 0) + 1);
@@ -994,7 +996,7 @@ async function requestJson<T>(path: string, options?: {
     if (!response.ok) {
       if (response.status === 401 && options?.token) {
         localStorage.removeItem("diamond_token");
-        if (typeof window !== "undefined" && window.location.pathname !== "/login") {
+        if (!options.suppressAuthRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
           window.location.replace("/login?reason=session_expired");
         }
         throw new Error("Invalid token");
@@ -2972,6 +2974,22 @@ function TelegramCheckingScreen({ locale }: { locale: Locale }) {
         <p className="pill-label">Telegram Mini App</p>
         <h1>{t(locale, "auth.telegram.checking.title", "Hisob tekshirilmoqda")}</h1>
         <p>{t(locale, "auth.telegram.checking.desc", "Telegram ID orqali hisobingiz tekshirilmoqda.")}</p>
+      </section>
+    </main>
+  );
+}
+
+function TelegramAuthUnavailableScreen({ locale, onRetry }: { locale: Locale; onRetry: () => void }) {
+  return (
+    <main className="auth-page">
+      <section className="auth-card compact">
+        <LogoMark size="md" />
+        <p className="pill-label">Telegram Mini App</p>
+        <h1>{t(locale, "auth.telegram.unavailable.title", "Telegram orqali kirib bo‘lmadi")}</h1>
+        <p>{t(locale, "auth.telegram.unavailable.desc", "Mini App’ni Telegram botidagi tugmadan qayta oching. Muammo davom etsa, internet aloqasini tekshiring.")}</p>
+        <button className="btn btn-primary" type="button" onClick={onRetry}>
+          {t(locale, "auth.telegram.unavailable.retry", "Qayta urinish")}
+        </button>
       </section>
     </main>
   );
@@ -24702,7 +24720,7 @@ function DashboardShell({
   // qaytarilmaydi.
   const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
   const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
-  const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-schedule"].filter((item) => orderedSections.includes(item));
+  const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin"
     ? primaryAdminSections
     : activeRole === "developer"
@@ -25360,8 +25378,6 @@ function DashboardShell({
       content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
     } else if (currentSection === "speaking-learning-paths" && activeRole === "speaking_admin") {
       content = <SpeakingLearningPaths apiFetch={authedApiFetch} />;
-    } else if (currentSection === "speaking-live" && activeRole === "speaking_admin") {
-      content = <SpeakingLiveManagement apiFetch={authedApiFetch} currentUserId={Number(user?.id || 0)} />;
     } else if (currentSection === "speaking-schedule" && activeRole === "speaking_admin") {
       content = <SpeakingLiveLessons apiFetch={authedApiFetch} />;
     } else {
@@ -26193,7 +26209,8 @@ export default function DiamondEducationApp() {
     let authFinished = false;
     let authAttemptInFlight = false;
     let retryCount = 0;
-    const maxRetries = 1;
+    let sdkRetryCount = 0;
+    const maxRetries = 2;
     setShowAuthRetry(false);
     setAuthInitError("");
 
@@ -26209,6 +26226,16 @@ export default function DiamondEducationApp() {
       }
       setAuthResolved(false);
       setInitialStateReady(false);
+    };
+
+    const finishTelegramAuthError = () => {
+      if (disposed) return;
+      authFinished = true;
+      setAuthStatus("telegram-unavailable");
+      setAuthInitError("");
+      setShowAuthRetry(false);
+      setAuthResolved(true);
+      setInitialStateReady(true);
     };
 
     const scheduleTelegramSdkRetry = () => {
@@ -26244,9 +26271,13 @@ export default function DiamondEducationApp() {
       // Do not turn a delayed Telegram SDK into the public landing page. The
       // SDK can inject initData after hydration, especially on Android.
       if (isTgClient && (!telegramRuntime.initData || !telegramRuntime.telegramId)) {
-        holdCheckingState("Telegram ma'lumoti yuklanmoqda. Iltimos, sahifani yopmang.");
         authAttemptInFlight = false;
-        scheduleTelegramSdkRetry();
+        sdkRetryCount += 1;
+        if (sdkRetryCount >= 2) finishTelegramAuthError();
+        else {
+          holdCheckingState("Telegram ma'lumoti yuklanmoqda. Iltimos, sahifani yopmang.");
+          scheduleTelegramSdkRetry();
+        }
         return;
       }
 
@@ -26310,16 +26341,7 @@ export default function DiamondEducationApp() {
       const scheduleRetry = () => {
         retryCount += 1;
         if (retryCount > maxRetries) {
-          if (typeof navigator !== "undefined" && navigator.onLine === false) {
-            holdCheckingState("Internet aloqasi yo‘q. Ulanishni tekshirib qayta urinib ko‘ring.");
-            return;
-          }
-          holdCheckingState("Sessiya tekshiruvi davom etmoqda. Qayta urinib ko‘rishingiz mumkin.");
-          window.setTimeout(() => {
-            if (disposed) return;
-            retryCount = 0;
-            initAuth().catch(() => null);
-          }, 3500);
+          finishTelegramAuthError();
           return;
         }
         if (disposed) return;
@@ -26332,7 +26354,7 @@ export default function DiamondEducationApp() {
         const token = localStorage.getItem("diamond_token");
         if (token) {
           try {
-            const me = await requestJson<ApiUser>("/auth/me", { token, timeoutMs: 30000, retries: 0 });
+            const me = await requestJson<ApiUser>("/auth/me", { token, timeoutMs: 30000, retries: 0, suppressAuthRedirect: Boolean(telegramId) });
             const syncedUser = await maybeSyncTelegramLink(token, me);
             if (telegramId && !belongsToTelegramAccount(syncedUser)) {
               localStorage.removeItem("diamond_token");
@@ -26360,8 +26382,12 @@ export default function DiamondEducationApp() {
             }
             if (isAuthErrorMessage(message)) {
               localStorage.removeItem("diamond_token");
-              router.replace("/login?reason=session_expired");
-              return;
+              if (!telegramId) {
+                router.replace("/login?reason=session_expired");
+                return;
+              }
+              userRef.current = null;
+              setUser(null);
             } else {
               setAuthStatus("checking");
               scheduleRetry();
@@ -26402,9 +26428,11 @@ export default function DiamondEducationApp() {
               return;
             }
             if (isTerminalTelegramAuthError(msg)) {
-              setAuthStatus("telegram-unregistered");
-              setInitialStateReady(true);
-              setAuthResolved(true);
+              if (/royxatdan|ro‘yxatdan|not registered|404/i.test(msg)) {
+                setAuthStatus("telegram-unregistered");
+                setInitialStateReady(true);
+                setAuthResolved(true);
+              } else finishTelegramAuthError();
               return;
             }
             setAuthStatus("checking");
@@ -26420,7 +26448,7 @@ export default function DiamondEducationApp() {
         const token = localStorage.getItem("diamond_token");
         if (token) {
           try {
-            const me = await requestJson<ApiUser>("/auth/me", { token, timeoutMs: 30000, retries: 0 });
+            const me = await requestJson<ApiUser>("/auth/me", { token, timeoutMs: 30000, retries: 0, suppressAuthRedirect: Boolean(telegramId) });
             const syncedUser = await maybeSyncTelegramLink(token, me);
             if (telegramId && !belongsToTelegramAccount(syncedUser)) {
               localStorage.removeItem("diamond_token");
@@ -26447,8 +26475,12 @@ export default function DiamondEducationApp() {
             }
             if (isAuthErrorMessage(message)) {
               localStorage.removeItem("diamond_token");
-              router.replace("/login?reason=session_expired");
-              return;
+              if (!telegramId) {
+                router.replace("/login?reason=session_expired");
+                return;
+              }
+              userRef.current = null;
+              setUser(null);
             } else {
               setAuthStatus("checking");
               scheduleRetry();
@@ -26480,8 +26512,14 @@ export default function DiamondEducationApp() {
             setAuthStatus("authenticated");
             setAuthResolved(true);
             return;
-          } catch {
-            // fall through to unauthenticated status
+          } catch (telegramError) {
+            const message = telegramError instanceof Error ? telegramError.message : "";
+            if (/royxatdan|ro‘yxatdan|not registered|404/i.test(message)) {
+              setAuthStatus("telegram-unregistered");
+              setInitialStateReady(true);
+              setAuthResolved(true);
+            } else finishTelegramAuthError();
+            return;
           }
         }
         if (telegramId && !telegramAutoLoginSuppressed) setAuthStatus("telegram-unregistered");
@@ -27147,18 +27185,22 @@ export default function DiamondEducationApp() {
       />
     );
   
+  } else if (!user && isTelegramClient && authResolved && authStatus === "telegram-unregistered") {
+    content = <TelegramUnregisteredScreen locale={locale} />;
+  } else if (!user && isTelegramClient && authResolved && authStatus === "telegram-unavailable") {
+    content = <TelegramAuthUnavailableScreen locale={locale} onRetry={() => setAuthRetryTrigger((value) => value + 1)} />;
   } else if (!user && isTelegramClient && !authResolved) {
     content = (
       <main className="placement-page process-runtime-page">
         <section className="placement-card placement-runtime-card">
           <article className="panel-card">
-            <h2>Telegram akkaunti tekshirilmoqda</h2>
+            <h2>{t(locale, "auth.telegram.checking.title", "Telegram akkaunti tekshirilmoqda")}</h2>
             <p className="text-sm text-ink-600 dark:text-navy-300">
-              Mini App Telegram sessiyangiz bilan kirishga urinmoqda. Iltimos, sahifani yopmang.
+              {t(locale, "auth.telegram.checking.desc", "Mini App Telegram sessiyangiz bilan kirishga urinmoqda. Iltimos, sahifani yopmang.")}
             </p>
             {showAuthRetry ? (
               <button className="btn btn-primary mt-4" onClick={() => setAuthRetryTrigger((value) => value + 1)}>
-                Qayta tekshirish
+                {t(locale, "auth.telegram.unavailable.retry", "Qayta tekshirish")}
               </button>
             ) : null}
           </article>

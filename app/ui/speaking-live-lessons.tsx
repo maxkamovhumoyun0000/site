@@ -47,7 +47,7 @@ type Props = {
 type FormValue = {
   title: string;
   topic: string;
-  subject: "english" | "russian";
+  subject: "english" | "russian" | "cefr";
   moderator_name: string;
   audience_label: string;
   starts_at: string;
@@ -70,15 +70,15 @@ const emptyForm = (): FormValue => ({
 const ROOM_TEXT = {
   uz: {
     label: "Live video xonasi avtomatik ochilsin",
-    hint: "Dars boshlanishidan 5 daqiqa oldin xona qatnashchilar uchun ochiladi.",
+    hint: "Xona dars boshlanish vaqtida qatnashchilar uchun ochiladi.",
   },
   en: {
     label: "Open the live video room automatically",
-    hint: "The room opens to participants 5 minutes before the lesson starts.",
+    hint: "The room opens to participants when the lesson starts.",
   },
   ru: {
     label: "Автоматически открыть live-видеокомнату",
-    hint: "Комната откроется участникам за 5 минут до начала занятия.",
+    hint: "Комната откроется участникам в момент начала занятия.",
   },
 } as const;
 const TEXT = {
@@ -97,6 +97,7 @@ const TEXT = {
     list: "Jadval ro‘yxati",
     all: "Barchasi",
     english: "English / IELTS",
+    cefr: "CEFR",
     russian: "Rus tili",
     subject: "Fan / til",
     status: "Holat",
@@ -118,6 +119,7 @@ const TEXT = {
     play: "Yozuvni ko‘rish",
     enter: "Live video xonasiga kirish",
     start: "Live boshlash",
+    startLater: "Dars vaqti kelganda boshlanadi",
     end: "Live’ni tugatish",
     notify: "Xabar yuborish",
     edit: "Tahrirlash",
@@ -188,6 +190,7 @@ const TEXT = {
     list: "Schedule list",
     all: "All",
     english: "English / IELTS",
+    cefr: "CEFR",
     russian: "Russian",
     subject: "Subject / language",
     status: "Status",
@@ -209,6 +212,7 @@ const TEXT = {
     play: "Watch recording",
     enter: "Enter live video room",
     start: "Start live",
+    startLater: "Available at lesson start time",
     end: "End live",
     notify: "Send notice",
     edit: "Edit",
@@ -278,6 +282,7 @@ const TEXT = {
     list: "Список уроков",
     all: "Все",
     english: "English / IELTS",
+    cefr: "CEFR",
     russian: "Русский язык",
     subject: "Предмет / язык",
     status: "Статус",
@@ -299,6 +304,7 @@ const TEXT = {
     play: "Смотреть запись",
     enter: "Войти в live-видеокомнату",
     start: "Начать эфир",
+    startLater: "Доступно в начале урока",
     end: "Завершить эфир",
     notify: "Отправить уведомление",
     edit: "Изменить",
@@ -416,6 +422,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [view, setView] = useState<"month" | "week" | "day" | "list">("month");
   const [anchor, setAnchor] = useState(() => new Date());
   const [subjectFilter, setSubjectFilter] = useState("all");
@@ -440,6 +447,11 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   >([]);
   const [menu, setMenu] = useState<number | null>(null);
   const [moderatingRoom, setModeratingRoom] = useState<LiveRoom | null>(null);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setCurrentTime(Date.now()), 15_000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (!modal) return;
@@ -601,7 +613,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     setForm({
       title: lesson.title,
       topic: lesson.topic,
-      subject: lesson.subject === "russian" ? "russian" : "english",
+      subject: lesson.subject === "russian" ? "russian" : lesson.subject === "cefr" ? "cefr" : "english",
       moderator_name: lesson.moderator_name,
       audience_label: lesson.audience_label,
       starts_at: dateInput(lesson.starts_at),
@@ -910,6 +922,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
               {t.subject}: {t.all}
             </option>
             <option value="english">{t.english}</option>
+            <option value="cefr">{t.cefr}</option>
             <option value="russian">{t.russian}</option>
           </select>
           <select
@@ -1016,7 +1029,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                           {lesson.audience_label || "—"}
                         </span>
                         <div className="mt-1 text-text-secondary-light">
-                          {lesson.subject === "russian" ? t.russian : t.english}
+                          {lesson.subject === "russian" ? t.russian : lesson.subject === "cefr" ? t.cefr : t.english}
                         </div>
                       </td>
                       <td className="whitespace-nowrap px-4 py-4 font-semibold text-on-surface">
@@ -1091,7 +1104,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                         <div className="relative flex items-center justify-end gap-1">
                           {lesson.status === "scheduled" || active ? (
                             <button
-                              disabled={Boolean(busy)}
+                              disabled={Boolean(busy) || (!active && currentTime < Date.parse(lesson.starts_at))}
+                              title={!active && currentTime < Date.parse(lesson.starts_at) ? t.startLater : undefined}
                               onClick={() =>
                                 active
                                   ? setModeratingRoom({
@@ -1108,7 +1122,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                                 ? "…"
                                 : active
                                   ? t.enter
-                                  : t.start}
+                                  : currentTime < Date.parse(lesson.starts_at) ? t.startLater : t.start}
                             </button>
                           ) : null}
                           {active ? (
@@ -1314,6 +1328,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                     className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2.5 text-sm"
                   >
                     <option value="english">{t.english}</option>
+                    <option value="cefr">{t.cefr}</option>
                     <option value="russian">{t.russian}</option>
                   </select>
                 </label>

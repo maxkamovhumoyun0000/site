@@ -159,14 +159,20 @@ def _livekit_control_url(public_url: str) -> str:
     raise HTTPException(status_code=503, detail="Live video is being prepared. Please try again shortly.")
 
 
-def _livekit_control_token(api_key: str, api_secret: str) -> str:
+def _livekit_control_token(api_key: str, api_secret: str, room: str = "") -> str:
     now = _now()
+    grants: dict[str, Any] = {"roomCreate": True, "roomList": True, "roomAdmin": True}
+    # LiveKit requires roomAdmin grants to name the target room. A global
+    # admin flag without `room` can create rooms but receives 401 for metadata,
+    # participant and track operations.
+    if room:
+        grants["room"] = room
     return jwt.encode(
         {
             "iss": api_key,
             "nbf": int(now.timestamp()) - 5,
             "exp": int((now + timedelta(seconds=60)).timestamp()),
-            "video": {"roomCreate": True, "roomList": True, "roomAdmin": True},
+            "video": grants,
         },
         api_secret,
         algorithm="HS256",
@@ -189,7 +195,7 @@ def _livekit_room_request(
         data=body,
         method="POST",
         headers={
-            "Authorization": f"Bearer {_livekit_control_token(api_key, api_secret)}",
+            "Authorization": f"Bearer {_livekit_control_token(api_key, api_secret, str(payload.get('room') or ''))}",
             "Content-Type": "application/json",
         },
     )
@@ -253,11 +259,13 @@ def _safe_datetime(value: Any) -> datetime | None:
 
 def _subject(value: str) -> str:
     normalized = str(value or "").strip().lower()
-    if normalized in {"english", "ielts", "eng"}:
+    if normalized in {"english", "ielts", "eng", "english / ielts", "english/ielts"}:
         return "english"
+    if normalized in {"cefr", "english / cefr", "english/cefr"}:
+        return "cefr"
     if normalized in {"russian", "russian-speaking", "rus", "ru"}:
         return "russian"
-    raise HTTPException(status_code=422, detail="Subject must be english or russian")
+    raise HTTPException(status_code=422, detail="Subject must be english, russian or cefr")
 
 
 def _room_id(value: str) -> str:

@@ -76,12 +76,14 @@ def _normalise_payload(payload: LessonPayload) -> dict[str, Any]:
     title = " ".join(payload.title.split())
     topic = " ".join(payload.topic.split())
     subject = payload.subject.strip().lower()
-    if subject in {"eng", "ielts", "english / ielts"}:
+    if subject in {"english", "eng", "ielts", "english / ielts", "english/ielts"}:
         subject = "english"
+    elif subject in {"cefr", "english / cefr", "english/cefr"}:
+        subject = "cefr"
     elif subject in {"ru", "russian", "rus tili"}:
         subject = "russian"
     else:
-        raise HTTPException(status_code=422, detail="Subject must be english or russian")
+        raise HTTPException(status_code=422, detail="Subject must be english, russian or cefr")
     starts = _iso_datetime(payload.starts_at)
     ends = _iso_datetime(payload.ends_at)
     if ends <= starts:
@@ -444,6 +446,8 @@ def _open_live_video_room(lesson_id: int, actor_id: int) -> tuple[dict[str, Any]
         return lesson, str(lesson["room_id"]), public_url, False
     if lesson.get("status") != "scheduled":
         raise HTTPException(status_code=409, detail="Only scheduled lessons can be started")
+    if _iso_datetime(str(lesson["starts_at"])) > datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="Lesson cannot start before its scheduled time")
     from backend.speaking_live_video import (
         MAX_ROOM_PARTICIPANTS,
         _ensure_livekit_room,
@@ -571,7 +575,7 @@ async def speaking_live_lesson_reminder_worker() -> None:
                     start = start.replace(tzinfo=timezone.utc)
                 minutes_left = int((start - now).total_seconds() // 60)
                 auto_opened = False
-                if bool(row.get("auto_open_video_room")) and -1 <= minutes_left <= 5:
+                if bool(row.get("auto_open_video_room")) and start <= now and now - start <= timedelta(minutes=6):
                     try:
                         updated, room_id, _, opened = await asyncio.to_thread(
                             _open_live_video_room,
@@ -580,7 +584,7 @@ async def speaking_live_lesson_reminder_worker() -> None:
                         )
                         if opened:
                             _audit(lesson_id, int(row.get("created_by") or 0), "live_video_room_auto_opened", {"room_id": room_id})
-                            await _notify(lesson_id, "Live video xonasi ochildi", f"{updated['title']} · dars boshlanishiga 5 daqiqadan kam qoldi", "auto-live-video-opened", "started")
+                            await _notify(lesson_id, "Live dars boshlandi", f"{updated['title']} jonli efirda. Ilovani ochib qo‘shiling.", "auto-live-video-opened", "started")
                         auto_opened = True
                     except HTTPException as exc:
                         if exc.status_code != 409:

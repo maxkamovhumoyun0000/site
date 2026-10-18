@@ -229,7 +229,7 @@ function SpeakingAdminPersonalPanel({
         <section className="admin-dash-panel">
           <div className="admin-dash-panel-head"><span className="admin-dash-panel-title">⚡ Tezkor amallar</span></div>
           {[
-            ["speaking-live", "🎥", "Live video boshqaruvi"],
+            ["speaking-schedule", "🎥", "Live darslar jadvali"],
             ["speaking-topics", "📝", "Mavzu va savollar"],
             ["speaking-users", "👥", "Speaking foydalanuvchilari"],
           ].map(([section, icon, label]) => <button key={section} type="button" onClick={() => onNavigate(section)} className="admin-user-item w-full cursor-pointer text-left transition-opacity hover:opacity-75"><div className="admin-user-avatar">{icon}</div><div className="min-w-0 flex-1"><div className="admin-user-name">{label}</div><div className="admin-user-sub">Boshqaruv sahifasini ochish</div></div></button>)}
