@@ -12879,24 +12879,39 @@ def _diamondvoy_start_fresh_session_final(user_id: int) -> dict:
     return _diamondvoy_create_chat_for_user(uid, "Yangi chat")
 
 
-def _diamondvoy_list_messages_final(chat_id: int, limit: int = 120) -> list[dict]:
+def _diamondvoy_list_messages_final(
+    chat_id: int, limit: int = 120, after_id: int | None = None
+) -> list[dict]:
     _ensure_final_chat_schema()
     lim = max(1, min(300, int(limit or 120)))
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
-            SELECT id, chat_id, role, content, created_at
-            FROM diamondvoy_chat_messages
-            WHERE chat_id=?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (int(chat_id), lim),
-        )
-        rows = [dict(r) for r in (cur.fetchall() or [])]
-        rows.reverse()
+        if after_id is None:
+            cur.execute(
+                """
+                SELECT id, chat_id, role, content, created_at
+                FROM diamondvoy_chat_messages
+                WHERE chat_id=?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(chat_id), lim),
+            )
+            rows = [dict(r) for r in (cur.fetchall() or [])]
+            rows.reverse()
+        else:
+            cur.execute(
+                """
+                SELECT id, chat_id, role, content, created_at
+                FROM diamondvoy_chat_messages
+                WHERE chat_id=? AND id>?
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (int(chat_id), max(0, int(after_id)), lim),
+            )
+            rows = [dict(r) for r in (cur.fetchall() or [])]
         return rows
     finally:
         conn.close()
@@ -18801,14 +18816,13 @@ def _community_chat_attachment_rows(message_ids: list[int]) -> dict[int, list[di
         conn.close()
 
 
-def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 0, limit: int = 120) -> list[dict[str, Any]]:
+def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int | None = None, limit: int = 120) -> list[dict[str, Any]]:
     _ensure_community_chat_schema()
     lim = max(1, min(300, int(limit or 120)))
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """
+        query = """
             SELECT
                 m.id, m.thread_id, m.sender_id, m.sender_role, m.message_text,
                 m.reply_to_message_id, m.client_message_id, m.created_at,
@@ -18825,14 +18839,24 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int = 
                 ON all_deleted.message_id=m.id AND all_deleted.user_id=0
             LEFT JOIN community_chat_message_deletions hidden_for_viewer
                 ON hidden_for_viewer.message_id=m.id AND hidden_for_viewer.user_id=?
-            WHERE m.thread_id=? AND m.id>? AND hidden_for_viewer.message_id IS NULL
+            WHERE m.thread_id=? AND hidden_for_viewer.message_id IS NULL
               AND all_deleted.message_id IS NULL
-            ORDER BY m.id ASC
+            {message_cursor}
             LIMIT ?
-            """,
-            (int(viewer_id), int(thread_id), max(0, int(after_id or 0)), lim),
-        )
-        rows = [dict(row) for row in (cur.fetchall() or [])]
+            """
+        if after_id is None:
+            cur.execute(
+                query.format(message_cursor="ORDER BY m.id DESC"),
+                (int(viewer_id), int(thread_id), lim),
+            )
+            rows = [dict(row) for row in (cur.fetchall() or [])]
+            rows.reverse()
+        else:
+            cur.execute(
+                query.format(message_cursor="AND m.id>? ORDER BY m.id ASC"),
+                (int(viewer_id), int(thread_id), max(0, int(after_id)), lim),
+            )
+            rows = [dict(row) for row in (cur.fetchall() or [])]
     finally:
         conn.close()
 
@@ -20281,6 +20305,7 @@ def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
         conn.close()
 
 
+@app.post("/api/auth/speaking-google", response_model=TokenResponse)
 @app.post("/auth/speaking-google", response_model=TokenResponse)
 async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Request):
     """Exchange a verified Google ID token for a normal Speaking session."""
@@ -24098,7 +24123,7 @@ async def chat_thread_messages(
 
 @app.get("/community-chat")
 async def community_chat_messages(
-    after_id: int = Query(default=0, ge=0),
+    after_id: int | None = Query(default=None, ge=0),
     limit: int = Query(default=120, ge=1, le=300),
     channel: str = Query(default="general", max_length=20),
     authorization: str | None = Header(default=None),
@@ -24169,6 +24194,22 @@ def _send_community_chat_push(thread_id: int, sender: dict[str, Any], message_id
     title = f"{_display_name(sender)} · Umumiy chat"
     threading.Thread(
         target=push_notifications.send_push_to_users,
+        args=(recipient_ids, title, preview),
+        kwargs={
+            "data": {
+                "target_screen": "community_chat",
+                "notification_type": "community_chat",
+                "thread_id": str(int(thread_id)),
+                "message_id": str(int(message_id)),
+            }
+        },
+        daemon=True,
+    ).start()
+    # Speaking tokens are kept in their own table because that app has a
+    # separate Firebase project. Send only to registered speaking accounts,
+    # never to the public speaking_all topic for a user-authored chat message.
+    threading.Thread(
+        target=push_notifications.send_push_to_speaking_users,
         args=(recipient_ids, title, preview),
         kwargs={
             "data": {
@@ -24809,6 +24850,24 @@ async def _diamondvoy_run_generation_job(
                 ),
                 None,
             )
+        push_data = {
+            "target_screen": "chats",
+            "notification_type": "diamondvoy_reply",
+            "chat_id": str(int(chat_id)),
+        }
+        push_preview = " ".join(assistant_text.split())[:140]
+        threading.Thread(
+            target=push_notifications.send_push_to_user,
+            args=(user_id, "Diamondvoy", push_preview),
+            kwargs={"data": push_data},
+            daemon=True,
+        ).start()
+        threading.Thread(
+            target=push_notifications.send_push_to_speaking_user,
+            args=(user_id, "Diamondvoy", push_preview),
+            kwargs={"data": push_data},
+            daemon=True,
+        ).start()
         _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "done", "content": assistant_text, "chat_title": current_chat_title})
     except Exception as exc:
         logger.exception("diamondvoy generation job failed job_id=%s chat_id=%s user_id=%s", job_id, chat_id, user_id)
@@ -25151,12 +25210,15 @@ async def final_diamondvoy_delete_chat(
 async def final_diamondvoy_messages(
     chat_id: int,
     limit: int = Query(default=120, ge=1, le=300),
+    after_id: int | None = Query(default=None, ge=0),
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student", "teacher", "admin", "support"})
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), int(user.get("id") or 0))
-    rows = _diamondvoy_list_messages_final(int(chat_id), limit=int(limit))
+    rows = _diamondvoy_list_messages_final(
+        int(chat_id), limit=int(limit), after_id=after_id
+    )
     attachments = _diamondvoy_message_attachments([int(r.get("id") or 0) for r in rows])
     return {
         "chat": _diamondvoy_serialize_chat_final(chat_row),

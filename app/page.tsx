@@ -1114,6 +1114,10 @@ function maybeRedirectLegacyStudentRuntimeRoute(
 
 function roleFromUser(user: ApiUser | null): Role {
   if (!user) return "student";
+  const declaredRole = String(user.role || "").trim().toLowerCase();
+  // Media accounts are backed by the admin API, but their workspace must stay
+  // restricted to the Media allow-list instead of falling through to Admin.
+  if (declaredRole === "media" || declaredRole === "media_admin") return "media";
   if (String(user.login_id || "").trim().toLowerCase() === "developer-x-01") return "developer";
   // The dedicated Speaking credential is a restricted staff workspace and
   // never inherits the general Admin dashboard.
@@ -25854,10 +25858,16 @@ export default function DiamondEducationApp() {
       const urlRole = (params.get("role") as Role) || "student";
       const urlSection = params.get("section") || "home";
       const accountRole = roleFromUser(userRef.current);
+      const limitedMediaAccount = accountRole === "admin"
+        && Boolean((appState?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
       // A copied/back navigation URL can still contain role=admin because the
       // media account is backed by an admin API token. Do not let that URL
       // switch this account into the ordinary admin workspace.
-      const safeRole = accountRole === "media" || accountRole === "developer" ? accountRole : urlRole;
+      const safeRole = limitedMediaAccount
+        ? "media"
+        : accountRole === "media" || accountRole === "developer"
+          ? accountRole
+          : urlRole;
       if (safeRole !== urlRole) {
         params.set("role", safeRole);
         window.history.replaceState(null, "", `/?${params.toString()}`);
@@ -26500,6 +26510,8 @@ export default function DiamondEducationApp() {
       try {
         const payload = await requestJson<GenericRow>("/app/state?scope=boot", { token, timeoutMs: 30000, retries: 0 });
         if (cancelled) return;
+        const limitedMediaAccount = roleNow === "admin"
+          && Boolean((payload?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
         setAppState((prev) => {
           if (roleNow === "student" && String(payload?.state_scope || "") === "boot" && prev?.student) {
             const previousStudent = (prev.student || {}) as GenericRow;
@@ -26559,7 +26571,7 @@ export default function DiamondEducationApp() {
         } catch {
           // Ignore storage pressure/private mode.
         }
-        const effective = payload?.effective_role as Role | undefined;
+        const effective = limitedMediaAccount ? "media" : payload?.effective_role as Role | undefined;
         // The Speaking account has a separate restricted workspace. Never
         // replace it with a broad backend role after refreshing app state.
         if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {

@@ -1,6 +1,7 @@
 """Private student-to-student chat APIs for Diamond Speaking."""
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any
 
@@ -21,7 +22,8 @@ class DirectChatCreateRequest(BaseModel):
 
 
 class DirectChatMessageRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=3000)
+    message: str = Field(default="", max_length=3000)
+    attachments: list[dict[str, str]] = Field(default_factory=list, max_length=5)
 
 
 def _main_helpers():
@@ -103,6 +105,14 @@ def _ensure_schema() -> None:
                     conn.rollback()
             if not messages_created:
                 raise RuntimeError("Could not create speaking_direct_messages table")
+            try:
+                cur.execute(
+                    "ALTER TABLE speaking_direct_messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"
+                )
+                conn.commit()
+            except Exception:
+                # Existing installations already have the migration applied.
+                conn.rollback()
             try:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_speaking_direct_messages_chat ON speaking_direct_messages(chat_id, id)"
@@ -243,14 +253,14 @@ async def list_speaking_direct_chats(authorization: str | None = Header(default=
             if not other:
                 continue
             cur.execute(
-                "SELECT message, created_at FROM speaking_direct_messages WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+            "SELECT message, created_at, attachments_json FROM speaking_direct_messages WHERE chat_id=? ORDER BY id DESC LIMIT 1",
                 (int(chat.get("id") or 0),),
             )
             latest = dict(cur.fetchone() or {})
             items.append({
                 "id": int(chat.get("id") or 0),
                 "other_user": _public_user(other),
-                "last_message": str(latest.get("message") or ""),
+                "last_message": str(latest.get("message") or ("🎙️ Voice message" if latest.get("attachments_json") else "")),
                 "last_time": latest.get("created_at") or chat.get("last_message_at"),
             })
         return {"items": items}
@@ -311,6 +321,7 @@ async def open_speaking_direct_chat(
 @router.get("/api/speaking/chats/{chat_id}/messages")
 async def get_speaking_direct_messages(
     chat_id: int,
+    after_id: int | None = Query(default=None, ge=0),
     authorization: str | None = Header(default=None),
 ):
     user = _require_speaking_user(authorization)
@@ -318,18 +329,31 @@ async def get_speaking_direct_messages(
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """SELECT m.id,m.message,m.sender_id,m.created_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
-               FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
-               WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 150""",
-            (int(chat_id),),
-        )
-        rows = [dict(row) for row in cur.fetchall() or []]
-        rows.reverse()
+        if after_id is None:
+            cur.execute(
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                   FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
+                   WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 150""",
+                (int(chat_id),),
+            )
+            rows = [dict(row) for row in cur.fetchall() or []]
+            rows.reverse()
+        else:
+            cur.execute(
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                   FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
+                   WHERE m.chat_id=? AND m.id>? ORDER BY m.id ASC LIMIT 150""",
+                (int(chat_id), int(after_id)),
+            )
+            rows = [dict(row) for row in cur.fetchall() or []]
         items = []
         for row in rows:
             author_row = {**row, "id": row.get("sender_id")}
             author = _public_user(author_row)
+            try:
+                attachments = json.loads(row.get("attachments_json") or "[]")
+            except (TypeError, ValueError):
+                attachments = []
             items.append({
                 "id": int(row.get("id") or 0),
                 "message": str(row.get("message") or ""),
@@ -337,6 +361,7 @@ async def get_speaking_direct_messages(
                 "is_mine": int(row.get("sender_id") or 0) == int(user.get("id") or 0),
                 "created_at": row.get("created_at"),
                 "author": author,
+                "attachments": attachments if isinstance(attachments, list) else [],
             })
         return {"chat": chat, "items": items}
     finally:
@@ -351,19 +376,32 @@ async def send_speaking_direct_message(
 ):
     user = _require_speaking_user(authorization)
     uid = int(user.get("id") or 0)
-    _chat_for_user(chat_id, uid)
+    chat = _chat_for_user(chat_id, uid)
     try:
         message = validate_public_text(payload.message.strip())
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Message could not be sent") from exc
-    if not message:
-        raise HTTPException(status_code=422, detail="Message is required")
+    if len(payload.attachments) > 5:
+        raise HTTPException(status_code=422, detail="At most 5 attachments can be sent")
+    if not message and not payload.attachments:
+        raise HTTPException(status_code=422, detail="Message or voice attachment is required")
+    try:
+        from backend.main import CommunityChatAttachmentRequest, _validate_community_chat_attachments
+
+        attachments = _validate_community_chat_attachments([
+            CommunityChatAttachmentRequest(url=item.get("url", ""))
+            for item in payload.attachments
+        ])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Attachment validation failed") from exc
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            "INSERT INTO speaking_direct_messages(chat_id,sender_id,message) VALUES (?,?,?) RETURNING id,created_at",
-            (int(chat_id), uid, message),
+            "INSERT INTO speaking_direct_messages(chat_id,sender_id,message,attachments_json) VALUES (?,?,?,?) RETURNING id,created_at",
+            (int(chat_id), uid, message, json.dumps(attachments, ensure_ascii=False)),
         )
         created = dict(cur.fetchone() or {})
         cur.execute(
@@ -371,7 +409,35 @@ async def send_speaking_direct_message(
             (created.get("created_at"), int(chat_id)),
         )
         conn.commit()
-        return {"item": {"id": int(created.get("id") or 0), "message": message, "sender_id": uid, "is_mine": True, "created_at": created.get("created_at"), "author": _public_user(user)}}
+        other_user_id = int((chat.get("other_user") or {}).get("id") or 0)
+        preview = message or ("🎙️ Voice message" if attachments else "📎 Attachment")
+        if other_user_id > 0:
+            title = f"{_public_user(user).get('full_name') or 'New message'} · Diamond Speaking"
+            data = {
+                "target_screen": "speaking_direct_chat",
+                "notification_type": "speaking_direct_chat",
+                "chat_id": str(int(chat_id)),
+                "message_id": str(int(created.get("id") or 0)),
+            }
+            try:
+                import push_notifications
+
+                threading.Thread(
+                    target=push_notifications.send_push_to_speaking_user,
+                    args=(other_user_id, title, preview[:140]),
+                    kwargs={"data": data},
+                    daemon=True,
+                ).start()
+                threading.Thread(
+                    target=push_notifications.send_push_to_user,
+                    args=(other_user_id, title, preview[:140]),
+                    kwargs={"data": data},
+                    daemon=True,
+                ).start()
+            except Exception:
+                # Chat delivery must succeed even when optional push is unavailable.
+                pass
+        return {"item": {"id": int(created.get("id") or 0), "message": message, "sender_id": uid, "is_mine": True, "created_at": created.get("created_at"), "author": _public_user(user), "attachments": attachments}}
     except Exception as exc:
         conn.rollback()
         raise HTTPException(status_code=500, detail="Message could not be saved") from exc

@@ -192,10 +192,14 @@ def ensure_speaking_tables() -> None:
                 device_id TEXT NOT NULL UNIQUE,
                 token TEXT NOT NULL,
                 platform TEXT,
+                user_id BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
+        )
+        cur.execute(
+            "ALTER TABLE speaking_push_tokens ADD COLUMN IF NOT EXISTS user_id BIGINT"
         )
         cur.execute(
             """
@@ -448,13 +452,21 @@ async def get_speaking_content(
 
 @router.post("/api/speaking/push-token")
 @router.post("/speaking/push-token")
-async def register_speaking_push_token(payload: PushTokenRegisterRequest):
-    """Anonymous device registration for push notifications."""
+async def register_speaking_push_token(
+    payload: PushTokenRegisterRequest,
+    authorization: str | None = Header(default=None),
+):
+    """Register device push; authenticated speaking accounts get private-chat routing."""
     ensure_speaking_tables()
+    user_id = None
+    if authorization:
+        from backend.speaking_chats import _require_speaking_user
+        user_id = int(_require_speaking_user(authorization).get("id") or 0) or None
     push_notifications.register_speaking_token(
         device_id=payload.device_id,
         token=payload.token,
         platform=payload.platform,
+        user_id=user_id,
     )
     return {"message": "Token registered successfully"}
 
@@ -2373,20 +2385,14 @@ async def send_staff_speaking_notification(
     if payload.target_topic_id:
         data_payload["target_topic_id"] = str(payload.target_topic_id)
 
-    recipient_count = push_notifications.send_push_to_speaking_devices(
-        title=payload.title,
-        body=payload.body,
-        data=data_payload,
-    )
-
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
             """
             INSERT INTO speaking_notifications (title, body, target_part, target_topic_id, sent_by_user_id, recipient_count, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            RETURNING id, title, body, recipient_count, created_at
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            RETURNING id
             """,
             (
                 payload.title.strip(),
@@ -2394,9 +2400,37 @@ async def send_staff_speaking_notification(
                 payload.target_part,
                 payload.target_topic_id,
                 int(user.get("id") or 0),
-                recipient_count,
-                "sent",
+                "sending",
             ),
+        )
+        inserted = cur.fetchone()
+        notification_id = int(inserted["id"] if isinstance(inserted, dict) else inserted[0])
+        conn.commit()
+
+        data_payload["notification_id"] = str(notification_id)
+        try:
+            recipient_count = push_notifications.send_push_to_speaking_devices(
+                title=payload.title,
+                body=payload.body,
+                data=data_payload,
+            )
+        except Exception:
+            cur.execute(
+                "UPDATE speaking_notifications SET status=? WHERE id=?",
+                ("failed", notification_id),
+            )
+            conn.commit()
+            raise
+        cur.execute(
+            "UPDATE speaking_notifications SET recipient_count=?, status=? WHERE id=?",
+            (recipient_count, "sent" if recipient_count else "failed", notification_id),
+        )
+        cur.execute(
+            """
+            SELECT id, title, body, recipient_count, created_at
+            FROM speaking_notifications WHERE id=?
+            """,
+            (notification_id,),
         )
         row = cur.fetchone()
         conn.commit()

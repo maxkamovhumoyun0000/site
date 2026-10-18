@@ -356,7 +356,7 @@ def unregister_device_token(token: str) -> None:
         conn.close()
 
 
-def register_speaking_token(device_id: str, token: str, *, platform: str = "android") -> None:
+def register_speaking_token(device_id: str, token: str, *, platform: str = "android", user_id: int | None = None) -> None:
     """Registers an anonymous device token for Diamond Speaking Questions."""
     from db import get_conn
 
@@ -380,22 +380,27 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
                 device_id TEXT NOT NULL UNIQUE,
                 token TEXT NOT NULL,
                 platform TEXT,
+                user_id BIGINT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        cur.execute(
+            "ALTER TABLE speaking_push_tokens ADD COLUMN IF NOT EXISTS user_id BIGINT"
+        )
         _encrypt_legacy_speaking_tokens(cur, conn, cipher)
         cur.execute(
             """
-            INSERT INTO speaking_push_tokens (device_id, token, platform, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO speaking_push_tokens (device_id, token, platform, user_id, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(device_id) DO UPDATE SET
                 token=excluded.token,
                 platform=excluded.platform,
+                user_id=excluded.user_id,
                 updated_at=CURRENT_TIMESTAMP
             """,
-            (dev_id or f"dev_{hash(tok)}", cipher.encrypt(tok), plat),
+            (dev_id or f"dev_{hash(tok)}", cipher.encrypt(tok), plat, int(user_id) if user_id else None),
         )
         conn.commit()
     except Exception:
@@ -431,7 +436,11 @@ def send_push_to_speaking_devices(
     *,
     data: dict[str, Any] | None = None,
 ) -> int:
-    """Sends push notification to all speaking app devices (via direct token and topic speaking_all)."""
+    """Send to registered devices, using the public topic only as a fallback.
+
+    Sending to both destinations duplicates every broadcast for registered app
+    installs because those devices subscribe to ``speaking_all`` as well.
+    """
     from db import get_conn
 
     init_firebase()
@@ -464,6 +473,7 @@ def send_push_to_speaking_devices(
 
     if token_rows:
         _send_to_token_rows(token_rows, title, body, data or {})
+        return len(token_rows)
 
     speaking_app = _firebase_apps.get("SPEAKING_ANDROID") or _firebase_apps.get("SPEAKING_IOS")
     if not speaking_app and _firebase_apps:
@@ -485,5 +495,96 @@ def send_push_to_speaking_devices(
         except Exception as e:
             logger.warning("push_notifications: topic broadcast failed: %s", e)
 
-    return max(len(token_rows), 1 if speaking_app else 0)
+        return 1
+    return 0
+
+
+def send_push_to_speaking_user(
+    user_id: int,
+    title: str,
+    body: str,
+    *,
+    data: dict[str, Any] | None = None,
+) -> int:
+    """Send a private speaking-chat push only to the recipient's linked devices."""
+    from db import get_conn
+
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return 0
+    init_firebase()
+    if not is_enabled():
+        return 0
+    try:
+        cipher = TokenCipher.from_environment()
+    except TokenEncryptionConfigurationError:
+        logger.error("push_notifications: speaking token encryption is not configured")
+        return 0
+    conn = get_conn()
+    cur = conn.cursor()
+    token_rows: list[dict[str, str]] = []
+    try:
+        cur.execute("SELECT token, platform FROM speaking_push_tokens WHERE user_id=?", (uid,))
+        for row in cur.fetchall() or []:
+            encrypted_token = str(row.get("token") or "")
+            if not encrypted_token:
+                continue
+            try:
+                token = cipher.decrypt(encrypted_token)
+            except Exception:
+                logger.warning("push_notifications: skipped an unreadable encrypted speaking token")
+                continue
+            if token:
+                token_rows.append({"token": token, "platform": str(row.get("platform") or "android"), "app": "speaking"})
+    except Exception:
+        logger.exception("push_notifications: failed to load speaking devices for user_id=%s", uid)
+    finally:
+        conn.close()
+    if token_rows:
+        _send_to_token_rows(token_rows, title, body, data or {})
+    return len(token_rows)
+
+
+def send_push_to_speaking_users(
+    user_ids: list[int],
+    title: str,
+    body: str,
+    *,
+    data: dict[str, Any] | None = None,
+) -> int:
+    """Send chat pushes to selected Speaking accounts without broadcasting to a topic."""
+    from db import get_conn
+
+    ids = list(dict.fromkeys(int(uid) for uid in (user_ids or []) if int(uid or 0) > 0))
+    if not ids:
+        return 0
+    init_firebase()
+    if not is_enabled():
+        return 0
+    try:
+        cipher = TokenCipher.from_environment()
+    except TokenEncryptionConfigurationError:
+        logger.error("push_notifications: speaking token encryption is not configured")
+        return 0
+    conn = get_conn()
+    cur = conn.cursor()
+    token_rows: list[dict[str, str]] = []
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        cur.execute(f"SELECT token, platform FROM speaking_push_tokens WHERE user_id IN ({placeholders})", tuple(ids))
+        for row in cur.fetchall() or []:
+            try:
+                token = cipher.decrypt(str(row.get("token") or ""))
+            except Exception:
+                logger.warning("push_notifications: skipped an unreadable encrypted speaking token")
+                continue
+            if token:
+                token_rows.append({"token": token, "platform": str(row.get("platform") or "android"), "app": "speaking"})
+    except Exception:
+        logger.exception("push_notifications: failed to load speaking devices for batch push")
+    finally:
+        conn.close()
+    if token_rows:
+        _send_to_token_rows(token_rows, title, body, data or {})
+    return len(token_rows)
 
