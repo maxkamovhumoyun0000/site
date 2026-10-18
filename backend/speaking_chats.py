@@ -196,6 +196,7 @@ def _chat_for_user(chat_id: int, user_id: int) -> dict[str, Any]:
     return {**row, "other_user": _public_user(other)}
 
 
+@router.get("/speaking/chat/users")
 @router.get("/api/speaking/chat/users")
 async def search_speaking_chat_users(
     query: str = Query(min_length=3, max_length=64),
@@ -231,6 +232,7 @@ async def search_speaking_chat_users(
         conn.close()
 
 
+@router.get("/speaking/chats")
 @router.get("/api/speaking/chats")
 async def list_speaking_direct_chats(authorization: str | None = Header(default=None)):
     user = _require_speaking_user(authorization)
@@ -268,6 +270,7 @@ async def list_speaking_direct_chats(authorization: str | None = Header(default=
         conn.close()
 
 
+@router.post("/speaking/chats")
 @router.post("/api/speaking/chats")
 async def open_speaking_direct_chat(
     payload: DirectChatCreateRequest,
@@ -318,6 +321,7 @@ async def open_speaking_direct_chat(
         conn.close()
 
 
+@router.get("/speaking/chats/{chat_id}/messages")
 @router.get("/api/speaking/chats/{chat_id}/messages")
 async def get_speaking_direct_messages(
     chat_id: int,
@@ -368,6 +372,7 @@ async def get_speaking_direct_messages(
         conn.close()
 
 
+@router.post("/speaking/chats/{chat_id}/messages")
 @router.post("/api/speaking/chats/{chat_id}/messages")
 async def send_speaking_direct_message(
     chat_id: int,

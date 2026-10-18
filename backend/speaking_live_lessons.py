@@ -288,6 +288,7 @@ def _audit(lesson_id: int, actor_id: int, action: str, details: dict[str, Any] |
         conn.close()
 
 
+@router.get("/speaking/live-lessons")
 @router.get("/api/speaking/live-lessons")
 async def list_my_live_lessons(authorization: str | None = Header(default=None)):
     _auth(authorization)

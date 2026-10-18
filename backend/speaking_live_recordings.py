@@ -278,6 +278,10 @@ async def recording_decision(lesson_id: int, payload: RecordingDecision, authori
     return {"lesson": _lesson(updated)}
 
 
+# The public URL contains /api, but Next.js strips that prefix before forwarding
+# requests to FastAPI. Keep both paths so playback also works on deployments or
+# direct backend clients that preserve /api.
+@router.get("/speaking/live-lessons/{lesson_id}/recording/{token}")
 @router.get("/api/speaking/live-lessons/{lesson_id}/recording/{token}")
 async def stream_recording(lesson_id: int, token: str):
     # The secret in the URL is 128 bits of entropy and only returned after

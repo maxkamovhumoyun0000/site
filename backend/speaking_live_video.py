@@ -444,8 +444,8 @@ def _active_room_or_error(cur: Any, room_id: str) -> dict[str, Any]:
 
 def _media_kind(value: str) -> str:
     kind = str(value or "").strip().lower()
-    if kind not in {"camera", "microphone"}:
-        raise HTTPException(status_code=422, detail="Media kind must be camera or microphone")
+    if kind not in {"camera", "microphone", "screen_share"}:
+        raise HTTPException(status_code=422, detail="Media kind must be camera, microphone, or screen_share")
     return kind
 
 
@@ -455,9 +455,7 @@ def _participant_publish_sources(cur: Any, room_id: str, user_id: int) -> list[s
         (room_id, user_id),
     )
     values = {str(dict(row).get("media_kind") or "").lower() for row in (cur.fetchall() or [])}
-    # Screen share has its own explicit OS confirmation and remains available
-    # to learners. Camera and microphone require moderator approval.
-    return ["SCREEN_SHARE", *[source for source in ("MICROPHONE", "CAMERA") if source.lower() in values]]
+    return [source for source in ("SCREEN_SHARE", "MICROPHONE", "CAMERA") if source.lower() in values]
 
 
 def _sync_livekit_publish_permissions(room_id: str, identity: str, sources: list[str]) -> None:
@@ -482,6 +480,7 @@ def _sync_livekit_publish_permissions(room_id: str, identity: str, sources: list
     )
 
 
+@router.get("/speaking/live-video/rooms")
 @router.get("/api/speaking/live-video/rooms")
 async def list_live_video_rooms(authorization: str | None = Header(default=None)):
     _require_user(authorization)
@@ -514,6 +513,7 @@ async def list_live_video_rooms(authorization: str | None = Header(default=None)
         conn.close()
 
 
+@router.post("/speaking/live-video/rooms")
 @router.post("/api/speaking/live-video/rooms")
 async def create_live_video_room(
     payload: LiveVideoRoomCreateRequest,
@@ -568,6 +568,7 @@ async def create_live_video_room(
     }
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/token")
 @router.post("/api/speaking/live-video/rooms/{room_id}/token")
 async def live_video_room_token(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -756,6 +757,7 @@ async def staff_live_video_moderator_token(
     }
 
 
+@router.get("/speaking/live-video/rooms/{room_id}/session-state")
 @router.get("/api/speaking/live-video/rooms/{room_id}/session-state")
 async def live_video_session_state(room_id: str, authorization: str | None = Header(default=None)):
     _require_user(authorization)
@@ -823,6 +825,7 @@ async def staff_update_live_video_session_state(
         conn.close()
 
 
+@router.get("/speaking/live-video/rooms/{room_id}/messages")
 @router.get("/api/speaking/live-video/rooms/{room_id}/messages")
 async def list_live_video_messages(room_id: str, authorization: str | None = Header(default=None)):
     _require_user(authorization)
@@ -839,6 +842,7 @@ async def list_live_video_messages(room_id: str, authorization: str | None = Hea
         conn.close()
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/messages")
 @router.post("/api/speaking/live-video/rooms/{room_id}/messages")
 async def send_live_video_message(room_id: str, payload: LiveVideoMessageRequest, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -888,6 +892,7 @@ async def staff_live_video_hands(room_id: str, authorization: str | None = Heade
         conn.close()
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/hand")
 @router.post("/api/speaking/live-video/rooms/{room_id}/hand")
 async def set_live_video_hand(room_id: str, payload: LiveVideoHandRequest, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -947,6 +952,7 @@ async def staff_live_video_direct_action(room_id: str, action: str, payload: Liv
     return {"ok": True}
 
 
+@router.get("/speaking/live-video/rooms/{room_id}/media-permissions")
 @router.get("/api/speaking/live-video/rooms/{room_id}/media-permissions")
 async def live_video_media_permissions(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -968,13 +974,14 @@ async def live_video_media_permissions(room_id: str, authorization: str | None =
                     "requested_at": states.get(kind, {}).get("requested_at"),
                     "decided_at": states.get(kind, {}).get("decided_at"),
                 }
-                for kind in ("camera", "microphone")
+                for kind in ("camera", "microphone", "screen_share")
             }
         }
     finally:
         conn.close()
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/media-permissions/request")
 @router.post("/api/speaking/live-video/rooms/{room_id}/media-permissions/request")
 async def request_live_video_media_permission(
     room_id: str,
@@ -1081,7 +1088,7 @@ async def decide_live_video_media_permission(
             (next_status, _iso(), int(moderator.get("id") or 0), room_id, payload.user_id, kind),
         )
         cur.execute("SELECT media_kind FROM speaking_live_video_media_permissions WHERE room_id=? AND user_id=? AND status='approved'", (room_id, payload.user_id))
-        sources = ["SCREEN_SHARE", *[str(dict(row).get("media_kind") or "").upper() for row in (cur.fetchall() or [])]]
+        sources = [str(dict(row).get("media_kind") or "").upper() for row in (cur.fetchall() or [])]
         _sync_livekit_publish_permissions(room_id, identity, sources)
         conn.commit()
         return {"user_id": payload.user_id, "media_kind": kind, "status": next_status}
@@ -1148,6 +1155,7 @@ async def staff_mute_live_video_track(
     return {"ok": True, "track": response}
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/heartbeat")
 @router.post("/api/speaking/live-video/rooms/{room_id}/heartbeat")
 async def live_video_room_heartbeat(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -1173,6 +1181,7 @@ async def live_video_room_heartbeat(room_id: str, authorization: str | None = He
         conn.close()
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/leave")
 @router.post("/api/speaking/live-video/rooms/{room_id}/leave")
 async def leave_live_video_room(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
@@ -1215,6 +1224,7 @@ async def leave_live_video_room(room_id: str, authorization: str | None = Header
     return {"ok": True}
 
 
+@router.post("/speaking/live-video/rooms/{room_id}/end")
 @router.post("/api/speaking/live-video/rooms/{room_id}/end")
 async def end_live_video_room(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)

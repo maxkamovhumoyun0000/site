@@ -151,6 +151,7 @@ const TEXT = {
     recordingDecision: "Dars yozuvini biriktirasizmi?",
     recordingProcessing: "Yozuv tayyorlanmoqda. Iltimos, kuting.",
     recordingFailed: "Yozuvni saqlab bo‘lmadi. Yozuv xizmati holatini tekshiring.",
+    playbackFailed: "Videoni ijro etib bo‘lmadi. Qayta urinib ko‘ring.",
     recordingReady: "Yozuv tayyor. Uni o‘quvchilarga 30 kunga ochasizmi?",
     recordingYes: "Ha, biriktirish",
     recordingNo: "Yo‘q, biriktirmaslik",
@@ -244,6 +245,7 @@ const TEXT = {
     recordingDecision: "Attach this lesson recording?",
     recordingProcessing: "The recording is being finalized. Please wait.",
     recordingFailed: "The recording could not be saved. Check the recording service.",
+    playbackFailed: "The video could not be played. Please try again.",
     recordingReady: "The recording is ready. Make it available to learners for 30 days?",
     recordingYes: "Yes, attach",
     recordingNo: "No, do not attach",
@@ -336,6 +338,7 @@ const TEXT = {
     recordingDecision: "Прикрепить запись урока?",
     recordingProcessing: "Запись обрабатывается. Пожалуйста, подождите.",
     recordingFailed: "Не удалось сохранить запись. Проверьте службу записи.",
+    playbackFailed: "Не удалось воспроизвести видео. Попробуйте ещё раз.",
     recordingReady: "Запись готова. Открыть её ученикам на 30 дней?",
     recordingYes: "Да, прикрепить",
     recordingNo: "Нет, не прикреплять",
@@ -436,6 +439,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     null,
   );
   const [recordingLesson, setRecordingLesson] = useState<Lesson | null>(null);
+  const [playerLesson, setPlayerLesson] = useState<Lesson | null>(null);
   const [recordingUrl, setRecordingUrl] = useState("");
   const [recordingStatus, setRecordingStatus] = useState("processing");
   const [history, setHistory] = useState<
@@ -466,6 +470,15 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [modal]);
+
+  useEffect(() => {
+    if (!playerLesson) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPlayerLesson(null);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [playerLesson]);
 
   useEffect(() => {
     if (modal !== "recordingDecision" || !recordingLesson) return;
@@ -1047,13 +1060,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                         {lesson.recording_url ? (
                           lesson.recording_days_left > 0 ? (
                             <button
-                              onClick={() =>
-                                window.open(
-                                  lesson.recording_url,
-                                  "_blank",
-                                  "noopener,noreferrer",
-                                )
-                              }
+                              onClick={() => setPlayerLesson(lesson)}
                               className="font-bold text-emerald-700"
                             >
                               ▷ {lesson.recording_days_left}{" "}
@@ -1513,6 +1520,53 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
             )}
           </div>
         </div>, document.body)
+        : null}
+      {playerLesson && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[10001] flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm sm:p-6"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget) setPlayerLesson(null);
+              }}
+              role="presentation"
+            >
+              <section
+                className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/10 bg-slate-950 shadow-2xl"
+                role="dialog"
+                aria-modal="true"
+                aria-label={playerLesson.title}
+              >
+                <header className="flex items-center justify-between gap-4 px-4 py-3 text-white sm:px-5">
+                  <div className="min-w-0">
+                    <h2 className="truncate text-sm font-bold sm:text-base">
+                      {playerLesson.title}
+                    </h2>
+                    <p className="mt-0.5 text-xs text-slate-300">
+                      {t.play}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPlayerLesson(null)}
+                    className="shrink-0 rounded-lg px-3 py-2 text-sm font-semibold text-white hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                  >
+                    ✕ {t.close}
+                  </button>
+                </header>
+                <video
+                  key={playerLesson.recording_url}
+                  className="aspect-video max-h-[75dvh] w-full bg-black object-contain"
+                  src={playerLesson.recording_url}
+                  controls
+                  playsInline
+                  preload="auto"
+                  autoPlay
+                  onError={() => setNotice(t.playbackFailed)}
+                />
+              </section>
+            </div>,
+            document.body,
+          )
         : null}
       {moderatingRoom ? (
         <LiveKitModeratorRoom

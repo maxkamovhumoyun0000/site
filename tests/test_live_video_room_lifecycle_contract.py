@@ -98,7 +98,15 @@ class LiveVideoRoomLifecycleContractTests(unittest.TestCase):
         self.assertIn('"canPublish": bool(publish_sources)', endpoint)
         self.assertIn('"canPublishSources": publish_sources', endpoint)
         self.assertNotIn('"canPublish": True', endpoint)
-        self.assertIn('return ["SCREEN_SHARE", *[source for source in ("MICROPHONE", "CAMERA")', source)
+        self.assertIn('return [source for source in ("SCREEN_SHARE", "MICROPHONE", "CAMERA")', source)
+
+    def test_student_screen_share_requires_moderator_permission(self) -> None:
+        source = (ROOT / "backend" / "speaking_live_video.py").read_text(encoding="utf-8")
+        self.assertIn('"screen_share"}', source[source.index("def _media_kind("):source.index("def _participant_publish_sources")])
+        self.assertIn('for kind in ("camera", "microphone", "screen_share")', source)
+        decision_start = source.index("async def decide_live_video_media_permission(")
+        decision_end = source.index('@router.post("/staff/speaking/live-video/rooms/{room_id}/participants/remove")', decision_start)
+        self.assertIn('sources = [str(dict(row).get("media_kind") or "").upper()', source[decision_start:decision_end])
 
     def test_moderator_permission_decision_updates_livekit_server_permissions(self) -> None:
         source = (ROOT / "backend" / "speaking_live_video.py").read_text(
