@@ -1978,7 +1978,7 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
                     src={toAssetUrl(String(course.cover_image_url))}
                     alt={localizedTitle}
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108"
-                    loading="eager"
+                    loading="lazy"
                     decoding="async"
                   />
                 ) : (
@@ -2065,7 +2065,7 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
                   src={String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)}
                   alt={video.title || "Video"}
                   className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  loading="eager"
+                  loading="lazy"
                   decoding="async"
                 />
               ) : (
@@ -2150,7 +2150,7 @@ function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
                   src={testimonial.avatarUrl}
                   alt={`${testimonial.name} profili`}
                   className="landing-review-avatar"
-                  loading="eager"
+                  loading="lazy"
                   decoding="async"
                 />
               ) : (
@@ -2336,9 +2336,14 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
         setLandingVideos([]);
       }
     }
-    loadLandingContent();
+    // Keep the first paint focused on the hero. The large public content feeds
+    // are below the fold, so fetch them after the browser has rendered the page.
+    const loadTimer = window.setTimeout(() => {
+      void loadLandingContent();
+    }, 900);
     return () => {
       cancelled = true;
+      window.clearTimeout(loadTimer);
     };
 
   }, [locale]);

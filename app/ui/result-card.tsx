@@ -132,7 +132,7 @@ export function ResultCard({
               muted
               playsInline
               loop
-              preload="metadata"
+              preload="none"
             />
             <div className="absolute inset-0 bg-black/20 group-hover:bg-black/10 transition-colors flex items-center justify-center">
               <div className="w-14 h-14 bg-white/90 rounded-full flex items-center justify-center text-blue-600 shadow-lg group-hover:scale-110 transition-transform">
@@ -151,7 +151,7 @@ export function ResultCard({
                   src={toAssetUrl(img)}
                   alt={`${title} - ${tt("public.results.mediaNumber", "Media {number}", { number: idx + 1 })}`}
                   className="w-full h-full object-cover block shrink-0 snap-center"
-                  loading="eager"
+                  loading="lazy"
                   decoding="async"
                 />
               ))}
@@ -167,7 +167,7 @@ export function ResultCard({
             src={resolvedMedia}
             alt={title}
             className="w-full h-full object-cover block transition-transform duration-500 group-hover:scale-105"
-            loading="eager"
+            loading="lazy"
             decoding="async"
           />
         ) : (
