@@ -294,6 +294,7 @@ async def search_speaking_chat_users(
 
 @router.get("/speaking/chats")
 @router.get("/api/speaking/chats")
+@router.get("/speaking/chats/direct")
 @router.get("/api/speaking/chats/direct")
 async def list_speaking_direct_chats(authorization: str | None = Header(default=None)):
     user = _require_speaking_user(authorization)
