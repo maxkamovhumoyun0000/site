@@ -9,6 +9,12 @@ Bu loyiha production serverda ishlaydi:
 ## Muhim Eslatma
 
 - **Har qanday sayt deployidan oldin database backup olinishi shart.**
+- **Dushanbadan shanbagacha, Toshkent vaqti bilan 08:00–18:00 oralig‘ida
+  production deploy mutlaqo taqiqlanadi** — adminlar ishiga halaqit bermaslik uchun.
+  Bu taqiq source sync, release activation, servislarni deploy sababli restart
+  qilish va boshqa production o‘zgarishlarini ham qamrab oladi. Git commit/push
+  qilish mumkin; productionga chiqarish esa faqat shu vaqtdan tashqarida
+  bajariladi. Yakshanba kuni deploy oynasi ochiq.
 - Data papkalar yangilanmasin.
 - Media/upload/runtime fayllarga tegilmasin.
 - `--delete` ishlatilmasin.

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -50,7 +51,6 @@ type FormValue = {
   moderator_name: string;
   audience_label: string;
   starts_at: string;
-  auto_open_video_room: boolean;
   reminder_minutes: number[];
 };
 
@@ -61,7 +61,6 @@ const emptyForm = (): FormValue => ({
   moderator_name: "",
   audience_label: "Barcha Speaking foydalanuvchilari",
   starts_at: "",
-  auto_open_video_room: true,
   reminder_minutes: [1440, 60, 15],
 });
 const ROOM_TEXT = {
@@ -422,7 +421,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
-  const [currentTime, setCurrentTime] = useState(() => Date.now());
   const [view, setView] = useState<"month" | "week" | "day" | "list">("month");
   const [anchor, setAnchor] = useState(() => new Date());
   const [subjectFilter, setSubjectFilter] = useState("all");
@@ -448,11 +446,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
   >([]);
   const [menu, setMenu] = useState<number | null>(null);
   const [moderatingRoom, setModeratingRoom] = useState<LiveRoom | null>(null);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => setCurrentTime(Date.now()), 15_000);
-    return () => window.clearInterval(interval);
-  }, []);
+  const promptedRecordingIds = useRef(new Set<number>());
 
   useEffect(() => {
     if (!modal) return;
@@ -493,8 +487,8 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     return () => { cancelled = true; window.clearInterval(interval); };
   }, [apiFetch, modal, recordingLesson, recordingStatus]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       const [schedule, active] = await Promise.all([
@@ -510,7 +504,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t.error);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [apiFetch, t.error]);
   useEffect(() => {
@@ -519,6 +513,26 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void load(true), 15_000);
+    return () => window.clearInterval(timer);
+  }, [load]);
+
+  useEffect(() => {
+    const readyLesson = lessons.find(
+      (lesson) =>
+        lesson.status === "completed" &&
+        lesson.recording_status === "ready" &&
+        !lesson.recording_url &&
+        !promptedRecordingIds.current.has(lesson.id),
+    );
+    if (!readyLesson || modal) return;
+    promptedRecordingIds.current.add(readyLesson.id);
+    setRecordingLesson(readyLesson);
+    setRecordingStatus("ready");
+    setModal("recordingDecision");
+  }, [lessons, modal]);
 
   const activeRooms = rooms.filter(
     (room) => room.status === "active" || room.status === "ending",
@@ -627,7 +641,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       moderator_name: lesson.moderator_name,
       audience_label: lesson.audience_label,
       starts_at: dateInput(lesson.starts_at),
-      auto_open_video_room: lesson.auto_open_video_room !== false,
       reminder_minutes: lesson.reminder_minutes || [1440, 60, 15],
     });
     setModal("form");
@@ -640,6 +653,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     try {
       const body = {
         ...form,
+        auto_open_video_room: true,
         starts_at: toIso(form.starts_at),
       };
       await apiFetch(
@@ -681,24 +695,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     } finally {
       setBusy("");
       setMenu(null);
-    }
-  }
-  async function beginLive(lesson: Lesson) {
-    setBusy(`${lesson.id}:start`);
-    setError("");
-    try {
-      const result = (await apiFetch(
-        `/staff/speaking/live-lessons/${lesson.id}/start`,
-        { method: "POST" },
-      )) as { room_id?: string; lesson?: Lesson };
-      const roomId = result.room_id || result.lesson?.room_id;
-      if (!roomId) throw new Error("Live room ID was not returned.");
-      setModeratingRoom({ id: roomId, title: lesson.title, status: "active", lessonId: lesson.id });
-      await load();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t.error);
-    } finally {
-      setBusy("");
     }
   }
   async function cancelLesson(lesson: Lesson) {
@@ -1102,27 +1098,18 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                       </td>
                       <td className="whitespace-nowrap px-4 py-4 text-right">
                         <div className="relative flex items-center justify-end gap-1">
-                          {lesson.status === "scheduled" || active ? (
+                          {lesson.status === "live" || active ? (
                             <button
-                              disabled={Boolean(busy) || (!active && currentTime < Date.parse(lesson.starts_at))}
-                              title={!active && currentTime < Date.parse(lesson.starts_at) ? t.startLater : undefined}
-                              onClick={() =>
-                                active
-                                  ? setModeratingRoom({
-                                      id: lesson.room_id,
-                                      title: lesson.title,
-                                      status: "active",
-                                      lessonId: lesson.id,
-                                    })
-                                  : void beginLive(lesson)
-                              }
+                              disabled={Boolean(busy)}
+                              onClick={() => setModeratingRoom({
+                                id: lesson.room_id,
+                                title: lesson.title,
+                                status: "active",
+                                lessonId: lesson.id,
+                              })}
                               className="rounded-lg bg-[#1736E8] px-3 py-2 font-bold text-white transition-colors hover:bg-[#1029B9] active:bg-[#0D238F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1736E8] focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {busy === `${lesson.id}:start`
-                                ? "…"
-                                : active
-                                  ? t.enter
-                                  : currentTime < Date.parse(lesson.starts_at) ? t.startLater : t.start}
+                              {t.enter}
                             </button>
                           ) : null}
                           {active ? (
@@ -1366,7 +1353,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                     className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2.5 text-sm"
                   />
                 </label>
-                <label className="flex items-center justify-between gap-3 rounded-xl border border-border-subtle-light bg-surface-canvas-light p-3.5 sm:col-span-2">
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-border-subtle-light bg-surface-canvas-light p-3.5 sm:col-span-2">
                   <span className="flex items-center gap-2">
                     <span className="text-lg text-primary" aria-hidden="true">
                       ◉
@@ -1380,18 +1367,10 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                       </span>
                     </span>
                   </span>
-                  <input
-                    type="checkbox"
-                    checked={form.auto_open_video_room}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        auto_open_video_room: event.target.checked,
-                      })
-                    }
-                    aria-label={roomText.label}
-                  />
-                </label>
+                  <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                    {lang === "en" ? "Automatic" : lang === "ru" ? "Автоматически" : "Avtomatik"}
+                  </span>
+                </div>
                 <fieldset className="grid gap-2 text-xs text-on-surface sm:col-span-2">
                   <legend className="mb-1 font-bold">{t.reminders}</legend>
                   {[

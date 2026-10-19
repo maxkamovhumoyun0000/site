@@ -579,7 +579,7 @@ async def speaking_live_lesson_reminder_worker() -> None:
                     start = start.replace(tzinfo=timezone.utc)
                 minutes_left = int((start - now).total_seconds() // 60)
                 auto_opened = False
-                if bool(row.get("auto_open_video_room")) and start <= now and now - start <= timedelta(minutes=6):
+                if start <= now and now - start <= timedelta(minutes=6):
                     try:
                         updated, room_id, _, opened = await asyncio.to_thread(
                             _open_live_video_room,
@@ -589,6 +589,11 @@ async def speaking_live_lesson_reminder_worker() -> None:
                         if opened:
                             _audit(lesson_id, int(row.get("created_by") or 0), "live_video_room_auto_opened", {"room_id": room_id})
                             await _notify(lesson_id, "Live dars boshlandi", f"{updated['title']} jonli efirda. Ilovani ochib qo‘shiling.", "auto-live-video-opened", "started")
+                            try:
+                                from backend.speaking_live_recordings import start_recording_for_room
+                                await asyncio.to_thread(start_recording_for_room, room_id)
+                            except Exception:
+                                logger.exception("Could not start scheduled lesson recording lesson_id=%s", lesson_id)
                         auto_opened = True
                     except HTTPException as exc:
                         if exc.status_code != 409:
