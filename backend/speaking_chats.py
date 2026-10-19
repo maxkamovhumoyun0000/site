@@ -254,6 +254,7 @@ def _open_speaking_chat_with_user(target_user_id: int, user: dict[str, Any]) -> 
 
 @router.get("/speaking/chat/users")
 @router.get("/api/speaking/chat/users")
+@router.get("/speaking/chats/contacts")
 @router.get("/api/speaking/chats/contacts")
 async def search_speaking_chat_users(
     query: str = Query(min_length=3, max_length=64),
@@ -359,6 +360,7 @@ async def open_speaking_direct_chat(
 
 
 @router.get("/api/speaking/chats/direct/{target_user_id}")
+@router.get("/speaking/chats/direct/{target_user_id}")
 async def get_or_open_speaking_direct_chat_by_user_id(
     target_user_id: int,
     after_id: int | None = Query(default=None, ge=0),
@@ -372,6 +374,7 @@ async def get_or_open_speaking_direct_chat_by_user_id(
 
 
 @router.post("/api/speaking/chats/direct/{target_user_id}")
+@router.post("/speaking/chats/direct/{target_user_id}")
 async def send_speaking_direct_chat_by_user_id(
     target_user_id: int,
     payload: DirectChatMessageRequest,
@@ -392,6 +395,7 @@ class SpeakingCommunityMessageRequest(BaseModel):
 
 
 @router.get("/api/speaking/chats/community")
+@router.get("/speaking/chats/community")
 async def get_speaking_community_chat(
     after_id: int | None = Query(default=None, ge=0),
     limit: int = Query(default=50, ge=1, le=50),
@@ -403,6 +407,7 @@ async def get_speaking_community_chat(
 
 
 @router.post("/api/speaking/chats/community")
+@router.post("/speaking/chats/community")
 async def send_speaking_community_chat(
     payload: SpeakingCommunityMessageRequest,
     authorization: str | None = Header(default=None),
@@ -421,6 +426,7 @@ async def send_speaking_community_chat(
 
 
 @router.get("/api/speaking/chats/community/events")
+@router.get("/speaking/chats/community/events")
 async def speaking_community_chat_events(
     request: Request,
     after_id: int = Query(default=0, ge=0),
