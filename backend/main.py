@@ -59715,10 +59715,8 @@ async def _notify_voice_room_waiting(subject: str) -> None:
         logger.error(f"Voice room broadcast failed: {e}")
 
 class VoiceRoomCreateRequest(BaseModel):
-    # Community voice rooms are intentionally not categorized.  Keeping
-    # defaults also lets older app builds create/join the same shared room.
     name: str | None = None
-    subject: str | None = None
+    subject: str
     tags: list[str] | None = None
 
 
@@ -59810,14 +59808,24 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
     user_id = int(user.get("id") or 0)
     if not user_id:
         raise HTTPException(status_code=401, detail="Unauthorized")
-        
-    role = str(user.get("role") or "").lower()
+
+    requested_subject = _normalize_subject_label(payload.subject)
+    if not requested_subject:
+        raise HTTPException(status_code=400, detail="Choose a valid room subject")
+    role = _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+    allowed_subjects = _user_subjects_from_row(user)
+    if role not in {"admin", "speaking_admin"} and not any(
+        _normalize_subject_label(item) == requested_subject for item in allowed_subjects
+    ):
+        raise HTTPException(status_code=403, detail="You are not enrolled in this subject")
     
     conn = get_conn()
     cur = conn.cursor()
     try:
         # Reuse live public room matching subject if active
-        req_subject = (payload.subject or "").strip()
+        req_subject = requested_subject
         active_ids = []
         for key in _REDIS_CLIENT.keys("voice_room_info_*") or []:
             room_id = str(key).replace("voice_room_info_", "")
@@ -59825,7 +59833,7 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
             if room_id and info and str(info.get("is_homework") or "") != "1":
                 room_s = str(info.get("subject") or "").lower().strip()
                 target_s = req_subject.lower()
-                if not target_s or target_s == "community" or room_s == target_s:
+                if room_s == target_s.lower():
                     active_ids.append(room_id)
         if active_ids:
             return {"success": True, "room_id": active_ids[0], "reused": True}
@@ -59833,9 +59841,9 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
         # Clear stale non-homework rooms for this subject before creating
         cur.execute(
             "DELETE FROM web_voiceroom_sessions WHERE room_id IN (SELECT id FROM web_voicerooms WHERE subject = %s)",
-            (req_subject if req_subject else "community",)
+            (req_subject,)
         )
-        cur.execute("DELETE FROM web_voicerooms WHERE subject = %s", (req_subject if req_subject else "community",))
+        cur.execute("DELETE FROM web_voicerooms WHERE subject = %s", (req_subject,))
             
         # Standalone Speaking accounts are immediately active learning
         # accounts. They can host their own practice room without a Dcoin
@@ -59849,8 +59857,8 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
                     raise HTTPException(status_code=400, detail="Hisobingizda yetarli Dcoin yo'q")
                     
         # Create room
-        norm_subj = req_subject if req_subject else "community"
-        default_title = f"Diamond Education {norm_subj.capitalize()} Voice Room" if norm_subj != "community" else "Diamond Education Voice Room"
+        norm_subj = req_subject
+        default_title = f"Diamond Education {norm_subj} Voice Room"
         room_name = (payload.name or default_title).strip()
         room_subject = norm_subj
         cur.execute(
@@ -59933,6 +59941,16 @@ async def delete_voice_room(room_id: int, authorization: str | None = Header(def
 @app.get("/voice-rooms/active")
 async def get_active_voice_rooms(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
+    user_id = int(user.get("id") or 0)
+    role = _role_from_login_type(
+        int(user.get("login_type") or 0), str(user.get("login_id") or "")
+    )
+    allowed_subjects = {
+        normalized
+        for item in _user_subjects_from_row(user)
+        if (normalized := _normalize_subject_label(item))
+    }
+    can_view_all = role in {"admin", "speaking_admin"}
     
     # 1. Get all rooms from DB (excluding study rooms and private rooms)
     conn = get_conn()
@@ -59961,6 +59979,10 @@ async def get_active_voice_rooms(authorization: str | None = Header(default=None
             db_room = db_rooms[room_id]
             if str(db_room.get("subject") or "").startswith("_study_room_"):
                 continue
+            room_subject = _normalize_subject_label(str(db_room.get("subject") or ""))
+            is_owner = int(db_room.get("owner_id") or 0) == user_id
+            if not can_view_all and not is_owner and room_subject not in allowed_subjects:
+                continue
                 
             listeners = _REDIS_CLIENT.scard(f"voice_room_peers_{room_id}") or 0
             
@@ -59974,7 +59996,7 @@ async def get_active_voice_rooms(authorization: str | None = Header(default=None
             rooms.append({
                 "room_id": room_id,
                 "name": db_room["name"],
-                "subject": db_room["subject"],
+                "subject": room_subject or db_room["subject"],
                 "tags": tags,
                 "host_id": db_room["owner_id"],
                 "host_name": db_room["host_name"],
@@ -59983,9 +60005,8 @@ async def get_active_voice_rooms(authorization: str | None = Header(default=None
         except Exception:
             pass
             
-    # Public voice rooms intentionally have a single live slot.
     rooms.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    return {"rooms": rooms[:1]}
+    return {"rooms": rooms}
 
 def _voice_room_notify_text(lang: str, subject: str, name: str, owner: str) -> str:
     if lang == "ru":
@@ -60005,6 +60026,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
     my_name = "Mehmon"
     my_role = "student"
     my_subject = "english"
+    my_subjects: list[str] = []
     my_avatar_url = ""
     guest_identity = None
 
@@ -60034,6 +60056,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 # get moderator-only voice-room actions. Teachers/support are
                 # not promoted merely because of their numeric login type.
                 my_role = "admin" if resolved_role in {"admin", "speaking_admin"} else resolved_role
+                my_subjects = _user_subjects_from_row(user)
         except Exception:
             pass
 
@@ -60176,6 +60199,24 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     
                     if not db_room:
                         await _send({"type": "error", "message": "Xona topilmadi."})
+                        continue
+
+                    room_subject = _normalize_subject_label(str(db_room.get("subject") or ""))
+                    is_room_owner = bool(
+                        my_user_id and int(db_room.get("owner_id") or 0) == my_user_id
+                    )
+                    has_subject_access = any(
+                        _normalize_subject_label(item) == room_subject
+                        for item in my_subjects
+                    )
+                    if (
+                        not is_homework_room
+                        and not is_study_room
+                        and my_role != "admin"
+                        and not is_room_owner
+                        and not has_subject_access
+                    ):
+                        await _send({"type": "error", "message": "Bu xona sizning fanlaringiz uchun emas."})
                         continue
                         
                     is_host = (int(db_room["owner_id"]) == my_user_id) if not is_homework_room else False
