@@ -1,7 +1,7 @@
 """Private server-side recordings for scheduled Diamond Speaking lessons.
 
 The LiveKit Egress worker writes MP4s to the main server. Only a moderator's
-post-lesson approval publishes an unguessable, 30-day replay link.
+post-lesson approval publishes an unguessable, 7-day replay link.
 """
 from __future__ import annotations
 
@@ -269,7 +269,7 @@ async def recording_decision(lesson_id: int, payload: RecordingDecision, authori
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE speaking_live_lessons SET recording_status=?,recording_url=?,recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP)+INTERVAL '30 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (next_status, url, int(user.get("id") or 0), lesson_id))
+        cur.execute("UPDATE speaking_live_lessons SET recording_status=?,recording_url=?,recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP)+INTERVAL '7 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (next_status, url, int(user.get("id") or 0), lesson_id))
         updated = dict(cur.fetchone())
         conn.commit()
     finally:
@@ -303,7 +303,7 @@ async def stream_recording(lesson_id: int, token: str):
 
 
 def expire_recordings() -> int:
-    """Purge private MP4s after the same 30-day window as replay access."""
+    """Purge private MP4s after the same 7-day window as replay access."""
     conn = get_conn()
     removed = 0
     try:

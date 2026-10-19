@@ -155,7 +155,7 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url,
+            """SELECT id, login_id, first_name, last_name, profile_image_url, role,
                       last_activity, last_login_at,
                       speaking_app_account, speaking_deleted_at, blocked, access_enabled
                FROM users WHERE id=? LIMIT 1""",
@@ -164,7 +164,10 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
         row = dict(cur.fetchone() or {})
         if (
             not row
-            or not is_speaking_app_account(row.get("speaking_app_account"))
+            or not (
+                is_speaking_app_account(row.get("speaking_app_account"))
+                or str(row.get("role") or "").strip().lower() in {"student", "teacher", "admin", "superadmin", "developer", "speaking_admin"}
+            )
             or row.get("speaking_deleted_at")
             or int(row.get("blocked") or 0) == 1
             or int(row.get("access_enabled", 1) or 0) != 1
@@ -177,12 +180,21 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
 
 def _public_user(row: dict[str, Any]) -> dict[str, Any]:
     display_name, _ = _main_helpers()
+    role = str(row.get("role") or "speaking_user").strip().lower()
+    if role in {"superadmin", "developer", "speaking_admin"}:
+        public_role = "admin"
+    elif role in {"student", "teacher", "admin"}:
+        public_role = role
+    else:
+        public_role = "student" if is_speaking_app_account(row.get("speaking_app_account")) else role
     return {
         "id": int(row.get("id") or 0),
         "login_id": str(row.get("login_id") or ""),
         "full_name": display_name(row),
         "avatar_url": str(row.get("profile_image_url") or "").strip() or None,
         "last_active": row.get("last_activity") or row.get("last_login_at"),
+        "role": public_role,
+        "roles": [public_role],
     }
 
 
@@ -210,8 +222,36 @@ def _chat_for_user(chat_id: int, user_id: int) -> dict[str, Any]:
     return {**row, "other_user": _public_user(other)}
 
 
+def _open_speaking_chat_with_user(target_user_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    """Find or atomically create a private conversation with an active user."""
+    _ensure_schema()
+    uid = int(user.get("id") or 0)
+    target = _active_speaking_user(int(target_user_id))
+    if not target or int(target.get("id") or 0) == uid:
+        raise HTTPException(status_code=404, detail="Speaking user not found")
+    if int(target_user_id) in _mutually_blocked_ids(uid):
+        raise HTTPException(status_code=403, detail="This speaking chat is unavailable")
+    low, high = sorted((uid, int(target_user_id)))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO speaking_direct_chats(user_low_id,user_high_id) VALUES (?,?) ON CONFLICT(user_low_id,user_high_id) DO NOTHING",
+            (low, high),
+        )
+        conn.commit()
+        cur.execute("SELECT id FROM speaking_direct_chats WHERE user_low_id=? AND user_high_id=? LIMIT 1", (low, high))
+        chat_id = int(dict(cur.fetchone() or {}).get("id") or 0)
+        if chat_id <= 0:
+            raise HTTPException(status_code=500, detail="Could not open speaking chat")
+        return {"id": chat_id, "other_user": _public_user(target)}
+    finally:
+        conn.close()
+
+
 @router.get("/speaking/chat/users")
 @router.get("/api/speaking/chat/users")
+@router.get("/api/speaking/chats/contacts")
 async def search_speaking_chat_users(
     query: str = Query(min_length=3, max_length=64),
     authorization: str | None = Header(default=None),
@@ -226,16 +266,17 @@ async def search_speaking_chat_users(
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url, last_activity, last_login_at
+            """SELECT id, login_id, first_name, last_name, profile_image_url, role, speaking_app_account, last_activity, last_login_at
                FROM users
-               WHERE COALESCE(speaking_app_account, 0)=1
-                 AND speaking_deleted_at IS NULL
+               WHERE (COALESCE(speaking_app_account, 0)=1 OR LOWER(COALESCE(role,'')) IN ('student','teacher','admin','superadmin','developer','speaking_admin'))
+                 AND COALESCE(CAST(speaking_deleted_at AS TEXT),'')=''
                  AND COALESCE(blocked, 0)=0
                  AND COALESCE(access_enabled, 1)=1
                  AND id<>?
-                 AND LOWER(login_id) LIKE ? ESCAPE '\\'
-               ORDER BY LOWER(login_id) LIMIT 20""",
-            (int(user.get("id") or 0), f"%{escaped}%"),
+                 AND (LOWER(COALESCE(login_id,'')) LIKE ? ESCAPE '\\'
+                      OR LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ? ESCAPE '\\')
+               ORDER BY LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 30""",
+            (int(user.get("id") or 0), f"%{escaped}%", f"%{escaped}%"),
         )
         items = [
             _public_user(dict(row))
@@ -249,6 +290,7 @@ async def search_speaking_chat_users(
 
 @router.get("/speaking/chats")
 @router.get("/api/speaking/chats")
+@router.get("/api/speaking/chats/direct")
 async def list_speaking_direct_chats(authorization: str | None = Header(default=None)):
     user = _require_speaking_user(authorization)
     _ensure_schema()
@@ -307,33 +349,83 @@ async def open_speaking_direct_chat(
         target = dict(cur.fetchone() or {})
         if not target or int(target.get("id") or 0) == uid:
             raise HTTPException(status_code=404, detail="Speaking user not found")
-        target = _active_speaking_user(int(target["id"])) or {}
-        if not target:
-            raise HTTPException(status_code=404, detail="Speaking user not found")
-        low, high = sorted((uid, int(target["id"])))
-        cur.execute(
-            """INSERT INTO speaking_direct_chats(user_low_id,user_high_id)
-               VALUES (?,?) ON CONFLICT(user_low_id,user_high_id) DO NOTHING
-               RETURNING id""",
-            (low, high),
-        )
-        inserted = dict(cur.fetchone() or {})
-        if inserted.get("id"):
-            chat_id = int(inserted["id"])
-        else:
-            conn.rollback()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT id FROM speaking_direct_chats WHERE user_low_id=? AND user_high_id=? LIMIT 1",
-                (low, high),
-            )
-            chat_id = int(dict(cur.fetchone() or {}).get("id") or 0)
-        conn.commit()
-        if chat_id <= 0:
-            raise HTTPException(status_code=500, detail="Could not open speaking chat")
-        return {"chat": {"id": chat_id, "other_user": _public_user(target)}}
+        target_id = int(target.get("id") or 0)
     finally:
         conn.close()
+    return {"chat": _open_speaking_chat_with_user(target_id, user)}
+
+
+@router.get("/api/speaking/chats/direct/{target_user_id}")
+async def get_or_open_speaking_direct_chat_by_user_id(
+    target_user_id: int,
+    after_id: int | None = Query(default=None, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    user = _require_speaking_user(authorization)
+    chat = _open_speaking_chat_with_user(target_user_id, user)
+    result = await get_speaking_direct_messages(int(chat["id"]), after_id=after_id, authorization=authorization)
+    result["chat"] = chat
+    return result
+
+
+@router.post("/api/speaking/chats/direct/{target_user_id}")
+async def send_speaking_direct_chat_by_user_id(
+    target_user_id: int,
+    payload: DirectChatMessageRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_speaking_user(authorization)
+    chat = _open_speaking_chat_with_user(target_user_id, user)
+    result = await send_speaking_direct_message(int(chat["id"]), payload, authorization=authorization)
+    return {**result, "chat": chat}
+
+
+class SpeakingCommunityMessageRequest(BaseModel):
+    message: str = Field(default="", max_length=4000)
+    reply_to_id: int | None = Field(default=None, ge=1)
+    reply_to_message_id: int | None = Field(default=None, ge=1)
+    client_message_id: str | None = Field(default=None, min_length=3, max_length=120)
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=5)
+
+
+@router.get("/api/speaking/chats/community")
+async def get_speaking_community_chat(
+    after_id: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=50, ge=1, le=50),
+    authorization: str | None = Header(default=None),
+):
+    from backend.main import community_chat_messages
+
+    return await community_chat_messages(after_id=after_id, limit=limit, channel="speaking", authorization=authorization)
+
+
+@router.post("/api/speaking/chats/community")
+async def send_speaking_community_chat(
+    payload: SpeakingCommunityMessageRequest,
+    authorization: str | None = Header(default=None),
+):
+    from backend.main import CommunityChatAttachmentRequest, CommunityChatMessageRequest, community_chat_send_message
+
+    request_payload = CommunityChatMessageRequest(
+        message=payload.message,
+        reply_to_message_id=payload.reply_to_message_id,
+        reply_to_id=payload.reply_to_id,
+        client_message_id=payload.client_message_id,
+        attachments=[CommunityChatAttachmentRequest(url=str(item.get("url") or "")) for item in payload.attachments],
+        channel="speaking",
+    )
+    return await community_chat_send_message(request_payload, authorization=authorization)
+
+
+@router.get("/api/speaking/chats/community/events")
+async def speaking_community_chat_events(
+    request: Request,
+    after_id: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    from backend.main import community_chat_events
+
+    return await community_chat_events(request=request, channel="speaking", after_id=after_id, authorization=authorization)
 
 
 @router.get("/speaking/chats/{chat_id}/messages")

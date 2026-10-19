@@ -19,7 +19,6 @@ type Lesson = {
   moderator_name: string;
   audience_label: string;
   starts_at: string;
-  ends_at: string;
   status: "scheduled" | "live" | "completed" | "cancelled" | string;
   auto_open_video_room: boolean;
   cancellation_reason: string;
@@ -51,7 +50,6 @@ type FormValue = {
   moderator_name: string;
   audience_label: string;
   starts_at: string;
-  ends_at: string;
   auto_open_video_room: boolean;
   reminder_minutes: number[];
 };
@@ -63,7 +61,6 @@ const emptyForm = (): FormValue => ({
   moderator_name: "",
   audience_label: "Barcha Speaking foydalanuvchilari",
   starts_at: "",
-  ends_at: "",
   auto_open_video_room: true,
   reminder_minutes: [1440, 60, 15],
 });
@@ -105,10 +102,10 @@ const TEXT = {
     clear: "Filtrlarni tozalash",
     name: "Dars nomi va mavzu",
     audience: "Auditoriya",
-    time: "Boshlanish va tugash",
+    time: "Boshlanish vaqti",
     moderator: "Moderator",
     participants: "Qatnashchilar",
-    recordingCol: "30 kunlik yozuv",
+    recordingCol: "7 kunlik yozuv",
     actions: "Amallar",
     planned: "Rejalashtirilgan",
     onair: "Jonli efirda",
@@ -138,7 +135,6 @@ const TEXT = {
     audienceLabel: "Auditoriya / guruh",
     moderatorName: "Moderator nomi",
     starts: "Boshlanish vaqti",
-    ends: "Tugash vaqti",
     reminders: "Eslatmalar",
     timeZone: "Toshkent vaqti (UTC+5)",
     minute24: "24 soat oldin",
@@ -152,7 +148,7 @@ const TEXT = {
     recordingProcessing: "Yozuv tayyorlanmoqda. Iltimos, kuting.",
     recordingFailed: "Yozuvni saqlab bo‘lmadi. Yozuv xizmati holatini tekshiring.",
     playbackFailed: "Videoni ijro etib bo‘lmadi. Qayta urinib ko‘ring.",
-    recordingReady: "Yozuv tayyor. Uni o‘quvchilarga 30 kunga ochasizmi?",
+    recordingReady: "Yozuv tayyor. Uni o‘quvchilarga 7 kunga ochasizmi?",
     recordingYes: "Ha, biriktirish",
     recordingNo: "Yo‘q, biriktirmaslik",
     reason: "Bekor qilish sababi",
@@ -175,6 +171,7 @@ const TEXT = {
     recordingAvailable: "Yozuvi mavjud",
     dateToday: "Bugun",
     recent: "Oxirgi 30 kun",
+    retentionInfo: "Darslar 30 kun ko‘rinadi; biriktirilgan yozuvlar 7 kun ochiq bo‘ladi.",
   },
   en: {
     title: "Live lesson schedule",
@@ -199,10 +196,10 @@ const TEXT = {
     clear: "Clear filters",
     name: "Lesson and topic",
     audience: "Audience",
-    time: "Start and end",
+    time: "Start time",
     moderator: "Moderator",
     participants: "Participants",
-    recordingCol: "30-day recording",
+    recordingCol: "7-day recording",
     actions: "Actions",
     planned: "Scheduled",
     onair: "Live",
@@ -232,7 +229,6 @@ const TEXT = {
     audienceLabel: "Audience / group",
     moderatorName: "Moderator name",
     starts: "Starts at",
-    ends: "Ends at",
     reminders: "Reminders",
     timeZone: "Tashkent time (UTC+5)",
     minute24: "24 hours before",
@@ -246,7 +242,7 @@ const TEXT = {
     recordingProcessing: "The recording is being finalized. Please wait.",
     recordingFailed: "The recording could not be saved. Check the recording service.",
     playbackFailed: "The video could not be played. Please try again.",
-    recordingReady: "The recording is ready. Make it available to learners for 30 days?",
+    recordingReady: "The recording is ready. Make it available to learners for 7 days?",
     recordingYes: "Yes, attach",
     recordingNo: "No, do not attach",
     reason: "Cancellation reason",
@@ -268,6 +264,7 @@ const TEXT = {
     recordingAvailable: "Recording available",
     dateToday: "Today",
     recent: "Last 30 days",
+    retentionInfo: "Lessons remain visible for 30 days; attached recordings are available for 7 days.",
   },
   ru: {
     title: "Расписание live-уроков",
@@ -292,10 +289,10 @@ const TEXT = {
     clear: "Сбросить фильтры",
     name: "Урок и тема",
     audience: "Аудитория",
-    time: "Начало и конец",
+    time: "Время начала",
     moderator: "Модератор",
     participants: "Участники",
-    recordingCol: "Запись на 30 дней",
+    recordingCol: "Запись на 7 дней",
     actions: "Действия",
     planned: "Запланирован",
     onair: "В эфире",
@@ -325,7 +322,6 @@ const TEXT = {
     audienceLabel: "Аудитория / группа",
     moderatorName: "Имя модератора",
     starts: "Начало",
-    ends: "Окончание",
     reminders: "Напоминания",
     timeZone: "Время Ташкента (UTC+5)",
     minute24: "За 24 часа",
@@ -339,7 +335,7 @@ const TEXT = {
     recordingProcessing: "Запись обрабатывается. Пожалуйста, подождите.",
     recordingFailed: "Не удалось сохранить запись. Проверьте службу записи.",
     playbackFailed: "Не удалось воспроизвести видео. Попробуйте ещё раз.",
-    recordingReady: "Запись готова. Открыть её ученикам на 30 дней?",
+    recordingReady: "Запись готова. Открыть её ученикам на 7 дней?",
     recordingYes: "Да, прикрепить",
     recordingNo: "Нет, не прикреплять",
     reason: "Причина отмены",
@@ -362,6 +358,7 @@ const TEXT = {
     recordingAvailable: "Запись доступна",
     dateToday: "Сегодня",
     recent: "Последние 30 дней",
+    retentionInfo: "Уроки отображаются 30 дней; прикреплённые записи доступны 7 дней.",
   },
 } as const;
 
@@ -630,7 +627,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       moderator_name: lesson.moderator_name,
       audience_label: lesson.audience_label,
       starts_at: dateInput(lesson.starts_at),
-      ends_at: dateInput(lesson.ends_at),
       auto_open_video_room: lesson.auto_open_video_room !== false,
       reminder_minutes: lesson.reminder_minutes || [1440, 60, 15],
     });
@@ -645,7 +641,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
       const body = {
         ...form,
         starts_at: toIso(form.starts_at),
-        ends_at: toIso(form.ends_at),
       };
       await apiFetch(
         editing
@@ -758,7 +753,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
         "audience",
         "moderator",
         "starts_at",
-        "ends_at",
         "status",
         "recording_url",
       ],
@@ -769,7 +763,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
         lesson.audience_label,
         lesson.moderator_name,
         lesson.starts_at,
-        lesson.ends_at,
         lesson.status,
         lesson.recording_url,
       ]),
@@ -791,7 +784,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
     URL.revokeObjectURL(url);
   }
   function dateLabel(lesson: Lesson) {
-    return `${localDate(lesson.starts_at, locale, { weekday: "short", day: "numeric", month: "short" })} · ${localDate(lesson.starts_at, locale, { hour: "2-digit", minute: "2-digit" })}–${localDate(lesson.ends_at, locale, { hour: "2-digit", minute: "2-digit" })}`;
+    return `${localDate(lesson.starts_at, locale, { weekday: "short", day: "numeric", month: "short" })} · ${localDate(lesson.starts_at, locale, { hour: "2-digit", minute: "2-digit" })}`;
   }
 
   return (
@@ -1373,18 +1366,6 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                     className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2.5 text-sm"
                   />
                 </label>
-                <label className="grid gap-1.5 text-xs font-bold text-on-surface">
-                  {t.ends}
-                  <input
-                    required
-                    type="datetime-local"
-                    value={form.ends_at}
-                    onChange={(event) =>
-                      setForm({ ...form, ends_at: event.target.value })
-                    }
-                    className="rounded-xl border border-border-subtle-light bg-surface-canvas-light px-3 py-2.5 text-sm"
-                  />
-                </label>
                 <label className="flex items-center justify-between gap-3 rounded-xl border border-border-subtle-light bg-surface-canvas-light p-3.5 sm:col-span-2">
                   <span className="flex items-center gap-2">
                     <span className="text-lg text-primary" aria-hidden="true">
@@ -1475,8 +1456,7 @@ export function SpeakingLiveLessons({ apiFetch }: Props) {
                   />
                 </label>
                 <p className="text-xs text-text-secondary-light">
-                  {t.recent}: yozuv dars tugaganidan keyin 30 kun davomida ochiq
-                  bo‘ladi.
+                  {t.retentionInfo}
                 </p>
                 <div className="flex justify-end">
                   <button

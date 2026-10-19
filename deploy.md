@@ -38,8 +38,22 @@ kalitlari o‘zgargandagina serverda
 scripts/configure_livekit_egress.py` orqali qayta yarating va faqat Egress
 xizmatini restart qiling. `scripts/smoke_livekit_egress.py` real MP4 yaratib
 tekshiradi va faqat o‘zining `smoke-*` vaqtinchalik faylini tozalaydi. Dars
-yozuvi moderator biriktirmaguncha xususiy qoladi; biriktirilgach 30 kunlik
+yozuvi moderator biriktirmaguncha xususiy qoladi; biriktirilgach 7 kunlik
 havola orqali ochiladi. Eski yozuvlar background worker tomonidan o‘chiriladi.
+
+## Speaking live dars holatini LiveKit bilan sinxronlash
+
+Backend `POST /api/speaking/livekit/webhook` LiveKit imzolagan `room_finished`
+hodisasini tekshiradi va xona/dars holatini idempotent yakunlaydi. LiveKit
+server konfiguratsiyasidagi `webhook.api_key` mavjud `LIVEKIT_API_KEY` bilan
+bir xil bo‘lishi, `webhook.urls` esa
+`https://diamond-education.uz/api/speaking/livekit/webhook` manzilini o‘z
+ichiga olishi kerak. `LIVEKIT_API_SECRET` webhook JWT imzosini tekshirish
+uchun backendda qoladi; secret klientga yoki LiveKit config’iga ko‘chirilmaydi.
+LiveKit konfiguratsiyasini o‘zgartirishdan oldin undagi faol xonalar yo‘qligini
+tekshiring, konfiguratsiyaning ruxsatlari saqlangan zaxira nusxasini oling,
+YAML’ni tekshirib, faqat LiveKit servisini qayta ishga tushiring. Faol dars
+bo‘lsa LiveKit restart qilmang.
 
 ## Majburiy: Deploydan Oldin Database Backup
 

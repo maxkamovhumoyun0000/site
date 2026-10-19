@@ -1,4 +1,4 @@
-"""Scheduling and 30-day replay access for Diamond Speaking live video lessons."""
+"""Scheduling and 7-day replay access for Diamond Speaking live video lessons."""
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +18,8 @@ from db import get_conn
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-RETENTION_DAYS = 30
+RECORDING_RETENTION_DAYS = 7
+LESSON_HISTORY_DAYS = 30
 REMINDER_MINUTES = (1440, 60, 15)
 TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
 
@@ -30,7 +31,9 @@ class LessonPayload(BaseModel):
     moderator_name: str = Field(default="", max_length=100)
     audience_label: str = Field(default="Barcha Speaking foydalanuvchilari", max_length=160)
     starts_at: str = Field(min_length=10, max_length=64)
-    ends_at: str = Field(min_length=10, max_length=64)
+    # Optional compatibility input for older clients. Lesson duration is no
+    # longer scheduled; the moderator controls when a live session ends.
+    ends_at: str | None = Field(default=None, max_length=64)
     auto_open_video_room: bool = True
     reminder_minutes: list[int] = Field(default_factory=lambda: [1440, 60, 15])
 
@@ -85,9 +88,6 @@ def _normalise_payload(payload: LessonPayload) -> dict[str, Any]:
     else:
         raise HTTPException(status_code=422, detail="Subject must be english, russian or cefr")
     starts = _iso_datetime(payload.starts_at)
-    ends = _iso_datetime(payload.ends_at)
-    if ends <= starts:
-        raise HTTPException(status_code=422, detail="Lesson end time must be after start time")
     reminders = sorted({int(item) for item in payload.reminder_minutes if int(item) in REMINDER_MINUTES}, reverse=True)
     return {
         "title": title,
@@ -96,7 +96,6 @@ def _normalise_payload(payload: LessonPayload) -> dict[str, Any]:
         "moderator_name": " ".join(payload.moderator_name.split()),
         "audience_label": " ".join(payload.audience_label.split()) or "All Speaking learners",
         "starts_at": starts.isoformat(),
-        "ends_at": ends.isoformat(),
         "auto_open_video_room": bool(payload.auto_open_video_room),
         "reminder_minutes": json.dumps(reminders),
     }
@@ -117,7 +116,7 @@ def ensure_live_lessons_schema() -> None:
                 moderator_name TEXT NOT NULL DEFAULT '',
                 audience_label TEXT NOT NULL DEFAULT 'All Speaking learners',
                 starts_at TIMESTAMPTZ NOT NULL,
-                ends_at TIMESTAMPTZ NOT NULL,
+                ends_at TIMESTAMPTZ,
                 auto_open_video_room BOOLEAN NOT NULL DEFAULT TRUE,
                 status TEXT NOT NULL DEFAULT 'scheduled',
                 cancellation_reason TEXT NOT NULL DEFAULT '',
@@ -138,6 +137,8 @@ def ensure_live_lessons_schema() -> None:
             """
         )
         cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS auto_open_video_room BOOLEAN NOT NULL DEFAULT TRUE")
+        # Keep old values for history, but do not require or use them for new schedules.
+        cur.execute("ALTER TABLE speaking_live_lessons ALTER COLUMN ends_at DROP NOT NULL")
         cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_egress_id TEXT")
         cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_status TEXT NOT NULL DEFAULT 'none'")
         cur.execute("ALTER TABLE speaking_live_lessons ADD COLUMN IF NOT EXISTS recording_file_path TEXT")
@@ -203,11 +204,11 @@ def _lesson(row: dict[str, Any], *, now: datetime | None = None) -> dict[str, An
         "moderator_name": str(item.get("moderator_name") or ""),
         "audience_label": str(item.get("audience_label") or ""),
         "starts_at": item.get("starts_at").isoformat() if isinstance(item.get("starts_at"), datetime) else str(item.get("starts_at") or ""),
-        "ends_at": item.get("ends_at").isoformat() if isinstance(item.get("ends_at"), datetime) else str(item.get("ends_at") or ""),
         "status": str(item.get("status") or "scheduled"),
         "auto_open_video_room": bool(item.get("auto_open_video_room", True)),
         "cancellation_reason": str(item.get("cancellation_reason") or ""),
         "room_id": str(item.get("room_id") or ""),
+        "can_join_live_video": str(item.get("status") or "") == "live" and bool(item.get("room_id")),
         "recording_url": "" if expired else str(item.get("recording_url") or ""),
         "recording_status": "expired" if expired else str(item.get("recording_status") or "none"),
         "recording_expired": expired,
@@ -299,12 +300,14 @@ async def list_my_live_lessons(authorization: str | None = Header(default=None))
     try:
         cur.execute(
             """SELECT * FROM speaking_live_lessons
-               WHERE (starts_at >= ? OR (starts_at >= ? AND status IN ('completed','cancelled')))
-               ORDER BY starts_at ASC LIMIT 300""",
-            (now.isoformat(), (now - timedelta(days=RETENTION_DAYS)).isoformat()),
+               WHERE status='live'
+                  OR starts_at >= ?
+                  OR (starts_at >= ? AND status IN ('completed','cancelled'))
+               ORDER BY CASE WHEN status='live' THEN 0 ELSE 1 END, starts_at ASC LIMIT 300""",
+            (now.isoformat(), (now - timedelta(days=LESSON_HISTORY_DAYS)).isoformat()),
         )
         rows = [dict(row) for row in (cur.fetchall() or [])]
-        return {"lessons": [_lesson(row, now=now) for row in rows], "recording_retention_days": RETENTION_DAYS}
+        return {"lessons": [_lesson(row, now=now) for row in rows], "recording_retention_days": RECORDING_RETENTION_DAYS}
     finally:
         conn.close()
 
@@ -318,7 +321,7 @@ async def list_staff_live_lessons(authorization: str | None = Header(default=Non
     try:
         cur.execute("SELECT * FROM speaking_live_lessons ORDER BY starts_at DESC LIMIT 500")
         rows = [dict(row) for row in (cur.fetchall() or [])]
-        return {"lessons": [_lesson(row) for row in rows], "recording_retention_days": RETENTION_DAYS}
+        return {"lessons": [_lesson(row) for row in rows], "recording_retention_days": RECORDING_RETENTION_DAYS}
     finally:
         conn.close()
 
@@ -333,9 +336,9 @@ async def create_live_lesson(payload: LessonPayload, authorization: str | None =
     try:
         cur.execute(
             """INSERT INTO speaking_live_lessons
-               (title,topic,subject,moderator_name,audience_label,starts_at,ends_at,auto_open_video_room,reminder_minutes,created_by,updated_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING *""",
-            (*[values[key] for key in ("title", "topic", "subject", "moderator_name", "audience_label", "starts_at", "ends_at", "auto_open_video_room", "reminder_minutes")], int(user.get("id") or 0), int(user.get("id") or 0)),
+               (title,topic,subject,moderator_name,audience_label,starts_at,auto_open_video_room,reminder_minutes,created_by,updated_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *""",
+            (*[values[key] for key in ("title", "topic", "subject", "moderator_name", "audience_label", "starts_at", "auto_open_video_room", "reminder_minutes")], int(user.get("id") or 0), int(user.get("id") or 0)),
         )
         row = cur.fetchone()
         conn.commit()
@@ -354,13 +357,13 @@ async def update_live_lesson(lesson_id: int, payload: LessonPayload, authorizati
     if str(old.get("status")) not in {"scheduled", "live"}:
         raise HTTPException(status_code=409, detail="Only scheduled or live lessons can be edited")
     values = _normalise_payload(payload)
-    time_changed = _iso_datetime(str(old.get("starts_at"))) != _iso_datetime(values["starts_at"]) or _iso_datetime(str(old.get("ends_at"))) != _iso_datetime(values["ends_at"])
+    time_changed = _iso_datetime(str(old.get("starts_at"))) != _iso_datetime(values["starts_at"])
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            """UPDATE speaking_live_lessons SET title=?,topic=?,subject=?,moderator_name=?,audience_label=?,starts_at=?,ends_at=?,auto_open_video_room=?,reminder_minutes=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *""",
-            (*[values[key] for key in ("title", "topic", "subject", "moderator_name", "audience_label", "starts_at", "ends_at", "auto_open_video_room", "reminder_minutes")], int(user.get("id") or 0), lesson_id),
+            """UPDATE speaking_live_lessons SET title=?,topic=?,subject=?,moderator_name=?,audience_label=?,starts_at=?,auto_open_video_room=?,reminder_minutes=?,updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *""",
+            (*[values[key] for key in ("title", "topic", "subject", "moderator_name", "audience_label", "starts_at", "auto_open_video_room", "reminder_minutes")], int(user.get("id") or 0), lesson_id),
         )
         row = cur.fetchone()
         conn.commit()
@@ -496,7 +499,7 @@ async def attach_live_lesson_recording(lesson_id: int, payload: LessonRecordingP
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE speaking_live_lessons SET recording_url=?, recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP) + INTERVAL '30 days', updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (payload.recording_url.strip(), int(user.get("id") or 0), lesson_id))
+        cur.execute("UPDATE speaking_live_lessons SET recording_url=?, recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP) + INTERVAL '7 days', updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (payload.recording_url.strip(), int(user.get("id") or 0), lesson_id))
         updated = dict(cur.fetchone())
         conn.commit()
     finally:
@@ -521,7 +524,7 @@ async def complete_live_lesson(lesson_id: int, authorization: str | None = Heade
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE speaking_live_lessons SET status='completed',ended_at=CURRENT_TIMESTAMP,recording_expires_at=CURRENT_TIMESTAMP + INTERVAL '30 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (int(user.get("id") or 0), lesson_id))
+        cur.execute("UPDATE speaking_live_lessons SET status='completed',ended_at=CURRENT_TIMESTAMP,recording_expires_at=CURRENT_TIMESTAMP + INTERVAL '7 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (int(user.get("id") or 0), lesson_id))
         updated = dict(cur.fetchone())
         conn.commit()
     finally:
@@ -534,7 +537,7 @@ async def complete_live_lesson(lesson_id: int, authorization: str | None = Heade
 async def reopen_live_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
     user = _auth(authorization, staff=True)
     lesson = _get_lesson(lesson_id)
-    if lesson.get("status") != "cancelled" or _iso_datetime(str(lesson.get("ends_at"))) <= datetime.now(timezone.utc):
+    if lesson.get("status") != "cancelled" or _iso_datetime(str(lesson.get("starts_at"))) <= datetime.now(timezone.utc):
         raise HTTPException(status_code=409, detail="Only a cancelled future lesson can be reopened")
     conn = get_conn()
     cur = conn.cursor()

@@ -14,6 +14,7 @@ import logging
 import re
 import secrets
 import json
+import hashlib
 import base64
 from functools import lru_cache
 from urllib import error as urlerror
@@ -23,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import jwt
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -605,6 +606,12 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
 
         if _safe_datetime(room.get("created_at")) and _safe_datetime(room.get("created_at")) < now - timedelta(hours=ROOM_LIFETIME_HOURS):
             cur.execute("UPDATE speaking_live_video_rooms SET status='ended', ended_at=?, last_activity_at=? WHERE id=?", (_iso(now), _iso(now), room_id))
+            cur.execute("UPDATE speaking_live_video_presences SET left_at=COALESCE(left_at,?),last_seen_at=? WHERE room_id=? AND left_at IS NULL", (_iso(now), _iso(now), room_id))
+            cur.execute("UPDATE speaking_live_lessons SET status='completed',ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP),recording_expires_at=COALESCE(recording_expires_at,CURRENT_TIMESTAMP + INTERVAL '7 days'),updated_at=CURRENT_TIMESTAMP WHERE room_id=? AND status='live'", (room_id,))
+            # Persist the terminal state before raising 410. The request's
+            # generic error handler rolls back, so without this commit a stale
+            # room remains active and reappears in the schedule indefinitely.
+            conn.commit()
             raise HTTPException(status_code=410, detail="This live video room has ended")
 
         # Rooms made by an earlier application deployment are upgraded lazily
@@ -1294,13 +1301,84 @@ async def end_live_video_room(room_id: str, authorization: str | None = Header(d
             (_iso(), _iso(), room_id),
         )
         finish_cur.execute(
-            "UPDATE speaking_live_lessons SET status='completed',ended_at=CURRENT_TIMESTAMP,recording_expires_at=CURRENT_TIMESTAMP + INTERVAL '30 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE room_id=? AND status='live'",
+            "UPDATE speaking_live_lessons SET status='completed',ended_at=CURRENT_TIMESTAMP,recording_expires_at=CURRENT_TIMESTAMP + INTERVAL '7 days',updated_by=?,updated_at=CURRENT_TIMESTAMP WHERE room_id=? AND status='live'",
             (int(user.get("id") or 0), room_id),
         )
         finish_conn.commit()
     finally:
         finish_conn.close()
     return {"ok": True}
+
+
+@router.post("/api/speaking/livekit/webhook")
+@router.post("/speaking/livekit/webhook")
+async def livekit_speaking_webhook(request: Request, authorization: str | None = Header(default=None)):
+    """Verify LiveKit's signed raw-body webhook and reconcile room completion.
+
+    LiveKit retries webhooks, so state transitions are guarded by current
+    statuses and can be safely delivered more than once.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Webhook payload is too large")
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="LiveKit webhook authorization is required")
+    _, api_key, api_secret = _livekit_config()
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        claims = jwt.decode(token, api_secret, algorithms=["HS256"], issuer=api_key)
+        expected_body_hash = base64.b64decode(str(claims.get("sha256") or ""), validate=True)
+        actual_body_hash = hashlib.sha256(raw_body).digest()
+        if not secrets.compare_digest(expected_body_hash, actual_body_hash):
+            raise ValueError("webhook body hash mismatch")
+        event = json.loads(raw_body.decode("utf-8"))
+    except (jwt.PyJWTError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=401, detail="Invalid LiveKit webhook signature")
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=400, detail="Invalid LiveKit webhook payload")
+    if str(event.get("event") or "").strip().lower() != "room_finished":
+        return {"ok": True, "ignored": True}
+    room_payload = event.get("room") if isinstance(event.get("room"), dict) else {}
+    try:
+        room_id = _room_id(str(room_payload.get("name") or ""))
+    except HTTPException:
+        # Ignore unrelated LiveKit rooms without creating or changing state.
+        return {"ok": True, "ignored": True}
+
+    from backend.speaking_live_lessons import ensure_live_lessons_schema
+    ensure_live_video_schema()
+    ensure_live_lessons_schema()
+    now_iso = _iso()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE speaking_live_video_rooms SET status='ended',ended_at=COALESCE(ended_at,?),last_activity_at=? WHERE id=? AND status IN ('active','ending') RETURNING id",
+            (now_iso, now_iso, room_id),
+        )
+        room_changed = bool(cur.fetchone())
+        cur.execute(
+            "UPDATE speaking_live_video_presences SET left_at=COALESCE(left_at,?),last_seen_at=? WHERE room_id=? AND left_at IS NULL",
+            (now_iso, now_iso, room_id),
+        )
+        cur.execute(
+            "UPDATE speaking_live_lessons SET status='completed',ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP),recording_expires_at=COALESCE(recording_expires_at,CURRENT_TIMESTAMP + INTERVAL '7 days'),updated_at=CURRENT_TIMESTAMP WHERE room_id=? AND status='live' RETURNING id",
+            (room_id,),
+        )
+        completed = cur.fetchone()
+        if completed:
+            cur.execute(
+                "INSERT INTO speaking_live_lesson_audit (lesson_id,actor_user_id,action,details) VALUES (?,0,'livekit_room_finished',?)",
+                (int(dict(completed).get("id") or 0), json.dumps({"room_id": room_id}, separators=(",", ":"))),
+            )
+        conn.commit()
+        return {"ok": True, "room_updated": room_changed, "lesson_completed": bool(completed)}
+    except Exception:
+        conn.rollback()
+        logger.exception("LiveKit room_finished webhook reconciliation failed room_id=%s", room_id)
+        raise HTTPException(status_code=500, detail="LiveKit event could not be processed")
+    finally:
+        conn.close()
 
 
 @router.get("/staff/speaking/live-video/rooms")

@@ -42,3 +42,52 @@ def test_livekit_control_grants_room_admin_for_metadata_updates() -> None:
 def test_moderator_room_has_no_lock_button() -> None:
     source = (ROOT / "app/ui/livekit-moderator-room.tsx").read_text(encoding="utf-8")
     assert "updateState({ locked:" not in source
+
+
+def test_live_lessons_do_not_require_or_schedule_an_end_time() -> None:
+    backend = (ROOT / "backend/speaking_live_lessons.py").read_text(encoding="utf-8")
+    ui = (ROOT / "app/ui/speaking-live-lessons.tsx").read_text(encoding="utf-8")
+    assert "ends_at: str | None" in backend  # legacy client compatibility only
+    assert "ALTER COLUMN ends_at DROP NOT NULL" in backend
+    assert "starts_at,auto_open_video_room" in backend
+    assert "SET title=?,topic=?,subject=?,moderator_name=?,audience_label=?,starts_at=?,auto_open_video_room" in backend
+    assert "Lesson end time must be after start time" not in backend
+    assert "ends_at" not in ui
+
+
+def test_live_lessons_api_includes_ongoing_lessons_and_join_state() -> None:
+    backend = (ROOT / "backend/speaking_live_lessons.py").read_text(encoding="utf-8")
+    public_list = backend[backend.index("async def list_my_live_lessons"):backend.index("@router.get(\"/staff/speaking/live-lessons\")")]
+    assert "WHERE status='live'" in public_list
+    assert "can_join_live_video" in backend
+    assert "ORDER BY CASE WHEN status='live' THEN 0 ELSE 1 END" in public_list
+
+
+def test_livekit_webhook_verifies_body_and_finishes_schedule_idempotently() -> None:
+    backend = (ROOT / "backend/speaking_live_video.py").read_text(encoding="utf-8")
+    webhook = backend[backend.index("async def livekit_speaking_webhook"):backend.index("@router.get(\"/staff/speaking/live-video/rooms\")")]
+    assert "jwt.decode(token, api_secret, algorithms=[\"HS256\"], issuer=api_key)" in webhook
+    assert "hashlib.sha256(raw_body).digest()" in webhook
+    assert "event.get(\"event\")" in webhook and "room_finished" in webhook
+    assert "status='completed'" in webhook
+
+
+def test_speaking_chat_compatibility_endpoints_exist() -> None:
+    backend = (ROOT / "backend/speaking_chats.py").read_text(encoding="utf-8")
+    for path in (
+        '/api/speaking/chats/direct',
+        '/api/speaking/chats/contacts',
+        '/api/speaking/chats/direct/{target_user_id}',
+        '/api/speaking/chats/community',
+    ):
+        assert path in backend
+
+
+def test_live_recordings_follow_seven_day_retention() -> None:
+    lessons = (ROOT / "backend/speaking_live_lessons.py").read_text(encoding="utf-8")
+    recordings = (ROOT / "backend/speaking_live_recordings.py").read_text(encoding="utf-8")
+    video = (ROOT / "backend/speaking_live_video.py").read_text(encoding="utf-8")
+    assert "RECORDING_RETENTION_DAYS = 7" in lessons
+    assert "INTERVAL '7 days'" in lessons
+    assert "INTERVAL '7 days'" in recordings
+    assert "INTERVAL '7 days'" in video
