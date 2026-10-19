@@ -141,8 +141,11 @@ def _ensure_schema() -> None:
 def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
     _, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
-    if not is_speaking_app_account(user.get("speaking_app_account")):
-        raise HTTPException(status_code=403, detail="Speaking app account required")
+    role = str(user.get("role") or "").strip().lower()
+    if not is_speaking_app_account(user.get("speaking_app_account")) and role not in {
+        "student", "teacher", "admin", "superadmin", "developer", "speaking_admin"
+    }:
+        raise HTTPException(status_code=403, detail="Chat account required")
     if user.get("speaking_deleted_at"):
         raise HTTPException(status_code=403, detail="Speaking account is inactive")
     if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
