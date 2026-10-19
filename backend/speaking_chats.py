@@ -489,7 +489,22 @@ async def get_speaking_direct_messages(
                 "author": author,
                 "attachments": attachments if isinstance(attachments, list) else [],
             })
-        return {"chat": chat, "items": items}
+        cur.execute(
+            "SELECT id,delivered_at,read_at FROM speaking_direct_messages WHERE chat_id=? AND sender_id=? ORDER BY id DESC LIMIT 150",
+            (int(chat_id), int(user.get("id") or 0)),
+        )
+        own_statuses = [
+            {
+                "id": int(dict(row).get("id") or 0),
+                "status": "seen"
+                if dict(row).get("read_at")
+                else "delivered"
+                if dict(row).get("delivered_at")
+                else "sent",
+            }
+            for row in cur.fetchall() or []
+        ]
+        return {"chat": chat, "items": items, "own_statuses": own_statuses}
     finally:
         conn.close()
 
