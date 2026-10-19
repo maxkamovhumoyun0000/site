@@ -59,7 +59,7 @@ from userbot_manager import (
     render_userbot_template,
     start_userbot_queue_worker,
 )
-from passwords import generate_password, hash_password, verify_password
+from passwords import generate_password, hash_password, is_password_hash, verify_password
 from name_standardization import name_search_terms, normalize_new_latin_name
 from speaking_contract import (
     SPEAKING_APP_LOGIN_TYPE,
@@ -1423,6 +1423,8 @@ class SpeakingRegistrationRequest(BaseModel):
     last_name: str = Field(default="", max_length=80)
     phone: str | None = Field(default=None, max_length=32)
     email: str = Field(min_length=5, max_length=254)
+    age: int = Field(ge=5, le=120)
+    gender: Literal["male", "female", "prefer_not_to_say"]
     language: Literal["uz", "ru", "en"] = "uz"
     subjects: Any = None
 
@@ -1434,6 +1436,12 @@ class SpeakingRegistrationVerificationRequest(BaseModel):
 
 class SpeakingGoogleLoginRequest(BaseModel):
     id_token: str = Field(min_length=100, max_length=8192)
+    # A complete profile is required before provisioning any new Google user.
+    first_name: str | None = Field(default=None, min_length=1, max_length=80)
+    last_name: str | None = Field(default=None, min_length=1, max_length=80)
+    phone: str | None = Field(default=None, min_length=7, max_length=32)
+    age: int | None = Field(default=None, ge=5, le=120)
+    gender: Literal["male", "female", "prefer_not_to_say"] | None = None
     device_id: str | None = Field(default=None, max_length=160)
     device_model: str | None = Field(default=None, max_length=120)
     revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
@@ -2562,6 +2570,7 @@ class CommunityChatMessageRequest(BaseModel):
     # An attachment may be sent without a textual caption.
     message: str = Field(default="", max_length=4000)
     reply_to_message_id: int | None = Field(default=None, ge=1)
+    reply_to_id: int | None = Field(default=None, ge=1)
     client_message_id: str | None = Field(default=None, min_length=3, max_length=120)
     attachments: list[CommunityChatAttachmentRequest] = Field(default_factory=list, max_length=5)
     channel: str = Field(default="general", max_length=20)
@@ -19982,6 +19991,8 @@ def _ensure_speaking_account_schema() -> None:
         CREATE TABLE IF NOT EXISTS speaking_account_contacts (
             user_id BIGINT PRIMARY KEY,
             email TEXT NOT NULL UNIQUE,
+            age INTEGER,
+            gender TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """,
@@ -20037,6 +20048,13 @@ def _ensure_speaking_account_schema() -> None:
         for statement in statements:
             cur.execute(statement)
         conn.commit()
+        # Migrate existing installations without touching existing profile data.
+        for column_name, column_type in (("age", "INTEGER"), ("gender", "TEXT")):
+            if not _db_has_column("speaking_account_contacts", column_name):
+                cur.execute(
+                    f"ALTER TABLE speaking_account_contacts ADD COLUMN {column_name} {column_type}"
+                )
+                conn.commit()
     finally:
         conn.close()
 
@@ -20376,17 +20394,47 @@ async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Reques
             raise HTTPException(status_code=409, detail="Google account is linked to another Speaking profile")
         user_id = bound_id or email_id
         if not user_id:
-            display_name = " ".join(str(claims.get("name") or "").split())[:160]
-            name_parts = display_name.split(" ", 1) if display_name else ["Speaker"]
-            first_name = name_parts[0][:80]
-            last_name = (name_parts[1] if len(name_parts) > 1 else "")[:80]
+            if (
+                not str(payload.first_name or "").strip()
+                or not str(payload.last_name or "").strip()
+                or not str(payload.phone or "").strip()
+                or payload.age is None
+                or payload.gender is None
+            ):
+                raise HTTPException(
+                    status_code=428,
+                    detail={"code": "profile_required"},
+                )
+            first_name = str(payload.first_name or "").strip()[:80]
+            last_name = str(payload.last_name or "").strip()[:80]
+            phone = "".join(ch for ch in str(payload.phone or "") if ch.isdigit() or ch == "+").strip()
+            phone_digits = "".join(ch for ch in phone if ch.isdigit())
+            if len(phone_digits) < 7:
+                raise HTTPException(status_code=422, detail="A valid phone number is required")
+            cur.execute(
+                "SELECT id FROM users WHERE phone=? AND speaking_deleted_at IS NULL LIMIT 1",
+                (phone,),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="This phone number is already in use")
             login_id = _generate_speaking_login_id(first_name, last_name)
             cur.execute(
-                "INSERT INTO users(login_id,password,first_name,last_name,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,0,1,0,0,1,'uz',0,0) RETURNING id",
-                (login_id, hash_password(secrets.token_urlsafe(32)), first_name, last_name, "English,Russian", SPEAKING_APP_LOGIN_TYPE),
+                "INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,?,0,1,0,0,1,'uz',0,0) RETURNING id",
+                (
+                    login_id,
+                    hash_password(secrets.token_urlsafe(32)),
+                    first_name,
+                    last_name,
+                    phone or None,
+                    "English,Russian",
+                    SPEAKING_APP_LOGIN_TYPE,
+                ),
             )
             user_id = int(dict(cur.fetchone() or {}).get("id") or 0)
-            cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, email, _now_utc().isoformat()))
+            cur.execute(
+                "INSERT INTO speaking_account_contacts(user_id,email,age,gender,updated_at) VALUES (?,?,?,?,?)",
+                (user_id, email, payload.age, payload.gender, _now_utc().isoformat()),
+            )
         cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
         user_row = cur.fetchone()
         user = dict(user_row) if user_row else None
@@ -20500,6 +20548,7 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
         "login_id": login_id, "password_hash": hash_password(str(payload.password)),
         "first_name": first_name, "last_name": last_name, "phone": phone,
         "language": payload.language, "subject": selected_subject,
+        "age": payload.age, "gender": payload.gender,
     }
     conn = get_conn(); cur = conn.cursor()
     try:
@@ -20552,13 +20601,20 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
         user_phone = data.get("phone") or None
         if user_id:
             cur.execute("UPDATE users SET password=?,first_name=?,last_name=?,phone=?,subject=?,language=?,blocked=0,access_enabled=1,pending_approval=0,speaking_deleted_at=NULL WHERE id=? AND speaking_app_account=1", (data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, data["language"], user_id))
+            cur.execute(
+                "UPDATE speaking_account_contacts SET age=?,gender=?,updated_at=? WHERE user_id=?",
+                (data["age"], data["gender"], _now_utc().isoformat(), user_id),
+            )
         else:
             cur.execute(
                 "INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,?, 0,1,0,0,1,?,0,0) RETURNING id",
                 (data["login_id"], data["password_hash"], data["first_name"], data["last_name"], user_phone, user_subject, SPEAKING_APP_LOGIN_TYPE, data["language"]),
             )
             user_id = int((cur.fetchone() or {}).get("id") or 0)
-            cur.execute("INSERT INTO speaking_account_contacts(user_id,email,updated_at) VALUES (?,?,?)", (user_id, verification["email"], _now_utc().isoformat()))
+            cur.execute(
+                "INSERT INTO speaking_account_contacts(user_id,email,age,gender,updated_at) VALUES (?,?,?,?,?)",
+                (user_id, verification["email"], data["age"], data["gender"], _now_utc().isoformat()),
+            )
         cur.execute(
             "UPDATE speaking_registration_verifications SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
             (_now_utc().isoformat(), payload.verification_id),
@@ -21325,6 +21381,30 @@ async def login(request: LoginRequest, req: Request):
                 record_login_failure(ip_key)
             increment_failed_logins(int(user.get("id") or 0))
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    # Upgrade legacy plaintext credentials on successful authentication. This
+    # only rewrites the password representation; it deliberately does not
+    # change session_version, revoke sessions, or alter device bindings.
+    if not is_demo and stored and not is_password_hash(stored):
+        try:
+            # Legacy verification was case-insensitive; hash its canonical
+            # uppercase form so the old accepted casing behavior remains.
+            upgraded = hash_password(incoming.upper())
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "UPDATE users SET password=? WHERE id=? AND password=?",
+                    (upgraded, int(user.get("id") or 0), stored),
+                )
+                conn.commit()
+                if int(getattr(cur, "rowcount", 0) or 0) == 1:
+                    user["password"] = upgraded
+            finally:
+                conn.close()
+        except Exception:
+            # Login must remain available during gradual migration. The
+            # password migration can be retried at the next successful login.
+            logger.exception("legacy password upgrade failed user_id=%s", int(user.get("id") or 0))
     clear_login_throttle(login_key)
     if ip_key:
         clear_login_throttle(ip_key)
@@ -24125,8 +24205,86 @@ async def chats_contacts(authorization: str | None = Header(default=None)):
         "last_time": None,
     })
 
+    # Existing direct conversations are part of the same contact list. Only
+    # active participants in a direct thread are exposed; group/community
+    # threads stay in their dedicated panes.
+    for thread in list_chat_threads_for_user(user_id, limit=200):
+        if str(thread.get("thread_type") or "") != "direct":
+            continue
+        thread_id = int(thread.get("id") or 0)
+        participants = list_chat_participants(thread_id)
+        other_id = next(
+            (int(p.get("user_id") or 0) for p in participants
+             if int(p.get("user_id") or 0) != user_id and int(p.get("active", 1) or 0) == 1),
+            0,
+        )
+        other = get_user_by_id(other_id) if other_id > 0 else None
+        if not other or int(other.get("blocked") or 0) == 1 or int(other.get("access_enabled", 1) or 0) != 1:
+            continue
+        other_role = _role_from_login_type(int(other.get("login_type") or 1), str(other.get("login_id") or ""))
+        items.append({
+            "id": f"direct:{thread_id}",
+            "kind": "direct",
+            "thread_id": thread_id,
+            "name": _display_name(other),
+            "login_id": str(other.get("login_id") or ""),
+            "role": other_role,
+            "avatar_url": _first_existing_avatar_url(other.get("profile_image_url"), other.get("effective_profile_image_url")),
+            "last_active": _as_iso_timestamp(other.get("last_activity") or other.get("last_login_at")),
+            "unread_count": int(thread.get("unread_count") or 0),
+            "last_message": str(thread.get("last_message") or "") or None,
+            "last_time": _as_iso_timestamp(thread.get("last_message_at") or thread.get("updated_at")),
+        })
+
     items.sort(key=lambda entry: str(entry.get("last_time") or ""), reverse=True)
     return {"items": items}
+
+
+def _direct_chat_for_user(thread_id: int, user_id: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    thread = get_chat_thread(int(thread_id)) or {}
+    if not thread or str(thread.get("thread_type") or "") != "direct":
+        raise HTTPException(status_code=404, detail="Direct chat not found")
+    participants = list_chat_participants(int(thread_id))
+    if not any(int(p.get("user_id") or 0) == int(user_id) and int(p.get("active", 1) or 0) == 1 for p in participants):
+        raise HTTPException(status_code=403, detail="You are not a participant in this chat")
+    peer_id = next((int(p.get("user_id") or 0) for p in participants if int(p.get("user_id") or 0) != int(user_id) and int(p.get("active", 1) or 0) == 1), 0)
+    peer = get_user_by_id(peer_id) if peer_id > 0 else None
+    if not peer or peer.get("deleted_at") or peer.get("speaking_deleted_at"):
+        raise HTTPException(status_code=404, detail="Direct chat not found")
+    if int(peer.get("blocked") or 0) == 1 or int(peer.get("access_enabled", 1) or 0) != 1:
+        raise HTTPException(status_code=403, detail="Direct chat is unavailable")
+    if peer_id in community_safety.blocked_ids(int(user_id), either_direction=True):
+        raise HTTPException(status_code=403, detail="Direct chat is unavailable")
+    return thread, participants
+
+
+@app.post("/chats/direct/{target_user_id}")
+async def open_direct_chat(target_user_id: int, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    source_id = int(user.get("id") or 0)
+    target = get_user_by_id(int(target_user_id))
+    if (not target or int(target.get("id") or 0) == source_id
+            or int(target.get("blocked") or 0) == 1
+            or int(target.get("access_enabled", 1) or 0) != 1):
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("deleted_at") or target.get("speaking_deleted_at"):
+        raise HTTPException(status_code=404, detail="User not found")
+    if int(target_user_id) in community_safety.blocked_ids(source_id, either_direction=True):
+        raise HTTPException(status_code=404, detail="User not found")
+    target_role = _role_from_login_type(int(target.get("login_type") or 1), str(target.get("login_id") or ""))
+    thread = get_or_create_direct_chat_thread(
+        source_id, int(target_user_id), role_a=role, role_b=target_role, created_by=source_id,
+    )
+    if not thread:
+        raise HTTPException(status_code=500, detail="Could not open direct chat")
+    thread_id = int(thread.get("id") or 0)
+    return {"chat": {"id": thread_id, "thread_id": thread_id, "other_user": {
+        "id": int(target.get("id") or 0), "login_id": str(target.get("login_id") or ""),
+        "full_name": _display_name(target), "role": target_role,
+        "avatar_url": _first_existing_avatar_url(target.get("profile_image_url"), target.get("effective_profile_image_url")),
+        "last_active": _as_iso_timestamp(target.get("last_activity") or target.get("last_login_at")),
+    }}}
 
 
 @app.get("/chats/{thread_id}/messages")
@@ -24136,11 +24294,41 @@ async def chat_thread_messages(
     limit: int = Query(default=120, ge=1, le=500),
     authorization: str | None = Header(default=None),
 ):
-    _user_row_from_bearer(authorization)
-    raise HTTPException(
-        status_code=410,
-        detail="Role-to-role chat disabled. Please use Diamondvoy or Taklif & Shikoyat.",
-    )
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    user_id = int(user.get("id") or 0)
+    _, participants = _direct_chat_for_user(thread_id, user_id)
+    rows = list_chat_messages(thread_id, after_id=after_id, limit=limit)
+    newest_incoming = max((int(row.get("id") or 0) for row in rows if int(row.get("sender_id") or 0) != user_id), default=0)
+    if newest_incoming:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT last_delivered_message_id FROM chat_participants WHERE thread_id=? AND user_id=? LIMIT 1", (thread_id, user_id))
+            old = int(dict(cur.fetchone() or {}).get("last_delivered_message_id") or 0)
+            if newest_incoming > old:
+                cur.execute("UPDATE chat_participants SET last_delivered_message_id=?, last_delivered_at=CURRENT_TIMESTAMP WHERE thread_id=? AND user_id=?", (newest_incoming, thread_id, user_id))
+                conn.commit()
+        finally:
+            conn.close()
+    peer = next((p for p in participants if int(p.get("user_id") or 0) != user_id), {})
+    peer_delivered = int(peer.get("last_delivered_message_id") or 0)
+    peer_read = int(peer.get("last_read_message_id") or 0)
+    authors: dict[int, dict[str, Any]] = {}
+    items = []
+    for row in rows:
+        sender_id = int(row.get("sender_id") or 0)
+        items.append({
+            "id": int(row.get("id") or 0), "thread_id": thread_id,
+            "message": str(row.get("message_text") or ""), "text": str(row.get("message_text") or ""),
+            "sender_id": sender_id, "is_mine": sender_id == user_id,
+            "created_at": _as_iso_timestamp(row.get("created_at")),
+            "reply_to_message_id": row.get("reply_to_message_id"),
+            "client_message_id": row.get("client_message_id"),
+            "author": _community_chat_author_payload(sender_id, authors),
+            "status": ("seen" if int(row.get("id") or 0) <= peer_read else "delivered" if int(row.get("id") or 0) <= peer_delivered else "sent") if sender_id == user_id else "delivered",
+        })
+    return {"thread": {"id": thread_id, "thread_type": "direct"}, "items": items}
 
 
 @app.get("/community-chat")
@@ -24157,6 +24345,8 @@ async def community_chat_messages(
     _community_chat_cleanup_expired_messages_if_due()
     thread = _community_chat_thread_for_user(user, role, channel)
     user_id = int(user.get("id") or 0)
+    if str(channel or "general").strip().lower() == "speaking":
+        limit = min(int(limit), 50)
     items = _community_chat_messages(
         int(thread.get("id") or 0),
         user_id,
@@ -24171,6 +24361,95 @@ async def community_chat_messages(
         },
         "items": items,
     }
+
+
+@app.get("/community-chat/events")
+async def community_chat_events(
+    request: Request,
+    channel: str = Query(default="general", max_length=20),
+    after_id: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    """Database-backed SSE so chat updates work across backend workers too."""
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
+        raise HTTPException(status_code=403, detail="Student access is blocked")
+    thread = _community_chat_thread_for_user(user, role, channel)
+    thread_id = int(thread.get("id") or 0)
+    viewer_id = int(user.get("id") or 0)
+
+    async def events():
+        cursor = int(after_id)
+        previous_statuses = ""
+        yield ": connected\n\n"
+        while not await request.is_disconnected():
+            batch_limit = 50 if str(channel).lower() == "speaking" else 100
+            rows = _community_chat_messages(thread_id, viewer_id, after_id=cursor, limit=batch_limit)
+            for item in rows:
+                cursor = max(cursor, int(item.get("id") or 0))
+                yield _sse_pack("message", item)
+            if not rows:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+    })
+
+
+@app.websocket("/community-chat/ws")
+async def community_chat_websocket(websocket: WebSocket, channel: str = Query(default="speaking", max_length=20)):
+    """Authenticated cross-worker realtime feed; message writes stay on REST."""
+    auth = (websocket.headers.get("authorization") or "").strip()
+    try:
+        if not auth.lower().startswith("bearer "):
+            await websocket.close(code=4401, reason="Authorization required")
+            return
+        user = _user_row_from_bearer(auth)
+        role = _require_role(user, {"student", "teacher", "admin", "support"})
+        if role == "student" and (int(user.get("access_enabled") or 1) != 1 or int(user.get("blocked") or 0) == 1):
+            await websocket.close(code=4403, reason="Student access is blocked")
+            return
+        thread = _community_chat_thread_for_user(user, role, channel)
+    except HTTPException as exc:
+        await websocket.close(code=4403 if exc.status_code == 403 else 4401, reason="Chat access denied")
+        return
+    except Exception:
+        await websocket.close(code=4401, reason="Chat access denied")
+        return
+
+    await websocket.accept()
+    thread_id = int(thread.get("id") or 0)
+    viewer_id = int(user.get("id") or 0)
+    cursor = 0
+    last_ping = time.monotonic()
+    try:
+        while True:
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                # The socket is intentionally read-only; sends must pass
+                # through the validated POST endpoint and attachment checks.
+                if len(raw) > 4096:
+                    await websocket.send_json({"type": "error", "message": "Payload too large"})
+            except asyncio.TimeoutError:
+                pass
+            rows = _community_chat_messages(
+                thread_id, viewer_id, after_id=cursor,
+                limit=50 if str(channel).lower() == "speaking" else 100,
+            )
+            for item in rows:
+                cursor = max(cursor, int(item.get("id") or 0))
+                await websocket.send_json({"type": "message", "item": item})
+            if not rows and time.monotonic() - last_ping >= 25:
+                await websocket.send_json({"type": "ping", "time": int(time.time())})
+                last_ping = time.monotonic()
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        logger.exception("community chat websocket failed user_id=%s channel=%s", viewer_id, channel)
+        with suppress(Exception):
+            await websocket.close(code=1011, reason="Chat stream failed")
 
 
 @app.post("/community-chat/upload")
@@ -24270,7 +24549,7 @@ async def community_chat_send_message(
         message_text = ""
     if not message_text and not attachments:
         raise HTTPException(status_code=422, detail="Xabar yoki kamida bitta fayl yuboring.")
-    reply_id = int(payload.reply_to_message_id or 0)
+    reply_id = int(payload.reply_to_message_id or payload.reply_to_id or 0)
     if reply_id > 0:
         conn = get_conn()
         cur = conn.cursor()
@@ -24411,11 +24690,36 @@ async def chat_thread_send_message(
     payload: ChatSendMessageRequest,
     authorization: str | None = Header(default=None),
 ):
-    _user_row_from_bearer(authorization)
-    raise HTTPException(
-        status_code=410,
-        detail="Role-to-role chat disabled. Please use Diamondvoy or Taklif & Shikoyat.",
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    user_id = int(user.get("id") or 0)
+    _, participants = _direct_chat_for_user(thread_id, user_id)
+    try:
+        text = validate_public_text(str(payload.message or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Message could not be sent") from exc
+    reply_id = int(payload.reply_to_message_id or 0)
+    if reply_id:
+        reply_rows = list_chat_messages(thread_id, after_id=reply_id - 1, limit=1)
+        if not reply_rows or int(reply_rows[0].get("id") or 0) != reply_id:
+            raise HTTPException(status_code=404, detail="Reply message not found")
+    created = add_chat_message(
+        thread_id, user_id, role, text,
+        reply_to_message_id=reply_id or None,
+        client_message_id=payload.client_message_id,
     )
+    if not created:
+        raise HTTPException(status_code=500, detail="Message could not be saved")
+    item = {
+        "id": int(created.get("id") or 0), "thread_id": thread_id,
+        "message": str(created.get("message_text") or text), "text": str(created.get("message_text") or text),
+        "sender_id": user_id, "is_mine": True,
+        "created_at": _as_iso_timestamp(created.get("created_at")),
+        "reply_to_message_id": created.get("reply_to_message_id"),
+        "client_message_id": created.get("client_message_id"),
+        "author": _community_chat_author_payload(user_id, {}), "status": "sent",
+    }
+    return {"item": item}
 
 
 @app.post("/chats/{thread_id}/read")
@@ -24424,17 +24728,79 @@ async def chat_thread_mark_read(
     payload: ChatReadRequest | None = None,
     authorization: str | None = Header(default=None),
 ):
-    _user_row_from_bearer(authorization)
-    raise HTTPException(
-        status_code=410,
-        detail="Role-to-role chat disabled. Please use Diamondvoy or Taklif & Shikoyat.",
-    )
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _, participants = _direct_chat_for_user(thread_id, int(user.get("id") or 0))
+    effective = mark_chat_read(thread_id, int(user.get("id") or 0), payload.last_message_id if payload else None)
+    return {"ok": True, "last_read_message_id": effective, "thread_id": thread_id}
 
 
 @app.get("/chats/unread-count")
 async def chats_unread_count(authorization: str | None = Header(default=None)):
-    _user_row_from_bearer(authorization)
-    return {"unread_count": 0}
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    threads = list_chat_threads_for_user(int(user.get("id") or 0), limit=500)
+    unread = sum(max(0, int(thread.get("unread_count") or 0)) for thread in threads if str(thread.get("thread_type") or "") == "direct")
+    return {"unread_count": unread}
+
+
+@app.get("/chats/{thread_id}/events")
+async def direct_chat_events(
+    thread_id: int,
+    request: Request,
+    after_id: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _direct_chat_for_user(thread_id, int(user.get("id") or 0))
+
+    async def events():
+        cursor = int(after_id)
+        previous_statuses = ""
+        yield ": connected\n\n"
+        while not await request.is_disconnected():
+            result = await chat_thread_messages(
+                thread_id, after_id=cursor, limit=100, authorization=authorization,
+            )
+            batch = result.get("items") or []
+            for item in batch:
+                cursor = max(cursor, int(item.get("id") or 0))
+                yield _sse_pack("message", item)
+            conn = get_conn()
+            cur = conn.cursor()
+            status_event = None
+            try:
+                cur.execute(
+                    "SELECT user_id,last_delivered_message_id,last_read_message_id FROM chat_participants WHERE thread_id=? AND user_id<>? AND COALESCE(active,1)=1 LIMIT 1",
+                    (int(thread_id), int(user.get("id") or 0)),
+                )
+                peer = dict(cur.fetchone() or {})
+                delivered_id = int(peer.get("last_delivered_message_id") or 0)
+                read_id = int(peer.get("last_read_message_id") or 0)
+                cur.execute(
+                    "SELECT id FROM chat_messages WHERE thread_id=? AND sender_id=? ORDER BY id DESC LIMIT 100",
+                    (int(thread_id), int(user.get("id") or 0)),
+                )
+                statuses = [
+                    {"id": int(dict(row).get("id") or 0), "status": "seen" if int(dict(row).get("id") or 0) <= read_id else "delivered" if int(dict(row).get("id") or 0) <= delivered_id else "sent"}
+                    for row in cur.fetchall() or []
+                ]
+                status_blob = json.dumps(statuses, separators=(",", ":"), sort_keys=True)
+                if statuses and status_blob != previous_statuses:
+                    previous_statuses = status_blob
+                    status_event = {"thread_id": int(thread_id), "items": statuses}
+            finally:
+                conn.close()
+            if status_event:
+                yield _sse_pack("status", status_event)
+            if not batch:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+    })
 
 
 def _ensure_diamondvoy_gen_jobs_schema() -> None:
@@ -24658,6 +25024,9 @@ def _diamondvoy_is_personal_learning_query(text: str) -> bool:
     ))
 
 
+_DIAMONDVOY_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
+
+
 async def _diamondvoy_run_generation_job(
     *,
     job_id: str,
@@ -24672,17 +25041,35 @@ async def _diamondvoy_run_generation_job(
     prior_context: list[dict[str, str]],
     subjects: list[str],
     current_chat_title: str,
+    cancel_event: asyncio.Event | None = None,
 ) -> None:
     """The actual LLM call, fully decoupled from the client's HTTP/SSE
     connection. Runs to completion (saves the assistant message + updates
     the chat title + logs/memory) via `asyncio.create_task` regardless of
-    whether the app is still connected/foregrounded — this is what makes
-    generation survive the user leaving the Diamondvoy chat mid-answer.
+    while connected. A request disconnect sets `cancel_event`; the task then
+    closes its provider stream and does not save or bill a completed answer.
     `event_stream()` below still tails this job's `content` column for
     clients that stay connected, so the live-typing experience is
     unchanged when the app stays open.
     """
     streamed = ""
+
+    async def next_chunk_or_cancel(generator):
+        if cancel_event is None:
+            return await anext(generator), False
+        next_task = asyncio.create_task(anext(generator))
+        cancel_task = asyncio.create_task(cancel_event.wait())
+        done, _ = await asyncio.wait({next_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
+        if cancel_task in done and cancel_event.is_set():
+            next_task.cancel()
+            with suppress(BaseException):
+                await next_task
+            with suppress(BaseException):
+                await generator.aclose()
+            return None, True
+        cancel_task.cancel()
+        return next_task.result(), False
+
     try:
         style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
         role_context_hint = {
@@ -24798,15 +25185,16 @@ async def _diamondvoy_run_generation_job(
                     gen = _xai_generate_text_stream_with_images(ai_user_text, vision_images, session=session)
                     while True:
                         try:
-                            chunk = await asyncio.wait_for(anext(gen), timeout=20.0)
-                            if not chunk:
-                                continue
-                            streamed += chunk
-                            _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
-                        except (asyncio.TimeoutError, TimeoutError):
-                            continue
+                            chunk, cancelled = await next_chunk_or_cancel(gen)
                         except StopAsyncIteration:
                             break
+                        if cancelled:
+                            _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                            return
+                        if not chunk:
+                            continue
+                        streamed += chunk
+                        _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
             else:
                 gen = diamondvoy_gemini_answer_stream(
                     ai_user_text,
@@ -24817,15 +25205,16 @@ async def _diamondvoy_run_generation_job(
                 )
                 while True:
                     try:
-                        chunk = await asyncio.wait_for(anext(gen), timeout=15.0)
-                        if not chunk:
-                            continue
-                        streamed += chunk
-                        _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
-                    except (asyncio.TimeoutError, TimeoutError):
-                        continue
+                        chunk, cancelled = await next_chunk_or_cancel(gen)
                     except StopAsyncIteration:
                         break
+                    if cancelled:
+                        _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                        return
+                    if not chunk:
+                        continue
+                    streamed += chunk
+                    _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
 
         assistant_text = sanitize_diamondvoy_reply(streamed.strip() or t(query_lang, "diamondvoy_answer_empty"))
         _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
@@ -24902,6 +25291,8 @@ async def _diamondvoy_run_generation_job(
             "chat_title": current_chat_title,
             "error": t(query_lang, "diamondvoy_generation_error"),
         })
+    finally:
+        _DIAMONDVOY_CANCEL_EVENTS.pop(str(job_id), None)
 
 
 async def _diamondvoy_stream_events(
@@ -24994,6 +25385,7 @@ async def _diamondvoy_stream_events(
     async def event_stream():
         current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
         assistant_text = ""
+        cancel_event: asyncio.Event | None = None
         try:
             yield _sse_pack(
                 "status",
@@ -25107,15 +25499,11 @@ async def _diamondvoy_stream_events(
                 f"User request:\n{user_text or '[image-only educational request]'}"
             )
 
-            # The actual LLM call is launched as a standalone background
-            # task (survives this HTTP/SSE connection closing — app
-            # backgrounded, navigated away, network drop, etc) and
-            # persisted incrementally to `web_diamondvoy_gen_jobs`. This
-            # generator just tails that job's `content` column and forwards
-            # deltas to the client for as long as the client stays
-            # connected; if it disconnects, the task keeps running and the
-            # final assistant message still gets saved to the chat.
+            # Persist progress for reconnecting clients, but cancel the model
+            # stream when its owning HTTP client disconnects.
             job_id = uuid4().hex
+            cancel_event = asyncio.Event()
+            _DIAMONDVOY_CANCEL_EVENTS[job_id] = cancel_event
             _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": int(chat_id), "user_id": user_id, "status": "running", "content": "", "chat_title": current_chat_title})
             asyncio.create_task(
                 _diamondvoy_run_generation_job(
@@ -25131,11 +25519,12 @@ async def _diamondvoy_stream_events(
                     prior_context=prior_context,
                     subjects=subjects,
                     current_chat_title=current_chat_title,
+                    cancel_event=cancel_event,
                 )
             )
 
             last_sent = ""
-            while True:
+            while not await request.is_disconnected():
                 job = await asyncio.get_event_loop().run_in_executor(None, _get_diamondvoy_gen_job, job_id)
                 job_status = str((job or {}).get("status") or "running")
                 job_content = str((job or {}).get("content") or "")
@@ -25150,11 +25539,24 @@ async def _diamondvoy_stream_events(
                 if job_status == "failed":
                     yield _sse_pack("error", {"message": str((job or {}).get("error") or t(query_lang, "diamondvoy_generation_error"))})
                     return
+                if job_status == "cancelled":
+                    yield _sse_pack("cancelled", {"chat_id": int(chat_id)})
+                    return
                 yield ": keepalive\n\n"
                 await asyncio.sleep(0.35)
+            cancel_event.set()
+            latest_job = await asyncio.get_event_loop().run_in_executor(None, _get_diamondvoy_gen_job, job_id)
+            if str((latest_job or {}).get("status") or "running") == "running":
+                _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": int(chat_id), "user_id": user_id, "status": "cancelled", "content": last_sent, "chat_title": current_chat_title})
+            return
         except Exception:
             logger.exception("final diamondvoy stream failed user_id=%s chat_id=%s", user_id, chat_id)
             yield _sse_pack("error", {"message": t(query_lang, "diamondvoy_generation_error")})
+        finally:
+            # Starlette may cancel a streaming task immediately on disconnect
+            # without another poll iteration; always signal the provider task.
+            if cancel_event is not None:
+                cancel_event.set()
 
     return StreamingResponse(
         event_stream(),
@@ -39292,23 +39694,34 @@ async def student_placement_answer(payload: PlacementAnswerRequest, authorizatio
     }
 
 
+def _image_type_from_signature(raw: bytes) -> tuple[str, str] | None:
+    """Detect supported raster image bytes; never trust a browser MIME header."""
+    if raw.startswith(b"\xff\xd8\xff"):
+        return ".jpg", "image/jpeg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png", "image/png"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif", "image/gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    return None
+
+
 async def _upload_web_image(file: UploadFile, upload_dir: Path, prefix: str) -> str:
-    content_type = str(file.content_type or "").split(";")[0].strip().lower()
     allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     original_name = Path(file.filename or "").name
     ext = Path(original_name).suffix.lower()
-    is_image_type = content_type.startswith("image/")
-    is_image_ext = ext in allowed_exts
-    if not is_image_type and not is_image_ext:
-        raise HTTPException(status_code=422, detail="Fayl turi noto'g'ri. Faqat rasm yuklash mumkin.")
+    if ext not in allowed_exts:
+        raise HTTPException(status_code=422, detail="Fayl turi noto'g'ri. Faqat JPG, PNG, WebP yoki GIF rasm yuboring.")
     raw = await file.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Fayl bo'sh.")
     if len(raw) > 7 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Fayl hajmi juda katta. Maksimal hajm: 7MB.")
-    if ext not in allowed_exts:
-        guessed = (mimetypes.guess_extension(content_type) or "").lower()
-        ext = guessed if guessed in allowed_exts else ".jpg"
+    detected = _image_type_from_signature(raw)
+    if not detected or (ext not in {detected[0], ".jpeg"}):
+        raise HTTPException(status_code=422, detail="Yuklangan fayl haqiqiy qo‘llab-quvvatlanadigan rasm emas.")
+    ext = detected[0]
     filename = f"{prefix}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(5)}{ext}"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / filename
@@ -39329,6 +39742,8 @@ async def _upload_web_file(file: UploadFile, upload_dir: Path, prefix: str, max_
     if not ext or len(ext) > 10 or not re.match(r"^\.[a-z0-9]{1,9}$", ext):
         guessed = mimetypes.guess_extension(str(file.content_type or "").split(";")[0].strip().lower() or "") or ""
         ext = guessed.lower() if guessed and len(guessed) <= 10 else ".bin"
+    if ext in {".html", ".htm", ".xhtml", ".svg", ".svgz", ".js", ".mjs", ".cjs", ".xml", ".xsl", ".hta"}:
+        raise HTTPException(status_code=422, detail="Bu faol kontent fayl turi yuklash uchun ruxsat etilmagan.")
     filename = f"{prefix}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(5)}{ext}"
     path = upload_dir / filename
     with open(path, "wb") as handle:
@@ -40328,7 +40743,11 @@ async def homework_generic_file(filename: str):
     file_path = HOMEWORK_UPLOAD_DIR / safe
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(str(file_path))
+    return FileResponse(
+        str(file_path),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe}"', "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/homework/voices/{filename}")
@@ -59608,13 +60027,13 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 my_user_id = int(user.get("id") or 0)
                 my_name = f"{user.get('first_name') or ''} {user.get('last_name') or ''}".strip() or "O'quvchi"
                 my_avatar_url = _first_existing_avatar_url(user.get("profile_image_url"), user.get("effective_profile_image_url")) or ""
-                r = int(user.get("login_type") or 0)
-                if r in (3, 4, 5):
-                    my_role = "admin"
-                elif r == 2:
-                    my_role = "teacher"
-                else:
-                    my_role = "student"
+                resolved_role = _role_from_login_type(
+                    int(user.get("login_type") or 0), str(user.get("login_id") or "")
+                )
+                # Only actual administrators and the dedicated Speaking admin
+                # get moderator-only voice-room actions. Teachers/support are
+                # not promoted merely because of their numeric login type.
+                my_role = "admin" if resolved_role in {"admin", "speaking_admin"} else resolved_role
         except Exception:
             pass
 
@@ -59682,6 +60101,9 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
         while True:
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.2)
+                if len(data) > 262144:
+                    await _send({"type": "error", "message": "Signal payload is too large"})
+                    continue
                 try:
                     msg = json.loads(data)
                 except Exception:
@@ -59849,11 +60271,11 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         await _broadcast_room(room_id, {"type": "chat_message", "author": "Tizim", "text": f"{my_name} xonaga qo'shildi."})
                     await _send_room_state(room_id)
                     
-                elif action == "request_stage":
+                elif action in {"request_stage", "raise_hand"}:
                     if current_room_id:
                         info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
                         host_id = info.get("host_id")
-                        if host_id:
+                        if host_id and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", my_ws_id):
                             _REDIS_CLIENT.rpush(f"webrtc_signal_{host_id}", json.dumps({
                                 "type": "webrtc_signal",
                                 "from_id": my_ws_id,
@@ -59872,7 +60294,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         await _send_room_state(current_room_id)
                 elif action == "approve_stage":
                     peer_id = msg.get("peer_id")
-                    if current_room_id:
+                    if current_room_id and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", str(peer_id or "")):
                         info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
                         if info.get("host_id") == my_ws_id:
                             stage_count = _REDIS_CLIENT.scard(f"voice_room_stage_{current_room_id}") or 0
@@ -59970,16 +60392,22 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                             })
 
                 elif action == "webrtc_signal":
-                    target_id = msg.get("target_id")
-                    if target_id:
-                        payload = json.dumps({"type": "webrtc_signal", "from_id": my_ws_id, "data": msg.get("data")})
+                    target_id = str(msg.get("target_id") or "")
+                    if (current_room_id and target_id
+                            and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", my_ws_id)
+                            and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", target_id)):
+                        signal_data = msg.get("data")
+                        if not isinstance(signal_data, dict):
+                            await _send({"type": "error", "message": "Invalid WebRTC signal"})
+                            continue
+                        payload = json.dumps({"type": "webrtc_signal", "from_id": my_ws_id, "data": signal_data})
                         _REDIS_CLIENT.rpush(f"webrtc_signal_{target_id}", payload)
                         _REDIS_CLIENT.expire(f"webrtc_signal_{target_id}", 3600)
 
-                elif action == "reaction":
+                elif action in {"reaction", "send_reaction"}:
                     if current_room_id:
-                        emoji = msg.get("emoji")
-                        if emoji:
+                        emoji = str(msg.get("emoji") or "")[:16]
+                        if emoji and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", my_ws_id):
                             await _broadcast_room(current_room_id, {
                                 "type": "reaction",
                                 "peer_id": my_ws_id,
@@ -59988,7 +60416,8 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                             
                 elif action == "force_mute":
                     target_id = msg.get("target_id")
-                    if current_room_id and target_id:
+                    if (current_room_id and target_id
+                            and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", str(target_id))):
                         if _REDIS_CLIENT.sismember(f"voice_room_admins_{current_room_id}", target_id):
                             await _send({"type": "error", "message": "Adminlarni Mute qilish mumkin emas!"})
                             continue
@@ -59998,7 +60427,8 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
 
                 elif action == "demote_peer":
                     peer_id = msg.get("peer_id")
-                    if current_room_id and peer_id:
+                    if (current_room_id and peer_id
+                            and _REDIS_CLIENT.sismember(f"voice_room_peers_{current_room_id}", str(peer_id))):
                         if _REDIS_CLIENT.sismember(f"voice_room_admins_{current_room_id}", peer_id):
                             await _send({"type": "error", "message": "Adminlarni sahnadan olish mumkin emas!"})
                             continue

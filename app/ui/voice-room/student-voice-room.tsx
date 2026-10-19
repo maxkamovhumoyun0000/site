@@ -197,8 +197,8 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
         )}
         
         {/* Top Header */}
-        <div className="pt-6 pb-4 px-6 bg-white dark:bg-slate-900 shadow-sm border-b border-slate-200 dark:border-slate-800 flex items-center justify-between z-20">
-           <button onClick={() => router.push('/dashboard')} className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
+        <div className="pt-6 pb-4 px-6 bg-white dark:bg-[#131C2E] shadow-sm border-b border-[#E6EBF5] dark:border-[#233352] flex items-center justify-between z-20">
+           <button onClick={() => router.push('/dashboard')} className="text-slate-500 dark:text-slate-400 hover:text-[#1736E8] dark:hover:text-[#afc6ff] transition-colors">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
            </button>
            <h1 className="text-xl font-bold text-slate-800 dark:text-white">{t("voiceroom.title") || "Voice Rooms"}</h1>
@@ -210,7 +210,7 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
                  handleCreateRoom();
                }
              }}
-             className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+             className="px-3.5 py-1.5 bg-[#1736E8] hover:bg-[#0020B8] text-white text-xs font-bold rounded-xl shadow-sm transition-all flex items-center gap-1.5"
            >
              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
              <span>{t("voiceroom.createRoom") || "Xona yaratish"}</span>
@@ -237,8 +237,8 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
                     className={cx(
                       "px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-all border",
                       activeSubTab === subj 
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-500/20" 
-                        : "bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700"
+                        ? "bg-[#1736E8] text-white border-[#1736E8] shadow-md shadow-[#1736E8]/20"
+                        : "bg-white dark:bg-[#131C2E] text-slate-600 dark:text-slate-300 border-[#E6EBF5] dark:border-[#233352] hover:bg-slate-50 dark:hover:bg-slate-700"
                     )}
                   >
                     {subj === "all" ? (t("voiceroom.all_subjects") || "Barcha fanlar") : SUBJECT_MAP[subj] || subj}
@@ -257,18 +257,18 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {filteredActive.map(room => (
-                  <div key={room.room_id} onClick={() => joinRoom(room.room_id!)} className="bg-white dark:bg-slate-800/80 rounded-2xl p-4 shadow-sm border border-slate-100 dark:border-slate-700/50 cursor-pointer hover:shadow-md hover:border-indigo-500/30 transition-all flex items-start justify-between group">
+                  <div key={room.room_id} onClick={() => joinRoom(room.room_id!)} className="bg-white dark:bg-[#131C2E] rounded-2xl p-4 shadow-sm border border-[#E6EBF5] dark:border-[#233352] cursor-pointer hover:shadow-md hover:border-[#1736E8]/40 transition-all flex items-start justify-between group">
                     <div>
                       <div className="flex items-center gap-2 mb-2">
-                         <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded text-xs font-semibold uppercase tracking-wider">
+                         <span className="px-2 py-0.5 bg-[#E9EEFF] dark:bg-[#1736E8]/20 text-[#1736E8] dark:text-[#afc6ff] rounded text-xs font-semibold uppercase tracking-wider">
                            {SUBJECT_MAP[room.subject] || room.subject}
                          </span>
                          <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400 text-xs">
-                           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                           <span className="w-1.5 h-1.5 rounded-full bg-[#13A879] animate-pulse"></span>
                            {room.listeners}
                          </span>
                       </div>
-                      <h3 className="font-bold text-slate-800 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">{room.name}</h3>
+                      <h3 className="font-bold text-slate-800 dark:text-white group-hover:text-[#1736E8] dark:group-hover:text-[#afc6ff] transition-colors">{room.name}</h3>
                       <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">{t("voiceroom.host")}: {room.host_name}</p>
                       {room.tags && room.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-2">
@@ -280,8 +280,8 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
                         </div>
                       )}
                     </div>
-                    <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center group-hover:bg-indigo-50 dark:group-hover:bg-indigo-500/20 transition-colors">
-                      <svg className="w-5 h-5 text-slate-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    <div className="w-10 h-10 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center group-hover:bg-[#E9EEFF] dark:group-hover:bg-[#1736E8]/20 transition-colors">
+                      <svg className="w-5 h-5 text-slate-400 group-hover:text-[#1736E8] dark:group-hover:text-[#afc6ff] ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                     </div>
                   </div>
                 ))}
@@ -299,7 +299,7 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
               handleCreateRoom();
             }
           }}
-          className="fixed bottom-6 right-6 w-14 h-14 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.3)] flex items-center justify-center transition-transform hover:scale-105 active:scale-95 z-30"
+          className="fixed bottom-6 right-6 w-14 h-14 bg-[#1736E8] hover:bg-[#0020B8] text-white rounded-full shadow-[0_8px_30px_rgba(23,54,232,0.3)] flex items-center justify-center transition-transform hover:scale-105 active:scale-95 z-30"
           title={t("voiceroom.createRoom") || "Xona yaratish"}
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>

@@ -41,10 +41,10 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
-    // The admin uses a few inline styles and the current Next runtime needs
-    // eval in development, so this is intentionally compatibility-conscious.
-    // It still blocks plugin/object injection, framing, and cross-origin base
-    // URL attacks in production.
+    // Keep compatibility with Next's inline bootstrap, but do not grant
+    // eval-based script execution in production. Development gets eval only
+    // when running the local dev server.
+    const isDevelopment = process.env.NODE_ENV !== "production";
     const csp = [
       "default-src 'self'",
       "base-uri 'self'",
@@ -54,10 +54,10 @@ const nextConfig: NextConfig = {
       "img-src 'self' data: blob: https:",
       "font-src 'self' data: https:",
       "media-src 'self' blob: https:",
-      "connect-src 'self' https: wss: http://127.0.0.1:18765",
+      `connect-src 'self' https: wss:${isDevelopment ? " http://127.0.0.1:18765" : ""}`,
       "worker-src 'self' blob:",
       "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
       "style-src 'self' 'unsafe-inline'",
     ].join("; ");
     return [{

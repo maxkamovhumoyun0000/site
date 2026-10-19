@@ -2628,10 +2628,10 @@ export function UniversalChat({
             clearComposerImages();
           }}
           className={cx(
-            "w-full text-left rounded-lg border px-3 py-3 transition",
+            "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
             activePane === "feedback"
-              ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
-              : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
+              ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
+              : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
           )}
         >
           <p className="font-black text-sm text-navy-900 dark:text-white">{tt("chat.feedback.title", "Taklif & Shikoyat")}</p>
@@ -2647,14 +2647,14 @@ export function UniversalChat({
             setError("");
           }}
           className={cx(
-            "w-full text-left rounded-lg border px-3 py-3 transition",
+            "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
             activePane === "community"
-              ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
-              : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
+              ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
+              : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
           )}
         >
           <div className="flex items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white">#</span>
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white font-bold">#</span>
             <div className="min-w-0">
               <p className="font-black text-sm text-navy-900 dark:text-white">Umumiy chat</p>
               <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">Barcha o‘quvchi, o‘qituvchi va administratorlar</p>
@@ -2665,7 +2665,7 @@ export function UniversalChat({
         <div className="pt-2">
           <div className="px-1 pb-2 text-[11px] font-bold uppercase text-ink-500 dark:text-navy-300">Diamondvoy</div>
           {aiChats.length === 0 ? (
-            <div className="px-3 py-4 rounded-lg border border-dashed border-line dark:border-white/10 text-xs text-ink-500 dark:text-navy-300">
+            <div className="px-3 py-4 rounded-2xl border border-dashed border-[#E6EBF5] dark:border-white/10 text-xs text-ink-500 dark:text-navy-300">
               {loadingList ? tt("common.loading", "Yuklanmoqda...") : tt("chat.ai.empty", "Hozircha chat yo'q")}
             </div>
           ) : (
@@ -2676,10 +2676,10 @@ export function UniversalChat({
                     type="button"
                     onClick={() => openDiamondvoy(chat.id)}
                     className={cx(
-                      "w-full text-left rounded-lg border px-3 py-3 transition",
+                      "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
                       activePane === "diamondvoy" && activeChatId === chat.id
-                        ? "bg-cyan-100 dark:bg-cyan-500/15 border-cyan-300 dark:border-cyan-400/50"
-                        : "bg-white dark:bg-white/5 border-line dark:border-white/10 hover:border-cyan-300",
+                        ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
+                        : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
                     )}
                   >
                     <div className="flex items-center gap-2">

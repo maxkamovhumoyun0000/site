@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import json
 import threading
+import asyncio
 from typing import Any
+from datetime import datetime
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
 
 from backend.community_safety import validate_public_text
 from db import get_conn
@@ -84,14 +87,18 @@ def _ensure_schema() -> None:
                     chat_id INTEGER NOT NULL,
                     sender_id INTEGER NOT NULL,
                     message TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    delivered_at TIMESTAMP,
+                    read_at TIMESTAMP
                 )""",
                 """CREATE TABLE IF NOT EXISTS speaking_direct_messages (
                     id BIGSERIAL PRIMARY KEY,
                     chat_id BIGINT NOT NULL,
                     sender_id BIGINT NOT NULL,
                     message TEXT NOT NULL,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    delivered_at TIMESTAMP,
+                    read_at TIMESTAMP
                 )""",
             ]
             messages_created = False
@@ -113,6 +120,12 @@ def _ensure_schema() -> None:
             except Exception:
                 # Existing installations already have the migration applied.
                 conn.rollback()
+            for column in ("delivered_at", "read_at"):
+                try:
+                    cur.execute(f"ALTER TABLE speaking_direct_messages ADD COLUMN {column} TIMESTAMP")
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
             try:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_speaking_direct_messages_chat ON speaking_direct_messages(chat_id, id)"
@@ -141,9 +154,9 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         cur.execute(
             """SELECT id, login_id, first_name, last_name, profile_image_url,
+                      last_activity, last_login_at,
                       speaking_app_account, speaking_deleted_at, blocked, access_enabled
                FROM users WHERE id=? LIMIT 1""",
             (int(user_id),),
@@ -169,6 +182,7 @@ def _public_user(row: dict[str, Any]) -> dict[str, Any]:
         "login_id": str(row.get("login_id") or ""),
         "full_name": display_name(row),
         "avatar_url": str(row.get("profile_image_url") or "").strip() or None,
+        "last_active": row.get("last_activity") or row.get("last_login_at"),
     }
 
 
@@ -207,11 +221,12 @@ async def search_speaking_chat_users(
     if len(normalized) < 3:
         raise HTTPException(status_code=422, detail="Enter at least three characters")
     blocked_ids = _mutually_blocked_ids(int(user.get("id") or 0))
+    escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url
+            """SELECT id, login_id, first_name, last_name, profile_image_url, last_activity, last_login_at
                FROM users
                WHERE COALESCE(speaking_app_account, 0)=1
                  AND speaking_deleted_at IS NULL
@@ -335,7 +350,7 @@ async def get_speaking_direct_messages(
     try:
         if after_id is None:
             cur.execute(
-                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
                    FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
                    WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 150""",
                 (int(chat_id),),
@@ -344,12 +359,23 @@ async def get_speaking_direct_messages(
             rows.reverse()
         else:
             cur.execute(
-                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
                    FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
                    WHERE m.chat_id=? AND m.id>? ORDER BY m.id ASC LIMIT 150""",
                 (int(chat_id), int(after_id)),
             )
             rows = [dict(row) for row in cur.fetchall() or []]
+        incoming_ids = [int(row.get("id") or 0) for row in rows if int(row.get("sender_id") or 0) != int(user.get("id") or 0)]
+        if incoming_ids:
+            newest_incoming = max(incoming_ids)
+            cur.execute(
+                "UPDATE speaking_direct_messages SET delivered_at=CURRENT_TIMESTAMP WHERE chat_id=? AND sender_id<>? AND id<=? AND delivered_at IS NULL",
+                (int(chat_id), int(user.get("id") or 0), newest_incoming),
+            )
+            conn.commit()
+            for row in rows:
+                if int(row.get("id") or 0) in incoming_ids and not row.get("delivered_at"):
+                    row["delivered_at"] = datetime.utcnow().isoformat()
         items = []
         for row in rows:
             author_row = {**row, "id": row.get("sender_id")}
@@ -364,12 +390,105 @@ async def get_speaking_direct_messages(
                 "sender_id": int(row.get("sender_id") or 0),
                 "is_mine": int(row.get("sender_id") or 0) == int(user.get("id") or 0),
                 "created_at": row.get("created_at"),
+                "status": "seen" if int(row.get("sender_id") or 0) == int(user.get("id") or 0) and row.get("read_at") else ("delivered" if row.get("delivered_at") else "sent"),
                 "author": author,
                 "attachments": attachments if isinstance(attachments, list) else [],
             })
         return {"chat": chat, "items": items}
     finally:
         conn.close()
+
+
+class DirectChatReadRequest(BaseModel):
+    last_message_id: int | None = Field(default=None, ge=1)
+
+
+@router.post("/speaking/chats/{chat_id}/read")
+@router.post("/api/speaking/chats/{chat_id}/read")
+async def mark_speaking_direct_messages_read(
+    chat_id: int,
+    payload: DirectChatReadRequest | None = None,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_speaking_user(authorization)
+    _chat_for_user(chat_id, int(user.get("id") or 0))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        target_id = int(payload.last_message_id or 0) if payload else 0
+        if target_id <= 0:
+            cur.execute("SELECT id FROM speaking_direct_messages WHERE chat_id=? ORDER BY id DESC LIMIT 1", (int(chat_id),))
+            target_id = int(dict(cur.fetchone() or {}).get("id") or 0)
+        cur.execute(
+            "UPDATE speaking_direct_messages SET read_at=CURRENT_TIMESTAMP, delivered_at=COALESCE(delivered_at,CURRENT_TIMESTAMP) WHERE chat_id=? AND sender_id<>? AND id<=? AND read_at IS NULL",
+            (int(chat_id), int(user.get("id") or 0), target_id),
+        )
+        conn.commit()
+        return {"ok": True, "last_read_message_id": target_id}
+    except Exception:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Could not update read state")
+    finally:
+        conn.close()
+
+
+def _speaking_chat_sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n"
+
+
+@router.get("/speaking/chats/{chat_id}/events")
+@router.get("/api/speaking/chats/{chat_id}/events")
+async def speaking_direct_chat_events(
+    chat_id: int,
+    request: Request,
+    after_id: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    """SSE delivery for new messages and sent/delivered/seen receipts."""
+    user = _require_speaking_user(authorization)
+    uid = int(user.get("id") or 0)
+    _chat_for_user(chat_id, uid)
+
+    async def events():
+        cursor = int(after_id)
+        previous_statuses = ""
+        yield ": connected\n\n"
+        while not await request.is_disconnected():
+            result = await get_speaking_direct_messages(
+                chat_id, after_id=cursor, authorization=authorization,
+            )
+            items = result.get("items") or []
+            for item in items:
+                cursor = max(cursor, int(item.get("id") or 0))
+                yield _speaking_chat_sse("message", item)
+
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT id,delivered_at,read_at FROM speaking_direct_messages WHERE chat_id=? AND sender_id=? ORDER BY id DESC LIMIT 100",
+                    (int(chat_id), uid),
+                )
+                statuses = [
+                    {
+                        "id": int(dict(row).get("id") or 0),
+                        "status": "seen" if dict(row).get("read_at") else "delivered" if dict(row).get("delivered_at") else "sent",
+                    }
+                    for row in cur.fetchall() or []
+                ]
+            finally:
+                conn.close()
+            blob = json.dumps(statuses, separators=(",", ":"), sort_keys=True)
+            if statuses and blob != previous_statuses:
+                previous_statuses = blob
+                yield _speaking_chat_sse("status", {"chat_id": int(chat_id), "items": statuses})
+            if not items:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+    })
 
 
 @router.post("/speaking/chats/{chat_id}/messages")
@@ -442,7 +561,7 @@ async def send_speaking_direct_message(
             except Exception:
                 # Chat delivery must succeed even when optional push is unavailable.
                 pass
-        return {"item": {"id": int(created.get("id") or 0), "message": message, "sender_id": uid, "is_mine": True, "created_at": created.get("created_at"), "author": _public_user(user), "attachments": attachments}}
+        return {"item": {"id": int(created.get("id") or 0), "message": message, "sender_id": uid, "is_mine": True, "created_at": created.get("created_at"), "author": _public_user(user), "attachments": attachments, "status": "sent"}}
     except Exception as exc:
         conn.rollback()
         raise HTTPException(status_code=500, detail="Message could not be saved") from exc

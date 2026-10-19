@@ -15004,6 +15004,8 @@ def ensure_universal_chat_schema() -> None:
                 ("role_snapshot", "TEXT"),
                 ("last_read_message_id", "BIGINT"),
                 ("last_read_at", "TIMESTAMP"),
+                ("last_delivered_message_id", "BIGINT"),
+                ("last_delivered_at", "TIMESTAMP"),
                 ("active", "INTEGER DEFAULT 1"),
                 ("joined_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
             ],
@@ -15259,7 +15261,8 @@ def list_chat_participants(thread_id: int) -> list[dict]:
     try:
         cur.execute(
             """
-            SELECT id, thread_id, user_id, role_snapshot, last_read_message_id, last_read_at, active, joined_at
+            SELECT id, thread_id, user_id, role_snapshot, last_read_message_id, last_read_at,
+                   last_delivered_message_id, last_delivered_at, active, joined_at
             FROM chat_participants
             WHERE thread_id=?
             ORDER BY id ASC
