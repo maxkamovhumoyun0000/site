@@ -88,6 +88,26 @@ def session_replacements_for_login(
     return tuple(selected[:required])
 
 
+def public_web_session_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Expose only safe device metadata with JSON-safe database timestamps."""
+
+    def timestamp(value: Any) -> Any:
+        return value.isoformat() if isinstance(value, datetime) else value
+
+    return [
+        {
+            "session_id": str(row.get("session_id") or ""),
+            "source": str(row.get("source") or "web"),
+            "device_model": str(row.get("device_model") or "").strip() or None,
+            "created_at": timestamp(row.get("created_at")),
+            "last_seen_at": timestamp(row.get("last_seen_at")),
+            "expires_at": timestamp(row.get("expires_at")),
+        }
+        for row in rows
+        if str(row.get("session_id") or "").strip()
+    ]
+
+
 def normalize_speaking_link_code(value: Any) -> str:
     """Validate a short, user-visible Student-to-Speaking approval code."""
     code = str(value or "").strip().upper().replace(" ", "")

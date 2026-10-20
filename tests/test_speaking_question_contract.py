@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -17,11 +19,34 @@ from speaking_contract import (
     variable_batch_question_targets,
     part_two_cue_card_fallback,
     public_sample_answer,
+    public_web_session_rows,
     question_insert_values_for_topic,
 )
 
 
 class SpeakingQuestionContractTests(unittest.TestCase):
+    def test_session_limit_payload_encodes_postgres_timestamps(self) -> None:
+        created = datetime(2026, 10, 19, 17, 2, 30, tzinfo=timezone.utc)
+        rows = public_web_session_rows(
+            [
+                {
+                    "session_id": "session-1",
+                    "source": "speaking",
+                    "device_model": "Phone",
+                    "created_at": created,
+                    "last_seen_at": created,
+                    "expires_at": created,
+                    "device_id": "must-not-be-exposed",
+                }
+            ]
+        )
+
+        self.assertEqual(rows[0]["created_at"], created.isoformat())
+        self.assertEqual(rows[0]["last_seen_at"], created.isoformat())
+        self.assertEqual(rows[0]["expires_at"], created.isoformat())
+        self.assertNotIn("device_id", rows[0])
+        json.dumps(rows)
+
     def test_question_insert_uses_its_parent_topics_part_and_subject(self) -> None:
         payload = SimpleNamespace(
             part=3,

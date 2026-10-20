@@ -69,6 +69,7 @@ from speaking_contract import (
     normalize_speaking_link_code,
     normalize_speaking_email,
     session_replacements_for_login,
+    public_web_session_rows,
     speaking_account_state_label,
     speaking_voice_guest_identity,
 )
@@ -6755,18 +6756,7 @@ def _active_web_sessions_for_user(user_id: int, *, conn: Any | None = None) -> l
 
 def _public_session_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Safe device metadata returned only after that user's password check."""
-    return [
-        {
-            "session_id": str(row.get("session_id") or ""),
-            "source": str(row.get("source") or "web"),
-            "device_model": str(row.get("device_model") or "").strip() or None,
-            "created_at": row.get("created_at"),
-            "last_seen_at": row.get("last_seen_at"),
-            "expires_at": row.get("expires_at"),
-        }
-        for row in rows
-        if str(row.get("session_id") or "").strip()
-    ]
+    return public_web_session_rows(rows)
 
 
 def _reserve_web_session_slot(
@@ -20050,11 +20040,12 @@ def _ensure_speaking_account_schema() -> None:
         conn.commit()
         # Migrate existing installations without touching existing profile data.
         for column_name, column_type in (("age", "INTEGER"), ("gender", "TEXT")):
-            if not _db_has_column("speaking_account_contacts", column_name):
-                cur.execute(
-                    f"ALTER TABLE speaking_account_contacts ADD COLUMN {column_name} {column_type}"
-                )
-                conn.commit()
+            # Multiple API workers can initialize the schema simultaneously.
+            # IF NOT EXISTS closes the check-then-alter race seen in production.
+            cur.execute(
+                f"ALTER TABLE speaking_account_contacts ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+        conn.commit()
     finally:
         conn.close()
 
