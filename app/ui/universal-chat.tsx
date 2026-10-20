@@ -49,7 +49,8 @@ const DIAMONDVOY_FILE_EXTENSIONS = new Set([
   "jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
 ]);
 
-type ActivePane = "diamondvoy" | "community" | "feedback" | null;
+type ActivePane = "diamondvoy" | "community" | "speaking-direct" | "feedback" | null;
+type CommunityChannel = "general" | "speaking";
 
 const feedbackStatusMeta = (value?: string | null) => {
   const status = String(value || "Yangi");
@@ -172,6 +173,7 @@ type CommunityChatAuthor = {
   id: number;
   full_name: string;
   role: string;
+  login_id?: string;
   avatar_url?: string | null;
   profile_image_url?: string | null;
   level?: string | null;
@@ -199,6 +201,23 @@ type CommunityChatMessage = {
     author?: CommunityChatAuthor | null;
     created_at?: string | null;
   } | null;
+  attachments?: CommunityChatAttachment[];
+};
+
+type SpeakingDirectChat = {
+  id: number;
+  other_user: CommunityChatAuthor;
+  last_message?: string | null;
+  last_time?: string | null;
+};
+
+type SpeakingDirectMessage = {
+  id: number;
+  message: string;
+  sender_id: number;
+  is_mine: boolean;
+  created_at?: string | null;
+  status?: string;
   attachments?: CommunityChatAttachment[];
 };
 
@@ -1801,12 +1820,19 @@ export function UniversalChat({
   const [aiMessages, setAiMessages] = useState<DiamondvoyMessage[]>([]);
   const [communityMessages, setCommunityMessages] = useState<CommunityChatMessage[]>([]);
   const [communityThreadId, setCommunityThreadId] = useState<number | null>(null);
+  const [communityChannel, setCommunityChannel] = useState<CommunityChannel>("general");
   const [communityInput, setCommunityInput] = useState("");
   const [communityReply, setCommunityReply] = useState<CommunityChatMessage | null>(null);
   const [communityActionId, setCommunityActionId] = useState<number | null>(null);
   const [communityProfile, setCommunityProfile] = useState<CommunityChatAuthor | null>(null);
   const [communityAttachments, setCommunityAttachments] = useState<CommunityChatAttachment[]>([]);
   const [communityUploading, setCommunityUploading] = useState(false);
+  const [speakingDirectChats, setSpeakingDirectChats] = useState<SpeakingDirectChat[]>([]);
+  const [speakingDirectMessages, setSpeakingDirectMessages] = useState<SpeakingDirectMessage[]>([]);
+  const [speakingContacts, setSpeakingContacts] = useState<CommunityChatAuthor[]>([]);
+  const [speakingContactQuery, setSpeakingContactQuery] = useState("");
+  const [speakingActiveChatId, setSpeakingActiveChatId] = useState<number | null>(null);
+  const [speakingDirectInput, setSpeakingDirectInput] = useState("");
   const [feedbackDetail, setFeedbackDetail] = useState<FeedbackDetail | null>(null);
   const [adminThreads, setAdminThreads] = useState<FeedbackThreadSummary[]>([]);
   const [activeFeedbackThreadId, setActiveFeedbackThreadId] = useState<number | null>(null);
@@ -1845,6 +1871,7 @@ export function UniversalChat({
   const messageCacheRef = useRef<Map<number, DiamondvoyMessage[]>>(new Map());
   const aiScrollRef = useRef<HTMLDivElement | null>(null);
   const communityScrollRef = useRef<HTMLDivElement | null>(null);
+  const speakingDirectScrollRef = useRef<HTMLDivElement | null>(null);
   const feedbackScrollRef = useRef<HTMLDivElement | null>(null);
   const adminScrollRef = useRef<HTMLDivElement | null>(null);
   const pinnedToBottomRef = useRef(true);
@@ -1852,7 +1879,12 @@ export function UniversalChat({
   const longPressedChatRef = useRef<number | null>(null);
   const msgLongPressTimerRef = useRef<number | null>(null);
   const communityLastMessageIdRef = useRef(0);
+  const speakingCommunityLastMessageIdRef = useRef(0);
   const activeChat = useMemo(() => aiChats.find((chat) => chat.id === activeChatId) || null, [aiChats, activeChatId]);
+  const activeSpeakingDirectChat = useMemo(
+    () => speakingDirectChats.find((chat) => chat.id === speakingActiveChatId) || null,
+    [speakingActiveChatId, speakingDirectChats],
+  );
   const returnFromFeedback = useCallback(() => {
     if (feedbackOnly) {
       onExitFeedback?.();
@@ -1872,6 +1904,8 @@ export function UniversalChat({
         ? aiScrollRef.current
         : activePane === "community"
           ? communityScrollRef.current
+        : activePane === "speaking-direct"
+          ? speakingDirectScrollRef.current
         : activePane === "feedback" && isAdmin
           ? adminScrollRef.current
           : feedbackScrollRef.current;
@@ -1934,12 +1968,16 @@ export function UniversalChat({
   const loadCommunityMessages = useCallback(async () => {
     setLoadingBody((current) => current || communityLastMessageIdRef.current === 0);
     try {
-      const payload = await apiFetch("/community-chat?limit=180");
+      const pageLimit = communityChannel === "speaking" ? 50 : 120;
+      const payload = await apiFetch(`/community-chat?limit=${pageLimit}&channel=${communityChannel}`);
       const rows = Array.isArray(payload?.items) ? payload.items : [];
       const nextMessages = rows as CommunityChatMessage[];
       const latestId = nextMessages.reduce((latest, item) => Math.max(latest, Number(item?.id || 0)), 0);
-      const receivedNewMessage = latestId > communityLastMessageIdRef.current;
-      communityLastMessageIdRef.current = latestId;
+      const lastMessageRef = communityChannel === "speaking"
+        ? speakingCommunityLastMessageIdRef
+        : communityLastMessageIdRef;
+      const receivedNewMessage = latestId > lastMessageRef.current;
+      lastMessageRef.current = latestId;
       setCommunityMessages(nextMessages);
       setCommunityThreadId(Number(payload?.thread?.id || 0) || null);
       setError("");
@@ -1949,7 +1987,120 @@ export function UniversalChat({
     } finally {
       setLoadingBody(false);
     }
-  }, [apiFetch, scrollToBottom, tt]);
+  }, [apiFetch, communityChannel, scrollToBottom, tt]);
+
+  const selectCommunityChannel = useCallback((channel: CommunityChannel) => {
+    if (channel === communityChannel) return;
+    setCommunityChannel(channel);
+    setCommunityMessages([]);
+    setCommunityThreadId(null);
+    setCommunityReply(null);
+    setCommunityAttachments([]);
+    setCommunityActionId(null);
+    setError("");
+  }, [communityChannel]);
+
+  const loadSpeakingDirectChats = useCallback(async () => {
+    const payload = await apiFetch("/speaking/chats/direct");
+    setSpeakingDirectChats(Array.isArray(payload?.items) ? payload.items as SpeakingDirectChat[] : []);
+  }, [apiFetch]);
+
+  const searchSpeakingContacts = useCallback(async (query: string) => {
+    const normalized = query.trim();
+    if (normalized.length < 3) {
+      setSpeakingContacts([]);
+      return;
+    }
+    try {
+      const payload = await apiFetch(`/speaking/chat/users?query=${encodeURIComponent(normalized)}`);
+      setSpeakingContacts(Array.isArray(payload?.items) ? payload.items as CommunityChatAuthor[] : []);
+    } catch (err) {
+      setError(parseError(err, tt("chat.speaking.searchError", "Speaking foydalanuvchilarini qidirib bo‘lmadi.")));
+    }
+  }, [apiFetch, tt]);
+
+  useEffect(() => {
+    const query = speakingContactQuery.trim();
+    if (query.length < 3) {
+      setSpeakingContacts([]);
+      return;
+    }
+    const timer = window.setTimeout(() => searchSpeakingContacts(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchSpeakingContacts, speakingContactQuery]);
+
+  const openSpeakingDirectChat = useCallback(async (user: CommunityChatAuthor) => {
+    setLoadingBody(true);
+    setError("");
+    try {
+      const payload = await apiFetch("/speaking/chats", {
+        method: "POST",
+        body: { target_login_id: String(user.login_id || "") },
+      });
+      const chat = payload?.chat as SpeakingDirectChat | undefined;
+      if (!chat?.id) throw new Error(tt("chat.speaking.openError", "Speaking chatni ochib bo‘lmadi."));
+      setSpeakingDirectChats((previous) => [chat, ...previous.filter((item) => item.id !== chat.id)]);
+      setSpeakingActiveChatId(chat.id);
+      setSpeakingDirectMessages([]);
+      setSpeakingContactQuery("");
+      setSpeakingContacts([]);
+      setActiveChatId(null);
+      setActivePane("speaking-direct");
+      await loadSpeakingDirectChats();
+    } catch (err) {
+      setError(parseError(err, tt("chat.speaking.openError", "Speaking chatni ochib bo‘lmadi.")));
+    } finally {
+      setLoadingBody(false);
+    }
+  }, [apiFetch, loadSpeakingDirectChats, tt]);
+
+  const loadSpeakingDirectMessages = useCallback(async (chatId: number, silent = false) => {
+    if (!chatId) return;
+    if (!silent) setLoadingBody(true);
+    try {
+      const payload = await apiFetch(`/speaking/chats/${chatId}/messages`);
+      const messages = Array.isArray(payload?.items) ? payload.items as SpeakingDirectMessage[] : [];
+      setSpeakingDirectMessages(messages);
+      const newestId = Number(messages[messages.length - 1]?.id || 0);
+      if (newestId) {
+        await apiFetch(`/speaking/chats/${chatId}/read`, { method: "POST", body: { last_message_id: newestId } });
+      }
+      if (!silent) setError("");
+    } catch (err) {
+      if (!silent) setError(parseError(err, tt("chat.speaking.loadError", "Speaking xabarlarini yuklab bo‘lmadi.")));
+    } finally {
+      if (!silent) setLoadingBody(false);
+    }
+  }, [apiFetch, tt]);
+
+  async function sendSpeakingDirectMessage() {
+    const message = speakingDirectInput.trim();
+    const chatId = speakingActiveChatId;
+    if (!message || !chatId || sending) return;
+    setSending(true);
+    setError("");
+    try {
+      const payload = await apiFetch(`/speaking/chats/${chatId}/messages`, {
+        method: "POST",
+        body: { message },
+      });
+      if (payload?.item) {
+        setSpeakingDirectMessages((previous) => [...previous.filter((item) => item.id !== payload.item.id), payload.item as SpeakingDirectMessage]);
+      } else {
+        await loadSpeakingDirectMessages(chatId, true);
+      }
+      setSpeakingDirectInput("");
+      await loadSpeakingDirectChats();
+      requestAnimationFrame(() => {
+        const node = speakingDirectScrollRef.current;
+        if (node) node.scrollTop = node.scrollHeight;
+      });
+    } catch (err) {
+      setError(parseError(err, "Xabar yuborilmadi."));
+    } finally {
+      setSending(false);
+    }
+  }
 
   async function handleCommunityFiles(files: FileList | null) {
     const selected = Array.from(files || []);
@@ -1989,6 +2140,7 @@ export function UniversalChat({
         method: "POST",
         body: {
           message: text,
+          channel: communityChannel,
           reply_to_message_id: communityReply?.id || undefined,
           client_message_id: `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           attachments: communityAttachments.map((attachment) => ({ url: attachment.url })),
@@ -2020,7 +2172,7 @@ export function UniversalChat({
         setCommunityActionId(null);
       } else {
         // Delete for everyone: API call, then mark as deleted (show placeholder)
-        await apiFetch(`/community-chat/messages/${message.id}?scope=${scope}`, { method: "DELETE" });
+        await apiFetch(`/community-chat/messages/${message.id}?scope=${scope}&channel=${communityChannel}`, { method: "DELETE" });
         setCommunityMessages((previous) =>
           previous.map((item) => (item.id === message.id ? { ...item, is_deleted: true, text: "" } : item)),
         );
@@ -2091,6 +2243,7 @@ export function UniversalChat({
   useEffect(() => {
     if (feedbackOnly) return;
     loadDiamondvoyChats().catch(() => null);
+    loadSpeakingDirectChats().catch(() => null);
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission().catch(() => null);
     }
@@ -2099,7 +2252,7 @@ export function UniversalChat({
       clearChatLongPressTimer();
       if (msgLongPressTimerRef.current) window.clearTimeout(msgLongPressTimerRef.current);
     };
-  }, [feedbackOnly, loadDiamondvoyChats]);
+  }, [feedbackOnly, loadDiamondvoyChats, loadSpeakingDirectChats]);
 
   useEffect(() => {
     if (feedbackOnly) setActivePane("feedback");
@@ -2177,6 +2330,16 @@ export function UniversalChat({
     const timer = window.setInterval(() => loadCommunityMessages().catch(() => null), 3000);
     return () => window.clearInterval(timer);
   }, [activePane, loadCommunityMessages]);
+
+  useEffect(() => {
+    if (activePane !== "speaking-direct" || !speakingActiveChatId) return;
+    loadSpeakingDirectMessages(speakingActiveChatId).catch(() => null);
+    const timer = window.setInterval(
+      () => loadSpeakingDirectMessages(speakingActiveChatId, true).catch(() => null),
+      3000,
+    );
+    return () => window.clearInterval(timer);
+  }, [activePane, loadSpeakingDirectMessages, speakingActiveChatId]);
 
   useEffect(() => {
     if (activePane !== "feedback") return;
@@ -2638,29 +2801,69 @@ export function UniversalChat({
           <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{isAdmin ? tt("chat.feedback.adminReview", "Admin review") : tt("chat.feedback.subtitle", "Anonim yoki anonimmas xabar yuborish")}</p>
         </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setActivePane("community");
-            setActiveChatId(null);
-            setCommunityActionId(null);
-            setError("");
-          }}
-          className={cx(
-            "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
-            activePane === "community"
-              ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
-              : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
-          )}
-        >
-          <div className="flex items-center gap-2">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-violet-500 text-white font-bold">#</span>
-            <div className="min-w-0">
-              <p className="font-black text-sm text-navy-900 dark:text-white">Umumiy chat</p>
-              <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">Barcha o‘quvchi, o‘qituvchi va administratorlar</p>
+        {(["general", "speaking"] as const).map((channel) => (
+          <button
+            key={channel}
+            type="button"
+            onClick={() => {
+              selectCommunityChannel(channel);
+              setActivePane("community");
+              setActiveChatId(null);
+              setSpeakingActiveChatId(null);
+              setCommunityActionId(null);
+              setError("");
+            }}
+            className={cx(
+              "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
+              activePane === "community" && communityChannel === channel
+                ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
+                : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
+            )}
+          >
+            <div className="flex items-center gap-2">
+              <span className={cx("grid h-9 w-9 place-items-center rounded-xl text-white font-bold", channel === "speaking" ? "bg-[#1736E8]" : "bg-violet-500")}>#</span>
+              <div className="min-w-0">
+                <p className="font-black text-sm text-navy-900 dark:text-white">{channel === "speaking" ? tt("chat.speaking.community", "Speaking hamjamiyati") : tt("chat.community.title", "Umumiy chat")}</p>
+                <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{channel === "speaking" ? tt("chat.speaking.communitySubtitle", "Diamond Speaking ilovasi bilan bir xil kanal") : tt("chat.community.subtitle", "Diamond Education hamjamiyati")}</p>
+              </div>
             </div>
+          </button>
+        ))}
+
+        <div className="rounded-2xl border border-[#E6EBF5] bg-white p-3 dark:border-white/10 dark:bg-white/5">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-sm font-black text-navy-900 dark:text-white">{tt("chat.speaking.privateTitle", "Speaking shaxsiy chatlari")}</p>
+            <span className="text-[11px] text-ink-500 dark:text-navy-300">{speakingDirectChats.length}</span>
           </div>
-        </button>
+          <input
+            value={speakingContactQuery}
+            onChange={(event) => setSpeakingContactQuery(event.target.value)}
+            placeholder={tt("chat.speaking.search", "Ism yoki login bo‘yicha qidirish")}
+            className="mb-2 w-full rounded-xl border border-line bg-slate-50 px-3 py-2 text-xs text-navy-900 outline-none focus:border-[#1736E8] dark:border-white/10 dark:bg-navy-900 dark:text-white"
+          />
+          {speakingContacts.length > 0 && (
+            <div className="mb-2 max-h-36 space-y-1 overflow-y-auto">
+              {speakingContacts.map((contact) => (
+                <button key={contact.id} type="button" onClick={() => openSpeakingDirectChat(contact).catch(() => null)} className="w-full rounded-lg px-2.5 py-2 text-left hover:bg-slate-50 dark:hover:bg-white/10">
+                  <span className="block truncate text-xs font-bold text-navy-900 dark:text-white">{contact.full_name}</span>
+                  <span className="block truncate text-[10px] text-ink-500 dark:text-navy-300">{contact.login_id || contact.role}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {speakingContactQuery.trim().length >= 3 && speakingContacts.length === 0 && !error && <p className="mb-2 px-1 text-[11px] text-ink-500 dark:text-navy-300">{tt("chat.speaking.notFound", "Mos foydalanuvchi topilmadi.")}</p>}
+          {speakingContactQuery.trim().length >= 3 && error && <p role="alert" className="mb-2 px-1 text-[11px] text-rose-600 dark:text-rose-300">{error}</p>}
+          {speakingDirectChats.length > 0 ? (
+            <div className="max-h-48 space-y-1 overflow-y-auto">
+              {speakingDirectChats.map((chat) => (
+                <button key={chat.id} type="button" onClick={() => { setSpeakingActiveChatId(chat.id); setSpeakingDirectMessages([]); setActiveChatId(null); setActivePane("speaking-direct"); setError(""); }} className={cx("w-full rounded-xl px-3 py-2.5 text-left transition", activePane === "speaking-direct" && speakingActiveChatId === chat.id ? "bg-[#E9EEFF] dark:bg-[#1736E8]/20" : "hover:bg-slate-50 dark:hover:bg-white/10")}>
+                  <span className="block truncate text-xs font-bold text-navy-900 dark:text-white">{chat.other_user?.full_name || chat.other_user?.login_id || "Speaking user"}</span>
+                  <span className="block truncate text-[11px] text-ink-500 dark:text-navy-300">{chat.last_message || "Yangi suhbat"}</span>
+                </button>
+              ))}
+            </div>
+          ) : <p className="py-1 text-[11px] text-ink-500 dark:text-navy-300">{tt("chat.speaking.noChats", "Shaxsiy suhbatlar hali yo‘q.")}</p>}
+        </div>
 
         <div className="pt-2">
           <div className="px-1 pb-2 text-[11px] font-bold uppercase text-ink-500 dark:text-navy-300">Diamondvoy</div>
@@ -3020,8 +3223,8 @@ export function UniversalChat({
           <button type="button" onClick={() => setActivePane(null)} className="lg:hidden p-2 rounded-lg border border-line dark:border-white/15 text-ink-700 dark:text-white">‹</button>
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-violet-500 text-lg font-black text-white">#</div>
           <div className="min-w-0">
-            <h3 className="font-black text-navy-900 dark:text-white truncate">{tt("chat.community.title", "Umumiy chat")}</h3>
-            <p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.community.subtitle", "Diamond Education hamjamiyati")}</p>
+            <h3 className="font-black text-navy-900 dark:text-white truncate">{communityChannel === "speaking" ? tt("chat.speaking.community", "Speaking hamjamiyati") : tt("chat.community.title", "Umumiy chat")}</h3>
+            <p className="text-xs text-ink-500 dark:text-navy-300">{communityChannel === "speaking" ? tt("chat.speaking.communitySubtitle", "Diamond Speaking ilovasi bilan bir xil kanal") : tt("chat.community.subtitle", "Diamond Education hamjamiyati")}</p>
           </div>
         </div>
       </div>
@@ -3147,6 +3350,43 @@ export function UniversalChat({
     </section>
 
     </>
+  );
+
+  const SpeakingDirectPane = (
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/70 dark:bg-navy-950", activePane === "speaking-direct" ? "flex" : "hidden")}>
+      <header className="flex items-center gap-3 border-b border-line bg-white px-4 py-3 dark:border-white/10 dark:bg-navy-900">
+        <button type="button" onClick={() => setActivePane(null)} className="rounded-lg border border-line px-3 py-2 text-sm text-ink-700 dark:border-white/15 dark:text-white">‹</button>
+        <div className="grid h-10 w-10 place-items-center rounded-full bg-[#1736E8]/10 font-bold text-[#1736E8] dark:bg-[#1736E8]/20 dark:text-blue-200">
+          {(activeSpeakingDirectChat?.other_user?.full_name || "S").slice(0, 1).toUpperCase()}
+        </div>
+        <div className="min-w-0">
+          <h3 className="truncate font-black text-navy-900 dark:text-white">{activeSpeakingDirectChat?.other_user?.full_name || "Speaking chat"}</h3>
+          <p className="truncate text-xs text-ink-500 dark:text-navy-300">{activeSpeakingDirectChat?.other_user?.login_id || activeSpeakingDirectChat?.other_user?.role || "Shaxsiy suhbat"}</p>
+        </div>
+      </header>
+      {error && <div role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-200">{error}</div>}
+      <div ref={speakingDirectScrollRef} onScroll={(event) => { const node = event.currentTarget; pinnedToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 72; }} className="flex-1 min-h-0 overflow-y-auto space-y-3 px-4 py-4">
+        {loadingBody && speakingDirectMessages.length === 0 ? (
+          <p className="text-center text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</p>
+        ) : speakingDirectMessages.length === 0 ? (
+          <div className="grid h-full place-items-center text-center text-sm text-ink-500 dark:text-navy-300">{tt("chat.speaking.start", "Suhbatni boshlash uchun xabar yuboring.")}</div>
+        ) : speakingDirectMessages.map((message) => (
+          <div key={message.id} className={cx("flex", message.is_mine ? "justify-end" : "justify-start")}>
+            <div className={cx("max-w-[82%] rounded-2xl border px-4 py-3", message.is_mine ? "border-[#1736E8] bg-[#1736E8] text-white" : "border-line bg-white text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white")}>
+              {message.message && <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.message}</p>}
+              {message.attachments?.map((attachment, index) => (
+                <a key={`${attachment.url}-${index}`} href={apiUrl(attachment.url)} target="_blank" rel="noreferrer" className={cx("mt-2 block truncate text-xs font-bold underline", message.is_mine ? "text-white" : "text-[#1736E8] dark:text-blue-200")}>{attachment.file_name || "Biriktirilgan fayl"}</a>
+              ))}
+              <p className="mt-2 text-[10px] opacity-70">{formatWhen(message.created_at)}{message.is_mine && message.status ? ` · ${message.status}` : ""}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <form onSubmit={(event) => { event.preventDefault(); sendSpeakingDirectMessage().catch(() => null); }} className="flex items-end gap-2 border-t border-line bg-white px-3 py-3 pb-[calc(env(safe-area-inset-bottom)+12px)] dark:border-white/10 dark:bg-navy-900">
+        <textarea value={speakingDirectInput} onChange={(event) => setSpeakingDirectInput(event.target.value)} rows={1} maxLength={3000} placeholder={tt("chat.speaking.placeholder", "Shaxsiy xabar yozing...")} className="max-h-32 min-w-0 flex-1 resize-none rounded-xl border border-line bg-slate-50 px-3 py-3 text-sm text-navy-900 outline-none focus:border-[#1736E8] dark:border-white/15 dark:bg-white/5 dark:text-white" />
+        <button type="submit" disabled={sending || !speakingDirectInput.trim() || !speakingActiveChatId} className="h-11 rounded-xl bg-[#1736E8] px-4 text-sm font-bold text-white disabled:opacity-50">{sending ? "…" : tt("chat.send", "Yuborish")}</button>
+      </form>
+    </section>
   );
 
   const UserFeedbackPane = (
@@ -3321,6 +3561,7 @@ export function UniversalChat({
       {!feedbackOnly && Sidebar}
       {DiamondvoyPane}
       {CommunityPane}
+      {SpeakingDirectPane}
       {UserFeedbackPane}
       {AdminFeedbackPane}
       {!activePane && (

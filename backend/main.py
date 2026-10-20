@@ -24361,6 +24361,7 @@ async def community_chat_send_message(
 async def community_chat_delete_message(
     message_id: int,
     scope: str = Query(default="me"),
+    channel: str = Query(default="general", max_length=20),
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
@@ -24368,7 +24369,7 @@ async def community_chat_delete_message(
     normalized_scope = str(scope or "me").strip().lower()
     if normalized_scope not in {"me", "everyone"}:
         raise HTTPException(status_code=422, detail="Unknown delete scope")
-    thread = _community_chat_thread_for_user(user, role)
+    thread = _community_chat_thread_for_user(user, role, channel)
     thread_id = int(thread.get("id") or 0)
     user_id = int(user.get("id") or 0)
     conn = get_conn()
