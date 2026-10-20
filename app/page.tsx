@@ -25835,7 +25835,7 @@ export default function DiamondEducationApp() {
   const generatorAnnouncedDoneRef = useRef<string>("");
   const [locale, setLocale] = useState<Locale>("uz");
   const [platformMaintenance, setPlatformMaintenance] = useState<{ active: boolean; message_uz: string; message_ru: string; message_en: string }>({ active: false, message_uz: "", message_ru: "", message_en: "" });
-  useEffect(() => { let cancelled = false; const load = () => fetch("/api/platform-maintenance", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((value) => { if (!cancelled && value) setPlatformMaintenance({ active: value.active === true, message_uz: String(value.message_uz || ""), message_ru: String(value.message_ru || ""), message_en: String(value.message_en || "") }); }).catch(() => null); void load(); const timer = window.setInterval(load, 15000); return () => { cancelled = true; window.clearInterval(timer); }; }, []);
+  useEffect(() => { let cancelled = false; const load = () => fetch("/api/platform-maintenance", { cache: "no-store" }).then((r) => r.ok ? r.json() : null).then((value) => { if (!cancelled && value) { const next = { active: value.active === true, message_uz: String(value.message_uz || ""), message_ru: String(value.message_ru || ""), message_en: String(value.message_en || "") }; setPlatformMaintenance((current) => current.active === next.active && current.message_uz === next.message_uz && current.message_ru === next.message_ru && current.message_en === next.message_en ? current : next); } }).catch(() => null); void load(); const timer = window.setInterval(load, 15000); return () => { cancelled = true; window.clearInterval(timer); }; }, []);
   const isStudentRole = roleFromUser(user) === "student";
   const shouldLoadStudentProctoring = Boolean(user && isStudentRole);
   const {
@@ -26647,6 +26647,7 @@ export default function DiamondEducationApp() {
         const limitedMediaAccount = roleNow === "admin"
           && Boolean((payload?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
         setAppState((prev) => {
+          let nextState: GenericRow;
           if (roleNow === "student" && String(payload?.state_scope || "") === "boot" && prev?.student) {
             const previousStudent = (prev.student || {}) as GenericRow;
             const nextStudent = (payload.student || {}) as GenericRow;
@@ -26671,7 +26672,7 @@ export default function DiamondEducationApp() {
             const preserveLeaderboard = previousLeaderboard.length > 0 && nextLeaderboard.length === 0;
             const preserveReviews = previousReviews.length > 0 && nextReviews.length === 0;
             const preserveSubjectWallet = Object.keys(previousSubjectWallet).length > 0 && Object.keys(nextSubjectWallet).length === 0;
-            return {
+            nextState = {
               ...prev,
               ...payload,
               student: {
@@ -26695,8 +26696,24 @@ export default function DiamondEducationApp() {
                   : previousStudent.daily_test_history,
               },
             };
+          } else {
+            nextState = payload;
           }
-          return payload;
+          // State polling is intentionally frequent for live admin workspaces.
+          // The API's timestamp changes on every response, so ignore that
+          // transport-only field when deciding whether the dashboard changed.
+          try {
+            if (prev) {
+              const previousStable = { ...prev };
+              const nextStable = { ...nextState };
+              delete previousStable.timestamp;
+              delete nextStable.timestamp;
+              if (JSON.stringify(previousStable) === JSON.stringify(nextStable)) return prev;
+            }
+          } catch {
+            // If serialization fails, prefer applying the fresh server snapshot.
+          }
+          return nextState;
         });
         try {
           if (String(payload?.state_scope || "full") !== "boot" || String(payload?.effective_role) !== "student") {
