@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import Script from "next/script";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const DEVICE_ID_KEY = "diamond_device_id";
@@ -9,25 +8,6 @@ const TELEGRAM_BOT_SYNC_PREF_PREFIX = "diamond_tg_bot_sync_pref_";
 const TELEGRAM_MANUAL_LOGOUT_PREFIX = "diamond_tg_manual_logout_";
 const LOGIN_REQUEST_TIMEOUT_MS = 30000;
 const TELEGRAM_AUTO_LOGIN_TIMEOUT_MS = 15000;
-const SPEAKING_GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_SPEAKING_GOOGLE_CLIENT_ID
-  || "956229422440-mrk4gdhhapnp594gmnlnij2d8m39p9us.apps.googleusercontent.com";
-
-type GoogleCredentialResponse = { credential?: string };
-type GoogleSession = { session_id?: string; device_model?: string; last_seen_at?: string; created_at?: string };
-
-declare global {
-  interface Window {
-    google?: {
-      accounts: {
-        id: {
-          initialize: (options: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
-          renderButton: (element: HTMLElement, options: Record<string, unknown>) => void;
-        };
-      };
-    };
-  }
-}
-
 type TelegramWebApp = {
   initData?: string;
   initDataUnsafe?: {
@@ -115,16 +95,6 @@ export default function LoginPage() {
   const [cameraReady, setCameraReady] = useState(false);
   const [showQrPanel, setShowQrPanel] = useState(false);
   const [telegramAutoChecking, setTelegramAutoChecking] = useState(false);
-  const [googleScriptReady, setGoogleScriptReady] = useState(false);
-  const [googleBusy, setGoogleBusy] = useState(false);
-  const [googleProfileRequired, setGoogleProfileRequired] = useState(false);
-  const [googleProfileError, setGoogleProfileError] = useState("");
-  const [pendingGoogleToken, setPendingGoogleToken] = useState("");
-  const [googleProfile, setGoogleProfile] = useState({ firstName: "", lastName: "", phone: "", age: "", gender: "prefer_not_to_say" });
-  const [googleSessions, setGoogleSessions] = useState<GoogleSession[]>([]);
-  const [selectedGoogleSessions, setSelectedGoogleSessions] = useState<string[]>([]);
-  const googleButtonRef = useRef<HTMLDivElement | null>(null);
-
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastScannedValueRef = useRef("");
@@ -200,97 +170,6 @@ export default function LoginPage() {
     localStorage.setItem("diamond_token", token);
     window.location.replace("/");
   }, []);
-
-  const exchangeGoogleToken = useCallback(async (
-    idToken: string,
-    profile?: { first_name: string; last_name: string; phone: string; age: number; gender: string },
-    revokeSessionIds: string[] = [],
-  ) => {
-    setGoogleBusy(true);
-    setGoogleProfileError("");
-    setError("");
-    try {
-      const response = await fetch(`${API_BASE}/auth/speaking-google`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id_token: idToken,
-          device_id: getOrCreateDeviceId(),
-          device_model: typeof navigator === "undefined" ? "Web browser" : navigator.userAgent.slice(0, 120),
-          revoke_session_ids: revokeSessionIds,
-          ...(profile || {}),
-        }),
-      });
-      const body = await response.json().catch(() => ({}));
-      const detail = body?.detail;
-      if (response.status === 428 && detail?.code === "profile_required") {
-        setPendingGoogleToken(idToken);
-        setGoogleProfileRequired(true);
-        setGoogleSessions([]);
-        return;
-      }
-      if (response.status === 409 && detail?.code === "session_limit") {
-        const sessions = Array.isArray(detail.sessions) ? detail.sessions as GoogleSession[] : [];
-        setGoogleSessions(sessions);
-        setSelectedGoogleSessions([]);
-        setPendingGoogleToken(idToken);
-        setGoogleProfileRequired(false);
-        setGoogleProfileError(String(detail.message || "Avvalgi qurilmalardan sessiyani tanlab yakunlang."));
-        return;
-      }
-      if (!response.ok) {
-        const message = typeof detail === "string" ? detail : "Google orqali kirib bo‘lmadi. Qayta urinib ko‘ring.";
-        throw new Error(message);
-      }
-      const token = String(body?.access_token || "");
-      if (!token) throw new Error("Serverdan sessiya tokeni olinmadi. Qayta urinib ko‘ring.");
-      completeLogin(token);
-    } catch (err) {
-      setGoogleProfileError(err instanceof Error ? err.message : "Google orqali kirishda xatolik yuz berdi.");
-      setError(err instanceof Error ? err.message : "Google orqali kirishda xatolik yuz berdi.");
-    } finally {
-      setGoogleBusy(false);
-    }
-  }, [completeLogin]);
-
-  useEffect(() => {
-    const element = googleButtonRef.current;
-    const google = window.google;
-    if (!googleScriptReady || !element || !google) return;
-    google.accounts.id.initialize({
-      client_id: SPEAKING_GOOGLE_CLIENT_ID,
-      callback: (response) => {
-        const credential = String(response?.credential || "").trim();
-        if (!credential) {
-          setError("Google hisobidan tasdiqlash tokeni olinmadi. Qayta urinib ko‘ring.");
-          return;
-        }
-        void exchangeGoogleToken(credential);
-      },
-    });
-    element.replaceChildren();
-    google.accounts.id.renderButton(element, {
-      type: "standard", theme: "outline", size: "large", shape: "pill",
-      text: "continue_with", logo_alignment: "left", width: Math.min(element.clientWidth || 340, 360),
-    });
-  }, [googleScriptReady, exchangeGoogleToken]);
-
-  async function submitGoogleProfile(event: FormEvent) {
-    event.preventDefault();
-    if (!pendingGoogleToken || googleBusy) return;
-    const age = Number(googleProfile.age);
-    if (!googleProfile.firstName.trim() || !googleProfile.lastName.trim() || !googleProfile.phone.trim() || !Number.isInteger(age) || age < 5 || age > 120) {
-      setGoogleProfileError("Ism, familiya, telefon va 5–120 oralig‘idagi yoshni to‘ldiring.");
-      return;
-    }
-    await exchangeGoogleToken(pendingGoogleToken, {
-      first_name: googleProfile.firstName.trim(),
-      last_name: googleProfile.lastName.trim(),
-      phone: googleProfile.phone.trim(),
-      age,
-      gender: googleProfile.gender,
-    }, selectedGoogleSessions);
-  }
 
   useEffect(() => {
     let cancelled = false;
@@ -543,12 +422,6 @@ export default function LoginPage() {
 
   return (
     <main className="login-brand-shell flex items-center justify-center min-h-[100svh] px-4 py-12 bg-navy-900 relative overflow-hidden">
-      <Script
-        src="https://accounts.google.com/gsi/client"
-        strategy="afterInteractive"
-        onReady={() => setGoogleScriptReady(true)}
-        onError={() => setError("Google kirish xizmati yuklanmadi. Tarmoqni tekshirib qayta urinib ko‘ring.")}
-      />
       {/* Dynamic Backgrounds matching Hero */}
       <div className="absolute inset-0 pointer-events-none opacity-20 bg-[url('data:image/svg+xml,%3Csvg viewBox=\'0 0 200 200\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noiseFilter\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.65\' numOctaves=\'3\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23noiseFilter)\'/%3E%3C/svg%3E')]" />
       <div className="absolute top-[-20%] left-[-10%] w-[60%] h-[60%] rounded-full bg-cyan-600/30 blur-[140px] pointer-events-none animate-pulse" />
@@ -596,18 +469,6 @@ export default function LoginPage() {
             {loading ? "Tekshirilmoqda..." : "Kirish"}
           </button>
         </form>
-
-        <div className="flex items-center w-full gap-4 my-8 opacity-60">
-          <div className="flex-1 h-px bg-cyan-200/20" />
-          <span className="text-xs font-bold text-cyan-100 uppercase tracking-widest">yoki</span>
-          <div className="flex-1 h-px bg-cyan-200/20" />
-        </div>
-
-        <div className="w-full flex flex-col items-center gap-2">
-          <div ref={googleButtonRef} className="min-h-[44px] w-full flex justify-center" />
-          {googleBusy ? <p role="status" className="text-xs font-semibold text-cyan-100">Google hisobi tekshirilmoqda...</p> : null}
-          <p className="text-[11px] text-cyan-100/70 text-center">Google orqali faqat Diamond Speaking hisobiga kirasiz.</p>
-        </div>
 
         {telegramAutoChecking && (
           <div className="w-full px-4 py-3 mb-4 text-sm font-semibold text-cyan-100 border border-cyan-400/40 bg-cyan-500/20 rounded-xl text-center">
@@ -670,54 +531,6 @@ export default function LoginPage() {
         </section>
       ) : null}
 
-      {googleProfileRequired || googleSessions.length > 0 ? (
-        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-slate-950/70 px-4 py-6 backdrop-blur-sm">
-          <section className="w-full max-w-md max-h-[90svh] overflow-y-auto rounded-3xl border border-white/20 bg-white p-6 text-slate-900 shadow-2xl">
-            {googleProfileRequired ? (
-              <form className="space-y-4" onSubmit={submitGoogleProfile}>
-                <div>
-                  <h2 className="text-xl font-extrabold">Speaking profilingizni to‘ldiring</h2>
-                  <p className="mt-1 text-sm text-slate-600">Yangi Google hisob uchun ro‘yxatdan o‘tishni yakunlang.</p>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="text-sm font-semibold">Ism<input required maxLength={80} autoComplete="given-name" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3" value={googleProfile.firstName} onChange={(event) => setGoogleProfile((v) => ({ ...v, firstName: event.target.value }))} /></label>
-                  <label className="text-sm font-semibold">Familiya<input required maxLength={80} autoComplete="family-name" className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3" value={googleProfile.lastName} onChange={(event) => setGoogleProfile((v) => ({ ...v, lastName: event.target.value }))} /></label>
-                </div>
-                <label className="block text-sm font-semibold">Telefon<input required type="tel" autoComplete="tel" maxLength={32} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3" value={googleProfile.phone} onChange={(event) => setGoogleProfile((v) => ({ ...v, phone: event.target.value }))} /></label>
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="text-sm font-semibold">Yosh<input required type="number" min={5} max={120} className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-3" value={googleProfile.age} onChange={(event) => setGoogleProfile((v) => ({ ...v, age: event.target.value }))} /></label>
-                  <label className="text-sm font-semibold">Jins<select className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-3" value={googleProfile.gender} onChange={(event) => setGoogleProfile((v) => ({ ...v, gender: event.target.value }))}><option value="prefer_not_to_say">Ko‘rsatmaslik</option><option value="female">Ayol</option><option value="male">Erkak</option></select></label>
-                </div>
-                {googleProfileError ? <p role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{googleProfileError}</p> : null}
-                <div className="flex justify-end gap-2 pt-1">
-                  <button type="button" className="rounded-xl border border-slate-200 px-4 py-2.5 font-semibold" onClick={() => { setGoogleProfileRequired(false); setPendingGoogleToken(""); setGoogleProfileError(""); }}>Bekor qilish</button>
-                  <button type="submit" disabled={googleBusy} className="rounded-xl bg-blue-700 px-5 py-2.5 font-bold text-white disabled:opacity-60">{googleBusy ? "Tekshirilmoqda..." : "Davom etish"}</button>
-                </div>
-              </form>
-            ) : (
-              <div className="space-y-4">
-                <div>
-                  <h2 className="text-xl font-extrabold">Faol qurilmalar limiti</h2>
-                  <p className="mt-1 text-sm text-slate-600">Davom etish uchun hisobingizdan chiqariladigan eski qurilmani tanlang.</p>
-                </div>
-                <div className="space-y-2">
-                  {googleSessions.map((session) => {
-                    const id = String(session.session_id || "");
-                    if (!id) return null;
-                    const checked = selectedGoogleSessions.includes(id);
-                    return <label key={id} className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-3"><input type="checkbox" checked={checked} onChange={(event) => setSelectedGoogleSessions((current) => event.target.checked ? [...current, id] : current.filter((value) => value !== id))} /><span><span className="block font-semibold">{session.device_model || "Noma’lum qurilma"}</span><span className="text-xs text-slate-500">{session.last_seen_at || session.created_at || "Faol sessiya"}</span></span></label>;
-                  })}
-                </div>
-                {googleProfileError ? <p role="alert" className="rounded-xl bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{googleProfileError}</p> : null}
-                <div className="flex justify-end gap-2">
-                  <button type="button" className="rounded-xl border border-slate-200 px-4 py-2.5 font-semibold" onClick={() => { setGoogleSessions([]); setPendingGoogleToken(""); setGoogleProfileError(""); }}>Bekor qilish</button>
-                  <button type="button" disabled={googleBusy || !selectedGoogleSessions.length} className="rounded-xl bg-blue-700 px-5 py-2.5 font-bold text-white disabled:opacity-50" onClick={() => pendingGoogleToken && void exchangeGoogleToken(pendingGoogleToken, undefined, selectedGoogleSessions)}>{googleBusy ? "Tekshirilmoqda..." : "Tanlanganlarni chiqarish va kirish"}</button>
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-      ) : null}
     </main>
   );
 }
