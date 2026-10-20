@@ -12,7 +12,6 @@ from datetime import datetime
 from typing import Tuple
 
 import pytz
-from openpyxl import Workbook
 
 from db import DB_WRITE_LOCK, _ym_now, get_conn
 
@@ -515,6 +514,8 @@ def export_payment_history_to_xlsx(
         )
 
     out_rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    from openpyxl import Workbook
 
     wb = Workbook()
     ws = wb.active

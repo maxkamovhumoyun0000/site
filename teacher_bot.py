@@ -7,7 +7,6 @@ from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
 import pytz
-from openpyxl import Workbook
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ErrorEvent
 from aiogram.exceptions import TelegramBadRequest
@@ -486,6 +485,8 @@ def _format_teacher_arena_live_text(snapshot: dict, lang: str) -> str:
 
 
 def _build_group_arena_questions_xlsx(session_id: int) -> bytes:
+    from openpyxl import Workbook
+
     qs = get_arena_group_session_questions(session_id)
     wb = Workbook()
     ws = wb.active
@@ -510,6 +511,8 @@ def _build_group_arena_questions_xlsx(session_id: int) -> bytes:
 
 
 def _build_group_arena_matrix_xlsx(session_id: int) -> bytes:
+    from openpyxl import Workbook
+
     qs = get_arena_group_session_questions(session_id)
     rows = list_arena_group_session_answers_for_export(session_id)
     wb = Workbook()

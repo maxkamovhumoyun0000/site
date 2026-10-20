@@ -18,8 +18,6 @@ import secrets
 from datetime import datetime, timedelta
 from uuid import uuid4
 import pytz
-from openpyxl import Workbook
-from openpyxl.styles import Font
 from admin_shared_menus import (
     build_admin_teacher_detail_reply,
     build_student_share_keyboard_rows,
@@ -2456,6 +2454,9 @@ async def handle_subject_for_admin_vocab(callback: CallbackQuery):
             await callback.message.answer(t(lang, 'admin_auto_msg_9'))
             
             # Generate fallback template
+            from openpyxl import Workbook
+            from openpyxl.styles import Font
+
             wb = Workbook()
             ws = wb.active
             ws.title = "Template"

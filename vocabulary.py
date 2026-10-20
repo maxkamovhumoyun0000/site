@@ -2,10 +2,8 @@ import io
 import random
 import re
 from typing import List, Dict, Any, Tuple
-from openpyxl import load_workbook
 from auth import normalize_level_to_cefr
 from db import get_conn
-from openpyxl import Workbook
 import io
 
 EXPECTED_VOCAB_HEADERS = ['Level', 'Word', 'translation_uz', 'translation_ru', 'Example Sentence 1', 'Example Sentence 2']
@@ -40,7 +38,16 @@ def vocab_language_for_subject(subject: str) -> str:
     return "en"
 
 
+def _new_workbook():
+    """Load spreadsheet support only when an XLSX export is requested."""
+    from openpyxl import Workbook
+
+    return Workbook()
+
+
 def parse_excel_bytes(file_bytes: bytes) -> tuple[List[Dict[str, Any]], list[str]]:
+    from openpyxl import load_workbook
+
     wb = load_workbook(io.BytesIO(file_bytes), read_only=True)
     sheet = wb.active
     rows = list(sheet.iter_rows(values_only=True))
@@ -864,7 +871,7 @@ def export_words_to_xlsx(subject: str) -> Tuple[io.BytesIO, str]:
     rows = cur.fetchall()
     conn.close()
 
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.title = f"{subject} Vocabulary"
     
@@ -915,7 +922,7 @@ def export_subject_dcoin_history_to_xlsx(
     if not rows:
         raise ValueError("empty_subject_dcoin_history")
 
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.title = "Dcoin History"
     headers = [
@@ -969,7 +976,7 @@ def export_subject_dcoin_history_to_xlsx(
 def export_all_groups_to_xlsx() -> Tuple[io.BytesIO, str]:
     from db import get_all_groups, get_group_users
     groups = get_all_groups()
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.append(['group_id', 'group_name', 'level', 'teacher_id', 'teacher_name', 'student_id', 'student_login', 'student_name', 'student_subject', 'student_level'])
     for g in groups:
@@ -995,7 +1002,7 @@ def export_all_groups_to_xlsx() -> Tuple[io.BytesIO, str]:
 def export_groups_for_teacher_to_xlsx(teacher_id: int) -> Tuple[io.BytesIO, str]:
     from db import get_groups_by_teacher, get_group_users, get_user_by_id
     groups = get_groups_by_teacher(teacher_id)
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.append(['group_id', 'group_name', 'level', 'teacher_id', 'teacher_name', 'student_id', 'student_login', 'student_name', 'student_subject', 'student_level'])
     for g in groups:
@@ -1020,7 +1027,7 @@ def export_groups_for_teacher_to_xlsx(teacher_id: int) -> Tuple[io.BytesIO, str]
 def export_students_to_xlsx() -> Tuple[io.BytesIO, str]:
     from db import get_all_users
     users = get_all_users()
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.append(['id', 'login_id', 'first_name', 'last_name', 'phone', 'subject', 'level', 'telegram_id', 'group_id', 'access_enabled'])
     for u in users:
@@ -1047,7 +1054,7 @@ def export_full_system_to_xlsx() -> Tuple[io.BytesIO, str]:
     """)
     tables = [r["table_name"] for r in cur.fetchall()]
 
-    wb = Workbook()
+    wb = _new_workbook()
     # Replace default sheet with a small info sheet
     ws_info = wb.active
     ws_info.title = 'meta'
@@ -1112,7 +1119,7 @@ def export_all_attendance_to_xlsx(owner_admin_id: int | None = None) -> Tuple[io
     attendance_data = cur.fetchall()
     conn.close()
     
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.title = "Attendance"
     
@@ -1163,7 +1170,7 @@ def export_group_attendance_to_xlsx(group_id: int) -> Tuple[io.BytesIO, str]:
     attendance_data = cur.fetchall()
     conn.close()
     
-    wb = Workbook()
+    wb = _new_workbook()
     ws = wb.active
     ws.title = f"Attendance - {group['name']}"
     
