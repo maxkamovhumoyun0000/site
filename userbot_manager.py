@@ -27,26 +27,52 @@ def _ensure_event_loop_for_pyrogram_import() -> None:
         asyncio.set_event_loop(asyncio.new_event_loop())
 
 
-# Pyrogram import handling
-try:
-    _ensure_event_loop_for_pyrogram_import()
-    from pyrogram import Client
-    from pyrogram.errors import (
-        FloodWait,
-        PhoneCodeInvalid,
-        PhoneCodeExpired,
-        SessionPasswordNeeded,
-        UserPrivacyRestricted,
-        PeerIdInvalid,
-        PhoneNumberInvalid,
-        ApiIdInvalid,
-    )
-    from pyrogram.types import InputPhoneContact
-    PYROGRAM_AVAILABLE = True
-except ImportError:
-    Client = None
-    PYROGRAM_AVAILABLE = False
-    logger.warning("Pyrogram library is not installed. Userbot feature disabled until installed.")
+# Pyrogram's import graph is sizeable and userbot is usually disabled. Load it
+# only when a configured userbot is actually requested by an API call.
+Client = None
+FloodWait = PhoneCodeInvalid = PhoneCodeExpired = SessionPasswordNeeded = Exception
+UserPrivacyRestricted = PeerIdInvalid = PhoneNumberInvalid = ApiIdInvalid = Exception
+InputPhoneContact = None
+PYROGRAM_AVAILABLE = False
+_PYROGRAM_IMPORT_ATTEMPTED = False
+
+
+def _ensure_pyrogram_available() -> bool:
+    global Client, FloodWait, PhoneCodeInvalid, PhoneCodeExpired, SessionPasswordNeeded
+    global UserPrivacyRestricted, PeerIdInvalid, PhoneNumberInvalid, ApiIdInvalid
+    global InputPhoneContact, PYROGRAM_AVAILABLE, _PYROGRAM_IMPORT_ATTEMPTED
+    if _PYROGRAM_IMPORT_ATTEMPTED:
+        return PYROGRAM_AVAILABLE
+    _PYROGRAM_IMPORT_ATTEMPTED = True
+    try:
+        _ensure_event_loop_for_pyrogram_import()
+        from pyrogram import Client as _Client
+        from pyrogram.errors import (
+            FloodWait as _FloodWait,
+            PhoneCodeInvalid as _PhoneCodeInvalid,
+            PhoneCodeExpired as _PhoneCodeExpired,
+            SessionPasswordNeeded as _SessionPasswordNeeded,
+            UserPrivacyRestricted as _UserPrivacyRestricted,
+            PeerIdInvalid as _PeerIdInvalid,
+            PhoneNumberInvalid as _PhoneNumberInvalid,
+            ApiIdInvalid as _ApiIdInvalid,
+        )
+        from pyrogram.types import InputPhoneContact as _InputPhoneContact
+        Client = _Client
+        FloodWait = _FloodWait
+        PhoneCodeInvalid = _PhoneCodeInvalid
+        PhoneCodeExpired = _PhoneCodeExpired
+        SessionPasswordNeeded = _SessionPasswordNeeded
+        UserPrivacyRestricted = _UserPrivacyRestricted
+        PeerIdInvalid = _PeerIdInvalid
+        PhoneNumberInvalid = _PhoneNumberInvalid
+        ApiIdInvalid = _ApiIdInvalid
+        InputPhoneContact = _InputPhoneContact
+        PYROGRAM_AVAILABLE = True
+    except ImportError:
+        PYROGRAM_AVAILABLE = False
+        logger.warning("Pyrogram library is not installed. Userbot feature disabled until installed.")
+    return PYROGRAM_AVAILABLE
 
 _userbot_client: Optional[Any] = None
 _userbot_queue: asyncio.Queue = asyncio.Queue()
@@ -74,9 +100,6 @@ def format_phone(phone: str) -> str:
 async def get_active_pyrogram_client() -> Optional[Any]:
     """Retrieves or initializes the active Pyrogram client from session_string stored in DB."""
     global _userbot_client
-    if not PYROGRAM_AVAILABLE:
-        return None
-
     settings = get_userbot_settings()
     session_str = str(settings.get("session_string") or "").strip()
     api_id = settings.get("api_id")
@@ -90,6 +113,9 @@ async def get_active_pyrogram_client() -> Optional[Any]:
             except Exception:
                 pass
             _userbot_client = None
+        return None
+
+    if not _ensure_pyrogram_available():
         return None
 
     if _userbot_client is not None and _userbot_client.is_connected:
@@ -115,7 +141,7 @@ async def get_active_pyrogram_client() -> Optional[Any]:
 
 async def send_userbot_otp_code(api_id: int, api_hash: str, phone_number: str) -> Dict[str, Any]:
     """Sends SMS OTP code via Pyrogram to initiate userbot login."""
-    if not PYROGRAM_AVAILABLE:
+    if not _ensure_pyrogram_available():
         return {"ok": False, "error": "Pyrogram kutubxonasi serverda o'rnatilmagan"}
 
     phone = format_phone(phone_number)
@@ -161,7 +187,7 @@ async def send_userbot_otp_code(api_id: int, api_hash: str, phone_number: str) -
 
 async def verify_userbot_otp_code(phone_number: str, code: str, password: Optional[str] = None) -> Dict[str, Any]:
     """Verifies OTP code and optional 2FA password, stores session string in DB."""
-    if not PYROGRAM_AVAILABLE:
+    if not _ensure_pyrogram_available():
         return {"ok": False, "error": "Pyrogram package not installed"}
 
     phone = format_phone(phone_number)

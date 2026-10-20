@@ -147,7 +147,6 @@ from db import (
     list_userbot_logs,
     ensure_daily_test_attempt_and_items,
     ensure_group_extra_subjects_schema,
-    _ensure_proctoring_schema_runtime,
     distribute_arena_group_rewards_if_ready,
     finish_arena_group_session_attempt,
     finish_daily_test_attempt,
@@ -429,29 +428,6 @@ from diamondvoy_helpers import (
 )
 from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
 import gamified_tests
-from backend.proctoring.service import (
-    evaluate_enrollment_sample,
-    aggregate_enrollment_embeddings,
-    enrollment_expiry_iso,
-    enrollment_sample_target,
-    verify_start_exam_image,
-    verify_recheck_image,
-)
-from backend.proctoring.face_engine import get_face_engine
-from backend.proctoring.storage import resolve_proctoring_upload_path, read_image_bgr
-from backend.proctoring.settings import (
-    PROCTORING_ENROLL_SCAN_WINDOW_SEC,
-    PROCTORING_FACE_MATCH_THRESHOLD,
-    PROCTORING_START_FACE_MATCH_THRESHOLD,
-    PROCTORING_RECHECK_FACE_MATCH_THRESHOLD,
-    PROCTORING_NO_FACE_GRACE_SEC,
-    PROCTORING_LOOKING_AWAY_GRACE_SEC,
-    PROCTORING_FACE_TOO_SMALL_GRACE_SEC,
-    PROCTORING_OFFLINE_GRACE_SEC,
-    PROCTORING_FULLSCREEN_EXIT_GRACE_SEC,
-    PROCTORING_START_VERIFY_MAX_RETRIES,
-    PROCTORING_FACE_MISMATCH_CONFIRMATION_LIMIT,
-)
 
 logger = logging.getLogger(__name__)
 from lesson_window import is_group_lesson_window_active
@@ -840,8 +816,6 @@ TTS_CACHE_DIR = Path(__file__).resolve().parent.parent / "data" / "tts_cache"
 TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 RESULT_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "result_uploads"
 RESULT_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-PROCTORING_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "proctoring_uploads"
-PROCTORING_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 HOMEWORK_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "homework_uploads"
 HOMEWORK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 PROFILE_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "profile_uploads"
@@ -1510,11 +1484,6 @@ class User(UserBase):
     access_enabled: bool = True
     pending_approval: bool = False
     has_group: bool = False
-    face_enrollment_required: bool = True
-    face_profile_status: str = "pending"
-    face_profile_version: int = 0
-    proctoring_required: bool = True
-    proctoring_block_reason: str | None = None
     avatar_url: str | None = None
     profile_image_url: str | None = None
     public_offer_agreed: bool = False
@@ -3251,7 +3220,6 @@ def _assert_general_admin_for_payment_globals(admin_ref_id: int, action: str) ->
 
 
 _ADMIN_PERF_INDEXES_READY = False
-_PROCTORING_SCHEMA_RUNTIME_READY = False
 
 
 def _ensure_admin_perf_indexes() -> None:
@@ -3331,14 +3299,6 @@ def _ensure_admin_perf_indexes() -> None:
             pass
     finally:
         conn.close()
-
-
-def _ensure_proctoring_schema_runtime_fast() -> None:
-    global _PROCTORING_SCHEMA_RUNTIME_READY
-    if _PROCTORING_SCHEMA_RUNTIME_READY:
-        return
-    _ensure_proctoring_schema_runtime()
-    _PROCTORING_SCHEMA_RUNTIME_READY = True
 
 
 def _scope_users_for_admin(admin_ref_id: int, users: list[dict], login_type_filter: tuple[int, ...] | None = None) -> list[dict]:
@@ -3990,29 +3950,13 @@ def _mark_face_reenrollment_required(user_id: int, profile: dict | None = None, 
 
 
 def _ensure_face_profile_compatibility(user: dict) -> dict:
-    if not user:
-        return user
-    user_id = int(user.get("id") or 0)
-    if user_id <= 0:
-        return user
-    profile = get_active_face_profile(user_id)
-    if not profile:
-        return user
-    if not _proctoring_image_url_exists(profile.get("reference_image_url")):
-        _mark_face_reenrollment_required(user_id, profile=profile, reason="reference_image_missing")
-        refreshed = _safe_call(lambda: get_user_by_id(user_id), None)
-        return refreshed or user
-    if _is_insightface_embedding_model(profile.get("embedding_model")):
-        return user
-    _mark_face_reenrollment_required(user_id, profile=profile, reason="embedding_model_mismatch")
-    refreshed = _safe_call(lambda: get_user_by_id(user_id), None)
-    return refreshed or user
+    # Old biometric profiles are retained for historical records but are no
+    # longer read, updated, or used to gate an account or test.
+    return user
 
 
 def _user_requires_face_enrollment(user: dict) -> bool:
-    # Proctoring/FaceID requirement removed from all test flows.
-    # Students are never required to enroll a face or pass FaceID to take tests.
-    # (Auth/role/timer/dedup/result/reward checks remain enforced elsewhere.)
+    # Compatibility helper for older callers; biometric checks are retired.
     return False
 
 
@@ -4030,18 +3974,11 @@ def _face_enrollment_required_detail() -> dict[str, Any]:
 
 
 def _require_student_face_setup_complete(user: dict) -> dict:
-    """Block student learning/test flows before any attempt/session side effect."""
-    user = _ensure_face_profile_compatibility(user)
-    if _user_requires_face_enrollment(user):
-        raise HTTPException(status_code=409, detail=_face_enrollment_required_detail())
-    _require_proctoring_ready(user)
+    """Compatibility shim: tests no longer require biometric enrollment."""
     return user
 
 
 def _proctoring_runtime_available(user: dict) -> tuple[bool, dict, str | None]:
-    # Proctoring/FaceID removed from all test flows: runtime proctoring is never required.
-    # Returning "proctoring_disabled" makes _ensure_proctoring_session_access a no-op and
-    # _attach_proctoring_payload report proctoring_required=False with no session.
     return False, user, "proctoring_disabled"
 
 
@@ -4108,81 +4045,18 @@ def _abort_unverified_active_proctoring_sessions_for_user(user_id: int, *, exclu
 
 
 def _ensure_proctoring_session_access(user: dict, session_id: int | None, *, expected_test_type: str, expected_attempt_ref: str | None = None) -> dict[str, Any] | None:
-    available, user, unavailable_reason = _proctoring_runtime_available(user)
-    if not available:
-        if unavailable_reason == "face_enrollment_required":
-            logger.info(
-                "proctoring.session_access.skipped user_id=%s test_type=%s attempt_ref=%s reason=%s",
-                int(user.get("id") or 0),
-                str(expected_test_type or ""),
-                str(expected_attempt_ref or ""),
-                unavailable_reason,
-            )
-            raise HTTPException(status_code=409, detail="Face enrollment is required before starting tests")
-        return None
-    sid = int(session_id or 0)
-    if sid <= 0:
-        raise HTTPException(status_code=400, detail="proctoring_session_id is required")
-    row = get_test_proctoring_session(sid)
-    if not row:
-        raise HTTPException(status_code=404, detail="Proctoring session not found")
-    if int(row.get("user_id") or 0) != int(user.get("id") or 0):
-        raise HTTPException(status_code=403, detail="Proctoring session does not belong to current user")
-    if str(row.get("test_type") or "") != str(expected_test_type or ""):
-        raise HTTPException(status_code=409, detail="Proctoring session is linked to different test type")
-    if expected_attempt_ref is not None:
-        actual_ref = str(row.get("test_attempt_ref") or "")
-        if actual_ref != str(expected_attempt_ref or ""):
-            # For competition modes (Duel/Arena/Boss), the session may transition from lobby -> running
-            # with the same proctoring row. Be lenient on exact ref match to avoid blocking submits.
-            is_competition_mode = str(expected_test_type or "").startswith(("duel-", "boss", "daily", "group"))
-            if not is_competition_mode:
-                raise HTTPException(status_code=409, detail="Proctoring session is linked to different test attempt")
-            else:
-                logger.info(
-                    "proctoring.ref_mismatch_allowed competition mode=%s user=%s expected_ref=%s actual_ref=%s",
-                    expected_test_type, int(user.get("id") or 0), expected_attempt_ref, actual_ref
-                )
-    _proctoring_failure_response(row)
-    if str(row.get("status") or "active") != "active":
-        raise HTTPException(status_code=423, detail="Proctoring session is not active")
-    # Strictly require at least one valid face-detected frame before answers can continue.
-    # This blocks "no-face" bypass attempts where test flow could continue without live detection.
-    if not bool(int(row.get("face_last_seen") or 0)):
-        raise HTTPException(status_code=423, detail="Yuz aniqlanmadi. Iltimos, kameraga qarang.")
-    return row
+    # Kept temporarily for clients/tests that still send the retired field.
+    return None
 
 
 def _attach_proctoring_payload(user: dict, response_payload: dict[str, Any], *, test_type: str, test_attempt_ref: str | None = None, test_route: str | None = None) -> dict[str, Any]:
-    available, user, unavailable_reason = _proctoring_runtime_available(user)
-    if not available:
-        response_payload["proctoring_required"] = unavailable_reason == "face_enrollment_required"
-        response_payload["face_enrollment_required"] = _user_requires_face_enrollment(user)
-        response_payload["proctoring_status"] = unavailable_reason or "disabled"
-        response_payload["proctoring_degraded"] = unavailable_reason == "face_enrollment_required"
-        response_payload["proctoring_block_reason"] = "Face enrollment is required before starting tests" if unavailable_reason == "face_enrollment_required" else None
-        if unavailable_reason == "face_enrollment_required":
-            logger.info(
-                "proctoring.attach.skipped user_id=%s test_type=%s attempt_ref=%s reason=%s",
-                int(user.get("id") or 0),
-                str(test_type or ""),
-                str(test_attempt_ref or ""),
-                unavailable_reason,
-            )
-        return response_payload
-    active = get_active_test_proctoring_session(int(user.get("id") or 0), test_type, test_attempt_ref)
-    if not active:
-        active = create_test_proctoring_session(
-            int(user.get("id") or 0),
-            test_type=test_type,
-            test_attempt_ref=test_attempt_ref,
-            test_route=test_route,
-            selfie_preview_required=True,
-        )
-    response_payload["proctoring_required"] = True
-    response_payload["face_enrollment_required"] = False
-    response_payload["proctoring_session_id"] = int(active.get("id") or 0)
-    response_payload["proctoring_status"] = str(active.get("status") or "active")
+    # Legacy response wrapper retained while old clients age out. Do not create
+    # biometric sessions or return proctoring state to any client.
+    for key in (
+        "proctoring_required", "face_enrollment_required", "proctoring_status",
+        "proctoring_degraded", "proctoring_block_reason", "proctoring_session_id",
+    ):
+        response_payload.pop(key, None)
     return response_payload
 
 
@@ -6637,11 +6511,6 @@ def _build_user_payload(u: dict) -> User:
         str(u.get("language") or ""),
         str(u.get("vocabulary_translation_language") or ""),
         str(u.get("profile_image_url") or ""),
-        str(u.get("face_enrollment_required") or ""),
-        str(u.get("face_profile_status") or ""),
-        int(u.get("face_profile_version") or 0),
-        str(u.get("proctoring_required") if u.get("proctoring_required") is not None else ""),
-        str(u.get("proctoring_block_reason") or ""),
         str(u.get("parent_phone") or ""),
         int(u.get("public_offer_agreed") or 0),
         int(u.get("pending_approval") or 0),
@@ -6655,17 +6524,11 @@ def _build_user_payload(u: dict) -> User:
     if cached_payload and cached_payload[0] > now_ts:
         return cached_payload[1]
     user_row = dict(u)
-    if role == "student" and user_id > 0:
-        user_row = _ensure_face_profile_compatibility(user_row)
     language = str(u.get("language") or "uz").strip().lower()
     if language not in WEB_LANGUAGES:
         language = "uz"
     profile_avatar_url = str(u.get("profile_image_url") or "").strip() or None
-    face_ref = None
-    if role == "student" and user_id > 0:
-        active_profile = _safe_call(lambda uid=user_id: get_active_face_profile(uid), None) or {}
-        face_ref = str(active_profile.get("reference_image_url") or "").strip() or None
-    avatar_url = _first_existing_avatar_url(profile_avatar_url, face_ref)
+    avatar_url = _first_existing_avatar_url(profile_avatar_url)
     valid_profile_avatar_url = profile_avatar_url if profile_avatar_url and _local_image_url_exists(profile_avatar_url) else None
     # A selected subject is not proof of a class assignment. Publicly
     # registered students retain their selected subject for placement and the
@@ -6692,11 +6555,6 @@ def _build_user_payload(u: dict) -> User:
         access_enabled=bool(int(u.get("access_enabled") or 0)),
         pending_approval=bool(int(u.get("pending_approval") or 0)),
         has_group=has_group,
-        face_enrollment_required=_user_requires_face_enrollment(user_row) if role == "student" else bool(int(user_row.get("face_enrollment_required") or 0)),
-        face_profile_status="active" if role == "student" else str(user_row.get("face_profile_status") or "pending"),
-        face_profile_version=int(user_row.get("face_profile_version") or 0),
-        proctoring_required=False if role == "student" else bool(int(user_row.get("proctoring_required") if user_row.get("proctoring_required") is not None else 1)),
-        proctoring_block_reason=None if role == "student" else str(user_row.get("proctoring_block_reason") or "").strip() or None,
         avatar_url=avatar_url,
         profile_image_url=valid_profile_avatar_url,
         public_offer_agreed=bool(int(user_row.get("public_offer_agreed") or 0)),
@@ -10058,7 +9916,6 @@ def _attendance_table_payload(group_id: int, group: dict, month: str | None) -> 
         avatar_url = (
             str(member.get("profile_image_url") or "").strip()
             or str(member.get("effective_profile_image_url") or "").strip()
-            or str(member.get("face_reference_image_url") or "").strip()
             or None
         )
         students.append(
@@ -13853,7 +13710,6 @@ def _serialize_user_row_light(row: dict) -> dict:
     avatar_url = _first_existing_avatar_url(
         row.get("profile_image_url"),
         row.get("effective_profile_image_url"),
-        row.get("face_reference_image_url"),
     )
     return {
         "id": int(row.get("id") or 0),
@@ -15623,23 +15479,8 @@ def _startup_validation_report() -> dict:
         conn.close()
     except Exception as exc:
         checks.append({"name": "database_connection", "ok": False, "error": str(exc)})
-    face_engine_ok = False
-    try:
-        engine = get_face_engine()
-        diagnostics = engine.diagnostics() if hasattr(engine, "diagnostics") else {"provider": getattr(engine, "provider", "unknown")}
-        face_engine_ok = bool(diagnostics.get("insightface_available"))
-        checks.append({
-            "name": "proctoring_face_engine",
-            "ok": face_engine_ok,
-            "provider": diagnostics.get("provider"),
-            "active_provider": diagnostics.get("active_provider"),
-            "insightface_available": diagnostics.get("insightface_available"),
-            "error": diagnostics.get("insightface_init_error"),
-        })
-    except Exception as exc:
-        checks.append({"name": "proctoring_face_engine", "ok": False, "error": str(exc)})
     return {
-        "ok": bool(url_ok and conn_ok and table_ok and face_engine_ok),
+        "ok": bool(url_ok and conn_ok and table_ok),
         "checks": checks,
         "database_url": str(DATABASE_URL or ""),
         "timestamp": _now_utc().isoformat(),
@@ -15654,7 +15495,6 @@ def _serialize_user_row(row: dict) -> dict:
     avatar_url = _first_existing_avatar_url(
         row.get("profile_image_url"),
         row.get("effective_profile_image_url"),
-        row.get("face_reference_image_url"),
     )
     return {
         "id": int(row.get("id") or 0),
@@ -15806,21 +15646,16 @@ def _local_image_url_exists(url: str | None) -> bool:
     raw = str(url or "").strip()
     if not raw:
         return False
-    local_prefixes = (
-        ("/student/proctoring/images/", PROCTORING_UPLOAD_DIR),
-        ("/profile/images/", PROFILE_UPLOAD_DIR),
-    )
-    for prefix, directory in local_prefixes:
-        if raw.startswith(prefix):
-            filename = Path(raw.removeprefix(prefix)).name
-            return bool(filename) and (directory / filename).is_file()
+    if raw.startswith("/profile/images/"):
+        filename = Path(raw.removeprefix("/profile/images/")).name
+        return bool(filename) and (PROFILE_UPLOAD_DIR / filename).is_file()
     if raw.startswith("/"):
         return True
     return True
 
 
 def _proctoring_image_url_exists(url: str | None) -> bool:
-    return _local_image_url_exists(url)
+    return False
 
 
 def _first_existing_avatar_url(*urls: Any) -> str | None:
@@ -15832,64 +15667,15 @@ def _first_existing_avatar_url(*urls: Any) -> str | None:
 
 
 def _enrich_user_rows_with_face_profiles(rows: list[dict]) -> list[dict]:
-    """Attach active FaceID reference image as avatar fallback for lightweight lists."""
-    if not rows:
-        return rows
-    ids = sorted({
-        int(row.get("id") or row.get("user_id") or 0)
-        for row in rows
-        if int(row.get("id") or row.get("user_id") or 0) > 0
-    })
-    missing_ids = [
-        uid
-        for uid in ids
-        if any(
-            int(row.get("id") or row.get("user_id") or 0) == uid
-            and not _first_existing_avatar_url(
-                row.get("profile_image_url"),
-                row.get("effective_profile_image_url"),
-                row.get("face_reference_image_url"),
-            )
-            for row in rows
+    """Keep avatar resolution limited to explicitly uploaded profile images."""
+    for row in rows or []:
+        avatar = _first_existing_avatar_url(
+            row.get("profile_image_url"),
+            row.get("effective_profile_image_url"),
         )
-    ]
-    if not missing_ids:
-        return rows
-    qmarks = ",".join(["?"] * len(missing_ids))
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            f"""
-            SELECT user_id, reference_image_url
-            FROM user_face_profiles
-            WHERE status='active'
-              AND user_id IN ({qmarks})
-            ORDER BY user_id ASC, id DESC
-            """,
-            tuple(missing_ids),
-        )
-        fallback: dict[int, str] = {}
-        for item in cur.fetchall() or []:
-            uid = int(item.get("user_id") or 0)
-            ref = str(item.get("reference_image_url") or "").strip()
-            if uid > 0 and ref and uid not in fallback and _proctoring_image_url_exists(ref):
-                fallback[uid] = ref
-        for row in rows:
-            uid = int(row.get("id") or row.get("user_id") or 0)
-            avatar = _first_existing_avatar_url(
-                row.get("profile_image_url"),
-                row.get("effective_profile_image_url"),
-                row.get("face_reference_image_url"),
-                fallback.get(uid),
-            )
-            row["profile_image_url"] = avatar
-            row["effective_profile_image_url"] = avatar
-            row["face_reference_image_url"] = avatar
-    except Exception:
-        logger.debug("face profile avatar fallback lookup failed", exc_info=True)
-    finally:
-        conn.close()
+        row["profile_image_url"] = avatar
+        row["effective_profile_image_url"] = avatar
+        row.pop("face_reference_image_url", None)
     return rows
 
 
@@ -16810,7 +16596,6 @@ def _leaderboard_payload(subject: str | None = None, group_id: int | None = None
         avatar_url = (
             str(row.get("profile_image_url") or "").strip()
             or str(row.get("effective_profile_image_url") or "").strip()
-            or str(row.get("face_reference_image_url") or "").strip()
             or None
         )
         uid = int(row.get("id") or row.get("user_id") or 0)
@@ -19599,32 +19384,6 @@ async def startup_event() -> None:
     else:
 
         logger.info("startup background schedulers skipped in worker pid=%s (lock held)", os.getpid())
-
-    async def _proctoring_face_engine_warmup() -> None:
-        warm_started = time.perf_counter()
-        try:
-            engine = await asyncio.to_thread(get_face_engine)
-            try:
-                import numpy as _np  # local import keeps non-proctoring startup resilient
-
-                await asyncio.to_thread(engine.analyze, _np.zeros((640, 640, 3), dtype=_np.uint8))
-            except Exception:
-                logger.debug("startup_background=proctoring_face_engine_inference_warmup skipped", exc_info=True)
-            diagnostics = engine.diagnostics() if hasattr(engine, "diagnostics") else {"provider": getattr(engine, "provider", "unknown")}
-            logger.info(
-                "startup_background=proctoring_face_engine_warmup ms=%.2f provider=%s insightface_available=%s error=%s",
-                (time.perf_counter() - warm_started) * 1000.0,
-                diagnostics.get("provider"),
-                diagnostics.get("insightface_available"),
-                diagnostics.get("insightface_init_error"),
-            )
-        except Exception:
-            logger.exception("startup_background=proctoring_face_engine_warmup failed")
-
-    if _proctoring_runtime_available({})[2] == "proctoring_disabled":
-        logger.info("startup_background=proctoring_face_engine_warmup skipped reason=proctoring_disabled")
-    else:
-        asyncio.create_task(_proctoring_face_engine_warmup(), name="proctoring_face_engine_warmup")
 
     if scheduler_owner:
         step = time.perf_counter()
@@ -37054,7 +36813,6 @@ async def teacher_attendance(
         avatar_url = (
             str(member.get("profile_image_url") or "").strip()
             or str(member.get("effective_profile_image_url") or "").strip()
-            or str(member.get("face_reference_image_url") or "").strip()
             or None
         )
         rows.append(
@@ -38604,7 +38362,6 @@ async def teacher_group_arena_leaderboard(group_id: int, authorization: str | No
         avatar = _first_existing_avatar_url(
             student.get("profile_image_url"),
             student.get("effective_profile_image_url"),
-            student.get("face_reference_image_url"),
             student.get("photo_url"),
         )
         leaderboard.append(
@@ -40812,8 +40569,8 @@ def _delete_old_profile_uploads(user_id: int, current_filename: str | None = Non
 def _delete_owned_user_uploads(user_id: int) -> None:
     """Remove local files whose ownership is encoded in their upload name.
 
-    These names are generated exclusively by the profile, homework, face
-    proctoring and chat upload endpoints.  The strict directory and filename
+    These names are generated exclusively by the profile, homework, and chat
+    upload endpoints. The strict directory and filename
     checks prevent an account deletion from ever traversing outside its
     designated upload locations.
     """
@@ -40825,7 +40582,6 @@ def _delete_owned_user_uploads(user_id: int) -> None:
         (HOMEWORK_UPLOAD_DIR, f"homework_{uid}_"),
         (HOMEWORK_UPLOAD_DIR, f"homework_voice_{uid}_"),
         (HOMEWORK_UPLOAD_DIR, f"homework_file_{uid}_"),
-        (PROCTORING_UPLOAD_DIR, f"face_{uid}_"),
         (CHAT_UPLOAD_DIR, f"chat_{uid}_"),
     )
     for upload_dir, prefix in owned_prefixes:
@@ -41730,7 +41486,6 @@ async def admin_users(
         raise HTTPException(status_code=403, detail="Speaking admin can view only Speaking App users")
     _ensure_user_web_columns()
     _ensure_admin_perf_indexes()
-    _safe_call(_ensure_proctoring_schema_runtime_fast, None)
     role_filter = str(role or "").strip().lower()
     normalized_subject = _normalize_subject_label(subject)
     query = str(q or "").strip().lower()
@@ -41788,13 +41543,6 @@ async def admin_users(
                 ORDER BY COALESCE(u.created_at, CURRENT_TIMESTAMP) DESC, u.id DESC
                 LIMIT ? OFFSET ?
             ),
-            fp_idx AS (
-                SELECT user_id, MAX(id) AS profile_id
-                FROM user_face_profiles
-                WHERE status='active'
-                  AND user_id IN (SELECT id FROM paged_users)
-                GROUP BY user_id
-            ),
             group_counts AS (
                 SELECT ug.user_id, COUNT(DISTINCT ug.group_id) AS group_count
                 FROM user_groups ug
@@ -41807,12 +41555,9 @@ async def admin_users(
             SELECT
                 pu.*,
                 sac.email AS contact_email,
-                COALESCE(NULLIF(pu.profile_image_url, ''), fp.reference_image_url) AS effective_profile_image_url,
-                fp.reference_image_url AS face_reference_image_url,
+                pu.profile_image_url AS effective_profile_image_url,
                 COALESCE(gc.group_count, 0) AS group_count
             FROM paged_users pu
-            LEFT JOIN fp_idx ON fp_idx.user_id = pu.id
-            LEFT JOIN user_face_profiles fp ON fp.id = fp_idx.profile_id
             LEFT JOIN group_counts gc ON gc.user_id = pu.id
             LEFT JOIN speaking_account_contacts sac ON sac.user_id = pu.id
             ORDER BY COALESCE(pu.created_at, CURRENT_TIMESTAMP) DESC, pu.id DESC
@@ -41834,13 +41579,6 @@ async def admin_users(
                 ORDER BY COALESCE(u.created_at, CURRENT_TIMESTAMP) DESC, u.id DESC
                 LIMIT ? OFFSET ?
             ),
-            fp_idx AS (
-                SELECT user_id, MAX(id) AS profile_id
-                FROM user_face_profiles
-                WHERE status='active'
-                  AND user_id IN (SELECT id FROM paged_users)
-                GROUP BY user_id
-            ),
             group_counts AS (
                 SELECT ug.user_id, COUNT(DISTINCT ug.group_id) AS group_count
                 FROM user_groups ug
@@ -41850,12 +41588,9 @@ async def admin_users(
             SELECT
                 pu.*,
                 sac.email AS contact_email,
-                COALESCE(NULLIF(pu.profile_image_url, ''), fp.reference_image_url) AS effective_profile_image_url,
-                fp.reference_image_url AS face_reference_image_url,
+                pu.profile_image_url AS effective_profile_image_url,
                 COALESCE(gc.group_count, 0) AS group_count
             FROM paged_users pu
-            LEFT JOIN fp_idx ON fp_idx.user_id = pu.id
-            LEFT JOIN user_face_profiles fp ON fp.id = fp_idx.profile_id
             LEFT JOIN group_counts gc ON gc.user_id = pu.id
             LEFT JOIN speaking_account_contacts sac ON sac.user_id = pu.id
             ORDER BY COALESCE(pu.created_at, CURRENT_TIMESTAMP) DESC, pu.id DESC
@@ -42636,12 +42371,6 @@ async def admin_user_detail(user_id: int, authorization: str | None = Header(def
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
     if not target or bool(int(target.get("screenshot_demo") or 0)):
         raise HTTPException(status_code=404, detail="User not found")
-    if not str(target.get("profile_image_url") or "").strip():
-        face_profile = _safe_call(lambda: get_active_face_profile(int(user_id)), None) or {}
-        face_ref = str(face_profile.get("reference_image_url") or "").strip()
-        if face_ref:
-            target["effective_profile_image_url"] = face_ref
-            target["face_reference_image_url"] = face_ref
     if not _can_manage_user_globally(admin_ref, target):
         raise HTTPException(status_code=403, detail="You cannot manage this user")
 
@@ -49748,13 +49477,11 @@ async def admin_payments_group_students(
             "avatar_url": (
                 str(member.get("profile_image_url") or "").strip()
                 or str(member.get("effective_profile_image_url") or "").strip()
-                or str(member.get("face_reference_image_url") or "").strip()
                 or None
             ),
             "profile_image_url": (
                 str(member.get("profile_image_url") or "").strip()
                 or str(member.get("effective_profile_image_url") or "").strip()
-                or str(member.get("face_reference_image_url") or "").strip()
                 or None
             ),
             "phone": str(member.get("phone") or "").strip(),
@@ -53124,7 +52851,6 @@ async def admin_attendance(
         avatar_url = (
             str(member.get("profile_image_url") or "").strip()
             or str(member.get("effective_profile_image_url") or "").strip()
-            or str(member.get("face_reference_image_url") or "").strip()
             or None
         )
         rows.append(
@@ -62233,3 +61959,17 @@ async def teacher_ai_check_note(
         None,
     )
     return {"message": "AI tekshirish muvaffaqiyatli", "result": ai_result}
+
+
+# Proctoring is retired. Remove its legacy handlers from the ASGI application
+# so they are absent from both routing and the generated OpenAPI schema.
+_retired_proctoring_routes = [
+    route for route in app.router.routes
+    if str(getattr(route, "path", "")).startswith(("/student/proctoring", "/admin/proctoring"))
+]
+if _retired_proctoring_routes:
+    app.router.routes[:] = [
+        route for route in app.router.routes
+        if not str(getattr(route, "path", "")).startswith(("/student/proctoring", "/admin/proctoring"))
+    ]
+    logger.info("retired_proctoring_routes_removed count=%s", len(_retired_proctoring_routes))

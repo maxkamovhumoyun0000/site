@@ -69,52 +69,33 @@ def test_filter_homeworks_with_open_window(monkeypatch: pytest.MonkeyPatch) -> N
     assert kept_ids == {1, 3}
 
 
-def test_proctoring_payload_degrades_when_face_enrollment_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    user = {
-        "id": 11,
-        "login_type": 1,
-        "proctoring_required": 1,
-        "face_enrollment_required": 1,
-        "face_profile_status": "pending",
-    }
-    monkeypatch.setattr(api, "get_active_face_profile", lambda _user_id: None)
-
-    def _unexpected_create(*_args, **_kwargs):
-        raise AssertionError("proctoring session should not be created without a ready face profile")
-
-    monkeypatch.setattr(api, "create_test_proctoring_session", _unexpected_create)
-
+def test_retired_proctoring_payload_is_not_returned() -> None:
     payload = api._attach_proctoring_payload(
-        user,
+        {"id": 11, "login_type": 1},
         {"session_id": "test_1"},
         test_type="vocabulary",
         test_attempt_ref="test_1",
     )
 
     assert payload["session_id"] == "test_1"
-    assert payload["proctoring_required"] is False
-    assert payload["face_enrollment_required"] is True
-    assert payload["proctoring_degraded"] is True
+    assert not any("proctoring" in key or "face_enrollment" in key for key in payload)
 
 
-def test_proctoring_session_access_does_not_block_answers_when_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
-    user = {
-        "id": 11,
-        "login_type": 1,
-        "proctoring_required": 1,
-        "face_enrollment_required": 1,
-        "face_profile_status": "pending",
-    }
-    monkeypatch.setattr(api, "get_active_face_profile", lambda _user_id: None)
+def test_proctoring_routes_are_removed_from_api() -> None:
+    route_paths = {getattr(route, "path", "") for route in api.app.router.routes}
+    assert not any(path.startswith(("/student/proctoring", "/admin/proctoring")) for path in route_paths)
 
-    def _unexpected_lookup(*_args, **_kwargs):
-        raise AssertionError("proctoring session lookup should be skipped in degraded mode")
 
-    monkeypatch.setattr(api, "get_test_proctoring_session", _unexpected_lookup)
+def test_user_payload_does_not_expose_retired_biometric_state() -> None:
+    user = api._build_user_payload({"id": 44, "login_type": 4, "login_id": "ADM44"})
+    payload = user.model_dump()
+    assert not any("proctoring" in key or key.startswith("face_") for key in payload)
 
+
+def test_retired_proctoring_fields_do_not_block_test_answers() -> None:
     assert api._ensure_proctoring_session_access(
-        user,
-        None,
+        {"id": 11, "login_type": 1},
+        999999,
         expected_test_type="vocabulary",
         expected_attempt_ref="test_1",
     ) is None

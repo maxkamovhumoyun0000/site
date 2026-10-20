@@ -3,14 +3,6 @@ import logging
 import html as html_module
 import traceback
 import re
-try:
-    import cv2
-except Exception:
-    cv2 = None
-try:
-    import numpy as np
-except Exception:
-    np = None
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -97,9 +89,11 @@ dp = Dispatcher()
 async def _decode_qr_text_from_photo_message(message: Message) -> str:
     if not message.photo:
         return ""
-    if cv2 is None or np is None:
-        return ""
     try:
+        # QR scanning is infrequent; avoid loading these large modules at boot.
+        import cv2
+        import numpy as np
+
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         if not file_info or not file_info.file_path:

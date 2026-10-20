@@ -16,12 +16,6 @@ import asyncio
 import time
 import traceback
 from pathlib import Path
-try:
-    import cv2  # type: ignore
-    import numpy as np  # type: ignore
-except Exception:
-    cv2 = None  # type: ignore
-    np = None  # type: ignore
 import pytz
 from uuid import uuid4
 from datetime import date as date_cls, timedelta, time as dtime, datetime as dt, timezone
@@ -193,9 +187,11 @@ dp = Dispatcher()
 async def _decode_qr_text_from_photo_message(message: types.Message) -> str:
     if not message.photo:
         return ""
-    if cv2 is None or np is None:
-        return ""
     try:
+        # QR scanning is infrequent; avoid loading these large modules at boot.
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         if not file_info or not file_info.file_path:

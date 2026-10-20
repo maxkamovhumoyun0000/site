@@ -23,6 +23,8 @@ Bu loyiha production serverda ishlaydi:
 - PC'ga bog'langan staging/canary yo'nalishi ishlatilmaydi. Bu runbook faqat
   production release uchun; sinovni productiondan alohida marshrutga avtomatik
   yo'naltirmang.
+- **Backend Uvicorn worker soni 4 ta bo‘lib qoladi.** Xotira optimizatsiyasi
+  uchun workerlarni kamaytirmang va systemd override’ni o‘zgartirmang.
 
 ## Speaking live yozuv xizmati
 
