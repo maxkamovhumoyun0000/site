@@ -24299,3 +24299,37 @@ aside[data-testid="mobile-drawer"] {
   border-color: #253452 !important;
   background: #090f20 !important;
 }
+
+/* Rounded public-site navigation inspired by the supplied reference. */
+.public-pill-header {
+  pointer-events: none;
+}
+
+.public-pill-header-backdrop {
+  position: absolute;
+  z-index: -1;
+  inset: 0 0 auto;
+  height: 88px;
+  background: #36a7d3;
+  transition: opacity 220ms ease;
+  pointer-events: none;
+}
+
+.public-pill-header-backdrop--hidden {
+  opacity: 0;
+}
+
+.public-pill-navbar {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 24px rgba(21, 39, 59, 0.12);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+
+@media (max-width: 639px) {
+  .public-pill-header-backdrop {
+    height: 78px;
+  }
+}

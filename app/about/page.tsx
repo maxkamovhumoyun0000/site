@@ -2,6 +2,7 @@
 
 import { PublicShell } from "../public-shell";
 import { useWebT } from "../ui/web-i18n";
+import Image from "next/image";
 
 export default function AboutPage() {
   const tt = useWebT();
@@ -13,44 +14,19 @@ export default function AboutPage() {
       title={tt("about.title", "Diamond Education - kelajagingiz poydevori")}
       subtitle={tt("about.subtitle", "Eng yaxshi kelajak shu yerdan boshlanadi")}
     >
-      <div className="max-w-4xl mx-auto space-y-12 pb-16">
+      <div className="mx-auto max-w-6xl space-y-12 pb-16">
 
-        {/* Founder Section */}
-        <section className="bg-white dark:bg-gray-800 rounded-3xl overflow-hidden shadow-xl shadow-gray-200/50 dark:shadow-none border border-gray-100 dark:border-gray-700 flex flex-col md:flex-row items-stretch">
-          <div className="w-full md:w-2/5 shrink-0 bg-gray-100 dark:bg-gray-900 relative flex items-center justify-center aspect-[3/4] md:aspect-auto md:min-h-[520px]">
-            <img 
-              src="/founder.jpg" 
-              alt={tt("about.founder.name", "Akbarxo'ja Anvarxo'jayev")} 
-              className="absolute inset-0 w-full h-full object-cover object-bottom" 
+        {/* Bosh direktor — suratning o'zida ism va lavozim ko'rsatilgan. */}
+        <section aria-label={tt("about.founder.role", "Bosh direktor")} className="flex justify-center">
+          <div className="relative aspect-[9/16] w-full max-w-[420px] overflow-hidden rounded-2xl shadow-lg">
+            <Image
+              src="/team/ceo.webp"
+              alt={tt("about.founder.name", "Akbarxo'ja Anvarxo'jayev — Bosh direktor")}
+              fill
+              sizes="(max-width: 420px) 100vw, 420px"
+              fetchPriority="high"
+              className="object-contain"
             />
-          </div>
-          <div className="p-8 md:p-12 w-full md:w-3/5 flex flex-col justify-center bg-gradient-to-br from-white to-blue-50/50 dark:from-gray-800 dark:to-gray-800/80">
-            <span className="text-blue-600 dark:text-blue-400 font-bold tracking-widest uppercase text-xs mb-3 flex items-center gap-2">
-              <span className="w-6 h-px bg-blue-600 dark:bg-blue-400"></span>
-              {tt("about.founder.role", "Asoschi va Bosh direktor")}
-            </span>
-            <h2 className="text-3xl md:text-4xl font-black text-gray-900 dark:text-white mb-6">
-              {tt("about.founder.title", "Yorqin kelajakni birgalikda quramiz")}
-            </h2>
-            <div className="relative">
-              <svg className="absolute -top-4 -left-4 w-10 h-10 text-blue-100 dark:text-gray-700 -z-10" fill="currentColor" viewBox="0 0 24 24"><path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z" /></svg>
-              <div className="prose prose-lg dark:prose-invert text-gray-600 dark:text-gray-400 leading-relaxed font-medium">
-                <p>
-                  {tt("about.founder.quote1", "Ta'lim – bu faqatgina bilim berish emas, balki yoshlarga ishonch ulashish, ularning ongida katta maqsadlar sari ilk qadamni qo'yishga yordam berishdir.")}
-                </p>
-                <p className="mt-4">
-                  {tt("about.founder.quote2", "Diamond Education markazini yaratishda bizning eng asosiy maqsadimiz har bir bilim oluvchining imkoniyatlarini maksimal ochib beradigan sifatli muhit va tizim yaratish edi. Maqsad qanchalik katta bo'lmasin, unga to'g'ri tayyorgarlik va kuchli jamoa bilan yetib borish mumkin.")}
-                </p>
-              </div>
-              <div className="mt-8">
-                <p className="text-lg font-black text-gray-900 dark:text-white">
-                  {tt("about.founder.name", "Akbarxo'ja Anvarxo'jayev")}
-                </p>
-                <p className="text-sm text-gray-500 font-bold uppercase tracking-wide mt-1">
-                  Diamond Education
-                </p>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -70,93 +46,25 @@ export default function AboutPage() {
             </p>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 sm:gap-6 md:gap-8">
-            {/* Rushana Xayitbayevna */}
-            <div className="group bg-white dark:bg-gray-800 rounded-2xl sm:rounded-3xl overflow-hidden shadow-md sm:shadow-xl border border-gray-100 dark:border-gray-700 hover:shadow-2xl hover:-translate-y-2 transition-all duration-300">
-              <div className="relative aspect-[3/4] overflow-hidden bg-gray-100 dark:bg-gray-900">
-                <img
-                  src="/teacher-rushana.jpg"
-                  alt="Rushana Xayitbayevna"
-                  className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105"
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-5 lg:gap-7">
+            {[
+              ["/team/rushana-abidova.webp", "Rushana Abidova"],
+              ["/team/diyor-abdugaliyev.webp", "Diyor Abdugaliyev"],
+              ["/team/dinora-sobirova.webp", "Dinora Sobirova"],
+              ["/team/shaxzoda-begmatova.webp", "Shaxzoda Begmatova"],
+              ["/team/baxtiyor-musurmonov.webp", "Baxtiyor Musurmonov"],
+              ["/team/muhsina-xasanboyeva.webp", "Muhsina Xasanboyeva"],
+            ].map(([src, name]) => (
+              <div key={src} className="relative aspect-[9/16] overflow-hidden rounded-xl sm:rounded-2xl">
+                <Image
+                  src={src}
+                  alt={name}
+                  fill
+                  sizes="(max-width: 639px) 50vw, (max-width: 1023px) 33vw, 360px"
+                  className="object-contain"
                 />
               </div>
-              <div className="p-2 sm:p-6">
-                <h3 className="text-[11px] sm:text-xl leading-tight font-black text-gray-900 dark:text-white mb-1">Rushana Xayitbayevna</h3>
-                <p className="text-blue-600 dark:text-blue-400 font-bold text-[8px] sm:text-sm uppercase tracking-normal sm:tracking-wide leading-tight mb-0 sm:mb-4">{tt("about.team.subject.russian", "Rus tili o'qituvchisi")}</p>
-                <ul className="mt-2 space-y-1 sm:space-y-2">
-                  {[
-                    tt("about.team.exp8", "8 yillik tajriba"),
-                    tt("about.team.rushana.level", "Til darajasi: C2"),
-                    tt("about.team.rushana.uni1", "Toshkent Davlat Pedagogika Universiteti"),
-                    tt("about.team.rushana.uni2", "Rossiya Davlat Pedagogika Universiteti — Magistratura"),
-                  ].map((item) => (
-                    <li key={item} className="flex items-start gap-1 sm:gap-2 text-[8px] sm:text-sm leading-tight text-gray-600 dark:text-gray-400">
-                      <span className="mt-0.5 sm:mt-1 w-2.5 h-2.5 sm:w-4 sm:h-4 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0">
-                        <svg className="w-1.5 h-1.5 sm:w-2.5 sm:h-2.5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg>
-                      </span>
-                      <span className="min-w-0 break-words font-medium">{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            {/* Diyor Abdugaliyev */}
-            <div className="group bg-white dark:bg-gray-800 rounded-2xl sm:rounded-3xl overflow-hidden shadow-md sm:shadow-xl border border-gray-100 dark:border-gray-700 hover:shadow-2xl hover:-translate-y-2 transition-all duration-300">
-              <div className="relative aspect-[3/4] overflow-hidden bg-gray-100 dark:bg-gray-900">
-                <img
-                  src="/teacher-diyor.jpg"
-                  alt="Diyor Abdugaliyev"
-                  className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105"
-                />
-              </div>
-              <div className="p-2 sm:p-6">
-                <h3 className="text-[11px] sm:text-xl leading-tight font-black text-gray-900 dark:text-white mb-1">Diyor Abdugaliyev</h3>
-                <p className="text-blue-600 dark:text-blue-400 font-bold text-[8px] sm:text-sm uppercase tracking-normal sm:tracking-wide leading-tight mb-0 sm:mb-4">{tt("about.team.subject.english", "Ingliz tili o'qituvchisi")}</p>
-                <ul className="mt-2 space-y-1 sm:space-y-2">
-                  {[
-                    tt("about.team.exp4", "4 yillik tajriba"),
-                    tt("about.team.diyor.score", "IELTS 8.0"),
-                    tt("about.team.diyor.uni", "UWED (Jahon iqtisodiyoti va diplomatiya universiteti)"),
-                  ].map((item) => (
-                    <li key={item} className="flex items-start gap-1 sm:gap-2 text-[8px] sm:text-sm leading-tight text-gray-600 dark:text-gray-400">
-                      <span className="mt-0.5 sm:mt-1 w-2.5 h-2.5 sm:w-4 sm:h-4 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0">
-                        <svg className="w-1.5 h-1.5 sm:w-2.5 sm:h-2.5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg>
-                      </span>
-                      <span className="min-w-0 break-words font-medium">{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-
-            {/* Dinora Sobirova */}
-            <div className="group bg-white dark:bg-gray-800 rounded-2xl sm:rounded-3xl overflow-hidden shadow-md sm:shadow-xl border border-gray-100 dark:border-gray-700 hover:shadow-2xl hover:-translate-y-2 transition-all duration-300">
-              <div className="relative aspect-[3/4] overflow-hidden bg-gray-100 dark:bg-gray-900">
-                <img
-                  src="/teacher-dinora.jpg"
-                  alt="Dinora Sobirova"
-                  className="h-full w-full object-cover object-bottom transition-transform duration-500 group-hover:scale-105"
-                />
-              </div>
-              <div className="p-2 sm:p-6">
-                <h3 className="text-[11px] sm:text-xl leading-tight font-black text-gray-900 dark:text-white mb-1">Dinora Sobirova</h3>
-                <p className="text-blue-600 dark:text-blue-400 font-bold text-[8px] sm:text-sm uppercase tracking-normal sm:tracking-wide leading-tight mb-0 sm:mb-4">{tt("about.team.subject.english", "Ingliz tili o'qituvchisi")}</p>
-                <ul className="mt-2 space-y-1 sm:space-y-2">
-                  {[
-                    tt("about.team.exp4", "4 yillik tajriba"),
-                    tt("about.team.dinora.score", "IELTS 6.5"),
-                  ].map((item) => (
-                    <li key={item} className="flex items-start gap-1 sm:gap-2 text-[8px] sm:text-sm leading-tight text-gray-600 dark:text-gray-400">
-                      <span className="mt-0.5 sm:mt-1 w-2.5 h-2.5 sm:w-4 sm:h-4 rounded-full bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center shrink-0">
-                        <svg className="w-1.5 h-1.5 sm:w-2.5 sm:h-2.5 text-blue-600 dark:text-blue-400" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd"/></svg>
-                      </span>
-                      <span className="min-w-0 break-words font-medium">{item}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
+            ))}
           </div>
         </section>
 
