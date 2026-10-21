@@ -26001,8 +26001,11 @@ export default function DiamondEducationApp() {
       const safeRole = limitedAdminAccount
         ? "limited_admin"
         : accountRole === "media" || accountRole === "developer"
+          || accountRole === "speaking_admin" || accountRole === "speaking_user"
           ? accountRole
-          : urlRole;
+          : accountRole === "admin" && ["student", "teacher", "support", "admin"].includes(urlRole)
+            ? urlRole
+            : accountRole;
       if (safeRole !== urlRole) {
         params.set("role", safeRole);
         window.history.replaceState(null, "", `/?${params.toString()}`);
