@@ -16,17 +16,27 @@ export default function AboutPage() {
     >
       <div className="mx-auto max-w-6xl space-y-12 pb-16">
 
-        {/* Bosh direktor — suratning o'zida ism va lavozim ko'rsatilgan. */}
-        <section aria-label={tt("about.founder.role", "Bosh direktor")} className="flex justify-center">
-          <div className="relative aspect-[9/16] w-full max-w-[420px] overflow-hidden rounded-2xl shadow-lg">
+        <section aria-label={tt("about.founder.role", "Bosh direktor")} className="mx-auto grid max-w-5xl items-center gap-8 md:grid-cols-[minmax(260px,380px)_1fr] md:gap-12">
+          <div className="relative mx-auto aspect-[9/16] w-full max-w-[380px] overflow-hidden rounded-2xl shadow-lg">
             <Image
               src="/team/ceo.webp"
               alt={tt("about.founder.name", "Akbarxo'ja Anvarxo'jayev — Bosh direktor")}
               fill
-              sizes="(max-width: 420px) 100vw, 420px"
+              sizes="(max-width: 767px) 100vw, 380px"
               fetchPriority="high"
               className="object-contain"
             />
+          </div>
+          <div className="space-y-5 text-center md:text-left">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-[0.16em] text-blue-700">{tt("about.founder.role", "Bosh direktor")}</p>
+              <h2 className="mt-2 text-3xl font-black text-slate-900 md:text-4xl">{tt("about.founder.name", "Akbarxo'ja Anvarxo'jayev")}</h2>
+              <p className="mt-2 text-lg font-semibold text-slate-600">{tt("about.founder.title", "Birgalikda yorqin kelajak quramiz")}</p>
+            </div>
+            <blockquote className="space-y-4 text-base leading-8 text-slate-700 md:text-lg">
+              <p>{tt("about.founder.quote1", "Ta'lim – bu faqatgina bilim berish emas, balki yoshlarga ishonch ulashish, ularning ongida katta maqsadlar sari ilk qadamni qo'yishga yordam berishdir.")}</p>
+              <p>{tt("about.founder.quote2", "Diamond Education markazini yaratishda bizning eng asosiy maqsadimiz har bir bilim oluvchining imkoniyatlarini maksimal ochib beradigan sifatli muhit va tizim yaratish edi. Maqsad qanchalik katta bo'lmasin, unga to'g'ri tayyorgarlik va kuchli jamoa bilan yetib borish mumkin.")}</p>
+            </blockquote>
           </div>
         </section>
 
@@ -95,7 +105,7 @@ export default function AboutPage() {
               <div className="branch-map-wrap">
                 <iframe
                   title="Diamond Education 1-filial"
-                  src="https://maps.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
+                  src="https://www.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
                   width="100%"
                   height="220"
                   style={{ border: 0, borderRadius: "12px" }}
@@ -144,7 +154,7 @@ export default function AboutPage() {
               <div className="branch-map-wrap">
                 <iframe
                   title="Diamond Education 2-filial"
-                  src="https://maps.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
+                  src="https://www.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
                   width="100%"
                   height="220"
                   style={{ border: 0, borderRadius: "12px" }}

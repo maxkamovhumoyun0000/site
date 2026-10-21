@@ -2812,7 +2812,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
               <div className="branch-map-wrap">
                 <iframe
                   title="Diamond Education 1-filial"
-                  src="https://maps.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
+                  src="https://www.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
                   width="100%"
                   height="220"
                   style={{ border: 0, borderRadius: "12px" }}
@@ -2861,7 +2861,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
               <div className="branch-map-wrap">
                 <iframe
                   title="Diamond Education 2-filial"
-                  src="https://maps.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
+                  src="https://www.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
                   width="100%"
                   height="220"
                   style={{ border: 0, borderRadius: "12px" }}

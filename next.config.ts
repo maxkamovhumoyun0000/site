@@ -56,7 +56,7 @@ const nextConfig: NextConfig = {
       "media-src 'self' blob: https:",
       `connect-src 'self' https: wss:${isDevelopment ? " http://127.0.0.1:18765" : ""}`,
       "worker-src 'self' blob:",
-      "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org",
+      "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org https://www.google.com https://maps.google.com",
       `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
       "style-src 'self' 'unsafe-inline'",
     ].join("; ");

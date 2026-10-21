@@ -14,16 +14,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>("light");
 
   useEffect(() => {
+    const token = typeof window !== "undefined" && localStorage.getItem("diamond_token");
     const saved = localStorage.getItem("diamond_theme") as Theme | null;
     const savedLocale = localStorage.getItem("diamond_locale") || "uz";
     const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const initial = saved || (prefersDark ? "dark" : "light");
+    const initial = !token ? "light" : (saved || (prefersDark ? "dark" : "light"));
     setTheme(initial);
     document.documentElement.setAttribute("data-theme", initial);
     document.documentElement.lang = savedLocale;
   }, []);
 
   const toggle = useCallback(() => {
+    const token = typeof window !== "undefined" && localStorage.getItem("diamond_token");
+    if (!token) return;
     setTheme((prev) => {
       const next = prev === "light" ? "dark" : "light";
       document.documentElement.setAttribute("data-theme", next);
