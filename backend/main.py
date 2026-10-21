@@ -1413,6 +1413,10 @@ class SpeakingRegistrationVerificationRequest(BaseModel):
 
 class SpeakingGoogleLoginRequest(BaseModel):
     id_token: str = Field(min_length=100, max_length=8192)
+    # Client-provided profile hints are accepted for API compatibility only.
+    # Email and display name are always taken from the verified ID token.
+    email: str | None = Field(default=None, max_length=254)
+    name: str | None = Field(default=None, max_length=160)
     # A complete profile is required before provisioning any new Google user.
     first_name: str | None = Field(default=None, min_length=1, max_length=80)
     last_name: str | None = Field(default=None, min_length=1, max_length=80)
@@ -1506,6 +1510,12 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str
     user: User
+
+
+class SpeakingGoogleTokenResponse(TokenResponse):
+    # Keep the established `access_token` contract while also supporting
+    # clients that expect the shorter `token` field.
+    token: str
 
 
 class IssuedCredentials(BaseModel):
@@ -20161,8 +20171,8 @@ def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
         conn.close()
 
 
-@app.post("/api/auth/speaking-google", response_model=TokenResponse)
-@app.post("/auth/speaking-google", response_model=TokenResponse)
+@app.post("/api/auth/speaking-google", response_model=SpeakingGoogleTokenResponse)
+@app.post("/auth/speaking-google", response_model=SpeakingGoogleTokenResponse)
 async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Request):
     """Exchange a verified Google ID token for a normal Speaking session."""
     from google.auth.transport import requests as google_requests
@@ -20282,7 +20292,12 @@ async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Reques
     _reserve_web_session_slot(user, device_id=payload.device_id, requested_session_ids=payload.revoke_session_ids)
     session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_google")
     token = _create_access_token(user, session_id=session_id, ttl_hours=ttl_hours)
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+    return SpeakingGoogleTokenResponse(
+        access_token=token,
+        token=token,
+        token_type="bearer",
+        user=_build_user_payload(user),
+    )
 
 
 @app.post("/auth/speaking-registration/start")

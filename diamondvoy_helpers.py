@@ -260,6 +260,31 @@ async def diamondvoy_is_subject_related(question: str, subjects: list[str]) -> b
         )
 
 
+def _diamondvoy_rich_markup_instructions(lang: str) -> str:
+    """Formatting guidance for learner-facing Diamondvoy chat responses."""
+    if lang == "ru":
+        return (
+            "\n\nФорматирование: используй таблицу Markdown для сравнений, если она делает ответ яснее. "
+            "Формулы можно записывать в KaTeX через $$...$$, например $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
+            "Примеры кода Python оформляй блоком ```python ... ```. Для учебной викторины используй формат «Викторина: вопрос; A) ... B) ... C) ...; Правильный ответ: [буква]». "
+            "Поиск и ссылки на источники указывай только если в контексте действительно переданы результаты поиска; не выдумывай источники и число просмотренных страниц."
+        )
+    if lang == "en":
+        return (
+            "\n\nRich formatting: use a standard Markdown table for comparisons when it improves clarity. "
+            "Write formulas in KaTeX using $$...$$, for example $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
+            "Format Python examples as ```python ... ```. For a study quiz use: 'Quiz: question... A) ... B) ... C) ... Correct answer: [letter]'. "
+            "Mention web-search completion, source counts, and citations only when actual retrieved source results are present in context; never invent sources or counts."
+        )
+    return (
+        "\n\nBoyitilgan format: taqqoslashni kerak bo‘lsa standart Markdown jadvalida ber. "
+        "Formulalarni KaTeX $$...$$ ko‘rinishida yoz, masalan $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
+        "Python misollarini ```python ... ``` blokida yoz. Study mode viktorinasi uchun: "
+        "'Viktorina: Savol matni... A) ... B) ... C) ... To‘g‘ri javob: [harf]' formatidan foydalan. "
+        "Web qidiruv yakuni, manbalar soni va iqtiboslarni faqat haqiqiy qidiruv natijalari kontekstda berilganida ko‘rsat; manba yoki sonni to‘qima."
+    )
+
+
 async def diamondvoy_gemini_answer(
     question: str,
     subjects: list[str],
@@ -332,6 +357,8 @@ async def diamondvoy_gemini_answer(
                 "Agar savol shu suhbatda avval so'ralgan savolga o'xshab qolsa, hech qachon «buni oldin ko'rib chiqqanmiz», «yuqorida aytdim» kabi iboralar bilan boshlama — har safar savolni yangidan, mazmunli javob ber.\n"
                 "Markdown yulduzcha (*, **, ***) va # sarlavhalarsiz yoz. Qisqa bo‘limlar, kerak bo‘lsa • yoki raqamli ro‘yxat; har bir bo‘limda 1–2 emoji (masalan 📌, 💡). Har javobda paragraf tuzilishi va emojilarni almashtirib tur, bitta shablonni takrorlama."
             )
+
+    sys_prompt += _diamondvoy_rich_markup_instructions(lc)
 
     history_lines: list[str] = []
     for row in (conversation or [])[-12:]:
@@ -456,6 +483,9 @@ async def diamondvoy_gemini_answer_stream(
                 "Agar savol shu suhbatda avval so'ralgan savolga o'xshab qolsa, hech qachon «buni oldin ko'rib chiqqanmiz», «yuqorida aytdim» kabi iboralar bilan boshlama — har safar savolni yangidan, mazmunli javob ber.\n"
                 "Markdown yulduzcha (*, **, ***) va # sarlavhalarsiz yoz. Qisqa bo‘limlar, kerak bo‘lsa • yoki raqamli ro‘yxat; har bir bo‘limda 1–2 emoji (masalan 📌, 💡). Har javobda paragraf tuzilishi va emojilarni almashtirib tur, bitta shablonni takrorlama."
             )
+
+    if not system_prompt_override:
+        sys_prompt += _diamondvoy_rich_markup_instructions(lc)
 
     # Reuse the exact Diamondvoy/Grok generation path for tightly-scoped
     # server jobs (for example homework grading) while allowing those jobs to
