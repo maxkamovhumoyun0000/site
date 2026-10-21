@@ -1,10 +1,11 @@
-export type Role = "student" | "speaking_user" | "teacher" | "admin" | "support" | "media" | "speaking_admin" | "developer";
+export type Role = "student" | "speaking_user" | "teacher" | "admin" | "limited_admin" | "support" | "media" | "speaking_admin" | "developer";
 
 export const ROLE_LABELS: Record<Role, string> = {
   student: "Talaba",
   speaking_user: "Speaking foydalanuvchisi",
   teacher: "O'qituvchi",
   admin: "Admin",
+  limited_admin: "Filial admini",
   support: "Support Teacher",
   media: "Media boshqaruvi",
   speaking_admin: "Speaking App boshqaruvi",
@@ -71,6 +72,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   speaking_user: ["home", "profile"],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
+  limited_admin: ["home", "chats", "users", "groups", "payments", "attendance", "profile"],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-users", "speaking-notifications", "profile"],
   developer: [

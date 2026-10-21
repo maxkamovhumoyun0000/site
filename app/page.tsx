@@ -1098,7 +1098,7 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
   // by every role and must remain reachable for ordinary admins as well.
   const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home" && section !== "profile"));
   const baseSections = DEFAULT_SECTIONS[role] || [];
-  let list = role === "media" || role === "speaking_admin" || role === "speaking_user"
+  let list = role === "media" || role === "limited_admin" || role === "speaking_admin" || role === "speaking_user"
     ? [...baseSections]
     : Array.from(new Set([...baseSections, ...(backendSections || [])]));
   if (role === "admin") {
@@ -1203,6 +1203,10 @@ function roleFromUser(user: ApiUser | null): Role {
   // MEDIA-X-01 is a web-only media staff account whose backend login_type is
   // still 4 (admin), so the dedicated login ID is the reliable role marker.
   if (declaredRole === "media" || declaredRole === "media_admin" || loginId === "media-x-01") return "media";
+  // Branch-admin credentials are also represented as login_type=4 by the
+  // backend. Resolve them before the admin fallback so they never render the
+  // unrestricted admin shell during startup or a state refresh.
+  if (declaredRole === "limited_admin" || /^diamond-lim-\d+$/.test(loginId)) return "limited_admin";
   if (loginId === "developer-x-01") return "developer";
   // The dedicated Speaking credential is a restricted staff workspace and
   // never inherits the general Admin dashboard.
@@ -1218,11 +1222,14 @@ function roleFromUser(user: ApiUser | null): Role {
 function workspaceRoleFromState(user: ApiUser | null, state: GenericRow | null | undefined): Role {
   const accountRole = roleFromUser(user);
   const adminScope = (state?.admin?.admin_scope || {}) as GenericRow;
-  // Limited-admin credentials are backed by the admin API, but the limited
-  // workspace is known as soon as the cached/server scope is available. Keep
-  // hydration from briefly painting the unrestricted admin shell first.
+  // The three staff workspaces stay independent: regular admins, branch
+  // admins, and media admins. Limited accounts use the admin API role but
+  // receive a dedicated client workspace from the server-provided scope.
   if (accountRole === "admin" && Boolean(adminScope.is_limited_admin) && !Boolean(adminScope.is_main_admin)) {
-    return "media";
+    return "limited_admin";
+  }
+  if (["media", "limited_admin", "speaking_admin", "speaking_user", "developer"].includes(accountRole)) {
+    return accountRole;
   }
   return (state?.effective_role as Role | undefined) || accountRole;
 }
@@ -24710,7 +24717,7 @@ function DashboardShell({
     (appState?.sections?.[activeRole] as string[] | undefined),
     getUserSubjects(activeRole, user, appState),
   );
-  const rawRoleData = activeRole === "media"
+  const rawRoleData = activeRole === "media" || activeRole === "limited_admin"
     ? (appState?.admin || {})
     : activeRole === "speaking_admin"
       ? (appState?.speaking_admin || {})
@@ -24738,7 +24745,7 @@ function DashboardShell({
   const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
   const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
   const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule"].filter((item) => orderedSections.includes(item));
-  const topbarSections = activeRole === "admin"
+  const topbarSections = activeRole === "admin" || activeRole === "limited_admin"
     ? primaryAdminSections
     : activeRole === "developer"
     ? primaryDeveloperSections
@@ -24749,7 +24756,7 @@ function DashboardShell({
     ? t(locale, `section.${item}.short`, labelFor(item, locale))
     : labelFor(item, locale);
   const normalizedSection = normalizeSection(section, activeRole, effectiveSections);
-  const currentSection = (normalizedSection === "generator" && !canGenerateAi) || (activeRole === "admin" && normalizedSection === "dcoin")
+  const currentSection = (normalizedSection === "generator" && !canGenerateAi) || ((activeRole === "admin" || activeRole === "limited_admin") && normalizedSection === "dcoin")
     ? "home"
     : normalizedSection;
   const [isMobileLayout, setIsMobileLayout] = useState(false);
@@ -25388,7 +25395,7 @@ function DashboardShell({
     } else if (currentSection === "home" && activeRole === "speaking_admin") {
       content = <SpeakingAdminHome apiFetch={authedApiFetch} user={user} onNavigate={handleNavigate} />;
     } else if (currentSection === "profile") {
-      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "speaking_admin" ? "SPEAKING ADMIN" : activeRole === "media" ? "MEDIA" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
+      content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel={activeRole === "speaking_admin" ? "SPEAKING ADMIN" : activeRole === "media" ? "MEDIA" : activeRole === "limited_admin" ? "LIMITED ADMIN" : "ADMIN"} onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="admin" />;
     } else if (currentSection === "speaking-users" && activeRole === "speaking_admin") {
@@ -25442,7 +25449,7 @@ function DashboardShell({
           sectionLabel={(sectionId) => labelFor(sectionId, locale)}
           notificationCount={unreadCount}
           primaryNavSections={
-            activeRole === "admin"
+            activeRole === "admin" || activeRole === "limited_admin"
               ? primaryAdminSections
               : activeRole === "developer"
               ? primaryDeveloperSections
@@ -25897,7 +25904,7 @@ export default function DiamondEducationApp() {
           }
           setActiveRole(workspaceRoleFromState(parsedUser, cachedAppState));
           setAuthStatus("authenticated");
-          setInitialStateReady(true);
+          setInitialStateReady(roleFromUser(parsedUser) !== "admin" || Boolean(cachedAppState?.admin?.admin_scope));
           setAuthResolved(true);
         }
       }
@@ -25985,13 +25992,14 @@ export default function DiamondEducationApp() {
       const urlRole = (params.get("role") as Role) || "student";
       const urlSection = params.get("section") || "home";
       const accountRole = roleFromUser(userRef.current);
-      const limitedMediaAccount = accountRole === "admin"
-        && Boolean((appStateRef.current?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
-      // A copied/back navigation URL can still contain role=admin because the
-      // media account is backed by an admin API token. Do not let that URL
-      // switch this account into the ordinary admin workspace.
-      const safeRole = limitedMediaAccount
-        ? "media"
+      const limitedAdminAccount = accountRole === "limited_admin" || (accountRole === "admin"
+        && Boolean((appStateRef.current?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin)
+        && !Boolean((appStateRef.current?.admin?.admin_scope as GenericRow | undefined)?.is_main_admin));
+      // A copied/back navigation URL can still contain role=admin because
+      // limited and media credentials are backed by the admin API. Do not let
+      // that URL switch a restricted account into the ordinary admin workspace.
+      const safeRole = limitedAdminAccount
+        ? "limited_admin"
         : accountRole === "media" || accountRole === "developer"
           ? accountRole
           : urlRole;
@@ -26241,7 +26249,7 @@ export default function DiamondEducationApp() {
       setShowAuthRetry(true);
       if (userRef.current) {
         setAuthResolved(true);
-        setInitialStateReady(true);
+        setInitialStateReady(roleFromUser(userRef.current) !== "admin" || Boolean(appStateRef.current?.admin?.admin_scope));
         return;
       }
       setAuthResolved(false);
@@ -26313,7 +26321,7 @@ export default function DiamondEducationApp() {
       setIsTelegramMode(Boolean(telegramId));
       if (userRef.current) {
         setAuthResolved(true);
-        setInitialStateReady(true);
+        setInitialStateReady(roleFromUser(userRef.current) !== "admin" || Boolean(appStateRef.current?.admin?.admin_scope));
       } else {
         const hasSavedToken = typeof window !== "undefined" && Boolean(localStorage.getItem("diamond_token"));
         if (!hasSavedToken && !telegramId) {
@@ -26606,8 +26614,9 @@ export default function DiamondEducationApp() {
     const appStateCacheKey = `diamond_app_state_cache_${String(user.id || "user")}`;
     const roleNow = roleFromUser(user);
     const sectionLower = String(section || "").toLowerCase();
+    const needsAdminWorkspaceResolution = roleNow === "admin" && !appState?.admin?.admin_scope;
     const skipGlobalAppState =
-      (roleNow === "admin" && sectionLower === "payments")
+      (roleNow === "admin" && sectionLower === "payments" && !needsAdminWorkspaceResolution)
       || (roleNow === "student" && sectionLower === "payments");
 
     try {
@@ -26620,9 +26629,9 @@ export default function DiamondEducationApp() {
           && (String(cached?.state_scope || "full") !== "boot" || String(cached?.effective_role) !== "student")
         ) {
           setAppState((prev) => prev || cached);
-          setInitialStateReady(true);
+          if (!needsAdminWorkspaceResolution || cached?.admin?.admin_scope) setInitialStateReady(true);
           const cachedRole = workspaceRoleFromState(user, cached);
-          if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
+          if (!(["media", "limited_admin", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
           }
         }
@@ -26654,13 +26663,14 @@ export default function DiamondEducationApp() {
         if (!cancelled) setInitialStateReady(true);
         return;
       }
-      if (!cancelled) setInitialStateReady(true);
+      if (!cancelled && !needsAdminWorkspaceResolution) setInitialStateReady(true);
       inFlight = true;
       try {
         const payload = await requestJson<GenericRow>("/app/state?scope=boot", { token, timeoutMs: 30000, retries: 0 });
         if (cancelled) return;
-        const limitedMediaAccount = roleNow === "admin"
-          && Boolean((payload?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
+        const limitedAdminAccount = roleNow === "admin"
+          && Boolean((payload?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin)
+          && !Boolean((payload?.admin?.admin_scope as GenericRow | undefined)?.is_main_admin);
         setAppState((prev) => {
           let nextState: GenericRow;
           if (roleNow === "student" && String(payload?.state_scope || "") === "boot" && prev?.student) {
@@ -26737,12 +26747,13 @@ export default function DiamondEducationApp() {
         } catch {
           // Ignore storage pressure/private mode.
         }
-        const effective = limitedMediaAccount ? "media" : payload?.effective_role as Role | undefined;
+        const effective = limitedAdminAccount ? "limited_admin" : payload?.effective_role as Role | undefined;
         // The Speaking account has a separate restricted workspace. Never
         // replace it with a broad backend role after refreshing app state.
-        if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {
+        if (!(["media", "limited_admin", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleFromUser(userRef.current)) && effective && effective !== activeRole) {
           setActiveRole(effective);
         }
+        if (needsAdminWorkspaceResolution) setInitialStateReady(true);
       } catch (error) {
         if (!cancelled) {
           const message = error instanceof Error ? error.message : "Could not refresh app state";
@@ -26765,10 +26776,14 @@ export default function DiamondEducationApp() {
           if (!isLikelyNetworkIssue && sec !== "chats" && sec !== "diamondvoy") {
             setNotice(message);
           }
+          if (needsAdminWorkspaceResolution) {
+            setAuthInitError("Admin ish maydoni aniqlanmadi. Qayta urinib ko‘ring.");
+            setShowAuthRetry(true);
+          }
         }
       } finally {
         inFlight = false;
-        if (!cancelled) setInitialStateReady(true);
+        if (!cancelled && !needsAdminWorkspaceResolution) setInitialStateReady(true);
       }
     }
 
