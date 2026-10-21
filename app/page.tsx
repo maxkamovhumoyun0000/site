@@ -1215,6 +1215,18 @@ function roleFromUser(user: ApiUser | null): Role {
   return "student";
 }
 
+function workspaceRoleFromState(user: ApiUser | null, state: GenericRow | null | undefined): Role {
+  const accountRole = roleFromUser(user);
+  const adminScope = (state?.admin?.admin_scope || {}) as GenericRow;
+  // Limited-admin credentials are backed by the admin API, but the limited
+  // workspace is known as soon as the cached/server scope is available. Keep
+  // hydration from briefly painting the unrestricted admin shell first.
+  if (accountRole === "admin" && Boolean(adminScope.is_limited_admin) && !Boolean(adminScope.is_main_admin)) {
+    return "media";
+  }
+  return (state?.effective_role as Role | undefined) || accountRole;
+}
+
 function userName(user: ApiUser | null) {
   if (!user) return "Diamond User";
   if (user.full_name) return user.full_name;
@@ -25822,6 +25834,8 @@ export default function DiamondEducationApp() {
   const [activeRole, setActiveRole] = useState<Role>("student");
   const [section, setSection] = useState("home");
   const [appState, setAppState] = useState<GenericRow | null>(null);
+  const appStateRef = useRef<GenericRow | null>(null);
+  appStateRef.current = appState;
   const [isTelegramMode, setIsTelegramMode] = useState(false);
   // Telegram can inject initData a moment after Next has hydrated.  Keep this
   // separate from `isTelegramMode` (which means an actual Telegram identity)
@@ -25871,16 +25885,17 @@ export default function DiamondEducationApp() {
         if (parsedUser && parsedUser.id) {
           userRef.current = parsedUser;
           setUser(parsedUser);
-          const cachedRole = roleFromUser(parsedUser);
-          setActiveRole(cachedRole);
+          let cachedAppState: GenericRow | null = null;
           const appStateCacheKey = `diamond_app_state_cache_${String(parsedUser.id)}`;
           const cachedAppStateStr = localStorage.getItem(appStateCacheKey);
           if (cachedAppStateStr) {
             const parsedAppState = JSON.parse(cachedAppStateStr) as GenericRow;
             if (parsedAppState) {
+              cachedAppState = parsedAppState;
               setAppState(parsedAppState);
             }
           }
+          setActiveRole(workspaceRoleFromState(parsedUser, cachedAppState));
           setAuthStatus("authenticated");
           setInitialStateReady(true);
           setAuthResolved(true);
@@ -25971,7 +25986,7 @@ export default function DiamondEducationApp() {
       const urlSection = params.get("section") || "home";
       const accountRole = roleFromUser(userRef.current);
       const limitedMediaAccount = accountRole === "admin"
-        && Boolean((appState?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
+        && Boolean((appStateRef.current?.admin?.admin_scope as GenericRow | undefined)?.is_limited_admin);
       // A copied/back navigation URL can still contain role=admin because the
       // media account is backed by an admin API token. Do not let that URL
       // switch this account into the ordinary admin workspace.
@@ -26606,7 +26621,7 @@ export default function DiamondEducationApp() {
         ) {
           setAppState((prev) => prev || cached);
           setInitialStateReady(true);
-          const cachedRole = cached?.effective_role as Role | undefined;
+          const cachedRole = workspaceRoleFromState(user, cached);
           if (!(["media", "speaking_admin", "speaking_user", "developer"] as Role[]).includes(roleNow) && cachedRole && cachedRole !== activeRole) {
             setActiveRole(cachedRole);
           }
