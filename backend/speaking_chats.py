@@ -310,6 +310,19 @@ async def list_speaking_direct_chats(authorization: str | None = Header(default=
             (uid, uid),
         )
         chats = [dict(row) for row in cur.fetchall() or []]
+        chat_ids = [int(chat.get("id") or 0) for chat in chats]
+        unread_counts: dict[int, int] = {}
+        if chat_ids:
+            placeholders = ",".join("?" for _ in chat_ids)
+            cur.execute(
+                f"SELECT chat_id, COUNT(*) AS unread_count FROM speaking_direct_messages "
+                f"WHERE chat_id IN ({placeholders}) AND sender_id<>? AND read_at IS NULL GROUP BY chat_id",
+                (*chat_ids, uid),
+            )
+            unread_counts = {
+                int(dict(row).get("chat_id") or 0): int(dict(row).get("unread_count") or 0)
+                for row in cur.fetchall() or []
+            }
         items = []
         for chat in chats:
             other_id = int(chat.get("user_high_id") if int(chat.get("user_low_id") or 0) == uid else chat.get("user_low_id") or 0)
@@ -326,6 +339,7 @@ async def list_speaking_direct_chats(authorization: str | None = Header(default=
                 "other_user": _public_user(other),
                 "last_message": str(latest.get("message") or ("🎙️ Voice message" if latest.get("attachments_json") else "")),
                 "last_time": latest.get("created_at") or chat.get("last_message_at"),
+                "unread_count": unread_counts.get(int(chat.get("id") or 0), 0),
             })
         return {"items": items}
     finally:
