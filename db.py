@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import json
+import hashlib
 import pytz
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -10236,6 +10237,50 @@ def prepare_user_for_new_test(user_id, subject):
 LOGIN_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_THROTTLE_MAX_FAILURES", "5") or 5))
 LOGIN_THROTTLE_WINDOW_SEC = max(60, int(os.getenv("LOGIN_THROTTLE_WINDOW_SEC", "900") or 900))
 _LOGIN_THROTTLE_SCHEMA_READY = False
+_LOGIN_THROTTLE_FALLBACK_LOCK = threading.Lock()
+_LOGIN_THROTTLE_FALLBACK: dict[str, tuple[int, int]] = {}
+
+
+def _login_throttle_fallback_key(throttle_key: str) -> str:
+    return hashlib.sha256(str(throttle_key).encode("utf-8", "replace")).hexdigest()
+
+
+def _fallback_login_is_throttled(throttle_key: str, limit: int, now: int) -> bool:
+    key = _login_throttle_fallback_key(throttle_key)
+    with _LOGIN_THROTTLE_FALLBACK_LOCK:
+        entry = _LOGIN_THROTTLE_FALLBACK.get(key)
+        if not entry:
+            return False
+        started, count = entry
+        if now - started >= LOGIN_THROTTLE_WINDOW_SEC:
+            _LOGIN_THROTTLE_FALLBACK.pop(key, None)
+            return False
+        return count >= limit
+
+
+def _fallback_login_record_failure(throttle_key: str, now: int) -> None:
+    key = _login_throttle_fallback_key(throttle_key)
+    with _LOGIN_THROTTLE_FALLBACK_LOCK:
+        # Bound memory use during prolonged database outages.
+        expired = [
+            item_key
+            for item_key, (started, _count) in _LOGIN_THROTTLE_FALLBACK.items()
+            if now - started >= LOGIN_THROTTLE_WINDOW_SEC
+        ]
+        for item_key in expired:
+            _LOGIN_THROTTLE_FALLBACK.pop(item_key, None)
+        if key not in _LOGIN_THROTTLE_FALLBACK and len(_LOGIN_THROTTLE_FALLBACK) >= 100_000:
+            _LOGIN_THROTTLE_FALLBACK.pop(next(iter(_LOGIN_THROTTLE_FALLBACK)))
+        started, count = _LOGIN_THROTTLE_FALLBACK.get(key, (now, 0))
+        if now - started >= LOGIN_THROTTLE_WINDOW_SEC:
+            started, count = now, 0
+        _LOGIN_THROTTLE_FALLBACK[key] = (started, count + 1)
+
+
+def _fallback_login_clear(throttle_key: str) -> None:
+    key = _login_throttle_fallback_key(throttle_key)
+    with _LOGIN_THROTTLE_FALLBACK_LOCK:
+        _LOGIN_THROTTLE_FALLBACK.pop(key, None)
 
 
 def ensure_login_throttle_schema():
@@ -10262,8 +10307,9 @@ def ensure_login_throttle_schema():
 def is_login_throttled(throttle_key: str, max_failures: int | None = None) -> bool:
     """True while the key has >= max_failures failures inside the window.
 
-    Fails open (allows login) on unexpected DB errors so a throttle-table
-    problem can never lock the whole platform out.
+    Uses a process-local bounded fallback during DB errors. The fallback does
+    not replace the shared persistent counter, but avoids disabling throttling
+    completely while the database throttle table is unavailable.
     """
     if not throttle_key:
         return False
@@ -10292,8 +10338,9 @@ def is_login_throttled(throttle_key: str, max_failures: int | None = None) -> bo
             finally:
                 conn.close()
     except Exception:
-        logger.exception("is_login_throttled failed (fail-open) key=%s", throttle_key)
-        return False
+        # Login identifiers can be personal data; never put throttle keys in logs.
+        logger.exception("is_login_throttled failed; using process-local fallback")
+        return _fallback_login_is_throttled(throttle_key, limit, int(time.time()))
 
 
 def record_login_failure(throttle_key: str) -> None:
@@ -10327,7 +10374,8 @@ def record_login_failure(throttle_key: str) -> None:
             finally:
                 conn.close()
     except Exception:
-        logger.exception("record_login_failure failed key=%s", throttle_key)
+        logger.exception("record_login_failure failed; recording process-local fallback")
+        _fallback_login_record_failure(throttle_key, int(time.time()))
 
 
 def clear_login_throttle(throttle_key: str) -> None:
@@ -10343,7 +10391,8 @@ def clear_login_throttle(throttle_key: str) -> None:
             finally:
                 conn.close()
     except Exception:
-        logger.exception("clear_login_throttle failed key=%s", throttle_key)
+        logger.exception("clear_login_throttle failed")
+        _fallback_login_clear(throttle_key)
 
 
 def increment_failed_logins(user_id: int) -> None:

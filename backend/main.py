@@ -12,6 +12,7 @@ import fcntl
 import html
 import hashlib
 import hmac
+import io
 import json
 import logging
 import math
@@ -25,6 +26,7 @@ import string
 import subprocess
 import threading
 import time
+import zipfile
 import smtplib
 from contextlib import contextmanager, suppress
 from functools import lru_cache
@@ -3113,6 +3115,15 @@ def _is_main_admin(admin_ref_id: int) -> bool:
 
 def _is_limited_admin(admin_ref_id: int) -> bool:
     return int(admin_ref_id) in {int(x) for x in LIMITED_ADMIN_CHAT_IDS}
+
+
+def _require_main_admin(user: dict) -> int:
+    """Require the explicitly configured owner/admin for global system controls."""
+    _require_role(user, {"admin"})
+    admin_ref = _admin_ref_id(user)
+    if not _is_main_admin(admin_ref):
+        raise HTTPException(status_code=403, detail="Only main admins can access system settings")
+    return admin_ref
 
 
 def _is_general_admin_scope(admin_ref_id: int) -> bool:
@@ -12010,6 +12021,58 @@ DIAMONDVOY_RETENTION_DAYS = 7
 FEEDBACK_RETENTION_DAYS = 186
 
 
+def _upload_content_matches_extension(raw: bytes, ext: str) -> bool:
+    """Validate uploaded bytes against the allowlisted extension, not client MIME."""
+    ext = str(ext or "").lower()
+    if ext in CHAT_IMAGE_MIME_BY_EXT or ext == ".gif":
+        detected = _image_type_from_signature(raw)
+        return bool(detected and (ext == detected[0] or (ext == ".jpeg" and detected[0] == ".jpg")))
+    if ext == ".pdf":
+        return raw.startswith(b"%PDF-")
+    if ext in {".doc", ".xls", ".ppt"}:
+        return raw.startswith(bytes.fromhex("D0CF11E0A1B11AE1"))
+    office_main_part = {
+        ".docx": "word/document.xml",
+        ".xlsx": "xl/workbook.xml",
+        ".pptx": "ppt/presentation.xml",
+    }.get(ext)
+    if office_main_part:
+        if not raw.startswith(b"PK\x03\x04"):
+            return False
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 10_000:
+                    return False
+                names = {entry.filename for entry in entries}
+            return "[Content_Types].xml" in names and office_main_part in names
+        except (OSError, zipfile.BadZipFile, ValueError):
+            return False
+    if ext == ".txt":
+        if b"\x00" in raw:
+            return False
+        try:
+            raw.decode("utf-8-sig")
+            return True
+        except UnicodeDecodeError:
+            return False
+    if ext == ".mp3":
+        return raw.startswith(b"ID3") or (len(raw) > 1 and raw[0] == 0xFF and raw[1] & 0xE0 == 0xE0)
+    if ext == ".wav":
+        return len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"
+    if ext in {".m4a", ".mp4", ".mov"}:
+        return len(raw) >= 12 and raw[4:8] == b"ftyp"
+    return False
+
+
+async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
+    """Read at most limit+1 bytes so oversized multipart bodies cannot exhaust RAM."""
+    raw = await file.read(max(1, int(max_bytes)) + 1)
+    if len(raw) > max_bytes:
+        raise HTTPException(status_code=413, detail="File is too large")
+    return raw
+
+
 def _chat_media_secret() -> bytes:
     raw = (
         os.getenv("CHAT_MEDIA_SECRET")
@@ -12109,7 +12172,7 @@ def _validate_chat_image_urls(image_urls: list[str] | None) -> list[str]:
 
 async def _upload_chat_image_file(file: UploadFile, user_id: int) -> str:
     content_type = str(file.content_type or "").split(";")[0].strip().lower()
-    raw = await file.read()
+    raw = await _read_upload_limited(file, CHAT_IMAGE_MAX_BYTES)
     if not raw:
         raise HTTPException(status_code=400, detail="Rasm yuklanmadi. Qayta urinib ko‘ring.")
     if len(raw) > CHAT_IMAGE_MAX_BYTES:
@@ -12118,6 +12181,8 @@ async def _upload_chat_image_file(file: UploadFile, user_id: int) -> str:
     expected = CHAT_IMAGE_MIME_BY_EXT.get(ext)
     if not expected or content_type not in {expected, "image/jpg" if expected == "image/jpeg" else expected}:
         raise HTTPException(status_code=422, detail="Rasm turi noto‘g‘ri")
+    if not _upload_content_matches_extension(raw, ext):
+        raise HTTPException(status_code=422, detail="Yuklangan fayl haqiqiy rasm emas")
     filename = f"chat_{int(user_id)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}{ext}"
     path = CHAT_UPLOAD_DIR / filename
     with open(path, "wb") as handle:
@@ -12127,7 +12192,7 @@ async def _upload_chat_image_file(file: UploadFile, user_id: int) -> str:
 
 async def _upload_community_attachment_file(file: UploadFile, user_id: int) -> dict[str, Any]:
     """Store an allowed community-chat image, document, audio or video file."""
-    raw = await file.read()
+    raw = await _read_upload_limited(file, COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES)
     if not raw:
         raise HTTPException(status_code=400, detail="File could not be uploaded")
     if len(raw) > COMMUNITY_CHAT_ATTACHMENT_MAX_BYTES:
@@ -12140,6 +12205,8 @@ async def _upload_community_attachment_file(file: UploadFile, user_id: int) -> d
     received_mime = str(file.content_type or "").split(";", 1)[0].strip().lower()
     if received_mime and received_mime not in {expected_mime, "application/octet-stream", "image/jpg"}:
         raise HTTPException(status_code=422, detail="The file type does not match its extension")
+    if not _upload_content_matches_extension(raw, ext):
+        raise HTTPException(status_code=422, detail="The uploaded file content does not match its type")
     safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(original_name).stem).strip("_")[:50] or "file"
     filename = f"community_{int(user_id)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}_{safe_stem}{ext}"
     (CHAT_UPLOAD_DIR / filename).write_bytes(raw)
@@ -12158,7 +12225,7 @@ async def _upload_diamondvoy_attachment_file(file: UploadFile, user_id: int) -> 
     chat may share media, including video; Diamondvoy receives only content it
     can inspect and has a lower per-file limit.
     """
-    raw = await file.read()
+    raw = await _read_upload_limited(file, DIAMONDVOY_ATTACHMENT_MAX_BYTES)
     if not raw:
         raise HTTPException(status_code=400, detail="Fayl yuklanmadi")
     if len(raw) > DIAMONDVOY_ATTACHMENT_MAX_BYTES:
@@ -12173,6 +12240,8 @@ async def _upload_diamondvoy_attachment_file(file: UploadFile, user_id: int) -> 
     received_mime = str(file.content_type or "").split(";", 1)[0].strip().lower()
     if received_mime and received_mime not in {expected_mime, "application/octet-stream", "image/jpg"}:
         raise HTTPException(status_code=422, detail="Fayl turi uning kengaytmasiga mos emas")
+    if not _upload_content_matches_extension(raw, ext):
+        raise HTTPException(status_code=422, detail="Yuklangan fayl mazmuni uning turiga mos emas")
     safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(original_name).stem).strip("_")[:50] or "file"
     filename = f"diamondvoy_{int(user_id)}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(6)}_{safe_stem}{ext}"
     (CHAT_UPLOAD_DIR / filename).write_bytes(raw)
@@ -15477,12 +15546,13 @@ def _startup_validation_report() -> dict:
             }
         )
         conn.close()
-    except Exception as exc:
-        checks.append({"name": "database_connection", "ok": False, "error": str(exc)})
+    except Exception:
+        # Do not return driver errors: they may contain the connection URL or
+        # infrastructure details. The API should expose only a stable status.
+        checks.append({"name": "database_connection", "ok": False, "error": "connection_failed"})
     return {
         "ok": bool(url_ok and conn_ok and table_ok),
         "checks": checks,
-        "database_url": str(DATABASE_URL or ""),
         "timestamp": _now_utc().isoformat(),
     }
 
@@ -23129,8 +23199,19 @@ async def chats_serve_media(filename: str, sig: str = Query(default="")):
     file_path = CHAT_UPLOAD_DIR / safe
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    media_type = CHAT_IMAGE_MIME_BY_EXT.get(file_path.suffix.lower()) or mimetypes.guess_type(safe)[0] or "application/octet-stream"
-    return FileResponse(str(file_path), media_type=media_type)
+    ext = file_path.suffix.lower()
+    media_type = COMMUNITY_CHAT_ATTACHMENT_MIME_BY_EXT.get(ext) or CHAT_IMAGE_MIME_BY_EXT.get(ext) or "application/octet-stream"
+    inline_types = ("image/", "audio/", "video/")
+    disposition = "inline" if media_type.startswith(inline_types) else "attachment"
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f'{disposition}; filename="{safe}"',
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )
 
 
 
@@ -54322,15 +54403,14 @@ async def admin_domain_email_delete(email_id: int, authorization: str | None = H
 @app.get("/admin/system/startup-check")
 async def admin_startup_check(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
+    _require_main_admin(user)
     return _startup_validation_report()
 
 
 @app.get("/admin/system/settings")
 async def admin_system_settings(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
-    admin_ref = _admin_ref_id(user)
+    admin_ref = _require_main_admin(user)
     return {
         "admin_ref_id": admin_ref,
         "is_main_admin": _is_main_admin(admin_ref),
@@ -54338,7 +54418,6 @@ async def admin_system_settings(authorization: str | None = Header(default=None)
         "economy_rules": get_economy_rule_settings(),
         "daily_test_stock": _safe_call(lambda: count_available_daily_tests_global(), 0),
         "support_metrics": _support_metrics_payload(),
-        "database_url": os.getenv("DATABASE_URL", ""),
         "webhook_mode": os.getenv("USE_WEBHOOK", "false"),
     }
 
