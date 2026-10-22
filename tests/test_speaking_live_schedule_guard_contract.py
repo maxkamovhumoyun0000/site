@@ -83,6 +83,20 @@ def test_speaking_chat_compatibility_endpoints_exist() -> None:
         assert path in backend
 
 
+def test_speaking_community_is_a_distinct_channel_and_search_accepts_legacy_query_key() -> None:
+    backend = (ROOT / "backend/speaking_chats.py").read_text(encoding="utf-8")
+    main = (ROOT / "backend/main.py").read_text(encoding="utf-8")
+    search = backend[backend.index("async def search_speaking_chat_users"):backend.index("async def list_speaking_direct_chats")]
+    community = main[main.index("def _community_chat_thread_for_user"):main.index("def _community_chat_cleanup_expired_messages_if_due")]
+    assert "query: str = Query(default=\"\"" in search
+    assert "q: str | None = Query(default=None" in search
+    assert "str(q if q is not None else query)" in search
+    assert "normalized_channel not in {\"general\", \"speaking\"}" in community
+    assert "_SPEAKING_COMMUNITY_CHAT_DIRECT_KEY" in community
+    assert "_COMMUNITY_CHAT_DIRECT_KEY" in community
+    assert "if normalized_channel == \"speaking\"" in community
+
+
 def test_live_recordings_follow_seven_day_retention() -> None:
     lessons = (ROOT / "backend/speaking_live_lessons.py").read_text(encoding="utf-8")
     recordings = (ROOT / "backend/speaking_live_recordings.py").read_text(encoding="utf-8")

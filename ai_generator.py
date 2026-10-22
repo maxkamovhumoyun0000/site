@@ -584,6 +584,68 @@ async def _xai_generate_text_stream(prompt: str, *, session: aiohttp.ClientSessi
         yield chunk
 
 
+async def _xai_generate_text_with_web_search(
+    prompt: str,
+    *,
+    session: aiohttp.ClientSession,
+    system_content: str,
+    deep_research: bool = False,
+) -> str:
+    """Run a grounded Diamondvoy answer through xAI's server-side web_search.
+
+    This uses the Responses API because chat-completions cannot execute the
+    server-side web-search tool. Citations are returned inline by that API;
+    never fabricate source names/counts if the provider returns none.
+    """
+    api_key = _get_xai_api_key()
+    model = str(os.getenv("XAI_TOOL_MODEL") or "grok-4.7").strip()
+    depth_hint = (
+        "Do deep research: compare several recent, authoritative sources, "
+        "explain disagreements and uncertainty, and cite every material claim. "
+        "Prefer primary sources when available."
+        if deep_research
+        else "Use web search only where it improves freshness or factual accuracy. Cite sources inline."
+    )
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": f"{system_content}\n\n{depth_hint}"},
+            {"role": "user", "content": str(prompt or "")},
+        ],
+        "tools": [{"type": "web_search"}],
+        "store": False,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "x-grok-conv-id": X_GROK_CONV_ID,
+    }
+    async with session.post(
+        "https://api.x.ai/v1/responses",
+        headers=headers,
+        json=payload,
+        timeout=aiohttp.ClientTimeout(total=120),
+    ) as response:
+        if response.status != 200:
+            detail = (await response.text())[:500]
+            logger.error("xAI web search failed status=%s detail=%s", response.status, detail)
+            raise RuntimeError("Diamondvoy web search is temporarily unavailable")
+        data = await response.json(content_type=None)
+    chunks: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = str(content.get("text") or "").strip()
+                if text:
+                    chunks.append(text)
+    answer = "\n".join(chunks).strip()
+    if not answer:
+        raise RuntimeError("Diamondvoy web search returned an empty answer")
+    return answer
+
+
 async def _xai_generate_text_stream_with_images(
     prompt: str,
     image_urls: list[str],

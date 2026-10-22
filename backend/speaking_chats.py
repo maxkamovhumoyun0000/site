@@ -257,15 +257,22 @@ def _open_speaking_chat_with_user(target_user_id: int, user: dict[str, Any]) -> 
 @router.get("/speaking/chats/contacts")
 @router.get("/api/speaking/chats/contacts")
 async def search_speaking_chat_users(
-    query: str = Query(min_length=3, max_length=64),
+    query: str = Query(default="", max_length=64),
+    q: str | None = Query(default=None, max_length=64),
     authorization: str | None = Header(default=None),
 ):
     user = _require_speaking_user(authorization)
-    normalized = query.strip().lstrip("@").lower()
-    if len(normalized) < 3:
-        raise HTTPException(status_code=422, detail="Enter at least three characters")
+    # `query` is the current client contract; `q` keeps older web/mobile
+    # builds working. Two characters are enough for names while the bounded
+    # result count prevents this endpoint becoming an unfiltered directory.
+    normalized = str(q if q is not None else query).strip().lstrip("@").casefold()
+    if len(normalized) < 2:
+        return {"items": []}
     blocked_ids = _mutually_blocked_ids(int(user.get("id") or 0))
-    escaped = normalized.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    # Use a printable, database-portable escape character. Backslash escape
+    # handling differs between PostgreSQL string modes and SQLite, which made
+    # names containing punctuation intermittently fail on one backend.
+    escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_")
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -277,8 +284,8 @@ async def search_speaking_chat_users(
                  AND COALESCE(blocked, 0)=0
                  AND COALESCE(access_enabled, 1)=1
                  AND id<>?
-                 AND (LOWER(COALESCE(login_id,'')) LIKE ? ESCAPE '\\'
-                      OR LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ? ESCAPE '\\')
+                 AND (LOWER(COALESCE(login_id,'')) LIKE ? ESCAPE '!'
+                      OR LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ? ESCAPE '!')
                ORDER BY LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 30""",
             (int(user.get("id") or 0), f"%{escaped}%", f"%{escaped}%"),
         )

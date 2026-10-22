@@ -428,7 +428,11 @@ from diamondvoy_helpers import (
     sanitize_diamondvoy_reply,
     try_diamondvoy_bot_info,
 )
-from ai_generator import _xai_generate_text, _xai_generate_text_stream_with_images
+from ai_generator import (
+    _xai_generate_text,
+    _xai_generate_text_stream_with_images,
+    _xai_generate_text_with_web_search,
+)
 import gamified_tests
 
 logger = logging.getLogger(__name__)
@@ -2733,6 +2737,7 @@ class DiamondvoyPinRequest(BaseModel):
 
 class DiamondvoySendMessageRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
+    mode: str = Field(default="standard", pattern="^(standard|study|web_search|deep_research)$")
     # `image_urls` remains for installed app versions that only support
     # photos. New clients use `attachments` so they can send documents,
     # audio and video too, using the same signed-media rules as community
@@ -24888,6 +24893,7 @@ async def _diamondvoy_run_generation_job(
     prior_context: list[dict[str, str]],
     subjects: list[str],
     current_chat_title: str,
+    mode: str = "standard",
     cancel_event: asyncio.Event | None = None,
 ) -> None:
     """The actual LLM call, fully decoupled from the client's HTTP/SSE
@@ -24977,12 +24983,28 @@ async def _diamondvoy_run_generation_job(
         ai_user_text = (
             f"{role_context_hint}\n"
             f"{style_hint}\n"
-            f"Reply in the user's language when possible. Return plain text only.\n"
+            f"Reply in the user's language when possible. Use Markdown only when it improves readability. "
+            "Do not invent facts, citations, scores, or example data and present them as real. "
+            "If a comparison is useful, build a Markdown table from the actual answer. "
+            "If a formula is useful, put the exact formula in a $$...$$ block. "
+            "If code is requested, return a fenced code block with the correct language.\n"
             f"{image_note}{document_note}\n\n"
             f"{memory_note}\n\n"
             f"Recent conversation:\n{chr(10).join(history_lines)}\n\n"
             f"User request:\n{user_text or '[image-only educational request]'}"
         )
+
+        if mode == "study":
+            ai_user_text += (
+                "\nStudy mode is enabled. Teach in short steps, invite the learner to reason, "
+                "and when the user requests a quiz (or a quiz is clearly the best teaching step), "
+                "include a working interactive quiz using exactly this format: "
+                "```quiz_json {\"type\":\"wizard_trigger\",\"wizard\":\"quiz_runner\","
+                "\"title\":\"...\",\"topic\":\"...\",\"questions\":["
+                "{\"prompt\":\"...\",\"options\":[\"A...\",\"B...\",\"C...\",\"D...\"],"
+                "\"correct_answer\":\"one exact option string\",\"explanation\":\"...\"}]} ``` . "
+                "Every question must have at least two distinct options and the correct answer must exactly match one option."
+            )
 
         # Check if user asked for test questions on a topic
         topic_match = None
@@ -24999,7 +25021,7 @@ async def _diamondvoy_run_generation_job(
                 is_pure_quiz_request = "tushuntir" not in low_u and "объясн" not in low_u and "explain" not in low_u
 
         # If pure quiz request and we have enough questions in the bank:
-        if is_pure_quiz_request and topic_match:
+        if mode in {"standard", "study"} and is_pure_quiz_request and topic_match:
             try:
                 from personalization import get_questions_from_bank
                 bank_qs = get_questions_from_bank(
@@ -25026,7 +25048,36 @@ async def _diamondvoy_run_generation_job(
                 pass
 
         if not streamed:
-            if image_urls:
+            if mode in {"web_search", "deep_research"}:
+                async def web_answer_stream():
+                    async with aiohttp.ClientSession() as session:
+                        answer = await _xai_generate_text_with_web_search(
+                            ai_user_text,
+                            session=session,
+                            system_content=(
+                                "You are Diamondvoy, an educational assistant. Reply in the user's language. "
+                                "Use only facts supported by retrieved sources, include inline citations, "
+                                "and never invent sources or citation counts.\n" + role_context_hint
+                            ),
+                            deep_research=mode == "deep_research",
+                        )
+                    for start in range(0, len(answer), 48):
+                        yield answer[start : start + 48]
+
+                gen = web_answer_stream()
+                while True:
+                    try:
+                        chunk, cancelled = await next_chunk_or_cancel(gen)
+                    except StopAsyncIteration:
+                        break
+                    if cancelled:
+                        _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                        return
+                    if not chunk:
+                        continue
+                    streamed += chunk
+                    _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
+            elif image_urls:
                 vision_images = [_chat_media_data_url(url) for url in image_urls]
                 async with aiohttp.ClientSession() as session:
                     gen = _xai_generate_text_stream_with_images(ai_user_text, vision_images, session=session)
@@ -25192,7 +25243,7 @@ async def _diamondvoy_stream_events(
     if user_text:
         _safe_call(lambda: _diamondvoy_upsert_user_style(user_id, user_text, query_lang), None)
 
-    if not regenerate and role in {"teacher", "support"}:
+    if not regenerate and payload.mode == "standard" and role in {"teacher", "support"}:
         norm = user_text.strip().lower()
         if re.search(r"^(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish)", norm):
             async def fast_wizard_stream():
@@ -25203,7 +25254,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_wizard_stream(), media_type="text/event-stream")
 
-    if not regenerate and role == "admin":
+    if not regenerate and payload.mode == "standard" and role == "admin":
         norm = user_text.strip().lower()
         if re.search(
             r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx)",
@@ -25271,7 +25322,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": hw_fsm_reply, "chat_id": int(chat_id), "chat_title": current_chat_title})
                 return
 
-            if not image_urls and not document_context and not personal_learning_query:
+            if payload.mode == "standard" and not image_urls and not document_context and not personal_learning_query:
                 info_text = try_diamondvoy_bot_info(
                     user_text,
                     user=user,
@@ -25293,7 +25344,7 @@ async def _diamondvoy_stream_events(
                     return
 
             style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
-            if user_text and not image_urls and not document_context and not personal_learning_query:
+            if payload.mode == "standard" and user_text and not image_urls and not document_context and not personal_learning_query:
                 cached = _safe_call(lambda: _diamondvoy_find_cached_answer(user_id, user_text), None)
                 if cached:
                     _safe_call(lambda: _diamondvoy_touch_memory(int(cached.get("id") or 0)), None)
@@ -25366,6 +25417,7 @@ async def _diamondvoy_stream_events(
                     prior_context=prior_context,
                     subjects=subjects,
                     current_chat_title=current_chat_title,
+                    mode=payload.mode,
                     cancel_event=cancel_event,
                 )
             )
@@ -25452,6 +25504,49 @@ async def final_diamondvoy_fresh_session(
     _require_role(user, {"student", "teacher", "admin", "support"})
     row = _diamondvoy_start_fresh_session_final(int(user.get("id") or 0))
     return {"chat": _diamondvoy_serialize_chat_final(row)}
+
+
+@app.get("/chats/diamondvoy/memory")
+async def final_diamondvoy_memory(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    items = _diamondvoy_recent_memories(int(user.get("id") or 0), limit=120)
+    return {
+        "items": [
+            {
+                "id": int(item.get("id") or 0),
+                "question": str(item.get("question_text") or ""),
+                "subject": str(item.get("subject") or ""),
+                "updated_at": item.get("updated_at"),
+                "times_used": int(item.get("hit_count") or 0),
+            }
+            for item in items
+        ]
+    }
+
+
+@app.delete("/chats/diamondvoy/memory")
+async def final_diamondvoy_clear_memory(
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _ensure_final_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM diamondvoy_memory WHERE user_id=?", (int(user.get("id") or 0),))
+        deleted = max(0, int(getattr(cur, "rowcount", 0) or 0))
+        conn.commit()
+        return {"ok": True, "deleted": deleted}
+    except Exception:
+        conn.rollback()
+        logger.exception("diamondvoy memory clear failed user_id=%s", user.get("id"))
+        raise HTTPException(status_code=500, detail="Could not clear Diamondvoy memory")
+    finally:
+        conn.close()
 
 
 @app.post("/chats/diamondvoy/{chat_id}/pin")

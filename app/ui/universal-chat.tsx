@@ -1839,6 +1839,11 @@ export function UniversalChat({
   const [adminFeedbackDetail, setAdminFeedbackDetail] = useState<FeedbackDetail | null>(null);
 
   const [input, setInput] = useState("");
+  const [diamondvoyMode, setDiamondvoyMode] = useState<"standard" | "study" | "web_search" | "deep_research">("standard");
+  const [diamondvoyMemoryOpen, setDiamondvoyMemoryOpen] = useState(false);
+  const [diamondvoyMemoryLoading, setDiamondvoyMemoryLoading] = useState(false);
+  const [diamondvoyMemoryError, setDiamondvoyMemoryError] = useState("");
+  const [diamondvoyMemoryItems, setDiamondvoyMemoryItems] = useState<Array<Record<string, unknown>>>([]);
   const [replyInput, setReplyInput] = useState("");
   const [anonymous, setAnonymous] = useState(true);
   const [images, setImages] = useState<UploadPreview[]>([]);
@@ -1855,6 +1860,7 @@ export function UniversalChat({
   const [dpointAmount, setDpointAmount] = useState("");
   const [dpointReason, setDpointReason] = useState("");
   const [previewMedia, setPreviewMedia] = useState<PreviewMedia>(null);
+  const [canvasDraft, setCanvasDraft] = useState<string | null>(null);
   const [chatActionId, setChatActionId] = useState<number | null>(null);
   const [visibleTimeId, setVisibleTimeId] = useState<string | null>(null);
   const [testReviewContext, setTestReviewContext] = useState<TestReviewContext | null>(null);
@@ -2510,6 +2516,7 @@ export function UniversalChat({
     unlockDiamondvoyThinkingAudio();
     let chatId = activeChatId;
     const text = retryText ?? input.trim();
+    const selectedMode = diamondvoyMode;
     const imageUrls = retryImages ?? images.map((item) => item.url);
     const previews = retryImages
       ? retryImages.map((url, index) => ({ url, preview: apiUrl(url), name: `image-${index + 1}` }))
@@ -2580,7 +2587,7 @@ export function UniversalChat({
           "Content-Type": "application/json",
           "X-Language": language,
         },
-        body: JSON.stringify({ message: text, attachments: imageUrls.map((url) => ({ url })) }),
+        body: JSON.stringify({ message: text, mode: selectedMode, attachments: imageUrls.map((url) => ({ url })) }),
         signal: controller.signal,
       });
       const finalText = await consumeSse(response, {
@@ -2634,6 +2641,34 @@ export function UniversalChat({
     } finally {
       setSending(false);
       streamAbortRef.current = null;
+    }
+  }
+
+  async function openDiamondvoyMemory() {
+    setDiamondvoyMemoryOpen(true);
+    setDiamondvoyMemoryLoading(true);
+    setDiamondvoyMemoryError("");
+    try {
+      const response = await apiFetch("/chats/diamondvoy/memory");
+      setDiamondvoyMemoryItems(Array.isArray(response?.items) ? response.items : []);
+    } catch (err) {
+      setDiamondvoyMemoryError(parseError(err, tt("chat.memoryLoadError", "Xotirani yuklab bo‘lmadi.")));
+    } finally {
+      setDiamondvoyMemoryLoading(false);
+    }
+  }
+
+  async function clearDiamondvoyMemory() {
+    if (!window.confirm(tt("chat.memoryConfirm", "Diamondvoy saqlagan shaxsiy o‘quv kontekstini o‘chirasizmi?"))) return;
+    setDiamondvoyMemoryLoading(true);
+    setDiamondvoyMemoryError("");
+    try {
+      await apiFetch("/chats/diamondvoy/memory", { method: "DELETE" });
+      setDiamondvoyMemoryItems([]);
+    } catch (err) {
+      setDiamondvoyMemoryError(parseError(err, tt("chat.memoryClearError", "Xotirani o‘chirib bo‘lmadi.")));
+    } finally {
+      setDiamondvoyMemoryLoading(false);
     }
   }
 
@@ -2903,28 +2938,39 @@ export function UniversalChat({
 
   function renderChatText(text: string) {
     if (!text) return null;
-    const parts = text.split(/\[btn\](.*?)\[\/btn\]/g);
+    const parts = text.split(/(\[btn\].*?\[\/btn\])/g);
     return (
       <div className="whitespace-pre-wrap break-words text-sm leading-6 space-y-1">
         {parts.map((part, index) => {
-          if (index % 2 === 1) {
+          const buttonMatch = part.match(/^\[btn\]([\s\S]*?)\[\/btn\]$/);
+          if (buttonMatch) {
+            const buttonText = buttonMatch[1];
             return (
               <button
                 key={index}
                 type="button"
                 onClick={() => {
-                  setInput(part);
+                  setInput(buttonText);
                   setTimeout(() => {
-                    sendDiamondvoyMessage(part).catch(() => null);
+                    sendDiamondvoyMessage(buttonText).catch(() => null);
                   }, 50);
                 }}
                 className="inline-block mt-1 mr-2 px-3 py-1.5 rounded-lg bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 font-semibold border border-cyan-200 dark:border-cyan-500/30 hover:bg-cyan-200 dark:hover:bg-cyan-500/30 transition-colors"
               >
-                {part}
+                {buttonText}
               </button>
             );
           }
-          return <span key={index}>{part}</span>;
+          const citations = part.split(/(\[\[\d+\]\]\(https?:\/\/[^)]+\))/g);
+          return (
+            <span key={index}>
+              {citations.map((citation, citationIndex) => {
+                const match = citation.match(/^\[\[(\d+)\]\]\((https?:\/\/[^)]+)\)$/);
+                if (!match) return <span key={citationIndex}>{citation}</span>;
+                return <a key={citationIndex} href={match[2]} target="_blank" rel="noopener noreferrer" className="font-bold text-blue-700 underline underline-offset-2 dark:text-blue-300">[{match[1]}] {new URL(match[2]).hostname}</a>;
+              })}
+            </span>
+          );
         })}
       </div>
     );
@@ -3163,6 +3209,11 @@ export function UniversalChat({
                         {tt("chat.copy", "Nusxalash")}
                       </button>
                     )}
+                    {!mine && !message.streaming && !!message.content && (
+                      <button type="button" onClick={() => setCanvasDraft(message.content)} className="underline underline-offset-2">
+                        {tt("chat.canvas", "Canvas")}
+                      </button>
+                    )}
                     {message.failed && (
                       <button type="button" onClick={() => sendDiamondvoyMessage(message.retryMessage, message.retryImages).catch(() => null)} className="font-bold underline underline-offset-2">
                         {tt("chat.retry", "Qayta urinish")}
@@ -3184,6 +3235,20 @@ export function UniversalChat({
         className="border-t-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-950/95 backdrop-blur-md px-4 sm:px-6 py-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]"
       >
         {ComposerImages}
+        <div className="mb-2 flex flex-wrap items-center gap-2" role="group" aria-label="Diamondvoy javob rejimi">
+          <span className="text-xs font-bold text-ink-500 dark:text-navy-300">{tt("chat.modeLabel", "Javob rejimi:")}</span>
+          <button type="button" disabled={diamondvoyMemoryLoading} onClick={() => openDiamondvoyMemory().catch(() => null)} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:border-[#002DFF] disabled:opacity-50 dark:border-navy-700 dark:bg-navy-900 dark:text-white">{tt("chat.memory", "Xotira & kontekst")}</button>
+          {([
+            ["standard", tt("chat.mode.standard", "Oddiy")],
+            ["study", tt("chat.mode.study", "Study mode")],
+            ["web_search", tt("chat.mode.webSearch", "Web qidiruv")],
+            ["deep_research", tt("chat.mode.deepResearch", "Deep research")],
+          ] as const).map(([mode, label]) => (
+            <button key={mode} type="button" disabled={sending} aria-pressed={diamondvoyMode === mode} onClick={() => setDiamondvoyMode(mode)} className={cx("rounded-full border px-3 py-1.5 text-xs font-bold transition disabled:opacity-50", diamondvoyMode === mode ? "border-[#001A88] bg-[#002DFF] text-white" : "border-slate-200 bg-white text-ink-700 hover:border-[#002DFF] dark:border-navy-700 dark:bg-navy-900 dark:text-white")}>
+              {label}
+            </button>
+          ))}
+        </div>
         {isAdmin && activeChatId && shouldShowDiamondvoyAdminCommands(input) && (
           <div className="mb-2 rounded-2xl border border-cyan-200 bg-cyan-50 p-1 dark:border-cyan-400/25 dark:bg-cyan-500/10">
             <button
@@ -3660,6 +3725,37 @@ export function UniversalChat({
             <span>{error}</span>
             <button type="button" onClick={() => setError("")} className="font-black">x</button>
           </div>
+        </div>
+      )}
+      {canvasDraft !== null && (
+        <div className="fixed inset-0 z-[110] flex items-end justify-center bg-navy-950/65 p-3 backdrop-blur-sm sm:items-center" onClick={() => setCanvasDraft(null)}>
+          <section className="flex max-h-[90dvh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-2xl dark:border-white/10 dark:bg-navy-900" onClick={(event) => event.stopPropagation()}>
+            <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 dark:border-white/10 sm:px-5">
+              <div><h2 className="font-black">{tt("chat.canvasTitle", "Diamondvoy Canvas")}</h2><p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.canvasHint", "Javob nusxasini shu yerda tahrirlang")}</p></div>
+              <button type="button" aria-label="Yopish" onClick={() => setCanvasDraft(null)} className="rounded-lg border border-line px-3 py-2 text-sm font-bold dark:border-white/15">Yopish</button>
+            </header>
+            <textarea autoFocus value={canvasDraft} onChange={(event) => setCanvasDraft(event.target.value)} className="min-h-[45dvh] flex-1 resize-y bg-white p-4 text-sm leading-6 text-navy-900 outline-none dark:bg-navy-900 dark:text-white sm:p-5" />
+            <footer className="flex justify-end gap-2 border-t border-line px-4 py-3 dark:border-white/10 sm:px-5">
+              <button type="button" onClick={() => navigator.clipboard?.writeText(canvasDraft).catch(() => null)} className="rounded-xl border border-line px-4 py-2 text-sm font-bold dark:border-white/15">Nusxalash</button>
+              <button type="button" onClick={() => setCanvasDraft(null)} className="rounded-xl bg-[#1736E8] px-4 py-2 text-sm font-bold text-white">{tt("chat.done", "Tayyor")}</button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {diamondvoyMemoryOpen && (
+        <div className="fixed inset-0 z-[110] flex items-end justify-center bg-navy-950/65 p-3 backdrop-blur-sm sm:items-center" onClick={() => setDiamondvoyMemoryOpen(false)}>
+          <section className="flex max-h-[85dvh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-2xl dark:border-white/10 dark:bg-navy-900" onClick={(event) => event.stopPropagation()}>
+            <header className="flex items-center justify-between border-b border-line px-4 py-3 dark:border-white/10">
+              <div><h2 className="font-black">{tt("chat.memory", "Xotira & kontekst")}</h2><p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.memoryHint", "Diamondvoy javoblarda foydalanadigan saqlangan o‘quv konteksti")}</p></div>
+              <button type="button" onClick={() => setDiamondvoyMemoryOpen(false)} className="rounded-lg border border-line px-3 py-2 text-sm font-bold dark:border-white/15">Yopish</button>
+            </header>
+            <div className="min-h-28 flex-1 overflow-y-auto p-4">
+              {diamondvoyMemoryLoading ? <p className="text-sm text-ink-500">{tt("loading", "Yuklanmoqda…")}</p> : diamondvoyMemoryError ? <p role="alert" className="text-sm text-rose-600">{diamondvoyMemoryError}</p> : diamondvoyMemoryItems.length === 0 ? <p className="text-sm text-ink-500 dark:text-navy-300">{tt("chat.memoryEmpty", "Hozircha saqlangan kontekst yo‘q.")}</p> : <ul className="space-y-2">{diamondvoyMemoryItems.map((item) => <li key={String(item.id)} className="rounded-xl border border-line p-3 dark:border-white/10"><p className="text-sm font-semibold">{String(item.question || "")}</p><p className="mt-1 text-xs text-ink-500 dark:text-navy-300">{String(item.subject || tt("general", "Umumiy"))} · {Number(item.times_used || 0)} {tt("chat.memoryUsed", "marta foydalanilgan")}</p></li>)}</ul>}
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-line px-4 py-3 dark:border-white/10">
+              <button type="button" disabled={diamondvoyMemoryLoading || diamondvoyMemoryItems.length === 0} onClick={() => clearDiamondvoyMemory().catch(() => null)} className="rounded-xl border border-rose-200 px-4 py-2 text-sm font-bold text-rose-700 disabled:opacity-50 dark:border-rose-400/30 dark:text-rose-200">{tt("chat.memoryClear", "Xotirani o‘chirish")}</button>
+            </footer>
+          </section>
         </div>
       )}
     </div>
