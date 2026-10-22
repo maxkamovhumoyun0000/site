@@ -2739,7 +2739,7 @@ class DiamondvoyPinRequest(BaseModel):
 
 class DiamondvoySendMessageRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
-    mode: str = Field(default="standard", pattern="^(standard|study|web_search|deep_research)$")
+    mode: str = Field(default="auto", pattern="^(auto|standard|study|web_search|deep_research)$")
     # `image_urls` remains for installed app versions that only support
     # photos. New clients use `attachments` so they can send documents,
     # audio and video too, using the same signed-media rules as community
@@ -12808,8 +12808,9 @@ def _diamondvoy_list_chats_final(user_id: int, limit: int = 30) -> list[dict]:
     if isinstance(cached, list):
         return cached
     _final_chat_cleanup_if_due()
-    # A Diamondvoy session is temporary. The fresh-session route replaces it
-    # on every new entry, so no prior dialogue is exposed as a history list.
+    # Keep the user's conversations available across app/page re-entry. The
+    # caller may choose the most recently active one; creating a new session
+    # must not silently delete the previous conversation.
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -12822,33 +12823,24 @@ def _diamondvoy_list_chats_final(user_id: int, limit: int = 30) -> list[dict]:
             FROM diamondvoy_chats c
             WHERE c.user_id=? AND c.deleted_at IS NULL
               AND COALESCE(c.persistent, 0)=0
-            ORDER BY c.id DESC LIMIT 1
+            ORDER BY COALESCE(c.updated_at, c.created_at) DESC, c.id DESC LIMIT ?
             """,
-            (int(user_id),),
+            (int(user_id), max(1, min(60, int(limit or 30)))),
         )
-        latest = dict(cur.fetchone() or {})
+        rows = [dict(row) for row in (cur.fetchall() or [])]
     finally:
         conn.close()
-    rows = [latest] if latest else [_diamondvoy_create_chat_for_user(int(user_id), "Yangi chat")]
+    if not rows:
+        rows = [_diamondvoy_create_chat_for_user(int(user_id), "Yangi chat")]
     return _short_cache_set(_DIAMONDVOY_CHAT_LIST_CACHE, cache_key, rows, ttl_seconds=6.0, max_items=4096)
 
 
 def _diamondvoy_start_fresh_session_final(user_id: int) -> dict:
-    """Discard all prior sessions for a user and return one blank chat."""
+    """Create a new blank chat without deleting the user's saved history."""
     _ensure_final_chat_schema()
     uid = int(user_id or 0)
     if uid <= 0:
         raise HTTPException(status_code=401, detail="Invalid user")
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            "UPDATE diamondvoy_chats SET deleted_at=CURRENT_TIMESTAMP, pinned_at=NULL WHERE user_id=? AND deleted_at IS NULL",
-            (uid,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
     _clear_user_media_caches(uid)
     return _diamondvoy_create_chat_for_user(uid, "Yangi chat")
 
@@ -24905,6 +24897,32 @@ def _diamondvoy_is_personal_learning_query(text: str) -> bool:
     ))
 
 
+def _diamondvoy_resolve_mode(requested_mode: str, user_text: str) -> str:
+    """Resolve automatic Diamondvoy research depth without a UI mode toggle."""
+    requested = str(requested_mode or "auto").strip().lower()
+    if requested == "study":
+        return "study"
+    # Preserve older clients that explicitly sent these values.
+    if requested in {"web_search", "deep_research"}:
+        return requested
+    text = str(user_text or "").lower().replace("’", "'").replace("ё", "е")
+    if re.search(
+        r"(deep\s+research|chuqur\s+tadqiqot|keng\s+qamrovli\s+tadqiqot|"
+        r"comprehensive\s+research|systematic\s+review|глубок(ое|ий)\s+исслед|"
+        r"bir\s+necha\s+manba|multiple\s+sources|несколько\s+источник)",
+        text,
+    ):
+        return "deep_research"
+    if re.search(
+        r"(internetdan|manbalar?\b|manba\s+keltir|qidir(ib|ing|)|izlab\s+top|"
+        r"latest|current|today|right\s+now|recent|news|source(s)?\b|search\s+the\s+web|"
+        r"сейчас|сегодня|последн|актуальн|источник|найди|поиск|новост|202[5-9])",
+        text,
+    ):
+        return "web_search"
+    return "standard"
+
+
 _DIAMONDVOY_CANCEL_EVENTS: dict[str, asyncio.Event] = {}
 
 
@@ -25234,6 +25252,7 @@ async def _diamondvoy_stream_events(
     user_id = int(user.get("id") or 0)
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
     user_text = str(payload.message or "").strip()
+    mode = _diamondvoy_resolve_mode(payload.mode, user_text)
     legacy_image_urls = _validate_chat_image_urls(payload.image_urls)
     attachment_rows = _validate_diamondvoy_attachments(payload.attachments)
     attachment_urls = [str(item.get("url") or "") for item in attachment_rows]
@@ -25272,7 +25291,7 @@ async def _diamondvoy_stream_events(
     if user_text:
         _safe_call(lambda: _diamondvoy_upsert_user_style(user_id, user_text, query_lang), None)
 
-    if not regenerate and payload.mode == "standard" and role in {"teacher", "support"}:
+    if not regenerate and mode == "standard" and role in {"teacher", "support"}:
         norm = user_text.strip().lower()
         if re.search(r"^(homework ber|create homework|vazifa ber|topshiriq ber|make homework|uy vazifasi berish)", norm):
             async def fast_wizard_stream():
@@ -25283,7 +25302,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": assistant_text, "chat_id": int(chat_id), "chat_title": current_chat_title})
             return StreamingResponse(fast_wizard_stream(), media_type="text/event-stream")
 
-    if not regenerate and payload.mode == "standard" and role == "admin":
+    if not regenerate and mode == "standard" and role == "admin":
         norm = user_text.strip().lower()
         if re.search(
             r"(yangi.*o.quvchi|add.*student|student.*qo.sh|o.quvchi.*qo.sh|bulk.*student|xlsx.*student|student.*xlsx)",
@@ -25351,7 +25370,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": hw_fsm_reply, "chat_id": int(chat_id), "chat_title": current_chat_title})
                 return
 
-            if payload.mode == "standard" and not image_urls and not document_context and not personal_learning_query:
+            if mode == "standard" and not image_urls and not document_context and not personal_learning_query:
                 info_text = try_diamondvoy_bot_info(
                     user_text,
                     user=user,
@@ -25373,7 +25392,7 @@ async def _diamondvoy_stream_events(
                     return
 
             style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
-            if payload.mode == "standard" and user_text and not image_urls and not document_context and not personal_learning_query:
+            if mode == "standard" and user_text and not image_urls and not document_context and not personal_learning_query:
                 cached = _safe_call(lambda: _diamondvoy_find_cached_answer(user_id, user_text), None)
                 if cached:
                     _safe_call(lambda: _diamondvoy_touch_memory(int(cached.get("id") or 0)), None)
@@ -25446,7 +25465,7 @@ async def _diamondvoy_stream_events(
                     prior_context=prior_context,
                     subjects=subjects,
                     current_chat_title=current_chat_title,
-                    mode=payload.mode,
+                    mode=mode,
                     cancel_event=cancel_event,
                 )
             )
@@ -25472,19 +25491,15 @@ async def _diamondvoy_stream_events(
                     return
                 yield ": keepalive\n\n"
                 await asyncio.sleep(0.35)
-            cancel_event.set()
-            latest_job = await asyncio.get_event_loop().run_in_executor(None, _get_diamondvoy_gen_job, job_id)
-            if str((latest_job or {}).get("status") or "running") == "running":
-                _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": int(chat_id), "user_id": user_id, "status": "cancelled", "content": last_sent, "chat_title": current_chat_title})
+            # A closed screen only detaches the SSE reader. The generation job
+            # continues server-side and is resumed from active-generation.
             return
         except Exception:
             logger.exception("final diamondvoy stream failed user_id=%s chat_id=%s", user_id, chat_id)
             yield _sse_pack("error", {"message": t(query_lang, "diamondvoy_generation_error")})
         finally:
-            # Starlette may cancel a streaming task immediately on disconnect
-            # without another poll iteration; always signal the provider task.
-            if cancel_event is not None:
-                cancel_event.set()
+            # Generation is intentionally independent of this HTTP stream.
+            pass
 
     return StreamingResponse(
         event_stream(),
