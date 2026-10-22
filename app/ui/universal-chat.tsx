@@ -2938,41 +2938,59 @@ export function UniversalChat({
 
   function renderChatText(text: string) {
     if (!text) return null;
-    const parts = text.split(/(\[btn\].*?\[\/btn\])/g);
+    const renderInline = (value: string, keyPrefix: string) => {
+      const parts = value.split(/(\[btn\][\s\S]*?\[\/btn\]|\[\[\d+\]\]\(https?:\/\/[^)]+\))/g);
+      return parts.map((part, index) => {
+        const buttonMatch = part.match(/^\[btn\]([\s\S]*?)\[\/btn\]$/);
+        if (buttonMatch) {
+          const buttonText = buttonMatch[1];
+          return <button key={`${keyPrefix}-${index}`} type="button" onClick={() => sendDiamondvoyMessage(buttonText).catch(() => null)} className="inline-block mt-1 mr-2 rounded-lg border border-cyan-200 bg-cyan-100 px-3 py-1.5 font-semibold text-cyan-700 transition-colors hover:bg-cyan-200 dark:border-cyan-500/30 dark:bg-cyan-500/20 dark:text-cyan-300">{buttonText}</button>;
+        }
+        const citation = part.match(/^\[\[(\d+)\]\]\((https?:\/\/[^)]+)\)$/);
+        if (citation) {
+          let label = citation[1];
+          try { label = new URL(citation[2]).hostname; } catch {}
+          return <a key={`${keyPrefix}-${index}`} href={citation[2]} target="_blank" rel="noopener noreferrer" className="font-bold text-blue-700 underline underline-offset-2 dark:text-blue-300">[{citation[1]}] {label}</a>;
+        }
+        return <React.Fragment key={`${keyPrefix}-${index}`}>{part}</React.Fragment>;
+      });
+    };
+    const lines = text.split("\n");
+    const blocks: React.ReactNode[] = [];
+    for (let index = 0; index < lines.length;) {
+      const line = lines[index];
+      const fence = line.match(/^\s*```([\w+#.-]*)\s*$/);
+      if (fence) {
+        const codeLines: string[] = [];
+        index++;
+        while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) codeLines.push(lines[index++]);
+        if (index < lines.length) index++;
+        blocks.push(<pre key={`code-${index}`} className="my-2 max-w-full overflow-x-auto rounded-xl border border-slate-700 bg-[#111827] p-3 text-xs leading-5 text-slate-100"><code>{codeLines.join("\n")}</code></pre>);
+        continue;
+      }
+      const tableLine = /^\s*\|.*\|\s*$/.test(line);
+      const separatorLine = index + 1 < lines.length && /^\s*\|?[\s|:-]+\|?\s*$/.test(lines[index + 1]) && lines[index + 1].includes("-");
+      if (tableLine && separatorLine) {
+        const parseCells = (source: string) => source.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+        const headers = parseCells(line);
+        index += 2;
+        const rows: string[][] = [];
+        while (index < lines.length && /^\s*\|.*\|\s*$/.test(lines[index])) rows.push(parseCells(lines[index++]));
+        blocks.push(<div key={`table-${index}`} className="my-2 max-w-full overflow-x-auto rounded-xl border border-slate-200 dark:border-navy-700"><table className="min-w-full border-collapse text-left text-xs"><thead className="bg-blue-50 text-navy-900 dark:bg-navy-800 dark:text-white"><tr>{headers.map((cell, cellIndex) => <th key={cellIndex} className="border-b border-slate-200 px-3 py-2 font-black dark:border-navy-700">{renderInline(cell, `th-${index}-${cellIndex}`)}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex} className="even:bg-slate-50 dark:even:bg-white/5">{headers.map((_, cellIndex) => <td key={cellIndex} className="border-t border-slate-100 px-3 py-2 align-top dark:border-white/5">{renderInline(row[cellIndex] || "", `td-${index}-${rowIndex}-${cellIndex}`)}</td>)}</tr>)}</tbody></table></div>);
+        continue;
+      }
+      const formulaLine = line.includes("$$");
+      if (formulaLine) {
+        blocks.push(<div key={`formula-${index}`} className="my-2 overflow-x-auto rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 font-mono text-sm text-navy-900 dark:border-blue-400/20 dark:bg-blue-500/10 dark:text-blue-100">{line.replaceAll("$$", "")}</div>);
+      } else if (line.trim()) {
+        blocks.push(<p key={`text-${index}`} className="whitespace-pre-wrap break-words">{renderInline(line, `inline-${index}`)}</p>);
+      } else {
+        blocks.push(<div key={`space-${index}`} className="h-1" />);
+      }
+      index++;
+    }
     return (
-      <div className="whitespace-pre-wrap break-words text-sm leading-6 space-y-1">
-        {parts.map((part, index) => {
-          const buttonMatch = part.match(/^\[btn\]([\s\S]*?)\[\/btn\]$/);
-          if (buttonMatch) {
-            const buttonText = buttonMatch[1];
-            return (
-              <button
-                key={index}
-                type="button"
-                onClick={() => {
-                  setInput(buttonText);
-                  setTimeout(() => {
-                    sendDiamondvoyMessage(buttonText).catch(() => null);
-                  }, 50);
-                }}
-                className="inline-block mt-1 mr-2 px-3 py-1.5 rounded-lg bg-cyan-100 dark:bg-cyan-500/20 text-cyan-700 dark:text-cyan-300 font-semibold border border-cyan-200 dark:border-cyan-500/30 hover:bg-cyan-200 dark:hover:bg-cyan-500/30 transition-colors"
-              >
-                {buttonText}
-              </button>
-            );
-          }
-          const citations = part.split(/(\[\[\d+\]\]\(https?:\/\/[^)]+\))/g);
-          return (
-            <span key={index}>
-              {citations.map((citation, citationIndex) => {
-                const match = citation.match(/^\[\[(\d+)\]\]\((https?:\/\/[^)]+)\)$/);
-                if (!match) return <span key={citationIndex}>{citation}</span>;
-                return <a key={citationIndex} href={match[2]} target="_blank" rel="noopener noreferrer" className="font-bold text-blue-700 underline underline-offset-2 dark:text-blue-300">[{match[1]}] {new URL(match[2]).hostname}</a>;
-              })}
-            </span>
-          );
-        })}
-      </div>
+      <div className="break-words text-sm leading-6">{blocks}</div>
     );
   }
 
