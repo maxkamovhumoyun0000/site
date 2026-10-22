@@ -3248,12 +3248,21 @@ def _assert_general_admin_for_payment_globals(admin_ref_id: int, action: str) ->
 
 
 _ADMIN_PERF_INDEXES_READY = False
+_ADMIN_PERF_INDEXES_LOCK = threading.Lock()
 
 
 def _ensure_admin_perf_indexes() -> None:
     global _ADMIN_PERF_INDEXES_READY
     if _ADMIN_PERF_INDEXES_READY:
         return
+    with _ADMIN_PERF_INDEXES_LOCK:
+        if _ADMIN_PERF_INDEXES_READY:
+            return
+        _ensure_admin_perf_indexes_once()
+
+
+def _ensure_admin_perf_indexes_once() -> None:
+    global _ADMIN_PERF_INDEXES_READY
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -10320,7 +10329,25 @@ async def _notify_admins_purchase_created(
     )
 
 
+_USER_WEB_COLUMNS_READY = False
+_USER_WEB_COLUMNS_LOCK = threading.Lock()
+
+
 def _ensure_user_web_columns() -> None:
+    global _USER_WEB_COLUMNS_READY
+    if _USER_WEB_COLUMNS_READY:
+        return
+    with _USER_WEB_COLUMNS_LOCK:
+        if _USER_WEB_COLUMNS_READY:
+            return
+        _ensure_user_web_columns_once()
+
+
+def _ensure_user_web_columns_once() -> None:
+    global _USER_WEB_COLUMNS_READY
+    # This migration is run during web-table startup. Rechecking dozens of
+    # ALTER TABLE statements and taking an ACCESS EXCLUSIVE NOWAIT lock from
+    # every admin list/search request added avoidable latency under load.
     conn = get_conn()
     cur = conn.cursor()
     def _apply_timeouts() -> None:
@@ -10470,6 +10497,7 @@ def _ensure_user_web_columns() -> None:
         except Exception:
             pass
     conn.close()
+    _USER_WEB_COLUMNS_READY = True
 
 
 def _ensure_referral_reward_history_schema() -> None:
@@ -22816,12 +22844,11 @@ async def list_user_sessions(authorization: str | None = Header(default=None)):
         )
         rows = cur.fetchall()
 
-        token = str(authorization or "").replace("Bearer ", "").strip()
-        current_session_id = None
-        if token:
-            cached = _AUTH_USER_ROW_CACHE.get(token)
-            if cached:
-                current_session_id = str(cached[0] or "").strip()
+        # The auth-row cache is (expires_at, user_row), not (session_id, row).
+        # Derive the current session from the already-validated signed token so
+        # a newly-created session is never mislabeled as an older device.
+        token_payload = _decode_bearer_payload(authorization)
+        current_session_id = str(token_payload.get("sid") or "").strip()
 
         sessions = []
         for r in (rows or []):

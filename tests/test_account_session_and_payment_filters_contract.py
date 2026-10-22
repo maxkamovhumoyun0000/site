@@ -33,6 +33,18 @@ class AccountSessionAndPaymentFiltersContractTests(unittest.TestCase):
             self.assertNotIn("_revoke_web_sessions", handler)
             self.assertNotIn("session_version=COALESCE", handler)
 
+    def test_current_session_marker_uses_signed_session_id_not_cache_timestamp(self) -> None:
+        sessions = _section(BACKEND, '@app.get("/user/sessions")', '@app.delete("/user/account")')
+        self.assertIn('_decode_bearer_payload(authorization)', sessions)
+        self.assertIn('token_payload.get("sid")', sessions)
+        self.assertNotIn('_AUTH_USER_ROW_CACHE.get(token)', sessions)
+
+    def test_stale_unauthorized_request_cannot_remove_replacement_token(self) -> None:
+        request = _section(PAYMENTS_PAGE, 'async function requestJson<T>', 'function getTelegramRuntimeAuth')
+        self.assertIn('const failedTokenIsCurrent = currentToken === options.token', request)
+        self.assertIn('if (failedTokenIsCurrent) localStorage.removeItem("diamond_token")', request)
+        self.assertIn('if (failedTokenIsCurrent && !options.suppressAuthRedirect', request)
+
     def test_screenshot_demo_student_and_teacher_cannot_be_hard_deleted(self) -> None:
         deletion = _section(DB, "def hard_delete_user_profile", "def soft_delete_user_profile")
         self.assertIn("COALESCE(screenshot_demo, 0) AS screenshot_demo", deletion)

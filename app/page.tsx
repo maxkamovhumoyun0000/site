@@ -995,8 +995,13 @@ async function requestJson<T>(path: string, options?: {
 
     if (!response.ok) {
       if (response.status === 401 && options?.token) {
-        localStorage.removeItem("diamond_token");
-        if (!options.suppressAuthRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
+        // A request started by an older render can finish after another tab or
+        // a fresh login has replaced the token. Never let that stale 401 erase
+        // the newer, valid session or redirect its user to the login page.
+        const currentToken = localStorage.getItem("diamond_token");
+        const failedTokenIsCurrent = currentToken === options.token;
+        if (failedTokenIsCurrent) localStorage.removeItem("diamond_token");
+        if (failedTokenIsCurrent && !options.suppressAuthRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
           window.location.replace("/login?reason=session_expired");
         }
         throw new Error("Invalid token");
