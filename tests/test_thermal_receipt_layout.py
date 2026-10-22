@@ -196,11 +196,26 @@ class ThermalReceiptLayoutTests(unittest.TestCase):
         """The dashboard cannot silently submit an omitted payment method as cash."""
         schema = BACKEND.split("class PaymentConfirmRequest", 1)[1].split("class PaymentRefundRequest", 1)[0]
         confirm = SOURCE.split("async function confirmStudentPayment", 1)[1].split("function refundSelectedPayment", 1)[0]
-        self.assertIn('payment_method: Literal["cash", "card"]', schema)
-        self.assertNotIn('payment_method: Literal["cash", "card"] = "cash"', schema)
-        self.assertIn('paymentMethod: "" | "cash" | "card"', SOURCE)
+        self.assertIn('payment_method: Literal["cash", "card", "cash_card"]', schema)
+        self.assertNotIn('payment_method: Literal["cash", "card", "cash_card"] = "cash"', schema)
+        self.assertIn('paymentMethod: "" | "cash" | "card" | "cash_card"', SOURCE)
         self.assertIn('To\'lov turini tanlang', SOURCE)
         self.assertIn('!userId || !groupId || !monthKey || !paymentMethod', confirm)
+
+    def test_mixed_payment_requires_matching_cash_and_card_parts_and_prints_both(self) -> None:
+        """Split tenders are persisted and both amounts survive all receipt outputs."""
+        thermal = BACKEND.split("def _receipt_escpos_document", 1)[1].split("def _receipt_print_document_payload", 1)[0]
+        pdf = BACKEND.split("def _receipt_pdf_bytes", 1)[1].split('@app.get("/admin/receipts/', 1)[0]
+        confirm = BACKEND.split('async def admin_payments_student_confirm', 1)[1].split('@app.', 1)[0]
+        self.assertIn('"cash_card"', confirm)
+        self.assertIn("cash_amount + card_amount - amount", confirm)
+        self.assertIn("ADD COLUMN IF NOT EXISTS cash_amount", BACKEND)
+        self.assertIn("ADD COLUMN IF NOT EXISTS card_amount", BACKEND)
+        self.assertIn("snapshot.get('cash_amount')", thermal)
+        self.assertIn("snapshot.get('card_amount')", thermal)
+        self.assertIn("snapshot.get('cash_amount')", pdf)
+        self.assertIn("snapshot.get('card_amount')", pdf)
+        self.assertIn('option value="cash_card"', SOURCE)
 
     def test_partial_filter_keeps_students_with_an_overdue_remainder(self) -> None:
         """A late remaining balance must not erase the fact that it was paid in part."""

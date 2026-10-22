@@ -2029,7 +2029,9 @@ class PaymentConfirmRequest(BaseModel):
     group_id: int
     amount: float
     # The cashier must explicitly choose how the payment was received.
-    payment_method: Literal["cash", "card"]
+    payment_method: Literal["cash", "card", "cash_card"]
+    cash_amount: float | None = Field(default=None, ge=0)
+    card_amount: float | None = Field(default=None, ge=0)
     card_id: int | None = None
     note: str | None = None
     is_advance: bool = False
@@ -43539,6 +43541,8 @@ def _ensure_payment_automation_schema() -> None:
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_id BIGINT",
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS refunded_amount DOUBLE PRECISION NOT NULL DEFAULT 0",
         "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS idempotency_key TEXT",
+        "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS cash_amount DOUBLE PRECISION",
+        "ALTER TABLE payment_transactions ADD COLUMN IF NOT EXISTS card_amount DOUBLE PRECISION",
     ):
         try:
             cur.execute(alter_sql)
@@ -43548,6 +43552,21 @@ def _ensure_payment_automation_schema() -> None:
                 conn.rollback()
             except Exception:
                 pass
+    if not _is_postgres_enabled():
+        # SQLite does not support ADD COLUMN IF NOT EXISTS; keep existing
+        # local databases compatible with the new split-payment fields.
+        for alter_sql in (
+            "ALTER TABLE payment_transactions ADD COLUMN cash_amount DOUBLE PRECISION",
+            "ALTER TABLE payment_transactions ADD COLUMN card_amount DOUBLE PRECISION",
+        ):
+            try:
+                cur.execute(alter_sql)
+                conn.commit()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
     for idx_sql in (
         "CREATE INDEX IF NOT EXISTS idx_payment_transactions_card_id ON payment_transactions(card_id)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ux_payment_tx_idempotency_key ON payment_transactions(idempotency_key) WHERE idempotency_key IS NOT NULL",
@@ -43709,6 +43728,8 @@ def _receipt_snapshot_from_transaction(cur: Any, transaction_id: int) -> tuple[d
         **_receipt_financial_snapshot(tx, total_paid_amount=total_paid_amount),
         **_receipt_discount_snapshot(tx),
         "payment_method": str(tx.get("payment_method") or "cash").strip().lower(),
+        "cash_amount": round(max(0.0, float(tx.get("cash_amount") or (tx.get("amount") if str(tx.get("payment_method") or "cash").lower() == "cash" else 0))), 2),
+        "card_amount": round(max(0.0, float(tx.get("card_amount") or (tx.get("amount") if str(tx.get("payment_method") or "cash").lower() == "card" else 0))), 2),
         "payment_type": "advance" if int(tx.get("is_advance") or 0) == 1 else "monthly",
         "payment_month": str(tx.get("ym") or ""),
         "branch_name": branch_name,
@@ -46791,7 +46812,7 @@ def _payment_store_confirmation_notification(
     bonus_events: list[dict[str, Any]] | None = None,
 ) -> int:
     method = str(payment_method or "").strip().lower() or "cash"
-    method_label = "Naqd" if method == "cash" else "Plastik karta" if method == "card" else method
+    method_label = "Naqd + karta" if method == "cash_card" else "Naqd" if method == "cash" else "Plastik karta" if method == "card" else method
     message = (
         f"To'lov qabul qilindi ({str(ym)}). "
         f"Holat: {str(status)}. "
@@ -46897,7 +46918,7 @@ async def _payment_send_confirmation_telegram(
         return False
     user_lang = str(student_row.get("language") or "uz")
     if user_lang == "ru":
-        method_label = "Наличные" if str(payment_method) == "cash" else "Пластиковая карта" if str(payment_method) == "card" else str(payment_method)
+        method_label = "Наличные + карта" if str(payment_method) == "cash_card" else "Наличные" if str(payment_method) == "cash" else "Пластиковая карта" if str(payment_method) == "card" else str(payment_method)
         lines = [
             "✅ Оплата подтверждена",
             f"📅 Месяц: {str(ym)}",
@@ -46906,7 +46927,7 @@ async def _payment_send_confirmation_telegram(
             f"Дата: {_now_tashkent_date()}",
         ]
     elif user_lang == "en":
-        method_label = "Cash" if str(payment_method) == "cash" else "Credit card" if str(payment_method) == "card" else str(payment_method)
+        method_label = "Cash + card" if str(payment_method) == "cash_card" else "Cash" if str(payment_method) == "cash" else "Credit card" if str(payment_method) == "card" else str(payment_method)
         lines = [
             "✅ Payment confirmed",
             f"📅 Month: {str(ym)}",
@@ -46915,7 +46936,7 @@ async def _payment_send_confirmation_telegram(
             f"Date: {_now_tashkent_date()}",
         ]
     else:
-        method_label = "Naqd" if str(payment_method) == "cash" else "Plastik karta" if str(payment_method) == "card" else str(payment_method)
+        method_label = "Naqd + karta" if str(payment_method) == "cash_card" else "Naqd" if str(payment_method) == "cash" else "Plastik karta" if str(payment_method) == "card" else str(payment_method)
         lines = [
             "✅ To'lov tasdiqlandi",
             f"📅 Oy: {str(ym)}",
@@ -47556,6 +47577,8 @@ async def admin_payments_transactions(
             tx.created_at AS paid_at,
             tx.amount AS payment_dcoin_amount,
             tx.payment_method,
+            tx.cash_amount,
+            tx.card_amount,
             tx.card_id,
             COALESCE(tx.refunded_amount, 0) AS refunded_amount,
             tx.is_advance,
@@ -48065,7 +48088,9 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
     width = _receipt_line_width(line_width)
     snapshot = dict(receipt.get("snapshot") or _safe_json_object(receipt.get("snapshot_json")))
     is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
-    method = "Karta" if str(snapshot.get("payment_method") or "").lower() == "card" else "Naqd"
+    payment_method = str(snapshot.get("payment_method") or "cash").lower()
+    method = "Naqd + karta" if payment_method == "cash_card" else "Karta" if payment_method == "card" else "Naqd"
+    is_mixed_payment = payment_method == "cash_card" and not is_refund
     teachers = ", ".join(str(item) for item in (snapshot.get("teachers") or []) if str(item).strip()) or "-"
     brand = _RECEIPT_BRAND
     branch = str(snapshot.get("branch_name") or "").strip()
@@ -48091,6 +48116,7 @@ def _receipt_escpos_document(receipt: dict[str, Any], line_width: Any = 36) -> b
         ("O'quvchi", snapshot.get("student_name")), ("Guruh", snapshot.get("group_name")),
         ("Oy uchun", f"{_receipt_month_label(snapshot.get('payment_month'))} uchun"),
         ("Fan", snapshot.get("subject_name")), ("O'qituvchi", teachers), ("To'lov turi", method),
+        *([("Naqd", f"{_receipt_money(snapshot.get('cash_amount'))} SO'M"), ("Karta", f"{_receipt_money(snapshot.get('card_amount'))} SO'M")] if is_mixed_payment else []),
         ("Tasdiqladi", snapshot.get("confirmed_by_name")), ("Sana", _receipt_timestamp_tashkent(snapshot.get("confirmed_at"))),
         *([("Izoh", snapshot.get("refund_note"))] if is_refund and snapshot.get("refund_note") else []),
         ("Chek ID", receipt.get("receipt_id")),
@@ -48136,8 +48162,13 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
     except Exception as exc:  # pragma: no cover - deployment dependency guard
         raise HTTPException(status_code=503, detail="Receipt PDF service is unavailable") from exc
     snapshot = dict(receipt.get("snapshot") or {})
-    method = "Karta" if snapshot.get("payment_method") == "card" else "Naqd"
+    payment_method = str(snapshot.get("payment_method") or "cash").lower()
+    method = "Naqd + karta" if payment_method == "cash_card" else "Karta" if payment_method == "card" else "Naqd"
     is_refund = str(snapshot.get("receipt_kind") or "") == "refund"
+    split_lines = [
+        f"Naqd: {float(snapshot.get('cash_amount') or 0):,.2f} so'm",
+        f"Karta: {float(snapshot.get('card_amount') or 0):,.2f} so'm",
+    ] if payment_method == "cash_card" and not is_refund else []
     document_title = "QAYTARISH CHEKI" if is_refund else "TO'LOV CHEKI"
     amount_label = "QAYTARILGAN SUMMA" if is_refund else "TO'LOV"
     teachers = ", ".join(str(value) for value in (snapshot.get("teachers") or []) if str(value).strip()) or "-"
@@ -48150,7 +48181,7 @@ def _receipt_pdf_bytes(receipt: dict[str, Any]) -> bytes:
         brand, *([branch_line] if branch_line else []), "",
         document_title, "", f"O'quvchi: {snapshot.get('student_name') or '-'}",
         f"Guruh: {snapshot.get('group_name') or '-'}", f"Fan / Kurs: {snapshot.get('subject_name') or '-'}",
-        f"Oy uchun: {_receipt_month_label(snapshot.get('payment_month'))} uchun", f"O'qituvchi: {teachers}", "", f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
+        f"Oy uchun: {_receipt_month_label(snapshot.get('payment_month'))} uchun", f"O'qituvchi: {teachers}", "", *split_lines, f"{amount_label}: {float(snapshot.get('amount') or 0):,.2f} so'm", *discount_line,
         f"JAMI TO'LANGAN: {float(snapshot.get('total_paid_amount') or 0):,.2f} so'm",
         f"QOLDIQ: {float(snapshot.get('remaining_amount') or 0):,.2f} so'm",
         f"To'lov turi: {method}", f"Tasdiqladi: {snapshot.get('confirmed_by_name') or '-'}",
@@ -50017,8 +50048,23 @@ async def admin_payments_student_confirm(
     month_key = _payment_validate_ym(payload.ym)
     amount = _payment_require_positive_amount(payload.amount, field_name="amount")
     payment_method = str(payload.payment_method or "cash").strip().lower()
-    if payment_method not in {"cash", "card"}:
+    if payment_method not in {"cash", "card", "cash_card"}:
         raise HTTPException(status_code=400, detail="Invalid payment method")
+    cash_amount = 0.0
+    card_amount = 0.0
+    if payment_method == "cash_card":
+        if payload.cash_amount is None or payload.card_amount is None:
+            raise HTTPException(status_code=400, detail="Cash and card amounts are required")
+        cash_amount = round(float(payload.cash_amount), 2)
+        card_amount = round(float(payload.card_amount), 2)
+        if not math.isfinite(cash_amount) or not math.isfinite(card_amount) or cash_amount <= 0 or card_amount <= 0:
+            raise HTTPException(status_code=400, detail="Cash and card amounts must both be greater than zero")
+        if abs(cash_amount + card_amount - amount) > 0.009:
+            raise HTTPException(status_code=400, detail="Cash and card amounts must add up to the total payment")
+    elif payment_method == "cash":
+        cash_amount = amount
+    else:
+        card_amount = amount
     clean_note = str(payload.note or "").strip()
     if len(clean_note) > 1000:
         raise HTTPException(status_code=400, detail="note is too long")
@@ -50044,7 +50090,7 @@ async def admin_payments_student_confirm(
         raise HTTPException(status_code=403, detail="Permission denied")
     selected_card_id = int(payload.card_id or 0)
     selected_card_row: dict[str, Any] | None = None
-    if payment_method == "card":
+    if payment_method in {"card", "cash_card"}:
         cards = _payment_card_rows(active_only=True)
         if selected_card_id > 0:
             selected_card_row = next((row for row in cards if int(row.get("id") or 0) == selected_card_id), None)
@@ -50098,6 +50144,8 @@ async def admin_payments_student_confirm(
                     and str(replay.get("ym") or "") == month_key
                     and abs(float(replay.get("amount") or 0) - float(amount)) <= 1e-9
                     and str(replay.get("payment_method") or "") == payment_method
+                    and abs(float(replay.get("cash_amount") or 0) - cash_amount) <= 1e-9
+                    and abs(float(replay.get("card_amount") or 0) - card_amount) <= 1e-9
                     and int(replay.get("confirmed_by_admin_id") or 0) == int(user.get("id") or 0)
                 )
                 if not same_request:
@@ -50163,9 +50211,9 @@ async def admin_payments_student_confirm(
             INSERT INTO payment_transactions
             (
                 obligation_id, user_id, group_id, ym, amount, payment_method, card_id, note, idempotency_key, is_advance,
-                confirmed_by_admin_id, confirmed_by_admin_name, created_at
+                confirmed_by_admin_id, confirmed_by_admin_name, cash_amount, card_amount, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             """,
             (
                 obligation_id,
@@ -50180,6 +50228,8 @@ async def admin_payments_student_confirm(
                 1 if bool(payload.is_advance) else 0,
                 int(user.get("id") or 0),
                 _display_name(user),
+                float(cash_amount),
+                float(card_amount),
             ),
         )
         tx_id = int(getattr(cur, "lastrowid", 0) or 0)

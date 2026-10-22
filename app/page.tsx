@@ -16519,7 +16519,9 @@ function AdminSection({
     ym: string;
     groupId: number;
     amount: string;
-    paymentMethod: "" | "cash" | "card";
+    paymentMethod: "" | "cash" | "card" | "cash_card";
+    cashAmount: string;
+    cardAmount: string;
     note: string;
     isAdvance: boolean;
   }>({
@@ -16527,6 +16529,8 @@ function AdminSection({
     groupId: 0,
     amount: "",
     paymentMethod: "",
+    cashAmount: "",
+    cardAmount: "",
     note: "",
     isAdvance: false,
   });
@@ -17704,6 +17708,8 @@ function AdminSection({
       ym: "",
       groupId: 0,
       amount: "",
+      cashAmount: "",
+      cardAmount: "",
     }));
   }
 
@@ -17757,14 +17763,21 @@ function AdminSection({
     const monthKey = String(paymentsConfirmDraft.ym || "").trim();
     const paymentMethod = paymentsConfirmDraft.paymentMethod;
     if (!userId || !groupId || !monthKey || !paymentMethod) return;
-    const amountNumber = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
+    const cashAmountNumber = Number(String(paymentsConfirmDraft.cashAmount || "").replace(",", "."));
+    const cardAmountNumber = Number(String(paymentsConfirmDraft.cardAmount || "").replace(",", "."));
+    const amountNumber = paymentMethod === "cash_card"
+      ? cashAmountNumber + cardAmountNumber
+      : Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
     if (!Number.isFinite(amountNumber) || amountNumber <= 0) return;
+    if (paymentMethod === "cash_card" && (!Number.isFinite(cashAmountNumber) || !Number.isFinite(cardAmountNumber) || cashAmountNumber <= 0 || cardAmountNumber <= 0)) return;
     const requestSignature = JSON.stringify({
       userId,
       groupId,
       monthKey,
       amount: Number(amountNumber.toFixed(2)),
       method: paymentMethod,
+      cashAmount: paymentMethod === "cash_card" ? Number(cashAmountNumber.toFixed(2)) : undefined,
+      cardAmount: paymentMethod === "cash_card" ? Number(cardAmountNumber.toFixed(2)) : undefined,
       note: String(paymentsConfirmDraft.note || "").trim(),
       isAdvance: Boolean(paymentsConfirmDraft.isAdvance),
     });
@@ -17786,6 +17799,8 @@ function AdminSection({
           group_id: groupId,
           amount: Number(amountNumber.toFixed(2)),
           payment_method: paymentMethod,
+          cash_amount: paymentMethod === "cash_card" ? Number(cashAmountNumber.toFixed(2)) : null,
+          card_amount: paymentMethod === "cash_card" ? Number(cardAmountNumber.toFixed(2)) : null,
           card_id: null,
           note: String(paymentsConfirmDraft.note || "").trim() || null,
           is_advance: Boolean(paymentsConfirmDraft.isAdvance),
@@ -17810,6 +17825,8 @@ function AdminSection({
       setPaymentsConfirmDraft((prev) => ({
         ...prev,
         amount: returnedDebt > 0 ? returnedDebt.toFixed(2) : "",
+        cashAmount: "",
+        cardAmount: "",
         note: "",
       }));
       void Promise.allSettled([
@@ -19610,6 +19627,7 @@ function AdminSection({
     const paymentMethodLabel = (value: string) => {
       if (value === "card") return pt("method.card", "Plastik karta");
       if (value === "cash") return pt("method.cash", "Naqd");
+      if (value === "cash_card") return pt("method.cashCard", "Naqd + karta");
       if (value === "refund") return pt("method.refund", "Qaytarish");
       if (value === "carry_forward") return pt("method.carryForward", "Keyingi oyga o'tkazish");
       return value || "-";
@@ -19729,8 +19747,13 @@ function AdminSection({
     const confirmGroupId = Number(paymentsConfirmDraft.groupId || 0);
     const confirmGroupRow = detailRows.find((row) => Number(row.group_id || 0) === confirmGroupId) || null;
     const remainingForConfirm = Number(confirmGroupRow?.debt_amount || 0);
-    const paymentAmountForConfirm = Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
-    const canConfirmPayment = Number.isFinite(paymentAmountForConfirm) && paymentAmountForConfirm > 0 && Boolean(paymentsConfirmDraft.paymentMethod);
+    const paymentCashForConfirm = Number(String(paymentsConfirmDraft.cashAmount || "").replace(",", "."));
+    const paymentCardForConfirm = Number(String(paymentsConfirmDraft.cardAmount || "").replace(",", "."));
+    const paymentAmountForConfirm = paymentsConfirmDraft.paymentMethod === "cash_card"
+      ? paymentCashForConfirm + paymentCardForConfirm
+      : Number(String(paymentsConfirmDraft.amount || "").replace(",", "."));
+    const canConfirmPayment = Number.isFinite(paymentAmountForConfirm) && paymentAmountForConfirm > 0 && Boolean(paymentsConfirmDraft.paymentMethod) &&
+      (paymentsConfirmDraft.paymentMethod !== "cash_card" || (Number.isFinite(paymentCashForConfirm) && paymentCashForConfirm > 0 && Number.isFinite(paymentCardForConfirm) && paymentCardForConfirm > 0));
     const refundableTxForConfirm = getRefundablePaymentTransaction();
     const refundableAmountForConfirm = refundableTxForConfirm
       ? Math.max(0, Number(refundableTxForConfirm.payment_dcoin_amount || refundableTxForConfirm.paid_amount || 0) - Number(refundableTxForConfirm.refunded_amount || 0))
@@ -20567,6 +20590,8 @@ function AdminSection({
                               ...prev,
                               groupId,
                               amount: debtAmount > 0 ? debtAmount.toFixed(2) : "",
+                              cashAmount: "",
+                              cardAmount: "",
                             }));
                           }}
                         >
@@ -20686,6 +20711,8 @@ function AdminSection({
                             ...prev,
                             groupId: gid,
                             amount: "",
+                            cashAmount: "",
+                            cardAmount: "",
                           }));
                         }}
                       >
@@ -20698,34 +20725,44 @@ function AdminSection({
                         ))}
                       </select>
                     </label>
-                    <label className="pmc-field">
+                    {paymentsConfirmDraft.paymentMethod === "cash_card" ? <>
+                      <label className="pmc-field">
+                        <span>{pt("cashAmount", "Naqd summa")}</span>
+                        <input type="number" min="0.01" step="0.01" value={paymentsConfirmDraft.cashAmount} onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, cashAmount: event.target.value }))} placeholder="0.00" />
+                      </label>
+                      <label className="pmc-field">
+                        <span>{pt("cardAmount", "Karta summa")}</span>
+                        <input type="number" min="0.01" step="0.01" value={paymentsConfirmDraft.cardAmount} onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, cardAmount: event.target.value }))} placeholder="0.00" />
+                      </label>
+                      <div className="pmc-field">
+                        <span>{pt("totalAmount", "Jami summa")}</span>
+                        <div className="min-h-11 rounded-xl border border-line dark:border-white/10 px-3 py-2 font-bold">{Number.isFinite(paymentAmountForConfirm) ? paymentAmountForConfirm.toFixed(2) : "0.00"}</div>
+                        <small className="text-ink-500 dark:text-navy-300">Naqd va karta summasi jami to&apos;lovga teng bo&apos;lishi kerak.</small>
+                      </div>
+                    </> : <label className="pmc-field">
                       <span>{pt("amount", "Miqdor")}</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={paymentsConfirmDraft.amount}
-                        onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, amount: event.target.value }))}
-                        placeholder="0.00"
-                      />
+                      <input type="number" min="0" step="0.01" value={paymentsConfirmDraft.amount} onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, amount: event.target.value }))} placeholder="0.00" />
                       <small className="text-ink-500 dark:text-navy-300">To&apos;lov turini alohida tanlang.</small>
-                    </label>
+                    </label>}
                     <label className="pmc-field">
                       <span>{pt("paymentMethod", "To'lov turi")} *</span>
                       <select
                         required
                         value={paymentsConfirmDraft.paymentMethod}
                         onChange={(event) => {
-                          const method = event.target.value === "card" ? "card" : event.target.value === "cash" ? "cash" : "";
+                          const method = event.target.value === "cash_card" ? "cash_card" : event.target.value === "card" ? "card" : event.target.value === "cash" ? "cash" : "";
                           setPaymentsConfirmDraft((prev) => ({
                             ...prev,
                             paymentMethod: method,
+                            cashAmount: method === "cash_card" ? prev.cashAmount : "",
+                            cardAmount: method === "cash_card" ? prev.cardAmount : "",
                           }));
                         }}
                       >
                         <option value="" disabled>{pt("selectPaymentMethod", "To'lov turini tanlang")}</option>
                         <option value="cash">{pt("paymentCash", "Naqd")}</option>
                         <option value="card">{pt("paymentCard", "Karta orqali")}</option>
+                        <option value="cash_card">{pt("method.cashCard", "Naqd + karta")}</option>
                       </select>
                     </label>
                     <label className="pmc-field pmc-field-full">
@@ -20781,7 +20818,7 @@ function AdminSection({
               {receiptPreview ? (() => {
                 const snapshot = (receiptPreview.snapshot || {}) as GenericRow;
                 const isRefund = snapshot.receipt_kind === "refund";
-                const method = snapshot.payment_method === "card" ? "Karta" : "Naqd";
+                const method = snapshot.payment_method === "cash_card" ? "Naqd + karta" : snapshot.payment_method === "card" ? "Karta" : "Naqd";
                 const paymentType = snapshot.payment_type === "refund_full" ? "To'liq qaytarish" : snapshot.payment_type === "refund_partial" ? "Qisman qaytarish" : snapshot.payment_type === "advance" ? "Oldindan to'lov" : "Oylik to'lov";
                 const teachers = Array.isArray(snapshot.teachers) ? snapshot.teachers.filter(Boolean).join(", ") : "-";
                 const brand = String(snapshot.brand || "DIAMOND EDUCATION").trim() || "DIAMOND EDUCATION";
@@ -20796,6 +20833,10 @@ function AdminSection({
                   <p><b>Fan / Kurs:</b> {snapshot.subject_name || "-"}</p>
                   <p><b>O&apos;qituvchi:</b> {teachers}</p>
                   <p className="text-base font-black"><b>{isRefund ? "Qaytarilgan summa" : "To'lov"}:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.amount || 0))} so&apos;m</p>
+                  {!isRefund && snapshot.payment_method === "cash_card" ? <>
+                    <p><b>Naqd:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.cash_amount || 0))} so&apos;m</p>
+                    <p><b>Karta:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.card_amount || 0))} so&apos;m</p>
+                  </> : null}
                   <p className="text-base font-black"><b>Qolgan qarz:</b> {new Intl.NumberFormat("uz-UZ", { maximumFractionDigits: 2 }).format(Number(snapshot.remaining_amount || 0))} so&apos;m</p>
                   <p><b>To&apos;lov turi:</b> {method}</p>
                   <p><b>Hisoblash turi:</b> {paymentType}</p>
@@ -20845,6 +20886,9 @@ function AdminSection({
                     <td>{row.teacher_name || "-"}</td>
                     <td>
                       {paymentMethodLabel(String(row.payment_method || ""))}
+                      {String(row.payment_method || "") === "cash_card" ? (
+                        <small className="block text-ink-500 dark:text-navy-300">Naqd {Number(row.cash_amount || 0).toFixed(2)} · Karta {Number(row.card_amount || 0).toFixed(2)}</small>
+                      ) : null}
                       {row.card_number_masked || row.card_owner_name ? (
                         <small className="block text-ink-500 dark:text-navy-300">
                           {row.card_owner_name ? `${row.card_owner_name} · ` : ""}{row.card_number_masked || "-"}
