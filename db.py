@@ -15094,6 +15094,7 @@ def ensure_universal_chat_schema() -> None:
                 ("message_text", "TEXT"),
                 ("reply_to_message_id", "BIGINT"),
                 ("client_message_id", "TEXT"),
+                ("edited_at", "TIMESTAMP"),
                 ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
             ],
         )

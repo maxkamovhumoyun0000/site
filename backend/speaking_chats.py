@@ -29,6 +29,10 @@ class DirectChatMessageRequest(BaseModel):
     attachments: list[dict[str, str]] = Field(default_factory=list, max_length=5)
 
 
+class DirectChatMessageEditRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=3000)
+
+
 def _main_helpers():
     # Late import avoids a cycle: main imports this router at application setup.
     from backend.main import _display_name, _user_row_from_bearer
@@ -128,6 +132,13 @@ def _ensure_schema() -> None:
                     conn.rollback()
             try:
                 cur.execute(
+                    "ALTER TABLE speaking_direct_messages ADD COLUMN edited_at TIMESTAMP"
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            try:
+                cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_speaking_direct_messages_chat ON speaking_direct_messages(chat_id, id)"
                 )
                 conn.commit()
@@ -154,11 +165,16 @@ def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
 
 
 def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
+    # This router can be mounted before the web-user migration has run in a
+    # worker. Ensure optional Speaking columns exist before the first lookup.
+    from backend.main import _ensure_user_web_columns
+
+    _ensure_user_web_columns()
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url, role,
+            """SELECT id, login_id, first_name, last_name, profile_image_url, role, subject,
                       last_activity, last_login_at,
                       speaking_app_account, speaking_deleted_at, blocked, access_enabled
                FROM users WHERE id=? LIMIT 1""",
@@ -195,6 +211,7 @@ def _public_user(row: dict[str, Any]) -> dict[str, Any]:
         "login_id": str(row.get("login_id") or ""),
         "full_name": display_name(row),
         "avatar_url": str(row.get("profile_image_url") or "").strip() or None,
+        "subject": str(row.get("subject") or "").strip() or None,
         "last_active": row.get("last_activity") or row.get("last_login_at"),
         "role": public_role,
         "roles": [public_role],
@@ -266,28 +283,42 @@ async def search_speaking_chat_users(
     # builds working. Two characters are enough for names while the bounded
     # result count prevents this endpoint becoming an unfiltered directory.
     normalized = str(q if q is not None else query).strip().lstrip("@").casefold()
-    if len(normalized) < 2:
+    if not normalized:
         return {"items": []}
+    from backend.main import _ensure_user_web_columns
+
+    _ensure_user_web_columns()
     blocked_ids = _mutually_blocked_ids(int(user.get("id") or 0))
     # Use a printable, database-portable escape character. Backslash escape
     # handling differs between PostgreSQL string modes and SQLite, which made
     # names containing punctuation intermittently fail on one backend.
     escaped = normalized.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    numeric_id = int(normalized) if normalized.isdigit() else None
+    name_match = len(normalized) >= 2
+    predicates = ["LOWER(COALESCE(login_id,'')) LIKE ? ESCAPE '!'"]
+    params: list[Any] = [f"%{escaped}%"]
+    if name_match:
+        predicates.append("LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ? ESCAPE '!'")
+        params.append(f"%{escaped}%")
+    if numeric_id is not None:
+        predicates.append("id=?")
+        params.append(numeric_id)
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url, role, speaking_app_account, last_activity, last_login_at
+            f"""SELECT id, login_id, first_name, last_name, profile_image_url, role, subject,
+                      speaking_app_account, last_activity, last_login_at
                FROM users
                WHERE (COALESCE(speaking_app_account, 0)=1 OR LOWER(COALESCE(role,'')) IN ('student','teacher','admin','superadmin','developer','speaking_admin'))
                  AND COALESCE(CAST(speaking_deleted_at AS TEXT),'')=''
                  AND COALESCE(blocked, 0)=0
                  AND COALESCE(access_enabled, 1)=1
                  AND id<>?
-                 AND (LOWER(COALESCE(login_id,'')) LIKE ? ESCAPE '!'
-                      OR LOWER(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')) LIKE ? ESCAPE '!')
-               ORDER BY LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 30""",
-            (int(user.get("id") or 0), f"%{escaped}%", f"%{escaped}%"),
+                 AND ({' OR '.join(predicates)})
+               ORDER BY CASE WHEN LOWER(COALESCE(login_id,''))=? THEN 0 ELSE 1 END,
+                        LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 30""",
+            (int(user.get("id") or 0), *params, normalized),
         )
         items = [
             _public_user(dict(row))
@@ -368,7 +399,7 @@ async def open_speaking_direct_chat(
     try:
         cur.execute(
             """SELECT id, login_id, first_name, last_name, profile_image_url,
-                      speaking_app_account, speaking_deleted_at, blocked, access_enabled
+                      subject, speaking_app_account, speaking_deleted_at, blocked, access_enabled
                FROM users WHERE LOWER(login_id)=? LIMIT 1""",
             (login_id,),
         )
@@ -473,7 +504,7 @@ async def get_speaking_direct_messages(
     try:
         if after_id is None:
             cur.execute(
-                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.edited_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
                    FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
                    WHERE m.chat_id=? ORDER BY m.id DESC LIMIT 150""",
                 (int(chat_id),),
@@ -482,7 +513,7 @@ async def get_speaking_direct_messages(
             rows.reverse()
         else:
             cur.execute(
-                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
+                """SELECT m.id,m.message,m.attachments_json,m.sender_id,m.created_at,m.edited_at,m.delivered_at,m.read_at,u.login_id,u.first_name,u.last_name,u.profile_image_url
                    FROM speaking_direct_messages m JOIN users u ON u.id=m.sender_id
                    WHERE m.chat_id=? AND m.id>? ORDER BY m.id ASC LIMIT 150""",
                 (int(chat_id), int(after_id)),
@@ -513,6 +544,8 @@ async def get_speaking_direct_messages(
                 "sender_id": int(row.get("sender_id") or 0),
                 "is_mine": int(row.get("sender_id") or 0) == int(user.get("id") or 0),
                 "created_at": row.get("created_at"),
+                "edited_at": row.get("edited_at"),
+                "is_edited": bool(row.get("edited_at")),
                 "status": "seen" if int(row.get("sender_id") or 0) == int(user.get("id") or 0) and row.get("read_at") else ("delivered" if row.get("delivered_at") else "sent"),
                 "author": author,
                 "attachments": attachments if isinstance(attachments, list) else [],
@@ -703,5 +736,85 @@ async def send_speaking_direct_message(
     except Exception as exc:
         conn.rollback()
         raise HTTPException(status_code=500, detail="Message could not be saved") from exc
+    finally:
+        conn.close()
+
+
+@router.patch("/speaking/chats/{chat_id}/messages/{message_id}")
+@router.patch("/api/speaking/chats/{chat_id}/messages/{message_id}")
+async def edit_speaking_direct_message(
+    chat_id: int,
+    message_id: int,
+    payload: DirectChatMessageEditRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_speaking_user(authorization)
+    uid = int(user.get("id") or 0)
+    _chat_for_user(chat_id, uid)
+    try:
+        message = validate_public_text(payload.message.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Message could not be edited") from exc
+    if not message:
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE speaking_direct_messages SET message=?, edited_at=CURRENT_TIMESTAMP WHERE id=? AND chat_id=? AND sender_id=?",
+            (message, int(message_id), int(chat_id), uid),
+        )
+        if int(cur.rowcount or 0) != 1:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Your message was not found")
+        conn.commit()
+    finally:
+        conn.close()
+    result = await get_speaking_direct_messages(
+        chat_id, after_id=max(0, int(message_id) - 1), authorization=authorization
+    )
+    item = next(
+        (row for row in result.get("items", []) if int(row.get("id") or 0) == int(message_id)),
+        None,
+    )
+    return {"item": item}
+
+
+@router.delete("/speaking/chats/{chat_id}/messages/{message_id}")
+@router.delete("/api/speaking/chats/{chat_id}/messages/{message_id}")
+async def delete_speaking_direct_message(
+    chat_id: int,
+    message_id: int,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_speaking_user(authorization)
+    uid = int(user.get("id") or 0)
+    _chat_for_user(chat_id, uid)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "DELETE FROM speaking_direct_messages WHERE id=? AND chat_id=? AND sender_id=?",
+            (int(message_id), int(chat_id), uid),
+        )
+        if int(cur.rowcount or 0) != 1:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Your message was not found")
+        cur.execute(
+            "SELECT created_at FROM speaking_direct_messages WHERE chat_id=? ORDER BY id DESC LIMIT 1",
+            (int(chat_id),),
+        )
+        latest = dict(cur.fetchone() or {})
+        cur.execute(
+            "UPDATE speaking_direct_chats SET last_message_at=COALESCE(?, created_at) WHERE id=?",
+            (latest.get("created_at"), int(chat_id)),
+        )
+        conn.commit()
+        return {"ok": True, "message_id": int(message_id)}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail="Message could not be deleted") from exc
     finally:
         conn.close()

@@ -1415,23 +1415,6 @@ class SpeakingRegistrationVerificationRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
 
 
-class SpeakingGoogleLoginRequest(BaseModel):
-    id_token: str = Field(min_length=100, max_length=8192)
-    # Client-provided profile hints are accepted for API compatibility only.
-    # Email and display name are always taken from the verified ID token.
-    email: str | None = Field(default=None, max_length=254)
-    name: str | None = Field(default=None, max_length=160)
-    # A complete profile is required before provisioning any new Google user.
-    first_name: str | None = Field(default=None, min_length=1, max_length=80)
-    last_name: str | None = Field(default=None, min_length=1, max_length=80)
-    phone: str | None = Field(default=None, min_length=7, max_length=32)
-    age: int | None = Field(default=None, ge=5, le=120)
-    gender: Literal["male", "female", "prefer_not_to_say"] | None = None
-    device_id: str | None = Field(default=None, max_length=160)
-    device_model: str | None = Field(default=None, max_length=120)
-    revoke_session_ids: list[str] = Field(default_factory=list, max_length=3)
-
-
 class SpeakingLinkStartRequest(BaseModel):
     device_id: str = Field(min_length=12, max_length=160)
     device_model: str | None = Field(default=None, max_length=120)
@@ -1514,12 +1497,6 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str
     user: User
-
-
-class SpeakingGoogleTokenResponse(TokenResponse):
-    # Keep the established `access_token` contract while also supporting
-    # clients that expect the shorter `token` field.
-    token: str
 
 
 class IssuedCredentials(BaseModel):
@@ -2564,6 +2541,10 @@ class CommunityChatMessageRequest(BaseModel):
     channel: str = Field(default="general", max_length=20)
 
 
+class CommunityChatEditMessageRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+
+
 class ChatReadRequest(BaseModel):
     last_message_id: int | None = Field(default=None, ge=1)
 
@@ -2735,6 +2716,10 @@ class DiamondvoyCreateChatRequest(BaseModel):
 
 class DiamondvoyPinRequest(BaseModel):
     pinned: bool = True
+
+
+class DiamondvoyEditMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
 
 
 class DiamondvoySendMessageRequest(BaseModel):
@@ -11702,6 +11687,7 @@ def _ensure_final_chat_schema(force: bool = False) -> None:
         # are no longer exposed in any client history list.
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chats ADD COLUMN IF NOT EXISTS persistent INTEGER DEFAULT 0")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chat_messages ADD COLUMN IF NOT EXISTS client_message_id TEXT")
+        _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_chat_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP")
         _safe_alter_column(conn, cur, "ALTER TABLE diamondvoy_settings ADD COLUMN IF NOT EXISTS voice_room_price DOUBLE PRECISION DEFAULT 50.0")
 
         ddl_pairs = [
@@ -12856,7 +12842,7 @@ def _diamondvoy_list_messages_final(
         if after_id is None:
             cur.execute(
                 """
-                SELECT id, chat_id, role, content, created_at
+                SELECT id, chat_id, role, content, created_at, edited_at
                 FROM diamondvoy_chat_messages
                 WHERE chat_id=?
                 ORDER BY id DESC
@@ -12869,7 +12855,7 @@ def _diamondvoy_list_messages_final(
         else:
             cur.execute(
                 """
-                SELECT id, chat_id, role, content, created_at
+                SELECT id, chat_id, role, content, created_at, edited_at
                 FROM diamondvoy_chat_messages
                 WHERE chat_id=? AND id>?
                 ORDER BY id ASC
@@ -13632,6 +13618,8 @@ def _feedback_message_payload(row: dict, attachments_map: dict[int, list[dict[st
         "is_anonymous_choice": bool(int(row.get("is_anonymous_choice") or 0)),
         "attachments": (attachments_map or {}).get(mid, []),
         "created_at": row.get("created_at"),
+        "edited_at": row.get("edited_at"),
+        "is_edited": bool(row.get("edited_at")),
     }
 
 
@@ -18719,7 +18707,7 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int | 
     try:
         query = """
             SELECT
-                m.id, m.thread_id, m.sender_id, m.sender_role, m.message_text,
+                m.id, m.thread_id, m.sender_id, m.sender_role, m.message_text, m.edited_at,
                 m.reply_to_message_id, m.client_message_id, m.created_at,
                 rm.sender_id AS reply_sender_id,
                 rm.sender_role AS reply_sender_role,
@@ -18779,6 +18767,8 @@ def _community_chat_messages(thread_id: int, viewer_id: int, *, after_id: int | 
                 "thread_id": int(row.get("thread_id") or thread_id),
                 "text": text,
                 "created_at": _as_iso_timestamp(row.get("created_at")),
+                "edited_at": _as_iso_timestamp(row.get("edited_at")),
+                "is_edited": bool(row.get("edited_at")),
                 "is_mine": sender_id == int(viewer_id),
                 "is_deleted": False,
                 "sender_role": str(row.get("sender_role") or ""),
@@ -19866,13 +19856,6 @@ def _ensure_speaking_account_schema() -> None:
         )
         """,
         """
-        CREATE TABLE IF NOT EXISTS speaking_google_identities (
-            google_subject TEXT PRIMARY KEY,
-            user_id BIGINT NOT NULL UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """,
-        """
         CREATE TABLE IF NOT EXISTS speaking_student_link_requests (
             code TEXT PRIMARY KEY,
             user_id BIGINT,
@@ -20196,135 +20179,6 @@ def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
         return f"{base}_{secrets.randbelow(90000) + 10000}"
     finally:
         conn.close()
-
-
-@app.post("/api/auth/speaking-google", response_model=SpeakingGoogleTokenResponse)
-@app.post("/auth/speaking-google", response_model=SpeakingGoogleTokenResponse)
-async def speaking_google_login(payload: SpeakingGoogleLoginRequest, req: Request):
-    """Exchange a verified Google ID token for a normal Speaking session."""
-    from google.auth.transport import requests as google_requests
-    from google.oauth2 import id_token as google_id_token
-
-    client_ip = _client_ip(req)
-    throttle_key = f"speaking-google:{client_ip}" if client_ip else ""
-    if throttle_key and is_login_throttled(throttle_key, max_failures=20):
-        raise HTTPException(status_code=429, detail="Too many sign-in attempts. Please try again later.")
-    audience = (os.getenv("SPEAKING_GOOGLE_WEB_CLIENT_ID") or
-                "956229422440-mrk4gdhhapnp594gmnlnij2d8m39p9us.apps.googleusercontent.com").strip()
-    try:
-        claims = await asyncio.wait_for(
-            asyncio.to_thread(
-                google_id_token.verify_oauth2_token,
-                payload.id_token,
-                google_requests.Request(),
-                audience,
-            ),
-            timeout=15,
-        )
-    except Exception as exc:
-        if throttle_key: record_login_failure(throttle_key)
-        logger.info("speaking Google token verification rejected: %s", type(exc).__name__)
-        raise HTTPException(status_code=401, detail="Google sign-in could not be verified") from exc
-    if claims.get("email_verified") not in (True, "true"):
-        raise HTTPException(status_code=403, detail="Google email must be verified")
-    google_subject = str(claims.get("sub") or "").strip()
-    if not google_subject:
-        raise HTTPException(status_code=401, detail="Google identity is missing")
-    try:
-        email = normalize_speaking_email(str(claims.get("email") or ""))
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Google email is invalid") from exc
-    if throttle_key: clear_login_throttle(throttle_key)
-
-    _ensure_speaking_account_schema()
-    conn = get_conn()
-    cur = conn.cursor()
-    user_id = 0
-    try:
-        cur.execute("SELECT user_id FROM speaking_google_identities WHERE google_subject=?", (google_subject,))
-        identity_row = cur.fetchone()
-        bound_id = int(dict(identity_row).get("user_id") or 0) if identity_row else 0
-        cur.execute("SELECT user_id FROM speaking_account_contacts WHERE LOWER(email)=LOWER(?)", (email,))
-        contact_row = cur.fetchone()
-        email_id = int(dict(contact_row).get("user_id") or 0) if contact_row else 0
-        if bound_id and email_id and bound_id != email_id:
-            raise HTTPException(status_code=409, detail="Google account is linked to another Speaking profile")
-        user_id = bound_id or email_id
-        if not user_id:
-            if (
-                not str(payload.first_name or "").strip()
-                or not str(payload.last_name or "").strip()
-                or not str(payload.phone or "").strip()
-                or payload.age is None
-                or payload.gender is None
-            ):
-                raise HTTPException(
-                    status_code=428,
-                    detail={"code": "profile_required"},
-                )
-            first_name = str(payload.first_name or "").strip()[:80]
-            last_name = str(payload.last_name or "").strip()[:80]
-            phone = "".join(ch for ch in str(payload.phone or "") if ch.isdigit() or ch == "+").strip()
-            phone_digits = "".join(ch for ch in phone if ch.isdigit())
-            if len(phone_digits) < 7:
-                raise HTTPException(status_code=422, detail="A valid phone number is required")
-            cur.execute(
-                "SELECT id FROM users WHERE phone=? AND speaking_deleted_at IS NULL LIMIT 1",
-                (phone,),
-            )
-            if cur.fetchone():
-                raise HTTPException(status_code=409, detail="This phone number is already in use")
-            login_id = _generate_speaking_login_id(first_name, last_name)
-            cur.execute(
-                "INSERT INTO users(login_id,password,first_name,last_name,phone,subject,login_type,blocked,access_enabled,pending_approval,public_signup,speaking_app_account,language,face_enrollment_required,proctoring_required) VALUES (?,?,?,?,?,?,?,0,1,0,0,1,'uz',0,0) RETURNING id",
-                (
-                    login_id,
-                    hash_password(secrets.token_urlsafe(32)),
-                    first_name,
-                    last_name,
-                    phone or None,
-                    "English,Russian",
-                    SPEAKING_APP_LOGIN_TYPE,
-                ),
-            )
-            user_id = int(dict(cur.fetchone() or {}).get("id") or 0)
-            cur.execute(
-                "INSERT INTO speaking_account_contacts(user_id,email,age,gender,updated_at) VALUES (?,?,?,?,?)",
-                (user_id, email, payload.age, payload.gender, _now_utc().isoformat()),
-            )
-        cur.execute("SELECT * FROM users WHERE id=?", (user_id,))
-        user_row = cur.fetchone()
-        user = dict(user_row) if user_row else None
-        if not user or not is_speaking_app_account(user.get("speaking_app_account")):
-            raise HTTPException(status_code=403, detail="This Google email is not a Speaking account")
-        if user.get("speaking_deleted_at"):
-            raise HTTPException(status_code=403, detail="Speaking account is inactive")
-        if int(user.get("blocked") or 0) == 1:
-            raise HTTPException(status_code=403, detail="Account is blocked")
-        if not bound_id:
-            cur.execute("SELECT user_id FROM speaking_google_identities WHERE user_id=?", (user_id,))
-            if cur.fetchone():
-                raise HTTPException(status_code=409, detail="Speaking account is already linked to another Google identity")
-            cur.execute("INSERT INTO speaking_google_identities(google_subject,user_id) VALUES (?,?)", (google_subject, user_id))
-        conn.commit()
-    except Exception:
-        with suppress(Exception): conn.rollback()
-        raise
-    finally:
-        conn.close()
-
-    user = get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=500, detail="Speaking account could not be loaded")
-    _reserve_web_session_slot(user, device_id=payload.device_id, requested_session_ids=payload.revoke_session_ids)
-    session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_google")
-    token = _create_access_token(user, session_id=session_id, ttl_hours=ttl_hours)
-    return SpeakingGoogleTokenResponse(
-        access_token=token,
-        token=token,
-        token_type="bearer",
-        user=_build_user_payload(user),
-    )
 
 
 @app.post("/auth/speaking-registration/start")
@@ -20856,8 +20710,13 @@ async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
         row = cur.fetchone()
     try:
         link = dict(row or {})
-        if not link or link.get("consumed_at") or not link.get("approved_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
-            raise HTTPException(status_code=400, detail="Speaking link has not been approved or has expired")
+        if not link or link.get("consumed_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
+            raise HTTPException(status_code=410, detail="Speaking link code is invalid or expired")
+        if not link.get("approved_at"):
+            # The Speaking client polls this endpoint while the user confirms
+            # the request in Student App. Keep that normal waiting state out of
+            # the error path so an unapproved code is not shown as stale.
+            return JSONResponse(status_code=202, content={"status": "pending"})
         user_id = int(link.get("user_id") or 0)
         user = get_user_by_id(user_id)
         if not user:
@@ -24557,6 +24416,50 @@ async def community_chat_delete_message(
         conn.close()
 
 
+@app.patch("/community-chat/messages/{message_id}")
+async def community_chat_edit_message(
+    message_id: int,
+    payload: CommunityChatEditMessageRequest,
+    channel: str = Query(default="general", max_length=20),
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    role = _require_role(user, {"student", "teacher", "admin", "support"})
+    thread = _community_chat_thread_for_user(user, role, channel)
+    thread_id = int(thread.get("id") or 0)
+    user_id = int(user.get("id") or 0)
+    try:
+        message = validate_public_text(payload.message.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Message could not be edited") from exc
+    if not message:
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE chat_messages SET message_text=?, edited_at=CURRENT_TIMESTAMP WHERE id=? AND thread_id=? AND sender_id=?",
+            (message, int(message_id), thread_id, user_id),
+        )
+        if int(cur.rowcount or 0) != 1:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Your message was not found")
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("community chat edit failed message_id=%s user_id=%s", message_id, user_id)
+        raise HTTPException(status_code=500, detail="Message could not be edited") from exc
+    finally:
+        conn.close()
+    items = _community_chat_messages(
+        thread_id, user_id, after_id=max(0, int(message_id) - 1), limit=5
+    )
+    item = next((row for row in items if int(row.get("id") or 0) == int(message_id)), None)
+    return {"item": item}
+
+
 @app.post("/chats/{thread_id}/messages")
 async def chat_thread_send_message(
     thread_id: int,
@@ -25634,6 +25537,88 @@ async def final_diamondvoy_messages(
         "chat": _diamondvoy_serialize_chat_final(chat_row),
         "items": [_diamondvoy_serialize_message_final(row, attachments) for row in rows],
     }
+
+
+@app.patch("/chats/diamondvoy/{chat_id}/messages/{message_id}")
+@app.patch("/student/diamondvoy/chats/{chat_id}/messages/{message_id}")
+async def final_diamondvoy_edit_message(
+    chat_id: int,
+    message_id: int,
+    payload: DiamondvoyEditMessageRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _diamondvoy_get_chat_for_user_final(int(chat_id), int(user.get("id") or 0))
+    try:
+        content = validate_public_text(payload.content.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Message could not be edited") from exc
+    if not content:
+        raise HTTPException(status_code=422, detail="Message cannot be empty")
+    _ensure_final_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE diamondvoy_chat_messages SET content=?, edited_at=CURRENT_TIMESTAMP WHERE id=? AND chat_id=? AND role='user'",
+            (content, int(message_id), int(chat_id)),
+        )
+        if int(cur.rowcount or 0) != 1:
+            conn.rollback()
+            raise HTTPException(status_code=404, detail="Your message was not found")
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("diamondvoy message edit failed chat_id=%s message_id=%s", chat_id, message_id)
+        raise HTTPException(status_code=500, detail="Message could not be edited") from exc
+    finally:
+        conn.close()
+    rows = _diamondvoy_list_messages_final(int(chat_id), limit=300, after_id=max(0, int(message_id) - 1))
+    item = next((row for row in rows if int(row.get("id") or 0) == int(message_id)), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Message was not found")
+    return {"item": _diamondvoy_serialize_message_final(item, _diamondvoy_message_attachments([int(message_id)]))}
+
+
+@app.delete("/chats/diamondvoy/{chat_id}/messages/{message_id}")
+@app.delete("/student/diamondvoy/chats/{chat_id}/messages/{message_id}")
+async def final_diamondvoy_delete_message(
+    chat_id: int,
+    message_id: int,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
+    _diamondvoy_get_chat_for_user_final(int(chat_id), int(user.get("id") or 0))
+    _ensure_final_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id FROM diamondvoy_chat_messages WHERE id=? AND chat_id=? AND role='user' LIMIT 1",
+            (int(message_id), int(chat_id)),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Your message was not found")
+        cur.execute("DELETE FROM diamondvoy_attachments WHERE message_id=?", (int(message_id),))
+        cur.execute(
+            "DELETE FROM diamondvoy_chat_messages WHERE id=? AND chat_id=? AND role='user'",
+            (int(message_id), int(chat_id)),
+        )
+        conn.commit()
+        return {"ok": True, "message_id": int(message_id)}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.exception("diamondvoy message delete failed chat_id=%s message_id=%s", chat_id, message_id)
+        raise HTTPException(status_code=500, detail="Message could not be deleted") from exc
+    finally:
+        conn.close()
 
 
 @app.get("/chats/diamondvoy/{chat_id}/active-generation")
