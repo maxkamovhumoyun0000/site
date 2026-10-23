@@ -83,6 +83,11 @@ export default async function RootLayout({
       </head>
       <body>
         <Script
+          src="/csp-style-bridge.js"
+          strategy="beforeInteractive"
+          nonce={nonce}
+        />
+        <Script
           src="https://telegram.org/js/telegram-web-app.js"
           strategy="beforeInteractive"
           nonce={nonce}

@@ -898,7 +898,7 @@ export function LandingDiamond3D() {
     <div
       ref={containerRef}
       className="hero-v2-diamond-shell"
-      style={{
+      data-csp-style={JSON.stringify({
         width: "100%",
         height: "100%",
         position: "absolute",
@@ -907,18 +907,18 @@ export function LandingDiamond3D() {
         zIndex: stage === "breaking" ? 999 : 2,
         pointerEvents: stage === "breaking" ? "auto" : "none",
         touchAction: stage === "breaking" ? "none" : "auto",
-      }}
+      })}
     >
       {/* Screen-wide ripple light wave effect */}
       {rippleActive && (
         <div
           className="diamond-light-ripple"
-          style={{
+          data-csp-style={JSON.stringify({
             position: "fixed",
             inset: 0,
             zIndex: 99999,
             pointerEvents: "none",
-          }}
+          })}
         />
       )}
 
@@ -928,13 +928,13 @@ export function LandingDiamond3D() {
         dpr={Math.min(typeof window !== "undefined" ? window.devicePixelRatio : 1, 1.5)}
         camera={{ position: [0, 0, 15], fov: 9, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true, toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 0.95 }}
-        style={{
+        data-csp-style={JSON.stringify({
           background: "transparent",
           width: "100%",
           height: "100%",
           pointerEvents: stage === "breaking" ? "auto" : "none",
           touchAction: isDraggingShard ? "none" : "auto",
-        }}
+        })}
       >
         <DiamondScene
           theme={theme}

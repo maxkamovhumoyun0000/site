@@ -108,7 +108,7 @@ export default function AboutPage() {
                   src="https://www.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
                   width="100%"
                   height="220"
-                  style={{ border: 0, borderRadius: "12px" }}
+                  data-csp-style={JSON.stringify({ border: 0, borderRadius: "12px" })}
                   allowFullScreen
                   loading="lazy"
                   referrerPolicy="no-referrer-when-downgrade"
@@ -157,7 +157,7 @@ export default function AboutPage() {
                   src="https://www.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
                   width="100%"
                   height="220"
-                  style={{ border: 0, borderRadius: "12px" }}
+                  data-csp-style={JSON.stringify({ border: 0, borderRadius: "12px" })}
                   allowFullScreen
                   loading="lazy"
                   referrerPolicy="no-referrer-when-downgrade"

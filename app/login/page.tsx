@@ -508,7 +508,7 @@ export default function LoginPage() {
         <section className="fixed inset-0 z-[200] bg-black">
           <div className="absolute inset-0">
             <video ref={videoRef} className="w-full h-full object-cover" playsInline muted autoPlay />
-            <canvas ref={canvasRef} style={{ display: "none" }} />
+            <canvas ref={canvasRef} data-csp-style={JSON.stringify({ display: "none" })} />
           </div>
           <div className="absolute inset-x-0 top-0 px-4 py-4 flex items-center justify-between bg-gradient-to-b from-black/75 to-transparent">
             <span className="text-white text-sm font-semibold">{cameraReady ? "QR tekshirilmoqda..." : "Kamera tayyorlanmoqda..."}</span>

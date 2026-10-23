@@ -184,7 +184,7 @@ function ThinkingAnimation({ text, detail }: { text: string; detail: string }) {
       </div>
       <div className="flex gap-1.5 mt-2">
         {[0, 1, 2].map((i) => (
-          <div key={i} className="w-2.5 h-2.5 rounded-full bg-blue-500 dark:bg-blue-400 animate-bounce" style={{ animationDelay: `${i * 0.2}s` }} />
+          <div key={i} className="w-2.5 h-2.5 rounded-full bg-blue-500 dark:bg-blue-400 animate-bounce" data-csp-style={JSON.stringify({ animationDelay: `${i * 0.2}s` })} />
         ))}
       </div>
     </div>
@@ -199,7 +199,7 @@ function AccuracyRing({ pct }: { pct: number }) {
     <div className="flex items-center justify-center">
       <svg width="96" height="96" viewBox="0 0 96 96">
         <circle cx="48" cy="48" r={r} fill="none" stroke="#e2e8f0" strokeWidth="8" className="dark:stroke-navy-700" />
-        <circle cx="48" cy="48" r={r} fill="none" stroke={color} strokeWidth="8" strokeDasharray={`${circ}`} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-1000" style={{ transform: "rotate(-90deg)", transformOrigin: "center" }} />
+        <circle cx="48" cy="48" r={r} fill="none" stroke={color} strokeWidth="8" strokeDasharray={`${circ}`} strokeDashoffset={offset} strokeLinecap="round" className="transition-all duration-1000" data-csp-style={JSON.stringify({ transform: "rotate(-90deg)", transformOrigin: "center" })} />
         <text x="48" y="48" textAnchor="middle" dominantBaseline="central" className="fill-navy-900 dark:fill-white text-xl font-black">{pct}%</text>
       </svg>
     </div>

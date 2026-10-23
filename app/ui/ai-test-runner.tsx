@@ -209,7 +209,7 @@ export function AiTestRunner({
           </span>
         </div>
         <div className="h-2 overflow-hidden rounded-full bg-surface-soft dark:bg-white/10">
-          <div className="h-full rounded-full bg-cyan-500 transition-all" style={{ width: `${progress}%` }} />
+          <div className="h-full rounded-full bg-cyan-500 transition-all" data-csp-style={JSON.stringify({ width: `${progress}%` })} />
         </div>
         {q.retry_until_correct && (
           <p className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-300">

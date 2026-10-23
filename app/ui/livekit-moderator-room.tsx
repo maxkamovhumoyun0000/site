@@ -474,7 +474,7 @@ export function LiveKitModeratorRoom({ roomId, title, apiFetch, onClose, onRoomE
 
   if (!portalReady) return null;
   return createPortal(
-    <div className="fixed inset-0 z-[2147483000] flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#F6F8FD] text-[#0F1B34]" role="dialog" aria-modal="true" aria-label={title} style={{ fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+    <div className="fixed inset-0 z-[2147483000] flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#F6F8FD] text-[#0F1B34]" role="dialog" aria-modal="true" aria-label={title} data-csp-style={JSON.stringify({ fontFamily: "'Plus Jakarta Sans', sans-serif" })}>
       <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Material+Symbols+Outlined:wght@400;500;600&display=swap" />
       <header className="flex min-h-16 shrink-0 flex-wrap items-center gap-3 border-b border-[#E6EBF5] bg-white px-4 py-2 shadow-sm lg:flex-nowrap">
         <div className="flex shrink-0 items-center gap-2 text-[11px] font-semibold text-[#68758D]"><span className="h-1.5 w-1.5 rounded-full bg-[#98A4BA]" />{c.room} #{roomId.slice(-6)} <span className="text-[#A5AFBF]">·</span><span className={room ? "font-bold text-[#13A879]" : "font-bold text-[#E8A33D]"}>● {room ? c.connected : c.connecting}</span></div>

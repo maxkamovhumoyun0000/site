@@ -165,6 +165,14 @@ def _sanitize_html(value: str) -> str:
     text = str(value or "")
     text = re.sub(r"(?is)<(script|style|iframe|object|embed|form|meta|link)[^>]*>.*?</\1>", "", text)
     text = re.sub(r"(?is)<(script|style|iframe|object|embed|form|meta|link)[^>]*/?>", "", text)
+    # The app's CSP denies style attributes. Also remove the internal
+    # data-csp-style bridge attribute so untrusted email HTML can never ask
+    # the nonce-authorized bridge to apply author-controlled CSS.
+    text = re.sub(
+        r"(?is)\s(?:style|data-csp-style)\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+        "",
+        text,
+    )
     text = re.sub(r"(?i)\son\w+\s*=\s*(['\"]).*?\1", "", text)
     text = re.sub(r"(?i)\s(href|src)\s*=\s*(['\"])\s*javascript:.*?\2", r" \1=\"#\"", text)
     return text[:MAX_BODY_CHARS]

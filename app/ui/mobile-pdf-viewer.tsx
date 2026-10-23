@@ -161,7 +161,7 @@ function PdfPageView({ pdfDoc, pdfApi, pageNumber, zoom, containerWidth, scrollR
       ref={wrapRef}
       data-pdf-page={pageNumber}
       className="relative mx-auto bg-white shadow-lg"
-      style={{ width: size.width, height: size.height }}
+      data-csp-style={JSON.stringify({ width: size.width, height: size.height })}
     >
       <canvas ref={canvasRef} className="absolute inset-0 bg-white pointer-events-none" />
       <div ref={textLayerRef} className="textLayer absolute inset-0" />
@@ -412,11 +412,11 @@ export function MobilePdfViewer({
         <div
           ref={scrollRef}
           className={`flex-1 overflow-auto bg-slate-950 p-0 ${liveZoom > 1 ? "select-none cursor-grab active:cursor-grabbing" : ""}`}
-          style={{
+          data-csp-style={JSON.stringify({
             touchAction: liveZoom > 1 ? "none" : "pan-y",
             WebkitOverflowScrolling: "touch",
             overscrollBehavior: "contain",
-          }}
+          })}
           onTouchStart={(e) => {
             if (e.touches.length >= 2) {
               touchStateRef.current.pinchDistance = touchDistance(e.touches);
@@ -501,7 +501,7 @@ export function MobilePdfViewer({
         >
           <div
             className="flex min-h-full flex-col gap-2"
-            style={{ zoom: liveZoom / renderZoom } as React.CSSProperties}
+            data-csp-style={JSON.stringify({ zoom: liveZoom / renderZoom } as React.CSSProperties)}
           >
             {pdfDoc && pdfApi
               ? Array.from({ length: pageCount }, (_, index) => (

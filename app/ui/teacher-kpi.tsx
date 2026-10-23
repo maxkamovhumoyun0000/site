@@ -24,7 +24,7 @@ function CircleProgress({
   const dash = (pct / 100) * circ;
   return (
     <div className="flex flex-col items-center gap-1.5 sm:gap-2">
-      <div className="relative" style={{ width: size, height: size }}>
+      <div className="relative" data-csp-style={JSON.stringify({ width: size, height: size })}>
         <svg width={size} height={size} className="-rotate-90">
           <circle
             cx={size / 2}
@@ -48,7 +48,7 @@ function CircleProgress({
         </svg>
         <div
           className="absolute inset-0 flex items-center justify-center text-xs sm:text-sm font-black tracking-tight"
-          style={{ color }}
+          data-csp-style={JSON.stringify({ color })}
         >
           {Math.round(pct)}%
         </div>

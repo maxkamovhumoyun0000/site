@@ -149,7 +149,7 @@ export function TeacherLibraryPanel({
       <div key={node.id}>
         <div
           className="group flex items-center gap-2 rounded-xl px-2 py-2 transition hover:bg-surface-soft dark:hover:bg-white/5"
-          style={{ paddingLeft: depth * 20 + 8 }}
+          data-csp-style={JSON.stringify({ paddingLeft: depth * 20 + 8 })}
         >
           {node.kind === "folder" ? (
             <button

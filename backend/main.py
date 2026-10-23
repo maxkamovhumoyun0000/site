@@ -14996,6 +14996,7 @@ def _public_app_base_url(request: Request | None = None) -> str:
 
 
 _MEDIA_STREAM_URL_RE = re.compile(r"^/media/stream/(\d+)(?:\?.*)?$", re.IGNORECASE)
+_SAME_SITE_ASSET_HOSTS = {"diamond-education.uz", "www.diamond-education.uz"}
 
 
 def _build_media_public_url(asset_id: int) -> str | None:
@@ -15012,19 +15013,40 @@ def _normalize_image_asset_url(url: str | None) -> str | None:
     match = _MEDIA_STREAM_URL_RE.match(raw)
     if match:
         return _build_media_public_url(int(match.group(1) or 0))
-    return raw
+    if raw.startswith("/"):
+        return None if raw.startswith("//") or "\\" in raw else raw
+    parsed = urlparse(raw)
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme == "https"
+        and parsed.hostname in _SAME_SITE_ASSET_HOSTS
+        and parsed.username is None
+        and parsed.password is None
+        and port in (None, 443)
+        and parsed.path.startswith("/")
+        and "\\" not in parsed.path
+    ):
+        normalized = f"{parsed.path}{f'?{parsed.query}' if parsed.query else ''}{f'#{parsed.fragment}' if parsed.fragment else ''}"
+        match = _MEDIA_STREAM_URL_RE.match(normalized)
+        if match:
+            return _build_media_public_url(int(match.group(1) or 0))
+        return normalized
+    return None
 
 
 def _has_valid_thumbnail_like_url(url: str | None) -> bool:
-    raw = str(url or "").strip()
-    if not raw:
+    normalized = _normalize_image_asset_url(url)
+    if not normalized:
         return False
-    lowered = raw.lower()
+    lowered = normalized.lower()
     if lowered.startswith("/media/stream/"):
         return True
     if lowered.startswith("/media/public/"):
         return True
-    if lowered.startswith("http://") or lowered.startswith("https://") or lowered.startswith("/"):
+    if lowered.startswith("/"):
         return any(lowered.split("?", 1)[0].endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp"))
     return False
 
@@ -15836,12 +15858,15 @@ def _local_image_url_exists(url: str | None) -> bool:
     raw = str(url or "").strip()
     if not raw:
         return False
-    if raw.startswith("/profile/images/"):
-        filename = Path(raw.removeprefix("/profile/images/")).name
+    normalized = _normalize_image_asset_url(raw)
+    if not normalized:
+        return False
+    if normalized.startswith("/profile/images/"):
+        filename = Path(normalized.removeprefix("/profile/images/")).name
         return bool(filename) and (PROFILE_UPLOAD_DIR / filename).is_file()
-    if raw.startswith("/"):
+    if normalized.startswith("/"):
         return True
-    return True
+    return False
 
 
 def _proctoring_image_url_exists(url: str | None) -> bool:
@@ -15851,8 +15876,9 @@ def _proctoring_image_url_exists(url: str | None) -> bool:
 def _first_existing_avatar_url(*urls: Any) -> str | None:
     for value in urls:
         raw = str(value or "").strip()
-        if raw and _local_image_url_exists(raw):
-            return raw
+        normalized = _normalize_image_asset_url(raw)
+        if normalized and _local_image_url_exists(normalized):
+            return normalized
     return None
 
 

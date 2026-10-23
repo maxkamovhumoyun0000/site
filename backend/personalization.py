@@ -2775,9 +2775,10 @@ async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, au
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]),user)
         if payload.source_kind in {"manual","ai"} and not payload.question_payload: raise HTTPException(status_code=422,detail="Manual or AI lesson needs a question payload")
+        question_payload = _normalize_learning_media_payload(payload.question_payload) if payload.question_payload else None
         topic_id = _learning_topic_for_module(cur, module_id, payload.topic_id)
-        cur.execute("INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",(module_id,topic_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(payload.question_payload,ensure_ascii=False) if payload.question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); lesson_id = int(cur.lastrowid or 0); conn.commit()
-        _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=payload.title, question=payload.question_payload or {})
+        cur.execute("INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",(module_id,topic_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(question_payload,ensure_ascii=False) if question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); lesson_id = int(cur.lastrowid or 0); conn.commit()
+        _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=payload.title, question=question_payload or {})
         return {"id":lesson_id,"topic_id":topic_id}
     finally: conn.close()
 
@@ -2891,7 +2892,8 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
             params.append(payload.title.strip())
         if payload.question_payload is not None:
             updates.append("question_payload_json=?")
-            params.append(json.dumps(_learning_library_question(payload.question_payload), ensure_ascii=False))
+            normalized_payload = _normalize_learning_media_payload(payload.question_payload)
+            params.append(json.dumps(_learning_library_question(normalized_payload), ensure_ascii=False))
         if payload.position is not None:
             updates.append("position=?")
             params.append(payload.position)
@@ -3830,6 +3832,51 @@ def _structured_string_list(raw: Any) -> list[str]:
     return result
 
 
+_LEARNING_MEDIA_FIELDS = {"audio_url", "image_url", "video_url", "thumbnail_url", "file_url"}
+_LEARNING_MEDIA_HOSTS = {"diamond-education.uz", "www.diamond-education.uz"}
+
+
+def _normalize_learning_media_url(value: Any, field: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        if raw.startswith("//") or "\\" in raw or any(ord(char) < 32 for char in raw):
+            raise HTTPException(status_code=422, detail="Learning media must use a Diamond Education URL")
+        return raw
+    if field == "image_url" and re.match(r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+=*$", raw, re.IGNORECASE):
+        return raw
+    try:
+        parsed = urlparse(raw)
+        port = parsed.port
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Learning media URL is invalid")
+    if (
+        parsed.scheme == "https"
+        and parsed.hostname in _LEARNING_MEDIA_HOSTS
+        and parsed.username is None
+        and parsed.password is None
+        and port in (None, 443)
+        and parsed.path.startswith("/")
+        and "\\" not in parsed.path
+    ):
+        return f"{parsed.path}{f'?{parsed.query}' if parsed.query else ''}{f'#{parsed.fragment}' if parsed.fragment else ''}"
+    raise HTTPException(status_code=422, detail="Learning media must be uploaded to Diamond Education")
+
+
+def _normalize_learning_media_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _normalize_learning_media_url(item, str(key).lower())
+            if str(key).lower() in _LEARNING_MEDIA_FIELDS and item is not None
+            else _normalize_learning_media_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_normalize_learning_media_payload(item) for item in value]
+    return value
+
+
 def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a content-library test question to portable module format for all test types, preserving audio and extra metadata."""
     if not isinstance(raw, dict):
@@ -3853,8 +3900,8 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         correct = options[index]
 
     explanation = str(raw.get("explanation") or raw.get("meaning") or "")
-    audio_url = str(raw.get("audio_url") or "").strip()
-    image_url = str(raw.get("image_url") or "").strip()
+    audio_url = _normalize_learning_media_url(raw.get("audio_url"), "audio_url")
+    image_url = _normalize_learning_media_url(raw.get("image_url"), "image_url")
     instruction = str(raw.get("instruction") or "").strip()
     passage = str(raw.get("passage") or raw.get("passage_template") or "").strip()
 

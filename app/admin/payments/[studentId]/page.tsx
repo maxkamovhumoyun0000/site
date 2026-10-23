@@ -512,7 +512,7 @@ export default function AdminStudentPaymentDetailPage() {
         </div>
 
         {isSelectedOverdue ? (
-          <article className="panel-card" style={{ borderColor: "rgba(220,38,38,0.35)" }}>
+          <article className="panel-card" data-csp-style={JSON.stringify({ borderColor: "rgba(220,38,38,0.35)" })}>
             <div className="row-between">
               <strong>Kechikkan to'lov</strong>
               <span className="chip chip-danger">Kechikkan</span>

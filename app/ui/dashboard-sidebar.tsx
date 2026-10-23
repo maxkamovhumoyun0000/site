@@ -41,11 +41,11 @@ function SidebarDiamondWordmark({
   secondarySize?: number;
 }) {
   return (
-    <strong className={className} style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" }}>
-      <span style={{ fontSize: `${primarySize}px`, fontWeight: 900, letterSpacing: "-0.02em", color: "var(--ev-logo-color, #000000)" }}>
-        D<span style={{ position: "relative", display: "inline-block" }}>ı<svg viewBox="0 0 24 24" fill="currentColor" style={{ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" }}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
+    <strong className={className} data-csp-style={JSON.stringify({ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" })}>
+      <span data-csp-style={JSON.stringify({ fontSize: `${primarySize}px`, fontWeight: 900, letterSpacing: "-0.02em", color: "var(--ev-logo-color, #000000)" })}>
+        D<span data-csp-style={JSON.stringify({ position: "relative", display: "inline-block" })}>ı<svg viewBox="0 0 24 24" fill="currentColor" data-csp-style={JSON.stringify({ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" })}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
       </span>
-      <span style={{ fontSize: `${secondarySize}px`, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ev-primary)", marginTop: "1px" }}>Education</span>
+      <span data-csp-style={JSON.stringify({ fontSize: `${secondarySize}px`, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ev-primary)", marginTop: "1px" })}>Education</span>
     </strong>
   );
 }
@@ -206,7 +206,7 @@ export function DashboardSidebar({
             onClick={() => onNavigate(item)}
             aria-current={active ? "page" : undefined}
             title={sectionLabel(item)}
-            style={{ "--item-delay": `${index * 28}ms` } as CSSProperties}
+            data-csp-style={JSON.stringify({ "--item-delay": `${index * 28}ms` } as CSSProperties)}
           >
             <span className={`${iconBase} ${active ? iconActive : iconIdle}`} aria-hidden="true">
               <span className="sidebar-nav-icon__letter">{sectionIconGlyph(item)}</span>

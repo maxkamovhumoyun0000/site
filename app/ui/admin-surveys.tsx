@@ -574,7 +574,7 @@ export function AdminSurveysPanel({
       {deleteConfirm && (
         <div
           className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-sm animate-fadeIn"
-          style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" }}
+          data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" })}
         >
           <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-5">
             <div className="flex flex-col items-center gap-3 text-center">
@@ -597,7 +597,7 @@ export function AdminSurveysPanel({
               </button>
               <button
                 className="btn flex-1 font-bold"
-                style={{ background: "var(--color-error, #ef4444)", color: "#fff", opacity: deleting ? 0.6 : 1 }}
+                data-csp-style={JSON.stringify({ background: "var(--color-error, #ef4444)", color: "#fff", opacity: deleting ? 0.6 : 1 })}
                 onClick={() => deleteSurvey(deleteConfirm)}
                 disabled={deleting}
               >
@@ -657,7 +657,7 @@ export function AdminSurveysPanel({
                     </button>
                     <button
                       className="btn btn-soft small px-3 text-base"
-                      style={{ color: "var(--color-error, #ef4444)", borderColor: "rgba(239,68,68,0.25)" }}
+                      data-csp-style={JSON.stringify({ color: "var(--color-error, #ef4444)", borderColor: "rgba(239,68,68,0.25)" })}
                       onClick={() => setDeleteConfirm(row)}
                       title="O'chirish"
                     >

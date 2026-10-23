@@ -57,7 +57,7 @@ export function ScrollReveal({
     <Component
       ref={ref}
       className={`${className} ${visible ? "visible" : ""}`}
-      style={style}
+      data-csp-style={JSON.stringify(style)}
     >
       {children}
     </Component>

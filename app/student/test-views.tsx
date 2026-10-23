@@ -1882,7 +1882,7 @@ export function StudentVocabularyProcess({
                   </div>
                 </div>
                 <div className="h-2.5 rounded-full bg-slate-200/50 dark:bg-navy-950 overflow-hidden shadow-inner border border-white/10">
-                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 shadow-[0_0_10px_rgba(34,211,238,0.5)]" style={{ width: `${Math.max(0, Math.min(100, Number(quizSession.progress_percent || 0)))}%` }} />
+                  <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 shadow-[0_0_10px_rgba(34,211,238,0.5)]" data-csp-style={JSON.stringify({ width: `${Math.max(0, Math.min(100, Number(quizSession.progress_percent || 0)))}%` })} />
                 </div>
                 <div className="flex flex-wrap items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
                   <span>Savol {quizSession.question_index || 1} / {quizSession.total_questions || 10}</span>
@@ -2682,7 +2682,7 @@ export function StudentGamified({
                 <div className="h-2.5 w-full overflow-hidden rounded-full bg-surface-soft dark:bg-white/10">
                   <div
                     className="h-full rounded-full bg-cyan-500 transition-all duration-300 dark:bg-cyan-400"
-                    style={{ width: `${genProgress}%` }}
+                    data-csp-style={JSON.stringify({ width: `${genProgress}%` })}
                   />
                 </div>
               </div>
@@ -2764,7 +2764,7 @@ export function StudentGamified({
                   className={`h-full rounded-full transition-all duration-700 ${
                     isGood ? "bg-emerald-500" : "bg-rose-500"
                   }`}
-                  style={{ width: `${pct}%` }}
+                  data-csp-style={JSON.stringify({ width: `${pct}%` })}
                 />
               </div>
             </div>
@@ -2805,7 +2805,7 @@ export function StudentGamified({
         <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-surface-soft dark:bg-white/10">
           <div
             className="h-full rounded-full bg-cyan-500 transition-all duration-500 dark:bg-cyan-400"
-            style={{ width: `${progressPct}%` }}
+            data-csp-style={JSON.stringify({ width: `${progressPct}%` })}
           />
         </div>
         {/* Counter */}
@@ -3511,7 +3511,7 @@ export function StudentDailyTestProcess({
               <div className="w-full h-2 bg-transparent border border-line dark:border-white/5 rounded-full mb-8 overflow-hidden">
                 <div 
                   className="h-full bg-cyan-500 transition-all duration-500 ease-out"
-                  style={{ width: `${Math.max(0, Math.min(100, Number(session.progress_percent || 0)))}%` }}
+                  data-csp-style={JSON.stringify({ width: `${Math.max(0, Math.min(100, Number(session.progress_percent || 0)))}%` })}
                 />
               </div>
               
@@ -5053,7 +5053,7 @@ export function StudentCompetitionPage({
                     <div className="w-full h-3 bg-white dark:bg-navy-950 rounded-full overflow-hidden shadow-inner border border-line dark:border-white/5">
                       <div 
                         className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all duration-500"
-                        style={{ width: `${generationPercent}%` }}
+                        data-csp-style={JSON.stringify({ width: `${generationPercent}%` })}
                       />
                     </div>
                     <p className="text-sm font-bold text-indigo-600 dark:text-indigo-300 mt-3">{generationPercent}%</p>
@@ -5267,7 +5267,7 @@ export function StudentCompetitionPage({
                 <div className="w-full h-2 bg-transparent border border-line dark:border-white/5 rounded-full mb-10 overflow-hidden">
                   <div 
                     className="h-full bg-indigo-500 transition-all duration-500 ease-out"
-                    style={{ width: `${Math.max(0, Math.min(100, progressPercent))}%` }}
+                    data-csp-style={JSON.stringify({ width: `${Math.max(0, Math.min(100, progressPercent))}%` })}
                   />
                 </div>
 
@@ -5387,7 +5387,7 @@ export function StudentCompetitionPage({
                               <div className="w-full h-2 bg-slate-100 dark:bg-navy-950 rounded-full overflow-hidden">
                                 <div 
                                   className={`h-full transition-all duration-500 ${opp.is_finished ? "bg-green-500" : "bg-gradient-to-r from-cyan-500 to-indigo-500"}`}
-                                  style={{ width: `${pct}%` }}
+                                  data-csp-style={JSON.stringify({ width: `${pct}%` })}
                                 />
                               </div>
                             </div>

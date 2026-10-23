@@ -168,8 +168,8 @@ export function BadgeAwardModal({ onNavigateToProfile }: BadgeAwardModalProps) {
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <span className="absolute top-6 left-8 text-amber-300 animate-bounce text-sm opacity-75">✨</span>
           <span className="absolute top-12 right-10 text-yellow-200 animate-pulse text-base opacity-80">⭐</span>
-          <span className="absolute bottom-16 left-10 text-cyan-300 animate-ping text-xs opacity-60" style={{ animationDuration: "3s" }}>✦</span>
-          <span className="absolute bottom-12 right-8 text-amber-400 animate-bounce text-sm opacity-75" style={{ animationDelay: "0.5s" }}>🌟</span>
+          <span className="absolute bottom-16 left-10 text-cyan-300 animate-ping text-xs opacity-60" data-csp-style={JSON.stringify({ animationDuration: "3s" })}>✦</span>
+          <span className="absolute bottom-12 right-8 text-amber-400 animate-bounce text-sm opacity-75" data-csp-style={JSON.stringify({ animationDelay: "0.5s" })}>🌟</span>
         </div>
 
         {/* Counter if multiple */}

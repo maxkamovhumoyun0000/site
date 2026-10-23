@@ -19,11 +19,11 @@ export function PublicFooter() {
           <div className="flex flex-col">
             <div className="footer-brand-lockup" aria-label="Diamond Education">
               <LogoMark size="sm" />
-              <strong className="footer-diamond-wordmark" style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" }}>
-                <span style={{ fontSize: "19px", fontWeight: 900, letterSpacing: "-0.02em" }}>
-                  D<span style={{ position: "relative", display: "inline-block" }}>ı<svg viewBox="0 0 24 24" fill="currentColor" style={{ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" }}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
+              <strong className="footer-diamond-wordmark" data-csp-style={JSON.stringify({ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" })}>
+                <span data-csp-style={JSON.stringify({ fontSize: "19px", fontWeight: 900, letterSpacing: "-0.02em" })}>
+                  D<span data-csp-style={JSON.stringify({ position: "relative", display: "inline-block" })}>ı<svg viewBox="0 0 24 24" fill="currentColor" data-csp-style={JSON.stringify({ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" })}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
                 </span>
-                <span style={{ fontSize: "9px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", marginTop: "1px" }}>Education</span>
+                <span data-csp-style={JSON.stringify({ fontSize: "9px", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", marginTop: "1px" })}>Education</span>
               </strong>
             </div>
             <p className="footer-v2-tagline mt-4">

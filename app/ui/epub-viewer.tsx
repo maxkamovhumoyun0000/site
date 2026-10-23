@@ -131,7 +131,7 @@ export function EpubViewer({ epubUrl, title, authToken, onBack, className = "" }
   }, [prev, next]);
 
   return (
-    <div className={`flex flex-col bg-slate-950 text-white ${className}`} style={{ height: "100dvh" }}>
+    <div className={`flex flex-col bg-slate-950 text-white ${className}`} data-csp-style={JSON.stringify({ height: "100dvh" })}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-800 shrink-0 gap-3">
         {onBack && (
@@ -151,7 +151,7 @@ export function EpubViewer({ epubUrl, title, authToken, onBack, className = "" }
             <div className="flex-1 h-1 bg-slate-700 rounded-full overflow-hidden">
               <div
                 className="h-full bg-cyan-500 rounded-full transition-all duration-300"
-                style={{ width: `${progress}%` }}
+                data-csp-style={JSON.stringify({ width: `${progress}%` })}
               />
             </div>
             <span className="text-[11px] text-slate-400 font-mono shrink-0">{progress}%</span>
@@ -191,7 +191,7 @@ export function EpubViewer({ epubUrl, title, authToken, onBack, className = "" }
         </button>
 
         {/* Epub container */}
-        <div className="flex-1 min-w-0 relative overflow-hidden bg-[#fafafa] dark:bg-[#1a1a2e]" style={{ margin: "0 3.5rem" }}>
+        <div className="flex-1 min-w-0 relative overflow-hidden bg-[#fafafa] dark:bg-[#1a1a2e]" data-csp-style={JSON.stringify({ margin: "0 3.5rem" })}>
           {loading && (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950 z-20 gap-4">
               <div className="w-10 h-10 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin" />

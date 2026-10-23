@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, FormEvent, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { migrateBrowserSessionToCookie, storeBrowserSessionToken } from "@/lib/auth-session";
@@ -86,15 +87,15 @@ function Settings3DToggle() {
   }, []);
   return (
     <article className="premium-card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div data-csp-style={JSON.stringify({ display: 'flex', justifyContent: 'space-between', alignItems: 'center' })}>
         <div>
-          <h3 style={{ fontSize: '18px', marginBottom: '4px' }}>{tt("admin.settings.animation", "3D Diamond Animatsiyasi")}</h3>
-          <p style={{ fontSize: '13px', color: 'var(--ink-500)' }}>
+          <h3 data-csp-style={JSON.stringify({ fontSize: '18px', marginBottom: '4px' })}>{tt("admin.settings.animation", "3D Diamond Animatsiyasi")}</h3>
+          <p data-csp-style={JSON.stringify({ fontSize: '13px', color: 'var(--ink-500)' })}>
             {tt("admin.settings.animation.desc", "Batareyani tejash va unumdorlikni oshirish uchun o'chirib qo'ying")}
           </p>
         </div>
-        <button 
-          className={`btn ${isOff ? 'btn-soft' : 'btn-primary'}`} 
+        <button
+          className={`btn ${isOff ? 'btn-soft' : 'btn-primary'}`}
           onClick={() => {
             const next = !isOff;
             localStorage.setItem('diamond_3d_disabled', String(next));
@@ -121,11 +122,11 @@ function DiamondWordmark({
   secondarySize?: number;
 }) {
   return (
-    <strong className={className} style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" }}>
-      <span style={{ fontSize: `${primarySize}px`, fontWeight: 900, letterSpacing: "-0.02em", color: "var(--ev-logo-color, #000000)" }}>
-        D<span style={{ position: "relative", display: "inline-block" }}>ı<svg viewBox="0 0 24 24" fill="currentColor" style={{ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" }}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
+    <strong className={className} data-csp-style={JSON.stringify({ display: "inline-flex", flexDirection: "column", lineHeight: 1.0, verticalAlign: "middle" })}>
+      <span data-csp-style={JSON.stringify({ fontSize: `${primarySize}px`, fontWeight: 900, letterSpacing: "-0.02em", color: "var(--ev-logo-color, #000000)" })}>
+        D<span data-csp-style={JSON.stringify({ position: "relative", display: "inline-block" })}>ı<svg viewBox="0 0 24 24" fill="currentColor" data-csp-style={JSON.stringify({ position: "absolute", top: "-0.1em", left: "50%", transform: "translateX(-50%)", width: "0.26em", height: "0.26em", color: "var(--ev-primary, #002DFF)" })}><path d="M12 2L3.5 12 12 22l8.5-10z" /></svg></span>amond
       </span>
-      <span style={{ fontSize: `${secondarySize}px`, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ev-primary)", marginTop: "1px" }}>Education</span>
+      <span data-csp-style={JSON.stringify({ fontSize: `${secondarySize}px`, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--ev-primary)", marginTop: "1px" })}>Education</span>
     </strong>
   );
 }
@@ -1119,7 +1120,7 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
       const lower = s.toLowerCase();
       return lower.includes("ingliz") || lower.includes("english") || lower.includes("rus") || lower.includes("russian");
     });
-    
+
     if (!hasLang) {
       if (role === "student") {
         const studentExclusions = new Set([
@@ -1311,7 +1312,7 @@ function SmallUserAvatar({
   const url = rowAvatarUrl(row);
   const label = String(name || rowDisplayName(row, "U")).trim() || "U";
   return (
-    <span className="mini-user-avatar" style={{ width: size, height: size, fontSize: Math.max(11, Math.round(size * 0.38)) }}>
+    <span className="mini-user-avatar" data-csp-style={JSON.stringify({ width: size, height: size, fontSize: Math.max(11, Math.round(size * 0.38)) })}>
       <SafeAvatarImage src={url} alt={label} fallback={label.slice(0, 1).toUpperCase()} />
     </span>
   );
@@ -1624,7 +1625,7 @@ function AttendanceLessonTable({
               );
             }) : (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", padding: "2.5rem 1rem", fontWeight: 600, color: "var(--ink-500)" }}>
+                <td colSpan={6} data-csp-style={JSON.stringify({ textAlign: "center", padding: "2.5rem 1rem", fontWeight: 600, color: "var(--ink-500)" })}>
                   {emptyText}
                 </td>
               </tr>
@@ -1939,7 +1940,7 @@ function LandingResultsCarousel({ groupId, items, index = 0 }: { groupId: string
       <div
         ref={trackRef}
         className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        style={{ animationDuration: `${animDuration}s` }}
+        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
       >
         {duplicatedItems.map((item, idx) => (
           <ResultCard item={item} compact key={`result-${groupId}-${item.id}-${idx}`} />
@@ -1988,7 +1989,7 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
       <div
         ref={trackRef}
         className="landing-results-marquee-track"
-        style={{ animationDuration: `${animDuration}s` }}
+        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
       >
         {duplicatedItems.map((course, idx) => {
           const subject = String(course.subject || "").trim();
@@ -2077,7 +2078,7 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
       <div
         ref={trackRef}
         className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        style={{ animationDuration: `${animDuration}s` }}
+        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
       >
         {duplicatedItems.map((video, idx) => (
           <div
@@ -2169,7 +2170,7 @@ function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
       <div
         ref={trackRef}
         className="landing-reviews-carousel-track"
-        style={{ animationDuration: `${animDuration}s` }}
+        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
       >
         {duplicatedItems.map((testimonial, idx) => (
           <article className="landing-review-card" key={`landing-review-card-${testimonial.name}-${idx}`}>
@@ -2250,7 +2251,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
   const [activeFaq, setActiveFaq] = useState<number | null>(null);
   const [videoFilter, setVideoFilter] = useState("Barchasi");
   const [videoLockPopup, setVideoLockPopup] = useState(false);
-  
+
   const availableVideoSubjects = useMemo(() => {
     const subs = new Set<string>();
     landingVideos.forEach(v => {
@@ -2322,7 +2323,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
           requestJson<{ surveys: GenericRow[] }>("/public/surveys").catch(() => ({ surveys: [] })),
         ]);
         if (cancelled) return;
-        
+
         const reviewItems = reviewsPayload.items || [];
         const mappedTestimonials = reviewItems.map((r) => {
           const quote = String(r.review_text || "").trim();
@@ -2337,13 +2338,13 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
             avatarUrl: resolveAssetUrl(String(r.author_avatar_url || r.profile_image_url || "").trim()),
           };
         }).filter((item): item is LandingTestimonial => Boolean(item));
-        
+
         setTestimonials(mappedTestimonials);
 
         const courseItems = coursesPayload.items || [];
         setCallbackCourses(courseItems);
         setLandingCourses(courseItems);
-        
+
         const videoItems = videosPayload.items || [];
         setLandingVideos(videoItems);
 
@@ -2424,7 +2425,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
   RESULT_TYPES.forEach((type) => {
     const items = landingResults.filter((item) => String(item.result_type || "").trim() === type);
     if (!items.length) return;
-    
+
     if (type === "Milliy Sertifikat") {
       const subjects = Array.from(new Set(items.map(item => String(item.subject || "").trim()).filter(Boolean)));
       if (subjects.length === 0) {
@@ -2556,7 +2557,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
               {t(locale, "landing.videos.all", "Barcha Videolarni Ko'rish")} →
             </a>
           </div>
-          
+
 
           <div className="mt-4 overflow-hidden -mx-6 md:-mx-8 px-6 md:px-8">
             {filteredLandingVideos.length ? (
@@ -2572,7 +2573,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
       {videoLockPopup && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="bg-white dark:bg-navy-900 rounded-2xl shadow-2xl max-w-md w-full p-6 text-center animate-in fade-in zoom-in-95 relative">
-            <button 
+            <button
               onClick={() => setVideoLockPopup(false)}
               className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
             >
@@ -2592,7 +2593,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
               {t(locale, "landing.videos.lockMessage", "Bizning o'quv markazimizda tahsil oling va bepul video darslar hamda ko'plab qo'shimcha o'quv materiallariga ega bo'ling.")}
             </p>
             <div className="flex justify-center">
-              <button 
+              <button
                 onClick={() => {
                   setVideoLockPopup(false);
                   scrollToId("courses");
@@ -2780,7 +2781,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
                   type="submit"
                   className="callback-btn"
                   disabled={callbackSubmitting}
-                  style={callbackSubmitting ? { opacity: 0.65, cursor: "not-allowed" } : undefined}
+                  data-csp-style={JSON.stringify(callbackSubmitting ? { opacity: 0.65, cursor: "not-allowed" } : undefined)}
                 >
                   {callbackSubmitting
                     ? tt("landing.callback.submitting", "Yuborilmoqda...")
@@ -2825,7 +2826,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
                   src="https://www.google.com/maps?q=41.110455,69.052183&z=18&output=embed"
                   width="100%"
                   height="220"
-                  style={{ border: 0, borderRadius: "12px" }}
+                  data-csp-style={JSON.stringify({ border: 0, borderRadius: "12px" })}
                   allowFullScreen
                   loading="lazy"
                   referrerPolicy="no-referrer-when-downgrade"
@@ -2874,7 +2875,7 @@ function PublicLandingScreen({ locale }: { locale: Locale }) {
                   src="https://www.google.com/maps?q=41.111575,69.062431&z=18&output=embed"
                   width="100%"
                   height="220"
-                  style={{ border: 0, borderRadius: "12px" }}
+                  data-csp-style={JSON.stringify({ border: 0, borderRadius: "12px" })}
                   allowFullScreen
                   loading="lazy"
                   referrerPolicy="no-referrer-when-downgrade"
@@ -3042,11 +3043,11 @@ function StudentPublicOfferScreen({ onAgreed }: { onAgreed: () => void }) {
           <h2 className="text-2xl font-black text-ink-900 dark:text-white mb-6 text-center">
             {tt("landing.footer.oferta", "Ommaviy Oferta")}
           </h2>
-          
+
           <div className="mb-8 max-h-[50vh] overflow-y-auto bg-white dark:bg-white rounded-xl border border-line dark:border-white/10 flex justify-center custom-scrollbar">
-            <img 
-              src="/assets/ommaviy-oferta.png" 
-              alt="Ommaviy Oferta" 
+            <img
+              src="/assets/ommaviy-oferta.png"
+              alt="Ommaviy Oferta"
               className="max-w-full h-auto object-contain"
             />
           </div>
@@ -3054,8 +3055,8 @@ function StudentPublicOfferScreen({ onAgreed }: { onAgreed: () => void }) {
           <div className="space-y-4 bg-surface-soft dark:bg-navy-950 p-5 rounded-xl border border-line dark:border-white/10 mb-8">
             <label className="flex items-start gap-3 cursor-pointer group">
               <div className="relative flex items-center justify-center mt-0.5">
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   className="peer sr-only"
                   checked={readChecked}
                   onChange={(e) => setReadChecked(e.target.checked)}
@@ -3072,8 +3073,8 @@ function StudentPublicOfferScreen({ onAgreed }: { onAgreed: () => void }) {
 
             <label className="flex items-start gap-3 cursor-pointer group">
               <div className="relative flex items-center justify-center mt-0.5">
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   className="peer sr-only"
                   checked={agreeChecked}
                   onChange={(e) => setAgreeChecked(e.target.checked)}
@@ -3091,7 +3092,7 @@ function StudentPublicOfferScreen({ onAgreed }: { onAgreed: () => void }) {
 
           <div className="flex justify-center h-[52px]">
             {readChecked && agreeChecked ? (
-              <button 
+              <button
                 className={`btn btn-primary w-full max-w-xs transition-all duration-300 animate-in fade-in zoom-in-95 ${loading ? "opacity-50 pointer-events-none" : ""}`}
                 onClick={async () => {
                   setLoading(true);
@@ -3161,7 +3162,7 @@ function CompactStudentStatCard({
         <div className="asc-icon">{icon}</div>
         <div className="asc-value">{value}</div>
         <div className="asc-label">{title}</div>
-        {detail ? <div style={{ fontSize: "11px", opacity: 0.7, marginTop: "4px", fontWeight: 600, position: "relative", zIndex: 1 }}>{detail}</div> : null}
+        {detail ? <div data-csp-style={JSON.stringify({ fontSize: "11px", opacity: 0.7, marginTop: "4px", fontWeight: 600, position: "relative", zIndex: 1 })}>{detail}</div> : null}
       </article>
     );
   }
@@ -3283,11 +3284,11 @@ function StudentHome({
         className="relative p-4 sm:p-6 md:p-8 bg-gradient-to-br from-navy-900 via-navy-800 to-navy-900 border border-white/10 rounded-2xl sm:rounded-[2rem] shadow-[0_0_40px_rgba(0,11,59,0.3)] overflow-hidden compact-hero-card logo-gradient-card"
       >
         <div className="absolute top-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-cyan-500/20 blur-[100px] pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col items-start justify-between gap-5 sm:gap-8 md:flex-row md:items-end">
           <div className="flex flex-col max-w-xl gap-3 sm:gap-4">
             <h2 className="w-full min-w-0 text-2xl sm:text-3xl md:text-4xl font-black text-white font-display tracking-tight drop-shadow-md">{userName(user)}</h2>
-            
+
             <div className="md:hidden shrink-0 rounded-xl border border-white/25 bg-white/12 px-4 py-2.5 text-left backdrop-blur-md shadow-inner self-start flex items-center gap-3">
               <span className="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-white/70">
                 <AssetIcon type="dcoin" size={20} />
@@ -3366,7 +3367,7 @@ function StudentHome({
                   <div className="w-full h-2 bg-slate-200 dark:bg-white/10 rounded-full overflow-hidden mb-1.5">
                     <div
                       className="h-full bg-gradient-to-r from-cyan-500 to-emerald-400 rounded-full transition-all duration-700"
-                      style={{ width: `${Math.min(100, Number(subject.progress || 0))}%` }}
+                      data-csp-style={JSON.stringify({ width: `${Math.min(100, Number(subject.progress || 0))}%` })}
                     />
                   </div>
                   <div className="flex items-center justify-between text-[11px] font-semibold text-ink-500 dark:text-white/60">
@@ -3474,7 +3475,7 @@ function StudentProgress({ data }: { data: GenericRow }) {
         <StatCard title={tt("student.progress.topics", "Tugatilgan mavzular")} value={monthly.topics_completed || 0} detail={tt("student.progress.grammar", "Grammatika")} tone="green" />
         <StatCard title={tt("student.progress.groupRank", "Guruhdagi o'rni")} value={`#${stats.group_rank || "-"}`} detail={tt("student.progress.classRank", "Hozirgi o'rni")} tone="gold" />
       </section>
-      
+
       <section className="p-4 sm:p-6 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-2xl shadow-premium">
         <h3 className="mb-4 text-lg sm:text-xl font-bold text-navy-900 font-display dark:text-white">{tt("student.dailyTest.recent", "Recent Daily Tests")}</h3>
         <div className="hidden md:block overflow-x-auto">
@@ -3733,7 +3734,7 @@ function StudentDcoin({ data, user }: { data: GenericRow, user?: any }) {
   const dcoin = data.dcoin || {};
   const subjectCount = Number(data.stats?.subject_count || 1);
   const dpointsTotal = Number(dcoin.dpoints_balance ?? data.stats?.total_dpoints ?? (Number(dcoin.total || 0) * subjectCount));
-  
+
   const leaderboard = useMemo(
     () =>
       [...((data.leaderboard || []) as GenericRow[])].sort(
@@ -3741,7 +3742,7 @@ function StudentDcoin({ data, user }: { data: GenericRow, user?: any }) {
       ),
     [data.leaderboard],
   );
-  
+
   const myRankIndex = user ? leaderboard.findIndex((row) => row.user_id === user.id) : -1;
   const myRankRow = myRankIndex >= 0 ? leaderboard[myRankIndex] : null;
 
@@ -3859,16 +3860,16 @@ function buildCalendarMonths(availableDates: Array<{ date: string; closed: boole
       activeMonths.add(d.date.slice(0, 7));
     }
   });
-  
+
   const monthsList = Array.from(activeMonths).sort();
-  
+
   return monthsList.map(monthStr => {
     const [year, month] = monthStr.split("-").map(Number);
     const firstDay = new Date(year, month - 1, 1);
     const lastDay = new Date(year, month, 0);
     const numDays = lastDay.getDate();
     const firstDayOfWeek = (firstDay.getDay() + 6) % 7;
-    
+
     const days: Array<string | null> = [];
     for (let i = 0; i < firstDayOfWeek; i++) {
       days.push(null);
@@ -3876,7 +3877,7 @@ function buildCalendarMonths(availableDates: Array<{ date: string; closed: boole
     for (let d = 1; d <= numDays; d++) {
       days.push(`${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
     }
-    
+
     return {
       monthStr,
       year,
@@ -4275,64 +4276,64 @@ function StudentSupport({
           <article
             className="overlay-modal-card support-booking-modal support-booking-modal-v2"
             onClick={(event) => event.stopPropagation()}
-            style={{ maxWidth: 560, width: "100%", padding: "0", overflow: "hidden", borderRadius: 24 }}
+            data-csp-style={JSON.stringify({ maxWidth: 560, width: "100%", padding: "0", overflow: "hidden", borderRadius: 24 })}
           >
             {/* Modal Header */}
-            <div className="support-modal-header" style={{
+            <div className="support-modal-header" data-csp-style={JSON.stringify({
               padding: "22px 26px 18px",
               position: "relative",
               overflow: "hidden",
-            }}>
+            })}>
               <div className="row-between">
                 <div>
-                  <span style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "rgba(255,255,255,0.9)" }}>
+                  <span data-csp-style={JSON.stringify({ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.14em", color: "rgba(255,255,255,0.9)" })}>
                     Support Booking
                   </span>
-                  <h3 style={{ margin: "4px 0 0", fontSize: 20, fontWeight: 700 }}>
+                  <h3 data-csp-style={JSON.stringify({ margin: "4px 0 0", fontSize: 20, fontWeight: 700 })}>
                     {tt("support.newBooking", "Yangi support dars")}
                   </h3>
                 </div>
                 <button
                   onClick={() => { setBookingModalOpen(false); setBookingStep("subject"); }}
                   aria-label={tt("common.close", "Yopish")}
-                  style={{
+                  data-csp-style={JSON.stringify({
                     width: 36, height: 36, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.15)",
                     background: "rgba(255,255,255,0.06)", cursor: "pointer", fontSize: 16, display: "flex",
                     alignItems: "center", justifyContent: "center", color: "inherit", flexShrink: 0,
                     transition: "background 0.2s",
-                  }}
+                  })}
                 >✕</button>
               </div>
 
               {/* Step progress bars */}
               {currentStepIdx >= 0 && (
-                <div style={{ display: "flex", gap: 6, marginTop: 14, alignItems: "center" }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", gap: 6, marginTop: 14, alignItems: "center" })}>
                   {steps.map((s, i) => (
-                    <div key={s} style={{
+                    <div key={s} data-csp-style={JSON.stringify({
                       height: 4, flex: 1, borderRadius: 2,
                       background: i <= currentStepIdx ? "#6366f1" : "rgba(255,255,255,0.12)",
                       transition: "background 0.3s",
-                    }} />
+                    })} />
                   ))}
                 </div>
               )}
             </div>
 
             {/* Modal Body */}
-            <div style={{ padding: "20px 24px 24px", maxHeight: "70vh", overflowY: "auto" }}>
+            <div data-csp-style={JSON.stringify({ padding: "20px 24px 24px", maxHeight: "70vh", overflowY: "auto" })}>
               {/* Branch legend */}
               {branches.length > 1 && (
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 })}>
                   {branches.map((b) => {
                     const pal = branchPalette(b.key);
                     return (
-                      <span key={b.key} style={{
+                      <span key={b.key} data-csp-style={JSON.stringify({
                         display: "inline-flex", alignItems: "center", gap: 6,
                         padding: "4px 10px", borderRadius: 20,
                         background: pal.bg, border: `1px solid ${pal.border}`,
                         fontSize: 12, fontWeight: 600, color: pal.text,
-                      }}>
-                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.selected, display: "inline-block" }} />
+                      })}>
+                        <span data-csp-style={JSON.stringify({ width: 8, height: 8, borderRadius: "50%", background: pal.selected, display: "inline-block" })} />
                         {b.label}
                       </span>
                     );
@@ -4340,7 +4341,7 @@ function StudentSupport({
                 </div>
               )}
 
-              {error && <div className="error-box" style={{ marginBottom: 16 }}>{error}</div>}
+              {error && <div className="error-box" data-csp-style={JSON.stringify({ marginBottom: 16 })}>{error}</div>}
 
               {!enabled ? (
                 <div className="support-empty-card">
@@ -4355,11 +4356,11 @@ function StudentSupport({
 
               /* ── STEP: subject ── */
               ) : bookingStep === "subject" ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <label style={{ fontWeight: 700, fontSize: 15, display: "block", marginBottom: 8 }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 16 })}>
+                  <label data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 15, display: "block", marginBottom: 8 })}>
                     {tt("support.subject", "Fan tanlang")}
                   </label>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 8 })}>
                     {supportSubjects.map((s) => (
                       <button
                         key={s}
@@ -4374,15 +4375,15 @@ function StudentSupport({
                           setDatesPerBranch({});
                           setBookingStep("date");
                         }}
-                        style={{
+                        data-csp-style={JSON.stringify({
                           padding: "14px 18px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.1)",
                           background: supportSubject === s ? "rgba(99,102,241,0.25)" : "rgba(255,255,255,0.04)",
                           cursor: "pointer", textAlign: "left", fontWeight: 600, fontSize: 15,
                           color: "inherit", transition: "all 0.2s",
                           display: "flex", alignItems: "center", gap: 10,
-                        }}
+                        })}
                       >
-                        <span style={{ fontSize: 20 }}>📚</span>
+                        <span data-csp-style={JSON.stringify({ fontSize: 20 })}>📚</span>
                         {s}
                       </button>
                     ))}
@@ -4391,11 +4392,11 @@ function StudentSupport({
 
               /* ── STEP: teacher ── */
               ) : bookingStep === "teacher" ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <label style={{ fontWeight: 700, fontSize: 15, display: "block" }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 16 })}>
+                  <label data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 15, display: "block" })}>
                     {tt("support.selectTeacher", "Support teacher tanlang")}
                   </label>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 8 })}>
                     {supportTeachers.map((t) => {
                       const isSelected = supportTeacherId === t.id;
                       return (
@@ -4410,18 +4411,18 @@ function StudentSupport({
                             setDatesPerBranch({});
                             setBookingStep("date");
                           }}
-                          style={{
+                          data-csp-style={JSON.stringify({
                             padding: "14px 16px", borderRadius: 14, border: `1px solid ${isSelected ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}`,
                             background: isSelected ? "rgba(99,102,241,0.2)" : "rgba(255,255,255,0.04)",
                             cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12,
                             color: "inherit", transition: "all 0.2s",
-                          }}
+                          })}
                         >
-                          <span style={{
+                          <span data-csp-style={JSON.stringify({
                             width: 40, height: 40, borderRadius: "50%", background: "rgba(99,102,241,0.3)",
                             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0,
-                          }}>👤</span>
-                          <div style={{ fontWeight: 700, fontSize: 15 }}>{t.name}</div>
+                          })}>👤</span>
+                          <div data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 15 })}>{t.name}</div>
                         </button>
                       );
                     })}
@@ -4429,7 +4430,7 @@ function StudentSupport({
                       <p className="support-booking-muted">{tt("support.noTeacher", "Support teacher topilmadi")}</p>
                     )}
                   </div>
-                  <button className="btn btn-soft" style={{ marginTop: 4 }} onClick={() => setBookingStep("subject")}>
+                  <button className="btn btn-soft" data-csp-style={JSON.stringify({ marginTop: 4 })} onClick={() => setBookingStep("subject")}>
                     {"< "}{tt("common.back", "Orqaga")}
                   </button>
                 </div>
@@ -4469,7 +4470,7 @@ function StudentSupport({
                 const hasAnyOpen = knownDates.some((d) => dateInfo.get(d)?.open);
 
                 return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 14 })}>
                     <div className="support-date-head">
                       <label>{tt("support.date", "Sana tanlang")}</label>
                       {datesLoading && <span className="support-date-loading">{tt("common.loading", "Yuklanmoqda...")}</span>}
@@ -4484,7 +4485,7 @@ function StudentSupport({
 
                     <div className="support-cal-scroll">
                       {!hasAnyOpen && !datesLoading ? (
-                        <p className="support-booking-muted" style={{ padding: "12px 4px" }}>{tt("support.noOpenDates", "Hozircha ochiq sana yo'q.")}</p>
+                        <p className="support-booking-muted" data-csp-style={JSON.stringify({ padding: "12px 4px" })}>{tt("support.noOpenDates", "Hozircha ochiq sana yo'q.")}</p>
                       ) : null}
                       {monthsToShow.map(({ y, m }) => {
                         const firstDow = (new Date(y, m, 1).getDay() + 6) % 7; // Dushanba = 0
@@ -4520,7 +4521,7 @@ function StudentSupport({
                                     type="button"
                                     disabled={!isOpen || datesLoading}
                                     className={`support-cal-day ${state}${isToday ? " is-today" : ""}`}
-                                    style={isSelected && pal ? { background: pal.selected, borderColor: pal.selected, color: "#fff" } : isOpen && pal ? { borderColor: pal.border } : undefined}
+                                    data-csp-style={JSON.stringify(isSelected && pal ? { background: pal.selected, borderColor: pal.selected, color: "#fff" } : isOpen && pal ? { borderColor: pal.border } : undefined)}
                                     title={isOpen ? available.map((b) => b.label).join(", ") : isClosed ? tt("support.closedDay", "Yopiq / dam olish") : ""}
                                     onClick={() => {
                                       if (!isOpen) return;
@@ -4542,7 +4543,7 @@ function StudentSupport({
                       })}
                     </div>
 
-                    <button className="btn btn-soft" style={{ marginTop: 2 }} onClick={() => setBookingStep(supportSubjects.length > 1 ? "teacher" : "subject")}>
+                    <button className="btn btn-soft" data-csp-style={JSON.stringify({ marginTop: 2 })} onClick={() => setBookingStep(supportSubjects.length > 1 ? "teacher" : "subject")}>
                       {"< "}{tt("common.back", "Orqaga")}
                     </button>
                   </div>
@@ -4553,31 +4554,31 @@ function StudentSupport({
               : bookingStep === "branch_time" ? (() => {
                 const availBranches = branchesForDate(date);
                 return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-                    <div style={{
+                  <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 20 })}>
+                    <div data-csp-style={JSON.stringify({
                       padding: "12px 16px", borderRadius: 14,
                       background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
                       display: "flex", alignItems: "center", gap: 10,
-                    }}>
-                      <span style={{ fontSize: 22 }}>📅</span>
+                    })}>
+                      <span data-csp-style={JSON.stringify({ fontSize: 22 })}>📅</span>
                       <div>
-                        <div style={{ fontWeight: 700, fontSize: 15 }}>{date}</div>
-                        <div style={{ fontSize: 12, opacity: 0.6 }}>{getFullWeekdayName(date, locale)}</div>
+                        <div data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 15 })}>{date}</div>
+                        <div data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6 })}>{getFullWeekdayName(date, locale)}</div>
                       </div>
                     </div>
 
                     {availBranches.length > 1 && (
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                      <div data-csp-style={JSON.stringify({ display: "flex", flexWrap: "wrap", gap: 8 })}>
                         {availBranches.map((b) => {
                           const pal = branchPalette(b.key);
                           return (
-                            <span key={b.key} style={{
+                            <span key={b.key} data-csp-style={JSON.stringify({
                               padding: "4px 12px", borderRadius: 20,
                               background: pal.bg, border: `1px solid ${pal.border}`,
                               fontSize: 12, fontWeight: 700, color: pal.text,
                               display: "inline-flex", alignItems: "center", gap: 6,
-                            }}>
-                              <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.selected }} />
+                            })}>
+                              <span data-csp-style={JSON.stringify({ width: 8, height: 8, borderRadius: "50%", background: pal.selected })} />
                               {b.label}
                             </span>
                           );
@@ -4588,13 +4589,13 @@ function StudentSupport({
                     {availBranches.length === 1 && branch && (() => {
                       const pal = branchPalette(branch);
                       return (
-                        <span style={{
+                        <span data-csp-style={JSON.stringify({
                           padding: "4px 12px", borderRadius: 20,
                           background: pal.bg, border: `1px solid ${pal.border}`,
                           fontSize: 12, fontWeight: 700, color: pal.text,
                           display: "inline-flex", alignItems: "center", gap: 6, width: "fit-content",
-                        }}>
-                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.selected }} />
+                        })}>
+                          <span data-csp-style={JSON.stringify({ width: 8, height: 8, borderRadius: "50%", background: pal.selected })} />
                           {availBranches[0].label}
                         </span>
                       );
@@ -4602,12 +4603,12 @@ function StudentSupport({
 
                     {(
                       <div>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                          <label style={{ fontWeight: 700, fontSize: 14 }}>
+                        <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 })}>
+                          <label data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 14 })}>
                             {tt("support.time", "Vaqt tanlang")}
                           </label>
                           {!loading && times.length > 0 ? (
-                            <span style={{ fontSize: 12, fontWeight: 700, color: freeTimes.length ? "#6ee7b7" : "#fca5a5" }}>
+                            <span data-csp-style={JSON.stringify({ fontSize: 12, fontWeight: 700, color: freeTimes.length ? "#6ee7b7" : "#fca5a5" })}>
                               {tt("support.freeCount", "{n} ta bo'sh", { n: freeTimes.length })}
                             </span>
                           ) : null}
@@ -4619,7 +4620,7 @@ function StudentSupport({
                         ) : times.length > 0 ? (
                           <>
                             {freeTimes.length === 0 ? (
-                              <div className="error-box" style={{ marginBottom: 10 }}>{tt("support.noFreeTimes", "Tanlangan sanada bo'sh vaqt qolmagan. Boshqa sana tanlang.")}</div>
+                              <div className="error-box" data-csp-style={JSON.stringify({ marginBottom: 10 })}>{tt("support.noFreeTimes", "Tanlangan sanada bo'sh vaqt qolmagan. Boshqa sana tanlang.")}</div>
                             ) : null}
                             <div className="support-time-grid">
                               {times.map((item, timeIdx) => {
@@ -4641,7 +4642,7 @@ function StudentSupport({
                                     disabled={!isFree}
                                     onClick={() => { if (!isFree) return; setBranch(item.branch || ""); setTime(item.time); setBookingStep("purpose"); }}
                                     className={`support-time-slot${isSelected ? " is-selected" : ""}${isFree ? "" : ` is-${item.status}`}`}
-                                    style={isSelected ? { borderColor: pal.selected, background: pal.bg, color: pal.text } : (multiBranch && isFree ? { borderColor: pal.border } : undefined)}
+                                    data-csp-style={JSON.stringify(isSelected ? { borderColor: pal.selected, background: pal.bg, color: pal.text } : (multiBranch && isFree ? { borderColor: pal.border } : undefined))}
                                     title={`${item.branchLabel ? item.branchLabel + " · " : ""}${item.reason || statusLabel}`}
                                   >
                                     <span className="support-time-slot-value">{item.time}</span>
@@ -4666,11 +4667,11 @@ function StudentSupport({
 
               /* ── STEP: purpose ── */
               : bookingStep === "purpose" ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <label style={{ fontWeight: 700, fontSize: 15, display: "block" }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 16 })}>
+                  <label data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 15, display: "block" })}>
                     {tt("support.purpose", "Sababni tanlang")}
                   </label>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 })}>
                     {purposeOptions.map((opt) => {
                       const icons: Record<string, string> = {
                         Speaking: "🗣️", Grammar: "📖", Writing: "✍️",
@@ -4682,16 +4683,16 @@ function StudentSupport({
                           key={opt}
                           type="button"
                           onClick={() => { setPurpose(opt); setBookingStep("confirm"); }}
-                          style={{
+                          data-csp-style={JSON.stringify({
                             padding: "14px 12px", borderRadius: 14,
                             border: `2px solid ${isSelected ? "rgba(99,102,241,0.7)" : "rgba(255,255,255,0.1)"}`,
                             background: isSelected ? "rgba(99,102,241,0.2)" : "rgba(255,255,255,0.04)",
                             cursor: "pointer", color: "inherit", transition: "all 0.15s",
                             display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
-                          }}
+                          })}
                         >
-                          <span style={{ fontSize: 24 }}>{icons[opt] || "📌"}</span>
-                          <span style={{ fontWeight: 700, fontSize: 13 }}>{opt}</span>
+                          <span data-csp-style={JSON.stringify({ fontSize: 24 })}>{icons[opt] || "📌"}</span>
+                          <span data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: 13 })}>{opt}</span>
                         </button>
                       );
                     })}
@@ -4703,9 +4704,9 @@ function StudentSupport({
 
               /* ── STEP: confirm ── */
               ) : bookingStep === "confirm" ? (
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  <h4 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{tt("support.confirmTitle", "Tasdiqlash")}</h4>
-                  <div style={{ borderRadius: 16, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 16 })}>
+                  <h4 data-csp-style={JSON.stringify({ margin: 0, fontSize: 18, fontWeight: 700 })}>{tt("support.confirmTitle", "Tasdiqlash")}</h4>
+                  <div data-csp-style={JSON.stringify({ borderRadius: 16, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" })}>
                     {([
                       { icon: "📚", label: tt("support.subject", "Fan"), value: supportSubject || "-" },
                       supportTeacherName ? { icon: "👤", label: tt("support.teacher", "O'qituvchi"), value: supportTeacherName } : null,
@@ -4719,23 +4720,23 @@ function StudentSupport({
                         if (!row) return null;
                         const pal = row.branchKey ? branchPalette(row.branchKey) : null;
                         return (
-                          <div key={i} style={{
+                          <div key={i} data-csp-style={JSON.stringify({
                             display: "flex", alignItems: "center", gap: 12,
                             padding: "12px 16px",
                             borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.07)" : "none",
                             background: i % 2 === 0 ? "rgba(255,255,255,0.03)" : "transparent",
-                          }}>
-                            <span style={{ fontSize: 18, width: 24, textAlign: "center", flexShrink: 0 }}>{row.icon}</span>
-                            <span style={{ fontSize: 13, opacity: 0.6, minWidth: 70 }}>{row.label}</span>
-                            <strong style={{ fontSize: 14, marginLeft: "auto", textAlign: "right", color: pal ? pal.text : "inherit" }}>
-                              {pal && <span style={{ width: 8, height: 8, borderRadius: "50%", background: pal.selected, display: "inline-block", marginRight: 6, verticalAlign: "middle" }} />}
+                          })}>
+                            <span data-csp-style={JSON.stringify({ fontSize: 18, width: 24, textAlign: "center", flexShrink: 0 })}>{row.icon}</span>
+                            <span data-csp-style={JSON.stringify({ fontSize: 13, opacity: 0.6, minWidth: 70 })}>{row.label}</span>
+                            <strong data-csp-style={JSON.stringify({ fontSize: 14, marginLeft: "auto", textAlign: "right", color: pal ? pal.text : "inherit" })}>
+                              {pal && <span data-csp-style={JSON.stringify({ width: 8, height: 8, borderRadius: "50%", background: pal.selected, display: "inline-block", marginRight: 6, verticalAlign: "middle" })} />}
                               {row.value}
                             </strong>
                           </div>
                         );
                       })}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 })}>
                     <button className="btn btn-soft" onClick={() => setBookingStep("purpose")} disabled={bookingInProgress}>
                       {"< "}{tt("common.back", "Orqaga")}
                     </button>
@@ -4760,23 +4761,23 @@ function StudentSupport({
           <h3>{tt("support.myBookings", "My Bookings")}</h3>
           <span className="chip">{bookingRows.length} {tt("common.itemsCount", "ta")}</span>
         </div>
-        <div className="support-booking-list" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "8px" }}>
+        <div className="support-booking-list" data-csp-style={JSON.stringify({ gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: "8px" })}>
           {bookingRows.slice(0, 24).map((row) => {
             const bKey = String(row.branch || "");
             const pal = bKey ? branchPalette(bKey) : null;
             return (
-              <article className="booking-mini-card support-history-card" key={`student-booking-${row.id}`} style={{ padding: "10px", gap: "6px" }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                  <span style={{ fontSize: "10px", fontWeight: "bold", color: "var(--ink-500)", textTransform: "uppercase" }}>{row.support_subject || "-"}</span>
-                  <strong style={{ fontSize: "13px" }}>{row.date ? `${row.date} (${getFullWeekdayName(row.date, locale)})` : "-"}</strong>
-                  <p style={{ fontSize: "11px", margin: 0 }}>
+              <article className="booking-mini-card support-history-card" key={`student-booking-${row.id}`} data-csp-style={JSON.stringify({ padding: "10px", gap: "6px" })}>
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: "2px" })}>
+                  <span data-csp-style={JSON.stringify({ fontSize: "10px", fontWeight: "bold", color: "var(--ink-500)", textTransform: "uppercase" })}>{row.support_subject || "-"}</span>
+                  <strong data-csp-style={JSON.stringify({ fontSize: "13px" })}>{row.date ? `${row.date} (${getFullWeekdayName(row.date, locale)})` : "-"}</strong>
+                  <p data-csp-style={JSON.stringify({ fontSize: "11px", margin: 0 })}>
                     {row.time || "-"} ·{" "}
-                    {pal ? <span style={{ color: pal.text, fontWeight: 700 }}>{localizedBranch(tt, row.branch)}</span> : localizedBranch(tt, row.branch)}
+                    {pal ? <span data-csp-style={JSON.stringify({ color: pal.text, fontWeight: 700 })}>{localizedBranch(tt, row.branch)}</span> : localizedBranch(tt, row.branch)}
                   </p>
                 </div>
-                <span className={`support-status-pill is-${String(row.status || "pending").toLowerCase()}`} style={{ fontSize: "10px", padding: "4px 8px", width: "fit-content" }}>{localizedStatus(tt, row.status)}</span>
-                <p style={{ fontSize: "11px", margin: 0 }}>{row.purpose || "General"}</p>
-                <button className="btn btn-soft small" style={{ fontSize: "11px", padding: "4px 8px", minHeight: "28px" }} onClick={() => setSelectedBooking(row)}>{tt("common.details", "Batafsil")}</button>
+                <span className={`support-status-pill is-${String(row.status || "pending").toLowerCase()}`} data-csp-style={JSON.stringify({ fontSize: "10px", padding: "4px 8px", width: "fit-content" })}>{localizedStatus(tt, row.status)}</span>
+                <p data-csp-style={JSON.stringify({ fontSize: "11px", margin: 0 })}>{row.purpose || "General"}</p>
+                <button className="btn btn-soft small" data-csp-style={JSON.stringify({ fontSize: "11px", padding: "4px 8px", minHeight: "28px" })} onClick={() => setSelectedBooking(row)}>{tt("common.details", "Batafsil")}</button>
               </article>
             );
           })}
@@ -5179,19 +5180,19 @@ function StudentDiamondvoy() {
           <button onClick={() => setError("")} className="ml-3 font-bold text-red-500">✕</button>
         </div>
       )}
-      
+
       {/* Mobile Chat List Overlay */}
       {isCompactViewport && (
-        <div 
+        <div
           className={`fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-40 transition-opacity duration-300 ${mobileChatListOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`}
           onClick={() => setMobileChatListOpen(false)}
         />
       )}
 
       <div className="flex flex-1 h-full w-full overflow-hidden bg-white dark:bg-slate-900 border-0 rounded-none">
-        
+
         {/* Sidebar */}
-        <aside 
+        <aside
           className={`
             ${isCompactViewport ? 'fixed inset-y-0 left-0 z-50 w-[280px] border-r shadow-2xl transition-transform duration-300 ease-out' : 'w-72 border-r flex flex-col'}
             ${isCompactViewport && !mobileChatListOpen ? '-translate-x-full' : 'translate-x-0'}
@@ -5221,7 +5222,7 @@ function StudentDiamondvoy() {
               </button>
             </div>
           </div>
-          
+
           <div className="flex-1 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-700">
             {loadingChats ? (
               <div className="flex items-center justify-center py-8">
@@ -5236,11 +5237,11 @@ function StudentDiamondvoy() {
                 const cid = Number(chat.id || 0);
                 const active = cid === Number(activeChatId || 0);
                 return (
-                  <div 
-                    key={`chat-${cid}`} 
+                  <div
+                    key={`chat-${cid}`}
                     className={`group relative flex items-center p-3 rounded-2xl cursor-pointer transition-all duration-200 ${
-                      active 
-                        ? "bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20" 
+                      active
+                        ? "bg-blue-50 dark:bg-blue-500/10 border border-blue-100 dark:border-blue-500/20"
                         : "hover:bg-slate-50 dark:hover:bg-slate-800 border border-transparent"
                     }`}
                     onClick={() => selectChat(cid)}
@@ -5253,7 +5254,7 @@ function StudentDiamondvoy() {
                         {String(chat.last_message_preview || tt("diamondvoy.noMessages", "No messages yet"))}
                       </div>
                     </div>
-                    
+
                     <button
                       className={`absolute right-3 p-1.5 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors opacity-0 group-hover:opacity-100 focus:opacity-100 ${active ? "opacity-100" : ""}`}
                       onClick={(e) => {
@@ -5296,7 +5297,7 @@ function StudentDiamondvoy() {
                 </div>
               </div>
             </div>
-            
+
             <button
               className="md:hidden p-2 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-500/10 rounded-xl transition-colors"
               onClick={() => createChat().catch(() => null)}
@@ -5316,7 +5317,7 @@ function StudentDiamondvoy() {
                 <p className="text-slate-500 dark:text-slate-400 max-w-sm mb-8 text-sm">
                   {tt("diamondvoy.greetingDesc", "Sizning shaxsiy AI yordamchingizman. Savollaringizga javob berishga va ingliz tilini o'rganishda yordam berishga tayyorman.")}
                 </p>
-                <button 
+                <button
                   className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-medium transition-colors shadow-lg shadow-blue-500/30 flex items-center gap-2"
                   onClick={() => createChat().catch(() => null)}
                 >
@@ -5334,7 +5335,7 @@ function StudentDiamondvoy() {
                     </span>
                   </div>
                 )}
-                
+
                 {!loadingMessages && !messages.length && (
                   <div className="text-center py-10 opacity-70">
                     <span className="text-4xl mb-3 block">💬</span>
@@ -5348,30 +5349,30 @@ function StudentDiamondvoy() {
                   const isStreaming = Boolean(row.streaming);
                   // Hide empty streaming bubble while thinking (avoid showing both)
                   if (isStreaming && !row.content && thinking) return null;
-                  
+
                   return (
                     <div key={`msg-${row.id || idx}`} className={`flex ${isUser ? "justify-end" : "justify-start"} animate-fade-in-up`}>
                       <div className={`flex max-w-[85%] sm:max-w-[75%] ${isUser ? "flex-row-reverse" : "flex-row"} gap-2 sm:gap-3 items-end`}>
-                        
+
                         {/* Avatar */}
                         {!isUser && (
                           <div className="w-6 h-6 sm:w-8 sm:h-8 shrink-0 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-sm">
                             <span className="text-[10px] sm:text-xs font-bold text-white">DV</span>
                           </div>
                         )}
-                        
+
                         <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
                           <div className={`
                             px-4 py-3 sm:px-5 sm:py-3.5 rounded-2xl sm:rounded-3xl shadow-sm text-[15px] leading-relaxed
-                            ${isUser 
-                              ? "bg-blue-600 text-white rounded-br-sm" 
+                            ${isUser
+                              ? "bg-blue-600 text-white rounded-br-sm"
                               : "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-transparent dark:border-slate-700/50 rounded-bl-sm"
                             }
                             ${isStreaming ? "animate-pulse" : ""}
                           `}>
                             <p className="whitespace-pre-wrap break-words">{String(row.content || "")}</p>
                           </div>
-                          
+
                           {row.created_at && !isStreaming && (
                             <span className="text-[10px] text-slate-400 mt-1.5 px-1 font-medium">
                               {new Date(row.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
@@ -5433,9 +5434,9 @@ function StudentDiamondvoy() {
                   type="submit"
                   disabled={streaming || !input.trim()}
                   className={`
-                    p-3 rounded-2xl shrink-0 transition-all duration-200 
-                    ${input.trim() && !streaming 
-                      ? "bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/30" 
+                    p-3 rounded-2xl shrink-0 transition-all duration-200
+                    ${input.trim() && !streaming
+                      ? "bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-500/30"
                       : "bg-slate-200 dark:bg-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed"
                     }
                   `}
@@ -5631,12 +5632,12 @@ function StudentGifts() {
     const reel = buildRouletteReel(baseSource, winner);
     reelRef.current = reel;
     winnerRef.current = winner;
-    
+
     stopRouletteFrame(); // Stop JS animation
-    
+
     setRouletteDisplay(reel);
     setRoulettePhase("settling");
-    
+
     // Trigger CSS transition
     window.setTimeout(() => {
       setRouletteIndex(lastWinnerIndex(reel, winner));
@@ -5840,7 +5841,7 @@ function StudentGifts() {
         : discountStatus === "not_applied_partial_payment_exists"
         ? tt("gifts.discountPartial", "Chegirma qo'llanmadi, chunki joriy oyda qisman to'lov mavjud.")
         : "";
-      
+
       const itemName = payload.item?.title || item.title || tt("gifts.gift", "Sovga");
       const boost = payload.diamondvoy_limit_boost;
       const boostMessage = boost?.bonus_messages
@@ -5871,31 +5872,31 @@ function StudentGifts() {
         <div className="gift-roulette-stage-card-wow">
           <div className="gift-roulette-stage-head-wow">
             <div>
-              <p className="gift-roulette-kicker" style={{ color: "var(--roulette-text)", opacity: 0.8, fontWeight: 700, fontSize: "14px", textTransform: "uppercase", letterSpacing: "1px" }}>
+              <p className="gift-roulette-kicker" data-csp-style={JSON.stringify({ color: "var(--roulette-text)", opacity: 0.8, fontWeight: 700, fontSize: "14px", textTransform: "uppercase", letterSpacing: "1px" })}>
                 🎰 Diamond Education
               </p>
               <h1>{roulettePhase === "done" ? tt("gifts.chestOpened", "🎉 Sandiq ochildi!") : tt("gifts.chestOpening", "✨ Sandiq ochilmoqda")}</h1>
-              <p style={{ color: "var(--roulette-text)", opacity: 0.7 }}>{roulettePhase === "done" ? tt("gifts.chestWinMsg", "Tabriklaymiz! Siz sovga yutdingiz.") : tt("gifts.chestWaitMsg", "Ruletka aylanyapti, kuting...")}</p>
+              <p data-csp-style={JSON.stringify({ color: "var(--roulette-text)", opacity: 0.7 })}>{roulettePhase === "done" ? tt("gifts.chestWinMsg", "Tabriklaymiz! Siz sovga yutdingiz.") : tt("gifts.chestWaitMsg", "Ruletka aylanyapti, kuting...")}</p>
             </div>
-            <button className="btn btn-primary" style={{ background: "var(--roulette-item-bg)", color: "var(--roulette-text)", border: "1px solid var(--roulette-border)", backdropFilter: "blur(10px)" }} disabled={opening && roulettePhase !== "done"} onClick={closeRoulettePage}>
+            <button className="btn btn-primary" data-csp-style={JSON.stringify({ background: "var(--roulette-item-bg)", color: "var(--roulette-text)", border: "1px solid var(--roulette-border)", backdropFilter: "blur(10px)" })} disabled={opening && roulettePhase !== "done"} onClick={closeRoulettePage}>
               {roulettePhase === "done" ? tt("common.close", "✓ Yopish") : tt("common.wait", "⏳ Kuting...")}
             </button>
           </div>
 
           <div className={`gift-roulette-panel is-${roulettePhase === "done" ? "done" : roulettePhase === "settling" ? "settling" : "spinning"}`}>
-            <p className="gift-roulette-caption" style={{ color: "var(--roulette-text)", opacity: 0.7, textAlign: "center", margin: "16px 0 8px 0", fontSize: "14px", fontWeight: 600 }}>
+            <p className="gift-roulette-caption" data-csp-style={JSON.stringify({ color: "var(--roulette-text)", opacity: 0.7, textAlign: "center", margin: "16px 0 8px 0", fontSize: "14px", fontWeight: 600 })}>
               {roulettePhase === "spinning" ? tt("gifts.rouletteSpinning", "Ruletka aylanyapti...") : roulettePhase === "settling" ? tt("gifts.rouletteSettling", "Yakunlanmoqda...") : roulettePhase === "done" ? tt("gifts.rouletteResult", "Natija!") : tt("gifts.rouletteReady", "Tayyorlanmoqda...")}
             </p>
             {rouletteDisplay.length ? (
               <div className="gift-roulette-window-wow">
-                <div className="gift-roulette-track-wow" style={{
+                <div className="gift-roulette-track-wow" data-csp-style={JSON.stringify({
                   "--roulette-item-width": `${rouletteItemWidthPx}px`,
                   "--roulette-item-gap": `${rouletteItemGapPx}px`,
                   gap: `${rouletteItemGapPx}px`,
                   left: "50%",
                   transform: `translateX(calc(-${rouletteIndex * rouletteItemStepPx + rouletteItemCenterPx}px))`,
                   transition: roulettePhase === "spinning" ? "transform 0.1s linear" : "transform 4s cubic-bezier(0.15, 0.85, 0.2, 1)",
-                } as CSSProperties}>
+                } as CSSProperties)}>
                   {rouletteDisplay.map((item, index) => (
                     <div className={`gift-roulette-item-wow ${roulettePhase === "done" && index === rouletteIndex ? "active" : ""}`} key={`${item.roulette_key || item.id}-${index}`}>
                       <img src={giftImage(item)} alt={item.title || tt("gifts.gift", "Sovga")} loading="eager" />
@@ -5906,15 +5907,15 @@ function StudentGifts() {
                 <div className="gift-roulette-marker-wow" />
               </div>
             ) : (
-              <div className="gift-roulette-loading" style={{ height: "220px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--roulette-text)" }}>
-                <div className="spinner-ring" style={{ borderColor: "var(--roulette-border)", borderTopColor: "var(--roulette-text)" }} />
-                <p style={{ marginTop: "16px", color: "var(--roulette-text)", opacity: 0.7 }}>{tt("gifts.rouletteLoading", "Ruletka yuklanmoqda...")}</p>
+              <div className="gift-roulette-loading" data-csp-style={JSON.stringify({ height: "220px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "var(--roulette-text)" })}>
+                <div className="spinner-ring" data-csp-style={JSON.stringify({ borderColor: "var(--roulette-border)", borderTopColor: "var(--roulette-text)" })} />
+                <p data-csp-style={JSON.stringify({ marginTop: "16px", color: "var(--roulette-text)", opacity: 0.7 })}>{tt("gifts.rouletteLoading", "Ruletka yuklanmoqda...")}</p>
               </div>
             )}
           </div>
         </div>
         {spinWinner && roulettePhase === "done" ? (
-          <div className="gift-winner-card gift-roulette-winner" style={{ marginTop: "32px", animation: "slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+          <div className="gift-winner-card gift-roulette-winner" data-csp-style={JSON.stringify({ marginTop: "32px", animation: "slide-up 0.5s cubic-bezier(0.16, 1, 0.3, 1)" })}>
             <img src={giftImage(spinWinner)} alt={spinWinner.title || tt("gifts.gift", "Sovga")} onError={handleGiftImageError} />
             <div>
               <span>{tt("gifts.prize", "Yutuq")}</span>
@@ -5931,7 +5932,7 @@ function StudentGifts() {
     <div className="page-stack">
       {message ? <div className="notice">{message}</div> : null}
       {spinWinner ? (
-        <section className="gift-winner-card" style={{ marginBottom: "24px" }}>
+        <section className="gift-winner-card" data-csp-style={JSON.stringify({ marginBottom: "24px" })}>
           <img src={giftImage(spinWinner)} alt={spinWinner.title || tt("gifts.gift", "Sovga")} onError={handleGiftImageError} />
           <div>
             <span>{tt("gifts.prize", "Yutuq")}</span>
@@ -5941,86 +5942,86 @@ function StudentGifts() {
         </section>
       ) : null}
 
-      <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "32px" }}>
-        <button 
-          className="gift-chest-card-wow" 
-          onClick={openChest} 
+      <section data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "32px" })}>
+        <button
+          className="gift-chest-card-wow"
+          onClick={openChest}
           disabled={opening || loading}
-          style={{ 
-            padding: "20px 12px", 
-            display: "flex", 
-            flexDirection: "column", 
-            alignItems: "center", 
-            justifyContent: "center", 
-            gap: "12px", 
+          data-csp-style={JSON.stringify({
+            padding: "20px 12px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "12px",
             cursor: opening || loading ? "not-allowed" : "pointer",
             border: "none",
             textAlign: "center"
-          }}
+          })}
         >
-          <img src={GIFT_CHEST_ICON_SRC} alt={tt("gifts.chest", "Sandiq")} style={{ width: "80px", height: "80px", filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.2))", transition: "transform 0.3s" }} />
-          <strong className="currency-inline" style={{ fontSize: "16px", background: "rgba(255,255,255,0.1)", padding: "6px 12px", borderRadius: "100px", backdropFilter: "blur(10px)" }}>
+          <img src={GIFT_CHEST_ICON_SRC} alt={tt("gifts.chest", "Sandiq")} data-csp-style={JSON.stringify({ width: "80px", height: "80px", filter: "drop-shadow(0 10px 20px rgba(0,0,0,0.2))", transition: "transform 0.3s" })} />
+          <strong className="currency-inline" data-csp-style={JSON.stringify({ fontSize: "16px", background: "rgba(255,255,255,0.1)", padding: "6px 12px", borderRadius: "100px", backdropFilter: "blur(10px)" })}>
             <AssetIcon type="dcoin" size={20} />
             {chestCost.toFixed(0)} D'coin
           </strong>
         </button>
 
-        <button 
-          className="gift-chest-card-wow" 
-          onClick={() => openGiftPopup()} 
-          style={{ 
-            padding: "20px 12px", 
-            display: "flex", 
-            flexDirection: "column", 
-            alignItems: "center", 
-            justifyContent: "center", 
-            gap: "12px", 
+        <button
+          className="gift-chest-card-wow"
+          onClick={() => openGiftPopup()}
+          data-csp-style={JSON.stringify({
+            padding: "20px 12px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "12px",
             cursor: "pointer",
             border: "none",
             textAlign: "center"
-          }}
+          })}
         >
-          <div style={{ position: "relative" }}>
-            <img src={GIFT_CHEST_ICON_SRC} alt="" style={{ width: "70px", height: "70px", filter: "grayscale(0.3) opacity(0.8)" }} />
+          <div data-csp-style={JSON.stringify({ position: "relative" })}>
+            <img src={GIFT_CHEST_ICON_SRC} alt="" data-csp-style={JSON.stringify({ width: "70px", height: "70px", filter: "grayscale(0.3) opacity(0.8)" })} />
             {(myGifts.length) ? (
-              <span style={{ position: "absolute", top: "-10px", right: "-10px", background: "var(--color-danger, #ef4444)", color: "#fff", padding: "4px 10px", borderRadius: "20px", fontSize: "14px", fontWeight: 800, border: "2px solid var(--card-bg)" }}>
+              <span data-csp-style={JSON.stringify({ position: "absolute", top: "-10px", right: "-10px", background: "var(--color-danger, #ef4444)", color: "#fff", padding: "4px 10px", borderRadius: "20px", fontSize: "14px", fontWeight: 800, border: "2px solid var(--card-bg)" })}>
                 {myGifts.length}
               </span>
             ) : null}
           </div>
-          <span style={{ fontSize: "14px", fontWeight: 700, opacity: 0.9 }}>{tt("gifts.myGifts", "Mening sovg'alarim")}</span>
+          <span data-csp-style={JSON.stringify({ fontSize: "14px", fontWeight: 700, opacity: 0.9 })}>{tt("gifts.myGifts", "Mening sovg'alarim")}</span>
         </button>
       </section>
       <section className="grid gifts-two-col">
-        {loading ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("common.loading", "Loading...")}</article> : null}
-        {!loading && !items.length ? <article className="gift-card-wow" style={{ padding: "24px" }}>{tt("gifts.noGiftsYet", "Sovgalar hali qo'shilmagan.")}</article> : null}
+        {loading ? <article className="gift-card-wow" data-csp-style={JSON.stringify({ padding: "24px" })}>{tt("common.loading", "Loading...")}</article> : null}
+        {!loading && !items.length ? <article className="gift-card-wow" data-csp-style={JSON.stringify({ padding: "24px" })}>{tt("gifts.noGiftsYet", "Sovgalar hali qo'shilmagan.")}</article> : null}
         {items.map((item) => {
           const price = Number(item.price_dcoin || 0);
           const canPurchase = wallet >= price;
           return (
-            <article className="gift-card-wow" key={item.id} onClick={() => setSelected(item)} style={{ cursor: "pointer" }}>
+            <article className="gift-card-wow" key={item.id} onClick={() => setSelected(item)} data-csp-style={JSON.stringify({ cursor: "pointer" })}>
               <img src={giftImage(item)} alt={item.title || tt("gifts.gift", "gift")} className="gift-thumb" onError={handleGiftImageError} />
               <div className="gift-card-wow-content">
-                <h3 style={{ fontSize: "14px", fontWeight: 700, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{item.title || "-"}</h3>
-                <p style={{ opacity: 0.8, fontSize: "13px", margin: 0, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{item.description || "—"}</p>
-                
-                <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "auto", paddingTop: "12px" }}>
-                  <div className="row-between" style={{ fontSize: "14px" }}>
-                    <span style={{ opacity: 0.7 }}>{tt("common.price", "Price")}</span>
+                <h3 data-csp-style={JSON.stringify({ fontSize: "14px", fontWeight: 700, margin: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" })}>{item.title || "-"}</h3>
+                <p data-csp-style={JSON.stringify({ opacity: 0.8, fontSize: "13px", margin: 0, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" })}>{item.description || "—"}</p>
+
+                <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: "8px", marginTop: "auto", paddingTop: "12px" })}>
+                  <div className="row-between" data-csp-style={JSON.stringify({ fontSize: "14px" })}>
+                    <span data-csp-style={JSON.stringify({ opacity: 0.7 })}>{tt("common.price", "Price")}</span>
                     <strong className="currency-inline">
                       <AssetIcon type="dcoin" size={16} />
                       {price.toFixed(1)} D'coin
                     </strong>
                   </div>
                   {item.is_payment_discount ? (
-                    <div className="row-between" style={{ fontSize: "14px" }}>
-                      <span style={{ opacity: 0.7 }}>{tt("gifts.monthlyDiscount", "Oylik chegirma")}</span>
+                    <div className="row-between" data-csp-style={JSON.stringify({ fontSize: "14px" })}>
+                      <span data-csp-style={JSON.stringify({ opacity: 0.7 })}>{tt("gifts.monthlyDiscount", "Oylik chegirma")}</span>
                       <strong>{Number(item.payment_discount_percent || 0)}%</strong>
                     </div>
                   ) : null}
                   {item.is_diamondvoy_limit_boost ? (
-                    <div className="row-between" style={{ fontSize: "14px" }}>
-                      <span style={{ opacity: 0.7 }}>{tt("gifts.diamondvoyBoost", "DiamondVoy bonusi")}</span>
+                    <div className="row-between" data-csp-style={JSON.stringify({ fontSize: "14px" })}>
+                      <span data-csp-style={JSON.stringify({ opacity: 0.7 })}>{tt("gifts.diamondvoyBoost", "DiamondVoy bonusi")}</span>
                       <strong>+{Number(item.diamondvoy_bonus_messages || 0)} · {Number(item.diamondvoy_boost_days || 1)} {tt("gifts.days", "kun")}</strong>
                     </div>
                   ) : null}
@@ -6068,10 +6069,10 @@ function StudentGifts() {
       ) : null}
       {selected ? (
         <div className="overlay-modal-backdrop" onClick={() => setSelected(null)}>
-          <article className="overlay-modal-card" onClick={(event) => event.stopPropagation()} style={{ overflow: "hidden" }}>
-            <img src={giftImage(selected)} alt={selected.title || tt("gifts.gift", "gift")} className="gift-detail-image" onError={handleGiftImageError} style={{ width: "calc(100% + 40px)", maxWidth: "none", margin: "-20px -20px 16px -20px", borderRadius: "20px 20px 0 0", borderTop: "none", borderLeft: "none", borderRight: "none", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-            <h3 style={{ fontSize: "22px", fontWeight: 800, marginBottom: "8px" }}>{selected.title || tt("gifts.gift", "Sovga")}</h3>
-            <p style={{ opacity: 0.8, lineHeight: 1.5, marginBottom: "24px" }}>{selected.description || tt("common.noDesc", "Tavsif yo'q")}</p>
+          <article className="overlay-modal-card" onClick={(event) => event.stopPropagation()} data-csp-style={JSON.stringify({ overflow: "hidden" })}>
+            <img src={giftImage(selected)} alt={selected.title || tt("gifts.gift", "gift")} className="gift-detail-image" onError={handleGiftImageError} data-csp-style={JSON.stringify({ width: "calc(100% + 40px)", maxWidth: "none", margin: "-20px -20px 16px -20px", borderRadius: "20px 20px 0 0", borderTop: "none", borderLeft: "none", borderRight: "none", aspectRatio: "1 / 1", objectFit: "cover", display: "block" })} />
+            <h3 data-csp-style={JSON.stringify({ fontSize: "22px", fontWeight: 800, marginBottom: "8px" })}>{selected.title || tt("gifts.gift", "Sovga")}</h3>
+            <p data-csp-style={JSON.stringify({ opacity: 0.8, lineHeight: 1.5, marginBottom: "24px" })}>{selected.description || tt("common.noDesc", "Tavsif yo'q")}</p>
             <div className="kv">
               <span>{tt("common.price", "Narx")}</span>
               <strong className="currency-inline">
@@ -6087,7 +6088,7 @@ function StudentGifts() {
             ) : null}
             <button
               className="btn btn-primary"
-              style={{ width: "100%", marginTop: "16px", padding: "14px", fontSize: "16px" }}
+              data-csp-style={JSON.stringify({ width: "100%", marginTop: "16px", padding: "14px", fontSize: "16px" })}
               onClick={() => purchaseGift(selected)}
               disabled={
                 wallet < Number(selected.price_dcoin || 0) ||
@@ -6096,15 +6097,15 @@ function StudentGifts() {
             >
               {tt("gifts.buy", "Sotib olish")}
             </button>
-            <button onClick={() => setSelected(null)} className="modal-icon-close" style={{ position: "absolute", top: "16px", right: "16px", zIndex: 10, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", backdropFilter: "blur(4px)" }}>✕</button>
+            <button onClick={() => setSelected(null)} className="modal-icon-close" data-csp-style={JSON.stringify({ position: "absolute", top: "16px", right: "16px", zIndex: 10, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", backdropFilter: "blur(4px)" })}>✕</button>
           </article>
         </div>
       ) : null}
       {selectedPurchase ? (
         <div className="overlay-modal-backdrop" onClick={() => setSelectedPurchase(null)}>
           <article className="overlay-modal-card" onClick={(event) => event.stopPropagation()}>
-            <img src={purchaseImage(selectedPurchase)} alt={selectedPurchase.item_title || tt("gifts.purchase", "Xarid")} className="gift-detail-image" style={{ width: "calc(100% + 40px)", maxWidth: "none", margin: "-20px -20px 16px -20px", borderRadius: "20px 20px 0 0", borderTop: "none", borderLeft: "none", borderRight: "none", aspectRatio: "1 / 1", objectFit: "cover", display: "block" }} />
-            <h3 style={{ fontSize: "22px", fontWeight: 800, marginBottom: "8px" }}>{selectedPurchase.item_title || tt("gifts.purchase", "Xarid")}</h3>
+            <img src={purchaseImage(selectedPurchase)} alt={selectedPurchase.item_title || tt("gifts.purchase", "Xarid")} className="gift-detail-image" data-csp-style={JSON.stringify({ width: "calc(100% + 40px)", maxWidth: "none", margin: "-20px -20px 16px -20px", borderRadius: "20px 20px 0 0", borderTop: "none", borderLeft: "none", borderRight: "none", aspectRatio: "1 / 1", objectFit: "cover", display: "block" })} />
+            <h3 data-csp-style={JSON.stringify({ fontSize: "22px", fontWeight: 800, marginBottom: "8px" })}>{selectedPurchase.item_title || tt("gifts.purchase", "Xarid")}</h3>
             <p>{selectedPurchase.gift?.description || (selectedPurchase.item_type === "chest" ? tt("gifts.chestPurchaseDesc", "Sandiq ochish xaridi") : tt("gifts.giftPurchaseDesc", "Sovga xaridi"))}</p>
             <div className="kv"><span>{tt("common.type", "Turi")}</span><strong>{selectedPurchase.item_type === "chest" ? tt("gifts.chest", "Sandiq") : tt("gifts.gift", "Sovga")}</strong></div>
             <div className="kv"><span>{tt("common.date", "Sana")}</span><strong>{selectedPurchase.created_date || "-"} {selectedPurchase.created_time || ""}</strong></div>
@@ -6228,7 +6229,7 @@ function StudentHomework() {
     } catch (e) {}
   }, [noteDraft, proofDraft, voiceDraft]);
 
-  
+
   // Voice Recording states
   const [recordingHomeworkId, setRecordingHomeworkId] = useState<number | null>(null);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
@@ -6365,16 +6366,16 @@ function StudentHomework() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       const chunks: BlobPart[] = [];
-      
+
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
       };
-      
+
       recorder.onstop = async () => {
         stream.getTracks().forEach(track => track.stop());
         const blob = new Blob(chunks, { type: "audio/webm" });
         const file = new File([blob], `voice_${Date.now()}.webm`, { type: "audio/webm" });
-        
+
         setUploading((prev) => ({ ...prev, [homeworkId]: true }));
         try {
           const url = await uploadHomeworkVoice(file);
@@ -6386,7 +6387,7 @@ function StudentHomework() {
           setUploading((prev) => ({ ...prev, [homeworkId]: false }));
         }
       };
-      
+
       recorder.start();
       setMediaRecorder(recorder);
       setRecordingHomeworkId(homeworkId);
@@ -6523,7 +6524,7 @@ function StudentHomework() {
       {/* ── Haftalik takrorlash kartasi ── */}
       {weeklyReview && weeklyReview.status !== "none" && (
         <section
-          style={{
+          data-csp-style={JSON.stringify({
             background: weeklyReview.status === "completed"
               ? "linear-gradient(135deg, #10b981 0%, #059669 100%)"
               : "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
@@ -6539,7 +6540,7 @@ function StudentHomework() {
               : "0 8px 32px rgba(99,102,241,0.35)",
             cursor: weeklyReview.status !== "completed" ? "pointer" : "default",
             transition: "opacity 0.2s",
-          }}
+          })}
           onClick={() => {
             if (weeklyReview.status === "completed") return;
             if (weeklyReview.homework_id) {
@@ -6550,26 +6551,26 @@ function StudentHomework() {
           }}
           role={weeklyReview.status !== "completed" ? "button" : undefined}
         >
-          <div style={{ fontSize: "40px", flexShrink: 0 }}>
+          <div data-csp-style={JSON.stringify({ fontSize: "40px", flexShrink: 0 })}>
             {weeklyReview.status === "completed" ? "✅" : "🗓️"}
           </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 800, fontSize: "16px", marginBottom: "4px" }}>
+          <div data-csp-style={JSON.stringify({ flex: 1, minWidth: 0 })}>
+            <div data-csp-style={JSON.stringify({ fontWeight: 800, fontSize: "16px", marginBottom: "4px" })}>
               {tt("homework.weeklyReviewTitle", "Haftalik Takrorlash")}
             </div>
-            <div style={{ fontSize: "13px", opacity: 0.88, marginBottom: "6px" }}>
+            <div data-csp-style={JSON.stringify({ fontSize: "13px", opacity: 0.88, marginBottom: "6px" })}>
               {weeklyReview.week_start} – {weeklyReview.week_end}
             </div>
             {weeklyReview.status === "completed" ? (
-              <span style={{ background: "rgba(255,255,255,0.25)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 }}>
+              <span data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.25)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 })}>
                 {tt("homework.weeklyReviewDone", "✓ Bajarildi")}
               </span>
             ) : (
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span style={{ background: "rgba(255,255,255,0.2)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 }}>
+              <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: "10px" })}>
+                <span data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.2)", borderRadius: "100px", padding: "3px 12px", fontSize: "13px", fontWeight: 700 })}>
                   {weeklyReview.question_count} {tt("homework.weeklyReviewQuestions", "ta savol")}
                 </span>
-                <span style={{ fontSize: "13px", opacity: 0.9 }}>
+                <span data-csp-style={JSON.stringify({ fontSize: "13px", opacity: 0.9 })}>
                   {tt("homework.weeklyReviewCta", "Boshlash →")}
                 </span>
               </div>
@@ -6644,10 +6645,10 @@ function StudentHomework() {
         const isRecording = recordingHomeworkId === hid;
         const currentVoiceDraftUrl = voiceDraft[hid];
         const persistedVoiceUrl = String(row.voice_message_url || "");
-        
+
         const isVoiceroom = Boolean(row.is_voiceroom) || Number(row.is_voiceroom || 0) === 1;
         const voiceroomGroup = row.voiceroom_group as GenericRow | undefined;
-        
+
         return (
           <ModalPortal open={Boolean(selectedHomework)}>
           <div className="overlay-modal-backdrop homework-modal-backdrop" onClick={() => setSelectedHomeworkId(null)}>
@@ -6709,7 +6710,7 @@ function StudentHomework() {
                     ) : (
                       <p className="text-sm text-red-500">{tt("homework.noGroup", "Guruh topilmadi.")}</p>
                     )}
-                    
+
                     {voiceroomGroup && voiceroomGroup.status === "completed" ? (
                       <p className="text-sm text-green-600 dark:text-green-400 font-bold">
                         {tt("homework.voiceroomCompleted", "✓ Voiceroom suhbati muvaffaqiyatli topshirildi.")}
@@ -6757,7 +6758,7 @@ function StudentHomework() {
                     String(proofUrl).match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
                       <img key={`proof-${hid}-${index}-${proofUrl}`} src={resolveAssetUrl(String(proofUrl))} alt={`Homework proof ${index + 1}`} className="homework-proof-preview" />
                     ) : (
-                      <a key={`proof-${hid}-${index}-${proofUrl}`} href={resolveAssetUrl(String(proofUrl))} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+                      <a key={`proof-${hid}-${index}-${proofUrl}`} href={resolveAssetUrl(String(proofUrl))} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
                     )
                   ))
                 ) : (
@@ -6824,7 +6825,7 @@ function StudentHomework() {
               {!isVoiceroom && !requiresTest ? (
                 <div className="homework-action-panel mt-4 p-4 border border-line dark:border-white/10 rounded-xl bg-surface-soft dark:bg-white/5">
                   <div className="row-between mb-2">
-                    <strong style={{ fontSize: "14px", fontWeight: 700 }}>✍️ {tt("homework.noteLabel", "Yozma Ish / Esse")}</strong>
+                    <strong data-csp-style={JSON.stringify({ fontSize: "14px", fontWeight: 700 })}>✍️ {tt("homework.noteLabel", "Yozma Ish / Esse")}</strong>
                     <span className="text-xs font-mono opacity-70">
                       {(noteValue.trim() ? noteValue.trim().split(/\s+/).length : 0)} ta so'z · {noteValue.length} ta belgi
                     </span>
@@ -6840,19 +6841,19 @@ function StudentHomework() {
                 </div>
               ) : null}
               {row.review_note ? (
-                <div style={{ marginTop: 14, padding: "14px", borderRadius: 12, background: "var(--surface-2, #10b98111)", border: "1px solid #10b98144", fontSize: 13 }}>
-                  <strong style={{ color: "#10b981", display: "block", marginBottom: 6 }}>💬 {tt("homework.teacherFeedback", "O'qituvchi xulosasi va bahosi")}:</strong>
-                  <p style={{ margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{String(row.review_note)}</p>
+                <div data-csp-style={JSON.stringify({ marginTop: 14, padding: "14px", borderRadius: 12, background: "var(--surface-2, #10b98111)", border: "1px solid #10b98144", fontSize: 13 })}>
+                  <strong data-csp-style={JSON.stringify({ color: "#10b981", display: "block", marginBottom: 6 })}>💬 {tt("homework.teacherFeedback", "O'qituvchi xulosasi va bahosi")}:</strong>
+                  <p data-csp-style={JSON.stringify({ margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" })}>{String(row.review_note)}</p>
                 </div>
               ) : null}
-              <div className="row-between" style={{ marginTop: 14 }}>
+              <div className="row-between" data-csp-style={JSON.stringify({ marginTop: 14 })}>
                 {!isVoiceroom ? (() => {
                   const missingUpload = requiresFile && (!proofDraft[hid] || proofDraft[hid].length === 0);
                   const missingVoice = requiresVoiceMessage && !voiceDraft[hid];
                   const hasEssayText = Boolean(noteValue.trim());
                   const missingEssay = !requiresFile && !requiresVoiceMessage && !requiresTest && !hasEssayText;
                   const isDisabled = isSubmitting || isUploading || isRecording || locked || missingUpload || missingVoice || missingEssay;
-                  
+
                   return (
                     <button
                       className="btn btn-primary w-full"
@@ -7346,20 +7347,20 @@ function TeacherHomeworkPanel({
     <div className="page-stack">
 
       {panelError ? <div className="error-box">{panelError}</div> : null}
-      <section className="panel-card homework-create-card" style={{ marginBottom: "20px" }}>
-        <div className="row-between gap-3" style={{ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid var(--border-color, rgba(0,0,0,0.08))" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <div style={{ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(99,102,241,0.14)", color: "#6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", flexShrink: 0 }}>
+      <section className="panel-card homework-create-card" data-csp-style={JSON.stringify({ marginBottom: "20px" })}>
+        <div className="row-between gap-3" data-csp-style={JSON.stringify({ marginBottom: "16px", paddingBottom: "16px", borderBottom: "1px solid var(--border-color, rgba(0,0,0,0.08))" })}>
+          <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: "12px" })}>
+            <div data-csp-style={JSON.stringify({ width: "40px", height: "40px", borderRadius: "12px", background: "rgba(99,102,241,0.14)", color: "#6366f1", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "22px", flexShrink: 0 })}>
               🤖
             </div>
             <div>
-              <h4 style={{ margin: 0, fontSize: "15px", fontWeight: 700 }}>AI Avto-Tekshiruv (Strict Teacher)</h4>
-              <p style={{ margin: "2px 0 0 0", fontSize: "12px", opacity: 0.7 }}>Yoqilganda AI topshirilgan vazifani qattiqqo‘l tekshiradi va D'point hamda izohni faqat yakuniy baholashda beradi</p>
+              <h4 data-csp-style={JSON.stringify({ margin: 0, fontSize: "15px", fontWeight: 700 })}>AI Avto-Tekshiruv (Strict Teacher)</h4>
+              <p data-csp-style={JSON.stringify({ margin: "2px 0 0 0", fontSize: "12px", opacity: 0.7 })}>Yoqilganda AI topshirilgan vazifani qattiqqo‘l tekshiradi va D'point hamda izohni faqat yakuniy baholashda beradi</p>
             </div>
           </div>
-          <label style={{ display: "inline-flex", alignItems: "center", gap: "10px", cursor: "pointer", background: aiAutoGrade ? "rgba(99,102,241,0.15)" : "var(--surface-2, rgba(0,0,0,0.05))", padding: "8px 16px", borderRadius: "100px", border: aiAutoGrade ? "1.5px solid #6366f1" : "1px solid transparent", transition: "all 0.2s", userSelect: "none" }}>
-            <input type="checkbox" checked={aiAutoGrade} onChange={(e) => toggleAiAutoGrade(e.target.checked)} style={{ width: "18px", height: "18px", accentColor: "#6366f1", cursor: "pointer" }} />
-            <span style={{ fontSize: "13px", fontWeight: 700, color: aiAutoGrade ? "#6366f1" : "inherit" }}>
+          <label data-csp-style={JSON.stringify({ display: "inline-flex", alignItems: "center", gap: "10px", cursor: "pointer", background: aiAutoGrade ? "rgba(99,102,241,0.15)" : "var(--surface-2, rgba(0,0,0,0.05))", padding: "8px 16px", borderRadius: "100px", border: aiAutoGrade ? "1.5px solid #6366f1" : "1px solid transparent", transition: "all 0.2s", userSelect: "none" })}>
+            <input type="checkbox" checked={aiAutoGrade} onChange={(e) => toggleAiAutoGrade(e.target.checked)} data-csp-style={JSON.stringify({ width: "18px", height: "18px", accentColor: "#6366f1", cursor: "pointer" })} />
+            <span data-csp-style={JSON.stringify({ fontSize: "13px", fontWeight: 700, color: aiAutoGrade ? "#6366f1" : "inherit" })}>
               {aiAutoGrade ? "Yoqilgan (Active)" : "O'chirilgan"}
             </span>
           </label>
@@ -7387,7 +7388,7 @@ function TeacherHomeworkPanel({
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "12px", marginBottom: "16px" }}>
+            <div data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "12px", marginBottom: "16px" })}>
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresTest ? "is-active" : ""}`}
@@ -7546,7 +7547,7 @@ function TeacherHomeworkPanel({
                 {imageUrl.match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
                   <img src={resolveAssetUrl(imageUrl)} alt="Homework attachment" className="homework-proof-preview" />
                 ) : (
-                  <a href={resolveAssetUrl(imageUrl)} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+                  <a href={resolveAssetUrl(imageUrl)} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
                 )}
                 <button className="btn btn-soft small" onClick={() => setImageUrl("")} type="button">Faylni olib tashlash</button>
               </div>
@@ -7568,7 +7569,7 @@ function TeacherHomeworkPanel({
             />
           </div>
         ) : null}
-        
+
         {isVoiceroom && targetType === "group" && voiceroomGroups.length > 0 ? (
           <div className="mt-6 border-t border-line dark:border-white/10 pt-6">
             <h4 className="font-bold mb-3">VoiceRoom Pairings</h4>
@@ -7674,7 +7675,7 @@ function TeacherHomeworkPanel({
                   editingHomeworkId ? "Homework updated" : "Homework created",
                 );
                 if (!saveResult) return;
-                
+
                 const savedHomeworkId = Number((saveResult.item || {}).id || saveResult.id || editingHomeworkId || 0);
                 if (requiresTest && testQuestions.length > 0) {
                   if (!savedHomeworkId) {
@@ -7765,7 +7766,7 @@ function TeacherHomeworkPanel({
 
       <ModalPortal open={submissionsModalOpen && selectedAssignment !== null}>
         <div className="overlay-modal-backdrop" onClick={() => setSubmissionsModalOpen(false)}>
-          <article className="overlay-modal-card mobile-sheet" style={{ maxWidth: '800px', margin: 'auto' }} onClick={(e) => e.stopPropagation()}>
+          <article className="overlay-modal-card mobile-sheet" data-csp-style={JSON.stringify({ maxWidth: '800px', margin: 'auto' })} onClick={(e) => e.stopPropagation()}>
             <div className="row-between mb-4">
                <div>
                   <h3>Studentlar holati</h3>
@@ -7788,7 +7789,7 @@ function TeacherHomeworkPanel({
               <button onClick={() => setFilterStatus("done")} className={`px-4 py-2 rounded-full text-sm font-semibold transition-colors ${filterStatus === "done" ? "bg-green-500 text-white" : "bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10"}`}>Bajarildi</button>
               <button onClick={() => setFilterStatus("not-done")} className={`px-4 py-2 rounded-full text-sm font-semibold transition-colors ${filterStatus === "not-done" ? "bg-red-500 text-white" : "bg-gray-100 dark:bg-white/5 hover:bg-gray-200 dark:hover:bg-white/10"}`}>Bajarilmadi</button>
             </div>
-            <div className="homework-review-mobile" style={{ display: 'grid', gap: '12px' }}>
+            <div className="homework-review-mobile" data-csp-style={JSON.stringify({ display: 'grid', gap: '12px' })}>
               {reviewRows.map((row) => {
 	            const reviewStudentId = Number(row.submission_student_id || row.student_id || 0);
 	            const reviewKey = `${Number(row.id || 0)}:${reviewStudentId}`;
@@ -7832,7 +7833,7 @@ function TeacherHomeworkPanel({
                       <img src={proofUrl} alt="Homework proof" className="homework-proof-preview" />
                     </a>
                   ) : (
-                    <a href={proofUrl} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+                    <a href={proofUrl} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
                   )
                 ) : row.submission_voice_message_url || row.voice_message_url ? (
                   <p className="chip mt-2">🎤 {row.is_voiceroom ? "Voice Room suhbati" : "Audio yuklangan"}</p>
@@ -7873,7 +7874,7 @@ function TeacherHomeworkPanel({
 	                  <span className="text-xs font-semibold text-ink-500 dark:text-navy-300">Homework #{row.id}</span>
 	                  <button
 	                    className="btn btn-soft small"
-	                    style={{ color: "#ef4444" }}
+	                    data-csp-style={JSON.stringify({ color: "#ef4444" })}
 	                    disabled={deletingHomeworkId === Number(row.id || 0)}
 	                    onClick={() => deleteHomeworkRow(Number(row.id || 0))}
 	                  >
@@ -7925,50 +7926,50 @@ function TeacherHomeworkPanel({
 	                      <h4>{row.title || "-"}</h4>
 	                      <p className="text-sm text-ink-500">{row.description || "Tavsif yo'q"}</p>
 	                    </section>
- 	                    <section className="homework-test-summary compact-cards">
- 	                      <h4>Test natijasi</h4>
- 	                      {row.test_available ? (
- 	                        row.test_completed ? (
- 	                          <>
- 	                            <div className="grid grid-2 mt-2">
- 	                              <div><span>To'g'ri</span><strong>{Number(row.test_correct_count || 0)}</strong></div>
- 	                              <div><span>Xato</span><strong>{Number(row.test_wrong_count || 0)}</strong></div>
- 	                              <div><span>Javobsiz</span><strong>{Number(row.test_skipped_count || 0)}</strong></div>
- 	                              <div><span>D'point</span><strong>{Number(row.test_dpoints_delta || 0).toFixed(1)}</strong></div>
- 	                            </div>
- 	                            {row.test_result?.review && row.test_result.review.length > 0 ? (
- 	                              <div className="mt-4 border-t border-line dark:border-white/10 pt-4 col-span-2 text-left" style={{ gridColumn: 'span 2 / span 2' }}>
- 	                                <h5 className="font-bold text-sm mb-2">Test Savollari va Javoblari:</h5>
- 	                                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
- 	                                  {row.test_result.review.map((q: any, qIdx: number) => {
- 	                                    const correct = q.is_correct;
- 	                                    return (
- 	                                      <div key={q.question_id || qIdx} className={`p-3 rounded-xl border text-xs ${correct ? "border-green-200 bg-green-50/30 dark:border-green-500/20 dark:bg-green-500/5" : "border-red-200 bg-red-50/30 dark:border-red-500/20 dark:bg-red-500/5"}`}>
- 	                                        <p className="font-bold mb-1" style={{ whiteSpace: 'pre-wrap' }}>{qIdx + 1}. {q.question}</p>
- 	                                        <p className="mb-0.5"><span className="font-semibold text-ink-500">Tanlangan javob: </span><span className={correct ? "text-green-600 dark:text-green-400 font-bold" : "text-red-600 dark:text-red-400 font-bold"}>{q.selected_option || (q.selected_option_index !== null && q.selected_option_index !== undefined ? `Variant #${q.selected_option_index + 1}` : "Javob berilmagan")}</span></p>
- 	                                        {!correct && <p className="mb-0.5"><span className="font-semibold text-ink-500">To'g'ri javob: </span><span className="text-green-600 dark:text-green-400 font-bold">{q.correct_option || `Variant #${q.correct_option_index + 1}`}</span></p>}
- 	                                        {q.explanation && <p className="mt-1 text-[11px] text-ink-400 italic">Tushuntirish: {q.explanation}</p>}
- 	                                      </div>
- 	                                    );
- 	                                  })}
- 	                                </div>
- 	                              </div>
- 	                            ) : null}
- 	                          </>
- 	                        ) : (
- 	                          <p className="chip">Test ishlanmagan</p>
- 	                        )
- 	                      ) : (
- 	                        <p className="chip">Test yo'q</p>
- 	                      )}
- 	                    </section>
+	                    <section className="homework-test-summary compact-cards">
+	                      <h4>Test natijasi</h4>
+	                      {row.test_available ? (
+	                        row.test_completed ? (
+	                          <>
+	                            <div className="grid grid-2 mt-2">
+	                              <div><span>To'g'ri</span><strong>{Number(row.test_correct_count || 0)}</strong></div>
+	                              <div><span>Xato</span><strong>{Number(row.test_wrong_count || 0)}</strong></div>
+	                              <div><span>Javobsiz</span><strong>{Number(row.test_skipped_count || 0)}</strong></div>
+	                              <div><span>D'point</span><strong>{Number(row.test_dpoints_delta || 0).toFixed(1)}</strong></div>
+	                            </div>
+	                            {row.test_result?.review && row.test_result.review.length > 0 ? (
+	                              <div className="mt-4 border-t border-line dark:border-white/10 pt-4 col-span-2 text-left" data-csp-style={JSON.stringify({ gridColumn: 'span 2 / span 2' })}>
+	                                <h5 className="font-bold text-sm mb-2">Test Savollari va Javoblari:</h5>
+	                                <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
+	                                  {row.test_result.review.map((q: any, qIdx: number) => {
+	                                    const correct = q.is_correct;
+	                                    return (
+	                                      <div key={q.question_id || qIdx} className={`p-3 rounded-xl border text-xs ${correct ? "border-green-200 bg-green-50/30 dark:border-green-500/20 dark:bg-green-500/5" : "border-red-200 bg-red-50/30 dark:border-red-500/20 dark:bg-red-500/5"}`}>
+	                                        <p className="font-bold mb-1" data-csp-style={JSON.stringify({ whiteSpace: 'pre-wrap' })}>{qIdx + 1}. {q.question}</p>
+	                                        <p className="mb-0.5"><span className="font-semibold text-ink-500">Tanlangan javob: </span><span className={correct ? "text-green-600 dark:text-green-400 font-bold" : "text-red-600 dark:text-red-400 font-bold"}>{q.selected_option || (q.selected_option_index !== null && q.selected_option_index !== undefined ? `Variant #${q.selected_option_index + 1}` : "Javob berilmagan")}</span></p>
+	                                        {!correct && <p className="mb-0.5"><span className="font-semibold text-ink-500">To'g'ri javob: </span><span className="text-green-600 dark:text-green-400 font-bold">{q.correct_option || `Variant #${q.correct_option_index + 1}`}</span></p>}
+	                                        {q.explanation && <p className="mt-1 text-[11px] text-ink-400 italic">Tushuntirish: {q.explanation}</p>}
+	                                      </div>
+	                                    );
+	                                  })}
+	                                </div>
+	                              </div>
+	                            ) : null}
+	                          </>
+	                        ) : (
+	                          <p className="chip">Test ishlanmagan</p>
+	                        )
+	                      ) : (
+	                        <p className="chip">Test yo'q</p>
+	                      )}
+	                    </section>
 	                  </div>
 	                  {submittedVoiceUrl ? (
 	                    <section className="homework-review-voice mb-4 p-4 border border-line dark:border-white/10 rounded-xl bg-surface-soft dark:bg-white/5">
 	                      <h4 className="font-bold mb-3">{row.is_voiceroom ? tt("homework.voiceRoomRecording", "Voice Room suhbati") : tt("homework.voiceMessage", "Voice Message")}</h4>
 	                      <audio src={resolveAssetUrl(submittedVoiceUrl)} controls className="w-full" />
 	                      {/* AI Speaking Evaluator */}
-	                      <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                      <div data-csp-style={JSON.stringify({ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' })}>
 	                        <button
 	                          className="btn btn-soft small"
 	                          disabled={Boolean(aiAnalyzeBusy[reviewKey] || speakingAiResult)}
@@ -8003,19 +8004,19 @@ function TeacherHomeworkPanel({
 	                      {speakingAiResult ? (() => {
 	                        const r = speakingAiResult;
 	                        return (
-	                          <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#6c63ff11', border: '1px solid #6c63ff33', fontSize: 13 }}>
+	                          <div data-csp-style={JSON.stringify({ marginTop: 14, padding: '14px', borderRadius: 12, background: '#6c63ff11', border: '1px solid #6c63ff33', fontSize: 13 })}>
 	                            <strong>🎤 {aiHomeworkText(locale, 'result')}</strong>
-	                            <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+	                            <div data-csp-style={JSON.stringify({ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' })}>
 	                              {r.overall_score !== undefined && <span>⭐ {aiHomeworkText(locale, 'score')}: <strong>{Number(r.overall_score).toFixed(1)}/10</strong></span>}
 	                              {r.fluency_score !== undefined && <span>💬 {aiHomeworkText(locale, 'fluency')}: <strong>{Number(r.fluency_score).toFixed(1)}/10</strong></span>}
 	                              {r.vocabulary_score !== undefined && <span>📚 {aiHomeworkText(locale, 'vocabulary')}: <strong>{Number(r.vocabulary_score).toFixed(1)}/10</strong></span>}
 	                            </div>
-	                            {r.transcript && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'transcript')}:</strong> {String(r.transcript)}</p>}
+	                            {r.transcript && <p data-csp-style={JSON.stringify({ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' })}><strong>{aiHomeworkText(locale, 'transcript')}:</strong> {String(r.transcript)}</p>}
 	                            {(r.pronunciation_errors as any[] || []).length > 0 && (
-	                              <p style={{ marginTop: 6, color: '#f59e0b' }}><strong>{aiHomeworkText(locale, 'pronunciation')}:</strong> {(r.pronunciation_errors as any[]).map((e: any) => [e.word, e.note].filter(Boolean).join(' - ')).join('; ')}</p>
+	                              <p data-csp-style={JSON.stringify({ marginTop: 6, color: '#f59e0b' })}><strong>{aiHomeworkText(locale, 'pronunciation')}:</strong> {(r.pronunciation_errors as any[]).map((e: any) => [e.word, e.note].filter(Boolean).join(' - ')).join('; ')}</p>
 	                            )}
-	                            {(r.grammar_errors as any[] || []).length > 0 && <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>}
-	                            {(r.overall_feedback || r.summary) && <p style={{ marginTop: 6, opacity: 0.75, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback || r.summary)}</p>}
+	                            {(r.grammar_errors as any[] || []).length > 0 && <p data-csp-style={JSON.stringify({ marginTop: 6, color: '#ef4444' })}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>}
+	                            {(r.overall_feedback || r.summary) && <p data-csp-style={JSON.stringify({ marginTop: 6, opacity: 0.75, whiteSpace: 'pre-wrap' })}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback || r.summary)}</p>}
 	                          </div>
 	                        );
 	                      })() : null}
@@ -8028,7 +8029,7 @@ function TeacherHomeworkPanel({
 	                          String(currentProof).match(/\.(jpeg|jpg|gif|png|webp)$/i) ? (
 	                            <img src={currentProof} alt={`Homework proof ${boundedIndex + 1}`} />
 	                          ) : (
-	                            <a href={currentProof} target="_blank" rel="noreferrer" className="btn btn-outline" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' }}>📄 Faylni ko'rish</a>
+	                            <a href={currentProof} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
 	                          )
 	                        ) : (
 	                          <div className="p-3 bg-surface-soft dark:bg-white/5 rounded-xl border border-line dark:border-white/10 text-sm">
@@ -8052,7 +8053,7 @@ function TeacherHomeworkPanel({
 	                        {/* AI Check Images / Essay */}
 	                        {imageProofUrls.length ? (
 	                        <>
-	                        <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                        <div data-csp-style={JSON.stringify({ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' })}>
 	                          <button
 	                            className="btn btn-soft small"
 	                            disabled={Boolean(aiCheckBusy[reviewKey] || writingAiResult)}
@@ -8089,24 +8090,24 @@ function TeacherHomeworkPanel({
 	                          const aiColor = aiProb >= 70 ? "#ef4444" : aiProb >= 40 ? "#f59e0b" : "#10b981";
 	                          const aiLabel = r.ai_detection_label ? String(r.ai_detection_label) : (aiProb >= 70 ? "Likely AI-Generated" : aiProb >= 40 ? "Uncertain" : "Likely Human");
 	                          return (
-	                            <div style={{ marginTop: 14, padding: '14px', borderRadius: 12, background: '#a855f711', border: '1px solid #a855f733', fontSize: 13 }}>
-	                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+	                            <div data-csp-style={JSON.stringify({ marginTop: 14, padding: '14px', borderRadius: 12, background: '#a855f711', border: '1px solid #a855f733', fontSize: 13 })}>
+	                              <div data-csp-style={JSON.stringify({ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 })}>
 	                              <strong>🖼️ {aiHomeworkText(locale, 'result')}</strong>
-	                              {r.suggested_score !== undefined && <span style={{ background: '#a855f722', borderRadius: 8, padding: '2px 10px', fontWeight: 700 }}>{aiHomeworkText(locale, 'score')}: {Number(r.suggested_score)}/100</span>}
+	                              {r.suggested_score !== undefined && <span data-csp-style={JSON.stringify({ background: '#a855f722', borderRadius: 8, padding: '2px 10px', fontWeight: 700 })}>{aiHomeworkText(locale, 'score')}: {Number(r.suggested_score)}/100</span>}
 	                              </div>
 	                              {aiProb >= 0 && (
-	                                <div style={{ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: aiColor + '18', border: `1px solid ${aiColor}44`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-	                                  <span style={{ fontSize: 12, fontWeight: 700, color: aiColor }}>🤖 {aiHomeworkText(locale, 'aiDetector')}: {aiLabel}</span>
-	                                  <span style={{ fontSize: 13, fontWeight: 900, color: aiColor }}>{aiProb}% {aiHomeworkText(locale, 'probability')}</span>
+	                                <div data-csp-style={JSON.stringify({ marginTop: 10, padding: '8px 12px', borderRadius: 8, background: aiColor + '18', border: `1px solid ${aiColor}44`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' })}>
+	                                  <span data-csp-style={JSON.stringify({ fontSize: 12, fontWeight: 700, color: aiColor })}>🤖 {aiHomeworkText(locale, 'aiDetector')}: {aiLabel}</span>
+	                                  <span data-csp-style={JSON.stringify({ fontSize: 13, fontWeight: 900, color: aiColor })}>{aiProb}% {aiHomeworkText(locale, 'probability')}</span>
 	                                </div>
 	                              )}
-	                              {r.writing_content && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'writingContent')}:</strong> {String(r.writing_content)}</p>}
-	                              {r.overall_feedback && <p style={{ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' }}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback)}</p>}
+	                              {r.writing_content && <p data-csp-style={JSON.stringify({ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' })}><strong>{aiHomeworkText(locale, 'writingContent')}:</strong> {String(r.writing_content)}</p>}
+	                              {r.overall_feedback && <p data-csp-style={JSON.stringify({ marginTop: 8, opacity: 0.8, whiteSpace: 'pre-wrap' })}><strong>{aiHomeworkText(locale, 'feedback')}:</strong> {String(r.overall_feedback)}</p>}
 	                              {(r.grammar_errors as any[] || []).length > 0 && (
-	                                <p style={{ marginTop: 6, color: '#ef4444' }}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>
+	                                <p data-csp-style={JSON.stringify({ marginTop: 6, color: '#ef4444' })}><strong>{aiHomeworkText(locale, 'grammar')}:</strong> {(r.grammar_errors as any[]).map((e: any) => [e.original, e.correction && `-> ${e.correction}`, e.explanation].filter(Boolean).join(' - ')).join('; ')}</p>
 	                              )}
 	                              {(r.strengths as string[] || []).length > 0 && (
-	                                <p style={{ marginTop: 6, color: '#10b981' }}><strong>{aiHomeworkText(locale, 'strengths')}:</strong> {(r.strengths as string[]).join(', ')}</p>
+	                                <p data-csp-style={JSON.stringify({ marginTop: 6, color: '#10b981' })}><strong>{aiHomeworkText(locale, 'strengths')}:</strong> {(r.strengths as string[]).join(', ')}</p>
 	                              )}
 	                            </div>
 	                          );
@@ -8114,7 +8115,7 @@ function TeacherHomeworkPanel({
 	                        </>
 	                        ) : null}
 	                        {submittedStudentNote ? (
-	                          <div style={{ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+	                          <div data-csp-style={JSON.stringify({ marginTop: 12, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' })}>
 	                            <button
 	                              className="btn btn-soft small"
 	                              disabled={Boolean(aiNoteBusy[reviewKey] || noteAiResult)}
@@ -8139,9 +8140,9 @@ function TeacherHomeworkPanel({
 	                              </button>
 	                            ) : null}
 	                            {noteAiResult ? (
-	                              <div style={{ width: '100%', marginTop: 4, padding: 14, borderRadius: 12, background: '#0ea5e911', border: '1px solid #0ea5e933', fontSize: 13 }}>
+	                              <div data-csp-style={JSON.stringify({ width: '100%', marginTop: 4, padding: 14, borderRadius: 12, background: '#0ea5e911', border: '1px solid #0ea5e933', fontSize: 13 })}>
 	                                <strong>📝 {aiHomeworkText(locale, 'note')}</strong>
-	                                <p style={{ margin: '8px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{formatAiResultForReview(noteAiResult, 'note', locale)}</p>
+	                                <p data-csp-style={JSON.stringify({ margin: '8px 0 0', whiteSpace: 'pre-wrap', lineHeight: 1.5 })}>{formatAiResultForReview(noteAiResult, 'note', locale)}</p>
 	                              </div>
 	                            ) : null}
 	                          </div>
@@ -8158,7 +8159,7 @@ function TeacherHomeworkPanel({
 	                      type="button"
 	                      disabled={reviewBusyNow || !aiAutoGrade}
 	                      title={!aiAutoGrade ? "AI avto-tekshiruv o'chirilgan" : undefined}
-	                      style={{ background: "rgba(99,102,241,0.12)", border: "1.5px solid #6366f1", color: "#6366f1", fontWeight: 700 }}
+	                      data-csp-style={JSON.stringify({ background: "rgba(99,102,241,0.12)", border: "1.5px solid #6366f1", color: "#6366f1", fontWeight: 700 })}
 	                      onClick={async () => {
 	                        const hwId = Number(row.id || 0);
 	                        if (!hwId || !reviewStudentId) return;
@@ -8535,14 +8536,14 @@ function AdminDomainEmailPanel({
 
       {/* ── BODY ── */}
       {loading ? (
-        <div className="dmail-list-loading" style={{ flex: 1 }}>
+        <div className="dmail-list-loading" data-csp-style={JSON.stringify({ flex: 1 })}>
           <div className="dmail-spinner" />
-          <span style={{ fontSize: 13, color: "var(--ink-500)", fontWeight: 600 }}>Yuklanmoqda...</span>
+          <span data-csp-style={JSON.stringify({ fontSize: 13, color: "var(--ink-500)", fontWeight: 600 })}>Yuklanmoqda...</span>
         </div>
       ) : error ? (
-        <div className="dmail-error" style={{ margin: 16 }}>{error}</div>
+        <div className="dmail-error" data-csp-style={JSON.stringify({ margin: 16 })}>{error}</div>
       ) : (
-        <div className={`dmail-body${selectedEmail ? " has-detail" : ""}`} style={{ flex: 1, minHeight: 0 }}>
+        <div className={`dmail-body${selectedEmail ? " has-detail" : ""}`} data-csp-style={JSON.stringify({ flex: 1, minHeight: 0 })}>
 
           {/* ── LEFT SIDEBAR ── */}
           <aside className="dmail-sidebar">
@@ -8575,7 +8576,7 @@ function AdminDomainEmailPanel({
           {/* ── EMAIL LIST ── */}
           <div className="dmail-list-panel">
             <div className="dmail-list-toolbar">
-              <span style={{ fontSize: 13, fontWeight: 800, color: "var(--ink-700)" }}>
+              <span data-csp-style={JSON.stringify({ fontSize: 13, fontWeight: 800, color: "var(--ink-700)" })}>
                 {filterTabs.find(t => t.id === filter)?.label}
               </span>
               {inbox.last_received_at && (
@@ -8611,7 +8612,7 @@ function AdminDomainEmailPanel({
                     >
                       <div
                         className="dmail-avatar"
-                        style={{ background: senderAvatarColor(sender) }}
+                        data-csp-style={JSON.stringify({ background: senderAvatarColor(sender) })}
                       >
                         {senderInitial(sender)}
                       </div>
@@ -8661,7 +8662,7 @@ function AdminDomainEmailPanel({
               <div className="dmail-detail-empty">
                 <span className="dmail-detail-empty-icon">✉️</span>
                 <span>Xatni tanlang</span>
-                <span style={{ fontSize: 12, opacity: 0.6 }}>Chap tomondan xatni tanlang</span>
+                <span data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6 })}>Chap tomondan xatni tanlang</span>
               </div>
             ) : (
               <>
@@ -8673,7 +8674,7 @@ function AdminDomainEmailPanel({
                   <div className="dmail-detail-meta">
                     <div
                       className="dmail-detail-avatar"
-                      style={{ background: senderAvatarColor(String(selectedEmail.sender || "")) }}
+                      data-csp-style={JSON.stringify({ background: senderAvatarColor(String(selectedEmail.sender || "")) })}
                     >
                       {senderInitial(String(selectedEmail.sender || ""))}
                     </div>
@@ -8729,7 +8730,7 @@ function AdminDomainEmailPanel({
                 {/* Body */}
                 <div className="dmail-detail-body">
                   {detailLoading ? (
-                    <div className="dmail-list-loading" style={{ minHeight: 120 }}>
+                    <div className="dmail-list-loading" data-csp-style={JSON.stringify({ minHeight: 120 })}>
                       <div className="dmail-spinner" />
                     </div>
                   ) : (
@@ -8740,11 +8741,12 @@ function AdminDomainEmailPanel({
                       {selectedEmail.html_body_sanitized && (
                         <div
                           className="dmail-html-body prose max-w-none dark:prose-invert"
+                          data-csp-style-ignore="true"
                           dangerouslySetInnerHTML={{ __html: String(selectedEmail.html_body_sanitized) }}
                         />
                       )}
                       {!selectedEmail.text_body && !selectedEmail.html_body_sanitized && (
-                        <p style={{ fontSize: 13, color: "var(--ink-500)", fontWeight: 600 }}>
+                        <p data-csp-style={JSON.stringify({ fontSize: 13, color: "var(--ink-500)", fontWeight: 600 })}>
                           Email body bo'sh.
                         </p>
                       )}
@@ -9319,11 +9321,11 @@ function StudentNotifications({ data }: { data: GenericRow }) {
     <div className="page-stack">
       <section className="panel-card">
         <div className="row-between mb-3 gap-3">
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: "8px", alignItems: "center" })}>
             {loading ? <span className="chip">{tt("common.loading", "Yuklanmoqda...")}</span> : <span className="chip">{notifications.length}</span>}
             {unreadCount > 0 ? <span className="chip alert">{unreadCount} {tt("notifications.unread", "o'qilmagan")}</span> : null}
           </div>
-          <div style={{ display: "flex", gap: "8px" }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: "8px" })}>
             {unreadCount > 0 ? (
               <button className="btn btn-soft small" type="button" onClick={() => markAllNotificationsRead().catch(() => null)}>
                 {tt("common.markAllRead", "Barchasini o‘qilgan deb belgilash")}
@@ -9343,7 +9345,7 @@ function StudentNotifications({ data }: { data: GenericRow }) {
                 className={`row-between bordered ${note.read ? "read" : "unread"}`}
                 key={`${note.id || "n"}-${idx}`}
                 onClick={() => { if (!note.read && noteId) markNotificationRead(noteId).catch(() => null); }}
-                style={{ cursor: "pointer", opacity: note.read ? 0.75 : 1.0 }}
+                data-csp-style={JSON.stringify({ cursor: "pointer", opacity: note.read ? 0.75 : 1.0 })}
               >
                 <div>
                   <strong>{note.title || tt("section.notifications", "Bildirishnomalar")}</strong>
@@ -9639,7 +9641,7 @@ function UserSessionsPanel({ locale }: { locale: Locale }) {
           const source = String(sess.source || "web");
           const created = String(sess.created_at || "");
           const lastSeen = String(sess.last_seen_at || created);
-          
+
           return (
             <div key={sid} className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${isCurrent ? "border-cyan-500/30 bg-cyan-500/5 dark:bg-cyan-500/10" : "border-line dark:border-white/10 bg-surface dark:bg-navy-900/40"}`}>
               <div>
@@ -10949,7 +10951,7 @@ function RoleProfilePanel({
               ))}
             </div>
           </div>
-          
+
           <div className="flex items-center justify-between pt-4 border-t border-line dark:border-white/10">
             <div>
               <div className="text-sm font-bold text-ink-700 dark:text-slate-200">{t(locale, "profile.darkMode", "Qorong'u rejim")}</div>
@@ -10999,9 +11001,12 @@ function RoleProfilePanel({
         </div>
         {qrPayload ? (
           <div className="profile-qr-block flex flex-col items-center justify-center p-4 bg-surface-soft dark:bg-navy-900/30 rounded-2xl border border-line/50">
-            <img
-              src={`https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(qrPayload.qr_payload)}`}
-              alt={`${role} QR login`}
+            <QRCodeSVG
+              value={qrPayload.qr_payload}
+              size={192}
+              level="H"
+              marginSize={2}
+              aria-label={`${role} QR login`}
               className="profile-qr-image w-48 h-48 rounded-xl bg-white p-2 border shadow-sm"
             />
             <div className="profile-qr-meta text-xs w-full mt-4 space-y-1">
@@ -11313,7 +11318,7 @@ function StudentPlacementScreen({
     session?.active,
     session?.current_question?.question_id,
     result,
-  ]);  
+  ]);
 
   const progressPercent = session?.total_questions
     ? Math.min(100, Math.round((Number(session.question_index || 0) / Number(session.total_questions || 50)) * 100))
@@ -11330,14 +11335,14 @@ function StudentPlacementScreen({
 
       <div className="flex-1 overflow-y-auto w-full p-4 sm:p-6 lg:p-8">
         <div className="max-w-4xl mx-auto space-y-6 relative">
-          
+
           {proctoringLoading && (
             <div className="placement-loading-card bg-white dark:bg-slate-900 rounded-3xl p-10 shadow-xl border border-slate-200 dark:border-slate-800 text-center relative overflow-hidden mt-8">
                <div className="w-12 h-12 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
                <p className="text-slate-500 font-medium">Yuklanmoqda...</p>
             </div>
           )}
-          
+
 	          {!proctoringLoading && (
             <>
               <StudentTestProctoring
@@ -11379,7 +11384,7 @@ function StudentPlacementScreen({
               {result ? (
                 <div className="placement-result-card test-result-card bg-white dark:bg-slate-900 rounded-3xl p-8 sm:p-12 shadow-xl border border-slate-200 dark:border-slate-800 text-center relative overflow-hidden mt-8 sm:mt-0">
                   <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-cyan-500/10 to-transparent" />
-                  
+
                   <div className={`w-24 h-24 mx-auto ${result.proctoring_stopped ? "bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400" : "bg-green-100 dark:bg-green-500/20 text-green-600 dark:text-green-400"} rounded-full flex items-center justify-center mb-6 relative`}>
                     {result.proctoring_stopped ? (
                       <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /></svg>
@@ -11387,7 +11392,7 @@ function StudentPlacementScreen({
                       <svg className="w-12 h-12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                     )}
                   </div>
-                  
+
                   <h3 className="text-3xl font-bold text-slate-800 dark:text-white mb-2">{result.proctoring_stopped ? "Test proctoring sabab to'xtatildi" : "Placement Completed"}</h3>
                   <p className="text-slate-500 mb-4">{result.proctoring_stopped ? "Test xavfsizlik tekshiruvi sabab yakunlandi." : "You have been assigned to your initial level."}</p>
                   {result.proctoring_stopped ? (
@@ -11395,7 +11400,7 @@ function StudentPlacementScreen({
                       Sabab: {result.proctoring_failure_message || humanizeProctoringStopReason(String(result.proctoring_failure_reason || ""))}
                     </div>
                   ) : null}
-                  
+
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-10">
                     <div className="bg-slate-50 dark:bg-slate-800/50 p-4 rounded-2xl border border-slate-100 dark:border-slate-700/50">
                       <p className="text-sm font-medium text-slate-500 mb-1">Level</p>
@@ -11410,7 +11415,7 @@ function StudentPlacementScreen({
                       <p className="text-2xl font-bold text-cyan-600 dark:text-cyan-400">{result.percentage || 0}%</p>
                     </div>
                   </div>
-                  
+
                   <button
                     className="bg-cyan-500 hover:bg-cyan-400 text-navy-900 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-cyan-500/30 transition-all hover:-translate-y-1 w-full sm:w-auto"
                     onClick={() => onPlacementDone(result)}
@@ -11443,23 +11448,23 @@ function StudentPlacementScreen({
                   </div>
 
                   <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full mb-8 overflow-hidden">
-                    <div 
+                    <div
                       className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 ease-out"
-                      style={{ width: `${progressPercent}%` }}
+                      data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
                     />
                   </div>
-                  
+
                   <h3 className="text-2xl sm:text-3xl font-bold text-slate-800 dark:text-white mb-10 leading-tight">
                     {session.current_question.question}
                   </h3>
-                  
+
                   <div className="grid sm:grid-cols-2 gap-4 mb-8">
                     {Object.entries(session.current_question.options || {}).map(([key, value]) => (
                       <button
                         key={`${session.current_question?.question_id || session.current_question?.question_index || "q"}-${key}`}
                         className={`relative group p-4 sm:p-6 rounded-2xl text-left transition-all duration-200 border-2 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden ${
-                          selectedOption === key 
-                            ? "border-cyan-400 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/20 dark:text-cyan-100 dark:border-cyan-400" 
+                          selectedOption === key
+                            ? "border-cyan-400 bg-cyan-50 text-cyan-900 dark:bg-cyan-500/20 dark:text-cyan-100 dark:border-cyan-400"
                             : "border-transparent hover:border-cyan-300 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800/50 dark:hover:bg-slate-800 dark:hover:border-cyan-400"
                         }`}
                         disabled={busy || timeLeft <= 0 || !proctoringReady}
@@ -11475,15 +11480,15 @@ function StudentPlacementScreen({
                         {selectedOption !== key && <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />}
                         <div className="relative flex items-center gap-4">
                           <span className={`w-8 h-8 rounded-xl shadow-sm flex items-center justify-center font-bold transition-colors ${
-                            selectedOption === key 
-                              ? "bg-cyan-500 text-white" 
+                            selectedOption === key
+                              ? "bg-cyan-500 text-white"
                               : "bg-white dark:bg-slate-700 text-slate-500 group-hover:text-cyan-500"
                           }`}>
                             {key}
                           </span>
                           <span className={`font-medium text-lg ${
-                            selectedOption === key 
-                              ? "text-cyan-700 dark:text-cyan-300" 
+                            selectedOption === key
+                              ? "text-cyan-700 dark:text-cyan-300"
                               : "text-slate-700 dark:text-slate-200"
                           }`}>
                             {value as string}
@@ -11508,7 +11513,7 @@ function StudentPlacementScreen({
                       <p className="text-slate-500 font-medium">Hello, {userName(user)}</p>
                     </div>
                   </div>
-                  
+
                   <div className="bg-cyan-50 dark:bg-cyan-500/10 p-5 rounded-2xl mb-8 border border-cyan-100 dark:border-cyan-500/20">
                     <p className="text-cyan-800 dark:text-cyan-300 font-medium mb-2">
                       Placement subject: <strong className="text-cyan-900 dark:text-cyan-200 bg-cyan-100 dark:bg-cyan-500/30 px-2 py-0.5 rounded ml-1">{session?.subject || placementSubject || "English"}</strong>
@@ -11526,9 +11531,9 @@ function StudentPlacementScreen({
 	                  ) : null}
 
 	                  <div className="flex flex-wrap gap-4 mt-2">
-                    <button 
+                    <button
                       className="bg-cyan-500 hover:bg-cyan-400 text-navy-900 px-8 py-4 rounded-2xl font-bold text-lg shadow-lg shadow-cyan-500/30 transition-all hover:-translate-y-1 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none justify-center"
-                      disabled={busy || proctoringStartBlocked} 
+                      disabled={busy || proctoringStartBlocked}
                       onClick={startPlacement}
                     >
                       {busy ? (
@@ -11538,7 +11543,7 @@ function StudentPlacementScreen({
                       )}
                       {busy ? "Preparing..." : "Start Placement Test"}
                     </button>
-                    <button 
+                    <button
                       className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-6 py-4 rounded-2xl font-bold text-lg transition-colors"
                       onClick={onLogout}
                     >
@@ -11737,15 +11742,15 @@ function AiGeneratorWorkspace({
     if (!token) return;
     const snapshot = readGeneratorJobSnapshot();
     if (!snapshot || !snapshot.job_id) return;
-    
+
     setSingleRunning(false);
     setSingleError("Bekor qilinmoqda...");
-    
+
     const nextSnapshot: GeneratorJobSnapshot = { ...snapshot, status: "failed", error: "Bekor qilindi" };
     writeGeneratorJobSnapshot(nextSnapshot);
 
     window.dispatchEvent(new CustomEvent("diamond:generator-finished", { detail: nextSnapshot }));
-    
+
     const cancelPath = role === "admin" ? `/admin/generator/jobs/${snapshot.job_id}/cancel` : `/teacher/generator/jobs/${snapshot.job_id}/cancel`;
     try {
       await requestJson(cancelPath, { method: "POST", token });
@@ -11866,7 +11871,7 @@ function AiGeneratorWorkspace({
                 </button>
               ))}
             </div>
-            <div className="flex gap-2" style={{ display: "flex", gap: "0.5rem" }}>
+            <div className="flex gap-2" data-csp-style={JSON.stringify({ display: "flex", gap: "0.5rem" })}>
               <button className="btn btn-primary" type="button" onClick={runSingleGeneration} disabled={singleRunning}>
                 {singleRunning ? "Ishlayapti..." : modeMeta[mode].action}
               </button>
@@ -11883,7 +11888,7 @@ function AiGeneratorWorkspace({
                 <strong>Progress</strong>
                 <small>{singleProgress.current}/{singleProgress.total} ({singleProgress.pct}%)</small>
               </div>
-              <div className="meter"><span style={{ width: `${singleProgress.pct}%` }} /></div>
+              <div className="meter"><span data-csp-style={JSON.stringify({ width: `${singleProgress.pct}%` })} /></div>
             </section>
           ) : null}
           {singleError ? <div className="error-box">{singleError}</div> : null}
@@ -12855,7 +12860,7 @@ function TeacherSection({
                       </select>
                     </label>
 
-                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                    <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
                       Guruh Nomi *
                       <input
                         type="text"
@@ -12866,7 +12871,7 @@ function TeacherSection({
                       />
                     </label>
 
-                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                    <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
                       Filial (Limited Admin) * (Majburiy)
                       <select
                         value={teacherCreateGroupDraft.owner_branch}
@@ -12953,7 +12958,7 @@ function TeacherSection({
                       </label>
                     )}
 
-                    <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                    <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
                       Telegram Guruh Havolasi
                       <input
                         type="url"
@@ -13144,7 +13149,7 @@ function TeacherSection({
                   <section className="admin-modal-section">
                     <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">📋 Asosiy ma&apos;lumotlar</p>
                     <div className="admin-form-grid-2">
-                      <label className="admin-form-label" style={{gridColumn: "1/-1"}}>
+                      <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
                         {tt("common.name", "Guruh nomi")}
                         <input value={String(teacherGroupDraft.name || "")} onChange={(e) => setTeacherGroupDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Guruh nomi" />
                       </label>
@@ -13187,7 +13192,7 @@ function TeacherSection({
                         </select>
                       </label>
                     </div>
-                    
+
                     {teacherGroupEditError ? <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-600">{teacherGroupEditError}</div> : null}
 
                     <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-ink-200 dark:border-navy-600">
@@ -13502,14 +13507,14 @@ function TeacherSection({
     );
   }
 
-  
+
   if (section === "substitutions") {
     return (
       <div className="page-stack">
 
         <section className="panel-card mb-6 p-6">
           <label className="text-sm font-bold text-ink-500 uppercase mb-2 block">{tt("temp_teacher.select_group", "Guruhni tanlang")}</label>
-          <select 
+          <select
             className="w-full mt-2 p-3 rounded-xl border border-line dark:bg-navy-900 dark:border-white/10 dark:text-white font-semibold outline-none focus:ring-2 focus:ring-cyan-500"
             value={selectedGroupId}
             onChange={(e) => {
@@ -14404,39 +14409,39 @@ if (section === "attendance") {
     const yellowCount = allStudents.filter((s:GenericRow)=>s.zone==="yellow").length;
     const greenCount = allStudents.filter((s:GenericRow)=>s.zone==="green").length;
     return (
-      <div className="page-stack" style={{gap:"2rem"}}>
+      <div className="page-stack" data-csp-style={JSON.stringify({gap:"2rem"})}>
 
-        {analyticsLoading && <div className="panel-card" style={{textAlign:"center",padding:"2rem",color:"var(--ink-400)"}}>{tt("analytics.loading","Yuklanmoqda...")}</div>}
+        {analyticsLoading && <div className="panel-card" data-csp-style={JSON.stringify({textAlign:"center",padding:"2rem",color:"var(--ink-400)"})}>{tt("analytics.loading","Yuklanmoqda...")}</div>}
         {analyticsError && <div className="notice notice-error">{analyticsError}</div>}
         {!analyticsLoading && allStudents.length>0 && (
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:"1rem"}}>
+          <div data-csp-style={JSON.stringify({display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:"1rem"})}>
             {[
               {label:tt("analytics.card.total","Jami"),value:allStudents.length,color:"#6366f1",isTotal:true},
               {label:"\ud83d\udfe2 "+tt("analytics.card.good","Yaxshi"),value:greenCount,color:"#22c55e",isTotal:false},
               {label:"\ud83d\udfe1 "+tt("analytics.card.average","O\u2019rtacha"),value:yellowCount,color:"#eab308",isTotal:false},
               {label:"\ud83d\udd34 "+tt("analytics.card.atrisk","Xavf ostida"),value:redCount,color:"#ef4444",isTotal:false},
             ].map(c=>(
-              <div key={c.label} className="panel-card" style={{textAlign:"center",padding:"1.25rem",border:`2px solid ${c.color}33`,borderRadius:"1rem"}}>
-                <div style={{fontSize:"2rem",fontWeight:800,color:c.color,lineHeight:1}}>{c.value}</div>
-                {allStudents.length>0&&!c.isTotal&&<div style={{fontSize:"0.78rem",color:"var(--ink-400)",marginTop:"0.2rem"}}>{Math.round(c.value/allStudents.length*100)}%</div>}
-                <div style={{fontSize:"0.85rem",color:"var(--ink-500)",marginTop:"0.5rem",fontWeight:600}}>{c.label}</div>
+              <div key={c.label} className="panel-card" data-csp-style={JSON.stringify({textAlign:"center",padding:"1.25rem",border:`2px solid ${c.color}33`,borderRadius:"1rem"})}>
+                <div data-csp-style={JSON.stringify({fontSize:"2rem",fontWeight:800,color:c.color,lineHeight:1})}>{c.value}</div>
+                {allStudents.length>0&&!c.isTotal&&<div data-csp-style={JSON.stringify({fontSize:"0.78rem",color:"var(--ink-400)",marginTop:"0.2rem"})}>{Math.round(c.value/allStudents.length*100)}%</div>}
+                <div data-csp-style={JSON.stringify({fontSize:"0.85rem",color:"var(--ink-500)",marginTop:"0.5rem",fontWeight:600})}>{c.label}</div>
               </div>
             ))}
           </div>
         )}
         {!analyticsLoading && groupsComparison.length>0 && (
           <div className="panel-card">
-            <h3 style={{marginBottom:"1rem",fontWeight:700}}>{tt("analytics.groups.title","Guruhlar bo\u2019yicha solishtirma")}</h3>
-            <div style={{display:"flex",flexDirection:"column",gap:"0.75rem"}}>
+            <h3 data-csp-style={JSON.stringify({marginBottom:"1rem",fontWeight:700})}>{tt("analytics.groups.title","Guruhlar bo\u2019yicha solishtirma")}</h3>
+            <div data-csp-style={JSON.stringify({display:"flex",flexDirection:"column",gap:"0.75rem"})}>
               {[...groupsComparison].sort((a,b)=>Number(b.avg_health_score)-Number(a.avg_health_score)).map((g:GenericRow)=>{
                 const score=Number(g.avg_health_score||0);
                 const zone=score>=80?"green":score>=55?"yellow":"red";
                 return (
-                  <div key={String(g.group_id)} style={{display:"flex",alignItems:"center",gap:"1rem"}}>
-                    <div style={{minWidth:150,fontWeight:600,fontSize:"0.88rem"}}>{String(g.group_name||`#${g.group_id}`)}<span style={{marginLeft:6,fontSize:"0.75rem",color:"var(--ink-400)"}}>{tt("analytics.groups.count","{count} ta",{count:Number(g.student_count||0)})}</span></div>
-                    <div style={{flex:1,background:"var(--surface-soft)",borderRadius:999,height:10,overflow:"hidden"}}><div style={{width:`${Math.min(100,score)}%`,height:"100%",background:zoneColor(zone),borderRadius:999,transition:"width 0.5s"}} /></div>
-                    <div style={{minWidth:44,textAlign:"right",fontWeight:700,color:zoneColor(zone)}}>{score.toFixed(0)}</div>
-                    {Number(g.avg_dcoin_speed)>0&&<div style={{minWidth:80,fontSize:"0.78rem",color:"var(--ink-400)"}}>&#x1FA99; {Number(g.avg_dcoin_speed).toFixed(1)}/oy</div>}
+                  <div key={String(g.group_id)} data-csp-style={JSON.stringify({display:"flex",alignItems:"center",gap:"1rem"})}>
+                    <div data-csp-style={JSON.stringify({minWidth:150,fontWeight:600,fontSize:"0.88rem"})}>{String(g.group_name||`#${g.group_id}`)}<span data-csp-style={JSON.stringify({marginLeft:6,fontSize:"0.75rem",color:"var(--ink-400)"})}>{tt("analytics.groups.count","{count} ta",{count:Number(g.student_count||0)})}</span></div>
+                    <div data-csp-style={JSON.stringify({flex:1,background:"var(--surface-soft)",borderRadius:999,height:10,overflow:"hidden"})}><div data-csp-style={JSON.stringify({width:`${Math.min(100,score)}%`,height:"100%",background:zoneColor(zone),borderRadius:999,transition:"width 0.5s"})} /></div>
+                    <div data-csp-style={JSON.stringify({minWidth:44,textAlign:"right",fontWeight:700,color:zoneColor(zone)})}>{score.toFixed(0)}</div>
+                    {Number(g.avg_dcoin_speed)>0&&<div data-csp-style={JSON.stringify({minWidth:80,fontSize:"0.78rem",color:"var(--ink-400)"})}>&#x1FA99; {Number(g.avg_dcoin_speed).toFixed(1)}/oy</div>}
                   </div>
                 );
               })}
@@ -14444,44 +14449,44 @@ if (section === "attendance") {
           </div>
         )}
         {!analyticsLoading && redCount>0 && (
-          <div style={{background:"rgba(239,68,68,0.08)",border:"2px solid rgba(239,68,68,0.3)",borderRadius:"1rem",padding:"1.25rem 1.5rem"}}>
-            <div style={{display:"flex",alignItems:"center",gap:"0.75rem",marginBottom:"0.75rem"}}>
-              <span style={{fontSize:"1.5rem"}}>&#9888;</span>
-              <strong style={{color:"#ef4444"}}>{tt("analytics.alert.title","Xavf ostidagi o\u2019quvchilar \u2014 zudlik bilan e\u2019tibor talab qiladi")}</strong>
+          <div data-csp-style={JSON.stringify({background:"rgba(239,68,68,0.08)",border:"2px solid rgba(239,68,68,0.3)",borderRadius:"1rem",padding:"1.25rem 1.5rem"})}>
+            <div data-csp-style={JSON.stringify({display:"flex",alignItems:"center",gap:"0.75rem",marginBottom:"0.75rem"})}>
+              <span data-csp-style={JSON.stringify({fontSize:"1.5rem"})}>&#9888;</span>
+              <strong data-csp-style={JSON.stringify({color:"#ef4444"})}>{tt("analytics.alert.title","Xavf ostidagi o\u2019quvchilar \u2014 zudlik bilan e\u2019tibor talab qiladi")}</strong>
             </div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:"0.5rem"}}>
+            <div data-csp-style={JSON.stringify({display:"flex",flexWrap:"wrap",gap:"0.5rem"})}>
               {allStudents.filter((s:GenericRow)=>s.zone==="red").map((s:GenericRow)=>(
-                <div key={Number(s.id)} style={{background:"rgba(239,68,68,0.12)",border:"1.5px solid rgba(239,68,68,0.3)",borderRadius:"0.5rem",padding:"0.3rem 0.75rem",fontSize:"0.82rem",fontWeight:600,color:"#dc2626"}}>
+                <div key={Number(s.id)} data-csp-style={JSON.stringify({background:"rgba(239,68,68,0.12)",border:"1.5px solid rgba(239,68,68,0.3)",borderRadius:"0.5rem",padding:"0.3rem 0.75rem",fontSize:"0.82rem",fontWeight:600,color:"#dc2626"})}>
                   {String(s.first_name||"")} {String(s.last_name||"")}
-                  {(s.risk_reasons as string[]||[]).length>0&&<span style={{fontWeight:400,color:"#b91c1c",marginLeft:4}}>&middot; {(s.risk_reasons as string[]).join("; ")}</span>}
+                  {(s.risk_reasons as string[]||[]).length>0&&<span data-csp-style={JSON.stringify({fontWeight:400,color:"#b91c1c",marginLeft:4})}>&middot; {(s.risk_reasons as string[]).join("; ")}</span>}
                 </div>
               ))}
             </div>
           </div>
         )}
         {!analyticsLoading && (
-          <div className="panel-card" style={{padding:0,overflow:"hidden"}}>
-            <div style={{padding:"1.25rem 1.5rem",borderBottom:"1px solid var(--line)",display:"flex",flexWrap:"wrap",gap:"0.75rem",alignItems:"center"}}>
-              <h3 style={{fontWeight:700,margin:0,marginRight:"auto"}}>{tt("analytics.table.title","O\u2019quvchilar ro\u2019yxati")} <span style={{fontWeight:400,color:"var(--ink-400)",fontSize:"0.85rem"}}>({tt("analytics.table.count","{count} ta",{count:filtered.length})})</span></h3>
-              <input style={{padding:"0.5rem 0.9rem",borderRadius:"0.75rem",border:"1.5px solid var(--line)",background:"var(--surface-soft)",fontWeight:600,outline:"none",minWidth:200}} placeholder={tt("analytics.search.placeholder","Ism, familya, login...")} value={analyticsSearch} onChange={(e)=>setAnalyticsSearch(e.target.value)} />
-              <div style={{display:"flex",gap:"0.4rem"}}>
+          <div className="panel-card" data-csp-style={JSON.stringify({padding:0,overflow:"hidden"})}>
+            <div data-csp-style={JSON.stringify({padding:"1.25rem 1.5rem",borderBottom:"1px solid var(--line)",display:"flex",flexWrap:"wrap",gap:"0.75rem",alignItems:"center"})}>
+              <h3 data-csp-style={JSON.stringify({fontWeight:700,margin:0,marginRight:"auto"})}>{tt("analytics.table.title","O\u2019quvchilar ro\u2019yxati")} <span data-csp-style={JSON.stringify({fontWeight:400,color:"var(--ink-400)",fontSize:"0.85rem"})}>({tt("analytics.table.count","{count} ta",{count:filtered.length})})</span></h3>
+              <input data-csp-style={JSON.stringify({padding:"0.5rem 0.9rem",borderRadius:"0.75rem",border:"1.5px solid var(--line)",background:"var(--surface-soft)",fontWeight:600,outline:"none",minWidth:200})} placeholder={tt("analytics.search.placeholder","Ism, familya, login...")} value={analyticsSearch} onChange={(e)=>setAnalyticsSearch(e.target.value)} />
+              <div data-csp-style={JSON.stringify({display:"flex",gap:"0.4rem"})}>
                 {(["all","green","yellow","red"] as const).map(z=>(
-                  <button key={z} onClick={()=>setAnalyticsZoneFilter(z)} style={{padding:"0.35rem 0.85rem",borderRadius:999,border:`2px solid ${z==="all"?"var(--line)":zoneColor(z)}`,background:analyticsZoneFilter===z?(z==="all"?"var(--surface-soft)":zoneBg(z)):"transparent",fontWeight:700,fontSize:"0.8rem",color:z==="all"?"var(--ink-600)":zoneColor(z),cursor:"pointer"}}>
+                  <button key={z} onClick={()=>setAnalyticsZoneFilter(z)} data-csp-style={JSON.stringify({padding:"0.35rem 0.85rem",borderRadius:999,border:`2px solid ${z==="all"?"var(--line)":zoneColor(z)}`,background:analyticsZoneFilter===z?(z==="all"?"var(--surface-soft)":zoneBg(z)):"transparent",fontWeight:700,fontSize:"0.8rem",color:z==="all"?"var(--ink-600)":zoneColor(z),cursor:"pointer"})}>
                     {z==="all"?tt("analytics.filter.all","Hammasi"):z==="green"?"\ud83d\udfe2 "+tt("analytics.filter.good","Yaxshi"):z==="yellow"?"\ud83d\udfe1 "+tt("analytics.filter.average","O\u2019rtacha"):"\ud83d\udd34 "+tt("analytics.filter.atrisk","Xavf")}
                   </button>
                 ))}
               </div>
               {allGroupNames.length>1&&(
-                <select value={analyticsGroupFilter} onChange={e=>setAnalyticsGroupFilter(e.target.value)} style={{padding:"0.45rem 0.75rem",borderRadius:"0.75rem",border:"1.5px solid var(--line)",background:"var(--surface-soft)",fontWeight:600,fontSize:"0.85rem"}}>
+                <select value={analyticsGroupFilter} onChange={e=>setAnalyticsGroupFilter(e.target.value)} data-csp-style={JSON.stringify({padding:"0.45rem 0.75rem",borderRadius:"0.75rem",border:"1.5px solid var(--line)",background:"var(--surface-soft)",fontWeight:600,fontSize:"0.85rem"})}>
                   <option value="all">{tt("analytics.filter.allGroups","Barcha guruhlar")}</option>
                   {allGroupNames.map(gn=><option key={String(gn)} value={String(gn)}>{String(gn)}</option>)}
                 </select>
               )}
             </div>
-            <div style={{overflowX:"auto"}}>
-              <table style={{width:"100%",borderCollapse:"collapse",minWidth:680}}>
+            <div data-csp-style={JSON.stringify({overflowX:"auto"})}>
+              <table data-csp-style={JSON.stringify({width:"100%",borderCollapse:"collapse",minWidth:680})}>
                 <thead>
-                  <tr style={{background:"var(--surface-soft)",borderBottom:"1.5px solid var(--line)"}}>
+                  <tr data-csp-style={JSON.stringify({background:"var(--surface-soft)",borderBottom:"1.5px solid var(--line)"})}>
                     {[
                       tt("analytics.table.student","O\u2019quvchi"),
                       tt("analytics.table.group","Guruh"),
@@ -14490,29 +14495,29 @@ if (section === "attendance") {
                       tt("analytics.table.tests","Testlar"),
                       tt("analytics.table.dcoin","D\u2019Coin/oy"),
                       tt("analytics.table.status","Holat"),
-                    ].map(h=><th key={h} style={{padding:"0.7rem 0.9rem",textAlign:"left",fontWeight:700,fontSize:"0.8rem",color:"var(--ink-500)",whiteSpace:"nowrap"}}>{h}</th>)}
+                    ].map(h=><th key={h} data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem",textAlign:"left",fontWeight:700,fontSize:"0.8rem",color:"var(--ink-500)",whiteSpace:"nowrap"})}>{h}</th>)}
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.length===0&&<tr><td colSpan={7} style={{textAlign:"center",padding:"2rem",color:"var(--ink-400)"}}>{tt("analytics.table.empty","O\u2019quvchilar topilmadi.")}</td></tr>}
+                  {filtered.length===0&&<tr><td colSpan={7} data-csp-style={JSON.stringify({textAlign:"center",padding:"2rem",color:"var(--ink-400)"})}>{tt("analytics.table.empty","O\u2019quvchilar topilmadi.")}</td></tr>}
                   {filtered.map((s:GenericRow)=>(
-                    <tr key={Number(s.id)} style={{borderBottom:"1px solid var(--line)",background:s.zone==="red"?"rgba(239,68,68,0.04)":s.zone==="yellow"?"rgba(234,179,8,0.04)":"transparent"}}>
-                      <td style={{padding:"0.7rem 0.9rem"}}><div style={{fontWeight:700,fontSize:"0.88rem"}}>{String(s.first_name||"")} {String(s.last_name||"")}</div><div style={{fontSize:"0.74rem",color:"var(--ink-400)"}}>{String(s.login_id||s.phone||"")}</div></td>
-                      <td style={{padding:"0.7rem 0.9rem",fontSize:"0.8rem",color:"var(--ink-500)"}}>{(s.groups as string[]||[]).join(", ")||"\u2014"}</td>
+                    <tr key={Number(s.id)} data-csp-style={JSON.stringify({borderBottom:"1px solid var(--line)",background:s.zone==="red"?"rgba(239,68,68,0.04)":s.zone==="yellow"?"rgba(234,179,8,0.04)":"transparent"})}>
+                      <td data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem"})}><div data-csp-style={JSON.stringify({fontWeight:700,fontSize:"0.88rem"})}>{String(s.first_name||"")} {String(s.last_name||"")}</div><div data-csp-style={JSON.stringify({fontSize:"0.74rem",color:"var(--ink-400)"})}>{String(s.login_id||s.phone||"")}</div></td>
+                      <td data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem",fontSize:"0.8rem",color:"var(--ink-500)"})}>{(s.groups as string[]||[]).join(", ")||"\u2014"}</td>
                       {[Number(s.attendance_rate||0),Number(s.hw_completion||0),Number(s.avg_test_score||0)].map((val,mi)=>(
-                        <td key={mi} style={{padding:"0.7rem 0.9rem"}}>
-                          <div style={{display:"flex",alignItems:"center",gap:"0.4rem"}}>
-                            <div style={{width:36,height:5,borderRadius:999,background:"var(--surface-soft)",overflow:"hidden"}}><div style={{width:`${Math.min(100,val)}%`,height:"100%",background:val>=80?"#22c55e":val>=55?"#eab308":"#ef4444",borderRadius:999}} /></div>
-                            <span style={{fontSize:"0.8rem",fontWeight:600}}>{val.toFixed(0)}%</span>
+                        <td key={mi} data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem"})}>
+                          <div data-csp-style={JSON.stringify({display:"flex",alignItems:"center",gap:"0.4rem"})}>
+                            <div data-csp-style={JSON.stringify({width:36,height:5,borderRadius:999,background:"var(--surface-soft)",overflow:"hidden"})}><div data-csp-style={JSON.stringify({width:`${Math.min(100,val)}%`,height:"100%",background:val>=80?"#22c55e":val>=55?"#eab308":"#ef4444",borderRadius:999})} /></div>
+                            <span data-csp-style={JSON.stringify({fontSize:"0.8rem",fontWeight:600})}>{val.toFixed(0)}%</span>
                           </div>
                         </td>
                       ))}
-                      <td style={{padding:"0.7rem 0.9rem",fontWeight:600,fontSize:"0.82rem",color:"var(--ink-500)"}}>{Number(s.dcoin_speed||0).toFixed(1)}</td>
-                      <td style={{padding:"0.7rem 0.9rem"}}>
-                        <span style={{display:"inline-flex",alignItems:"center",gap:"0.25rem",padding:"0.2rem 0.65rem",borderRadius:999,background:zoneBg(String(s.zone||"green")),border:`1.5px solid ${zoneColor(String(s.zone||"green"))}`,color:zoneColor(String(s.zone||"green")),fontWeight:700,fontSize:"0.76rem",whiteSpace:"nowrap"}}>
+                      <td data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem",fontWeight:600,fontSize:"0.82rem",color:"var(--ink-500)"})}>{Number(s.dcoin_speed||0).toFixed(1)}</td>
+                      <td data-csp-style={JSON.stringify({padding:"0.7rem 0.9rem"})}>
+                        <span data-csp-style={JSON.stringify({display:"inline-flex",alignItems:"center",gap:"0.25rem",padding:"0.2rem 0.65rem",borderRadius:999,background:zoneBg(String(s.zone||"green")),border:`1.5px solid ${zoneColor(String(s.zone||"green"))}`,color:zoneColor(String(s.zone||"green")),fontWeight:700,fontSize:"0.76rem",whiteSpace:"nowrap"})}>
                           {s.zone==="green"?"\ud83d\udfe2":s.zone==="yellow"?"\ud83d\udfe1":"\ud83d\udd34"} {zoneBadge(String(s.zone||"green"))}
                         </span>
-                        {(s.risk_reasons as string[]||[]).length>0&&<div style={{fontSize:"0.7rem",color:"#b91c1c",marginTop:"0.2rem",maxWidth:150}}>{(s.risk_reasons as string[]).join("; ")}</div>}
+                        {(s.risk_reasons as string[]||[]).length>0&&<div data-csp-style={JSON.stringify({fontSize:"0.7rem",color:"#b91c1c",marginTop:"0.2rem",maxWidth:150})}>{(s.risk_reasons as string[]).join("; ")}</div>}
                       </td>
                     </tr>
                   ))}
@@ -14610,8 +14615,8 @@ if (section === "attendance") {
                   <th>{tt("admin.users.table.name", "O'quvchi")}</th>
                   <th>{tt("common.dpointBalance", "D'Point Balans")}</th>
                   <th>{tt("admin.groups.table.subject", "Fan")}</th>
-                  <th style={{ minWidth: 150 }}>{tt("common.amount", "Miqdor")}</th>
-                  <th style={{ minWidth: 200 }}>{tt("common.reason", "Sabab")}</th>
+                  <th data-csp-style={JSON.stringify({ minWidth: 150 })}>{tt("common.amount", "Miqdor")}</th>
+                  <th data-csp-style={JSON.stringify({ minWidth: 200 })}>{tt("common.reason", "Sabab")}</th>
                   <th>{tt("admin.users.table.actions", "Amallar")}</th>
                 </tr>
               </thead>
@@ -14846,11 +14851,11 @@ if (section === "attendance") {
         className="relative p-4 sm:p-6 md:p-8 bg-gradient-to-br from-navy-900 via-navy-800 to-navy-900 border border-white/10 rounded-2xl sm:rounded-[2rem] shadow-[0_0_40px_rgba(0,11,59,0.3)] overflow-hidden compact-hero-card logo-gradient-card"
       >
         <div className="absolute top-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-cyan-500/20 blur-[100px] pointer-events-none" />
-        
+
         <div className="relative z-10 flex flex-col items-start justify-between gap-5 sm:gap-8 md:flex-row md:items-end">
           <div className="flex flex-col max-w-xl gap-3 sm:gap-4">
             <h2 className="w-full min-w-0 text-2xl sm:text-3xl md:text-4xl font-black text-white font-display tracking-tight drop-shadow-md">{userName(user)}</h2>
-            
+
             <div className="md:hidden shrink-0 rounded-xl border border-white/25 bg-white/12 px-4 py-2.5 text-left backdrop-blur-md shadow-inner self-start flex items-center gap-3">
               <span className="flex items-center gap-1 text-xs font-bold uppercase tracking-wider text-white/70">
                 {tt("teacher.dashboard.activeGroups", "Active Groups")}
@@ -14903,14 +14908,14 @@ if (section === "attendance") {
           {teacherDashboardGroups.length ? (
             teacherDashboardGroups.map((group: GenericRow) => (
               <div key={`teacher-dash-group-${group.id || group.name}`} className="admin-user-item cursor-pointer hover:opacity-80 transition-opacity" onClick={() => onNavigate?.("attendance")}>
-                <div className="admin-user-avatar" style={{ background: "linear-gradient(135deg, #0284c7, #06b6d4)" }}>
+                <div className="admin-user-avatar" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0284c7, #06b6d4)" })}>
                   {String(group.name || "G").charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="admin-user-name">{group.name || `#${group.id}`}</div>
                   <div className="admin-user-sub">{String(group.subject || "")} · {formatLevelDisplay(group.level)} · {String(group.lesson_start || "")}</div>
                 </div>
-                <span className="admin-dash-panel-badge" style={{ background: "rgba(6,182,212,0.12)", color: "#0891b2" }}>
+                <span className="admin-dash-panel-badge" data-csp-style={JSON.stringify({ background: "rgba(6,182,212,0.12)", color: "#0891b2" })}>
                   {tt("teacher.dashboard.studentCount", "{count} students").replace("{count}", String(group.student_count || group.students_count || 0))}
                 </span>
               </div>
@@ -15066,28 +15071,28 @@ function AdminAnalyticsPanel() {
   const greenCount  = allStudents.filter((s: GenericRow) => s.zone === "green").length;
 
   return (
-    <div className="page-stack" style={{ gap: "2rem" }}>
+    <div className="page-stack" data-csp-style={JSON.stringify({ gap: "2rem" })}>
 
 
       {loading && (
-        <div className="panel-card" style={{ textAlign: "center", padding: "2rem", color: "var(--ink-400)" }}>{tt("analytics.loading", "Yuklanmoqda...")}</div>
+        <div className="panel-card" data-csp-style={JSON.stringify({ textAlign: "center", padding: "2rem", color: "var(--ink-400)" })}>{tt("analytics.loading", "Yuklanmoqda...")}</div>
       )}
       {error && <div className="notice notice-error">{error}</div>}
 
       {!loading && allStudents.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "1rem" }}>
+        <div data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "1rem" })}>
           {[
             { label: tt("analytics.card.total", "Jami"), value: allStudents.length, color: "#6366f1", isTotal: true },
             { label: "\ud83d\udfe2 " + tt("analytics.card.good", "Yaxshi"),       value: greenCount,  color: "#22c55e", isTotal: false },
             { label: "\ud83d\udfe1 " + tt("analytics.card.average", "O\u2019rtacha"),      value: yellowCount, color: "#eab308", isTotal: false },
             { label: "\ud83d\udd34 " + tt("analytics.card.atrisk", "Xavf ostida"),  value: redCount,    color: "#ef4444", isTotal: false },
           ].map((c) => (
-            <div key={c.label} className="panel-card" style={{ textAlign: "center", padding: "1.25rem", border: `2px solid ${c.color}33`, borderRadius: "1rem" }}>
-              <div style={{ fontSize: "2rem", fontWeight: 800, color: c.color, lineHeight: 1 }}>{c.value}</div>
+            <div key={c.label} className="panel-card" data-csp-style={JSON.stringify({ textAlign: "center", padding: "1.25rem", border: `2px solid ${c.color}33`, borderRadius: "1rem" })}>
+              <div data-csp-style={JSON.stringify({ fontSize: "2rem", fontWeight: 800, color: c.color, lineHeight: 1 })}>{c.value}</div>
               {!c.isTotal && allStudents.length > 0 && (
-                <div style={{ fontSize: "0.78rem", color: "var(--ink-400)", marginTop: "0.2rem" }}>{Math.round(c.value / allStudents.length * 100)}%</div>
+                <div data-csp-style={JSON.stringify({ fontSize: "0.78rem", color: "var(--ink-400)", marginTop: "0.2rem" })}>{Math.round(c.value / allStudents.length * 100)}%</div>
               )}
-              <div style={{ fontSize: "0.85rem", color: "var(--ink-500)", marginTop: "0.5rem", fontWeight: 600 }}>{c.label}</div>
+              <div data-csp-style={JSON.stringify({ fontSize: "0.85rem", color: "var(--ink-500)", marginTop: "0.5rem", fontWeight: 600 })}>{c.label}</div>
             </div>
           ))}
         </div>
@@ -15095,23 +15100,23 @@ function AdminAnalyticsPanel() {
 
       {!loading && groupsComparison.length > 0 && (
         <div className="panel-card">
-          <h3 style={{ marginBottom: "1rem", fontWeight: 700 }}>{tt("analytics.groups.title", "Guruhlar bo\u2019yicha solishtirma")}</h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <h3 data-csp-style={JSON.stringify({ marginBottom: "1rem", fontWeight: 700 })}>{tt("analytics.groups.title", "Guruhlar bo\u2019yicha solishtirma")}</h3>
+          <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: "0.75rem" })}>
             {[...groupsComparison].sort((a, b) => Number(b.avg_health_score) - Number(a.avg_health_score)).map((g: GenericRow) => {
               const score = Number(g.avg_health_score || 0);
               const zone = score >= 80 ? "green" : score >= 55 ? "yellow" : "red";
               return (
-                <div key={String(g.group_id)} style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-                  <div style={{ minWidth: 150, fontWeight: 600, fontSize: "0.88rem" }}>
+                <div key={String(g.group_id)} data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: "1rem" })}>
+                  <div data-csp-style={JSON.stringify({ minWidth: 150, fontWeight: 600, fontSize: "0.88rem" })}>
                     {String(g.group_name || `#${g.group_id}`)}
-                    <span style={{ marginLeft: 6, fontSize: "0.75rem", color: "var(--ink-400)" }}>{tt("analytics.groups.count", "{count} ta", { count: Number(g.student_count || 0) })}</span>
+                    <span data-csp-style={JSON.stringify({ marginLeft: 6, fontSize: "0.75rem", color: "var(--ink-400)" })}>{tt("analytics.groups.count", "{count} ta", { count: Number(g.student_count || 0) })}</span>
                   </div>
-                  <div style={{ flex: 1, background: "var(--surface-soft)", borderRadius: 999, height: 10, overflow: "hidden" }}>
-                    <div style={{ width: `${Math.min(100, score)}%`, height: "100%", background: zoneColor(zone), borderRadius: 999, transition: "width 0.5s" }} />
+                  <div data-csp-style={JSON.stringify({ flex: 1, background: "var(--surface-soft)", borderRadius: 999, height: 10, overflow: "hidden" })}>
+                    <div data-csp-style={JSON.stringify({ width: `${Math.min(100, score)}%`, height: "100%", background: zoneColor(zone), borderRadius: 999, transition: "width 0.5s" })} />
                   </div>
-                  <div style={{ minWidth: 44, textAlign: "right", fontWeight: 700, color: zoneColor(zone) }}>{score.toFixed(0)}</div>
+                  <div data-csp-style={JSON.stringify({ minWidth: 44, textAlign: "right", fontWeight: 700, color: zoneColor(zone) })}>{score.toFixed(0)}</div>
                   {Number(g.avg_dcoin_speed) > 0 && (
-                    <div style={{ minWidth: 80, fontSize: "0.78rem", color: "var(--ink-400)" }}>&#x1FA99; {Number(g.avg_dcoin_speed).toFixed(1)}/oy</div>
+                    <div data-csp-style={JSON.stringify({ minWidth: 80, fontSize: "0.78rem", color: "var(--ink-400)" })}>&#x1FA99; {Number(g.avg_dcoin_speed).toFixed(1)}/oy</div>
                   )}
                 </div>
               );
@@ -15121,17 +15126,17 @@ function AdminAnalyticsPanel() {
       )}
 
       {!loading && redCount > 0 && (
-        <div style={{ background: "rgba(239,68,68,0.08)", border: "2px solid rgba(239,68,68,0.3)", borderRadius: "1rem", padding: "1.25rem 1.5rem" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
-            <span style={{ fontSize: "1.5rem" }}>&#9888;</span>
-            <strong style={{ color: "#ef4444" }}>{tt("analytics.alert.title", "Xavf ostidagi o\u2019quvchilar \u2014 zudlik bilan e\u2019tibor talab qiladi")}</strong>
+        <div data-csp-style={JSON.stringify({ background: "rgba(239,68,68,0.08)", border: "2px solid rgba(239,68,68,0.3)", borderRadius: "1rem", padding: "1.25rem 1.5rem" })}>
+          <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" })}>
+            <span data-csp-style={JSON.stringify({ fontSize: "1.5rem" })}>&#9888;</span>
+            <strong data-csp-style={JSON.stringify({ color: "#ef4444" })}>{tt("analytics.alert.title", "Xavf ostidagi o\u2019quvchilar \u2014 zudlik bilan e\u2019tibor talab qiladi")}</strong>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", flexWrap: "wrap", gap: "0.5rem" })}>
             {allStudents.filter((s: GenericRow) => s.zone === "red").map((s: GenericRow) => (
-              <div key={Number(s.id)} style={{ background: "rgba(239,68,68,0.12)", border: "1.5px solid rgba(239,68,68,0.3)", borderRadius: "0.5rem", padding: "0.3rem 0.75rem", fontSize: "0.82rem", fontWeight: 600, color: "#dc2626" }}>
+              <div key={Number(s.id)} data-csp-style={JSON.stringify({ background: "rgba(239,68,68,0.12)", border: "1.5px solid rgba(239,68,68,0.3)", borderRadius: "0.5rem", padding: "0.3rem 0.75rem", fontSize: "0.82rem", fontWeight: 600, color: "#dc2626" })}>
                 {String(s.first_name || "")} {String(s.last_name || "")}
                 {(s.risk_reasons as string[] || []).length > 0 && (
-                  <span style={{ fontWeight: 400, color: "#b91c1c", marginLeft: 4 }}>&middot; {(s.risk_reasons as string[]).join("; ")}</span>
+                  <span data-csp-style={JSON.stringify({ fontWeight: 400, color: "#b91c1c", marginLeft: 4 })}>&middot; {(s.risk_reasons as string[]).join("; ")}</span>
                 )}
               </div>
             ))}
@@ -15140,31 +15145,31 @@ function AdminAnalyticsPanel() {
       )}
 
       {!loading && (
-        <div className="panel-card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid var(--line)", display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
-            <h3 style={{ fontWeight: 700, margin: 0, marginRight: "auto" }}>
+        <div className="panel-card" data-csp-style={JSON.stringify({ padding: 0, overflow: "hidden" })}>
+          <div data-csp-style={JSON.stringify({ padding: "1.25rem 1.5rem", borderBottom: "1px solid var(--line)", display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" })}>
+            <h3 data-csp-style={JSON.stringify({ fontWeight: 700, margin: 0, marginRight: "auto" })}>
               {tt("analytics.table.title", "O\u2019quvchilar ro\u2019yxati")}{" "}
-              <span style={{ fontWeight: 400, color: "var(--ink-400)", fontSize: "0.85rem" }}>({tt("analytics.table.count", "{count} ta", { count: filtered.length })})</span>
+              <span data-csp-style={JSON.stringify({ fontWeight: 400, color: "var(--ink-400)", fontSize: "0.85rem" })}>({tt("analytics.table.count", "{count} ta", { count: filtered.length })})</span>
             </h3>
             <input
-              style={{ padding: "0.5rem 0.9rem", borderRadius: "0.75rem", border: "1.5px solid var(--line)", background: "var(--surface-soft)", fontWeight: 600, outline: "none", minWidth: 200 }}
+              data-csp-style={JSON.stringify({ padding: "0.5rem 0.9rem", borderRadius: "0.75rem", border: "1.5px solid var(--line)", background: "var(--surface-soft)", fontWeight: 600, outline: "none", minWidth: 200 })}
               placeholder={tt("analytics.search.placeholder", "Ism, familya, login...")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <div style={{ display: "flex", gap: "0.4rem" }}>
+            <div data-csp-style={JSON.stringify({ display: "flex", gap: "0.4rem" })}>
               {(["all", "green", "yellow", "red"] as const).map((z) => (
                 <button
                   key={z}
                   onClick={() => setZoneFilter(z)}
-                  style={{
+                  data-csp-style={JSON.stringify({
                     padding: "0.35rem 0.85rem", borderRadius: 999,
                     border: `2px solid ${z === "all" ? "var(--line)" : zoneColor(z)}`,
                     background: zoneFilter === z ? (z === "all" ? "var(--surface-soft)" : zoneBg(z)) : "transparent",
                     fontWeight: 700, fontSize: "0.8rem",
                     color: z === "all" ? "var(--ink-600)" : zoneColor(z),
                     cursor: "pointer",
-                  }}
+                  })}
                 >
                   {z === "all" ? tt("analytics.filter.all", "Hammasi") : z === "green" ? "\ud83d\udfe2 " + tt("analytics.filter.good", "Yaxshi") : z === "yellow" ? "\ud83d\udfe1 " + tt("analytics.filter.average", "O\u2019rtacha") : "\ud83d\udd34 " + tt("analytics.filter.atrisk", "Xavf")}
                 </button>
@@ -15174,17 +15179,17 @@ function AdminAnalyticsPanel() {
               <select
                 value={groupFilter}
                 onChange={(e) => setGroupFilter(e.target.value)}
-                style={{ padding: "0.45rem 0.75rem", borderRadius: "0.75rem", border: "1.5px solid var(--line)", background: "var(--surface-soft)", fontWeight: 600, fontSize: "0.85rem" }}
+                data-csp-style={JSON.stringify({ padding: "0.45rem 0.75rem", borderRadius: "0.75rem", border: "1.5px solid var(--line)", background: "var(--surface-soft)", fontWeight: 600, fontSize: "0.85rem" })}
               >
                 <option value="all">{tt("analytics.filter.allGroups", "Barcha guruhlar")}</option>
                 {allGroupNames.map((gn) => <option key={String(gn)} value={String(gn)}>{String(gn)}</option>)}
               </select>
             )}
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 680 }}>
+          <div data-csp-style={JSON.stringify({ overflowX: "auto" })}>
+            <table data-csp-style={JSON.stringify({ width: "100%", borderCollapse: "collapse", minWidth: 680 })}>
               <thead>
-                <tr style={{ background: "var(--surface-soft)", borderBottom: "1.5px solid var(--line)" }}>
+                <tr data-csp-style={JSON.stringify({ background: "var(--surface-soft)", borderBottom: "1.5px solid var(--line)" })}>
                   {[
                     tt("analytics.table.student", "O\u2019quvchi"),
                     tt("analytics.table.group", "Guruh"),
@@ -15194,49 +15199,49 @@ function AdminAnalyticsPanel() {
                     tt("analytics.table.dcoin", "D\u2019Coin/oy"),
                     tt("analytics.table.status", "Holat")
                   ].map((h) => (
-                    <th key={h} style={{ padding: "0.7rem 0.9rem", textAlign: "left", fontWeight: 700, fontSize: "0.8rem", color: "var(--ink-500)", whiteSpace: "nowrap" }}>{h}</th>
+                    <th key={h} data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem", textAlign: "left", fontWeight: 700, fontSize: "0.8rem", color: "var(--ink-500)", whiteSpace: "nowrap" })}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 && (
-                  <tr><td colSpan={7} style={{ textAlign: "center", padding: "2rem", color: "var(--ink-400)" }}>{tt("analytics.table.empty", "O\u2019quvchilar topilmadi.")}</td></tr>
+                  <tr><td colSpan={7} data-csp-style={JSON.stringify({ textAlign: "center", padding: "2rem", color: "var(--ink-400)" })}>{tt("analytics.table.empty", "O\u2019quvchilar topilmadi.")}</td></tr>
                 )}
                 {filtered.map((s: GenericRow) => (
-                  <tr key={Number(s.id)} style={{ borderBottom: "1px solid var(--line)", background: s.zone === "red" ? "rgba(239,68,68,0.04)" : s.zone === "yellow" ? "rgba(234,179,8,0.04)" : "transparent" }}>
-                    <td style={{ padding: "0.7rem 0.9rem" }}>
-                      <div style={{ fontWeight: 700, fontSize: "0.88rem" }}>{String(s.first_name || "")} {String(s.last_name || "")}</div>
-                      <div style={{ fontSize: "0.74rem", color: "var(--ink-400)" }}>{String(s.login_id || s.phone || "")}</div>
+                  <tr key={Number(s.id)} data-csp-style={JSON.stringify({ borderBottom: "1px solid var(--line)", background: s.zone === "red" ? "rgba(239,68,68,0.04)" : s.zone === "yellow" ? "rgba(234,179,8,0.04)" : "transparent" })}>
+                    <td data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem" })}>
+                      <div data-csp-style={JSON.stringify({ fontWeight: 700, fontSize: "0.88rem" })}>{String(s.first_name || "")} {String(s.last_name || "")}</div>
+                      <div data-csp-style={JSON.stringify({ fontSize: "0.74rem", color: "var(--ink-400)" })}>{String(s.login_id || s.phone || "")}</div>
                     </td>
-                    <td style={{ padding: "0.7rem 0.9rem", fontSize: "0.8rem", color: "var(--ink-500)" }}>
+                    <td data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem", fontSize: "0.8rem", color: "var(--ink-500)" })}>
                       {(s.groups as string[] || []).join(", ") || "\u2014"}
                     </td>
                     {[Number(s.attendance_rate || 0), Number(s.hw_completion || 0), Number(s.avg_test_score || 0)].map((val, mi) => (
-                      <td key={mi} style={{ padding: "0.7rem 0.9rem" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                          <div style={{ width: 36, height: 5, borderRadius: 999, background: "var(--surface-soft)", overflow: "hidden" }}>
-                            <div style={{ width: `${Math.min(100, val)}%`, height: "100%", background: val >= 80 ? "#22c55e" : val >= 55 ? "#eab308" : "#ef4444", borderRadius: 999 }} />
+                      <td key={mi} data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem" })}>
+                        <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: "0.4rem" })}>
+                          <div data-csp-style={JSON.stringify({ width: 36, height: 5, borderRadius: 999, background: "var(--surface-soft)", overflow: "hidden" })}>
+                            <div data-csp-style={JSON.stringify({ width: `${Math.min(100, val)}%`, height: "100%", background: val >= 80 ? "#22c55e" : val >= 55 ? "#eab308" : "#ef4444", borderRadius: 999 })} />
                           </div>
-                          <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>{val.toFixed(0)}%</span>
+                          <span data-csp-style={JSON.stringify({ fontSize: "0.8rem", fontWeight: 600 })}>{val.toFixed(0)}%</span>
                         </div>
                       </td>
                     ))}
-                    <td style={{ padding: "0.7rem 0.9rem", fontWeight: 600, fontSize: "0.82rem", color: "var(--ink-500)" }}>
+                    <td data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem", fontWeight: 600, fontSize: "0.82rem", color: "var(--ink-500)" })}>
                       {Number(s.dcoin_speed || 0).toFixed(1)}
                     </td>
-                    <td style={{ padding: "0.7rem 0.9rem" }}>
-                      <span style={{
+                    <td data-csp-style={JSON.stringify({ padding: "0.7rem 0.9rem" })}>
+                      <span data-csp-style={JSON.stringify({
                         display: "inline-flex", alignItems: "center", gap: "0.25rem",
                         padding: "0.2rem 0.65rem", borderRadius: 999,
                         background: zoneBg(String(s.zone || "green")),
                         border: `1.5px solid ${zoneColor(String(s.zone || "green"))}`,
                         color: zoneColor(String(s.zone || "green")),
                         fontWeight: 700, fontSize: "0.76rem", whiteSpace: "nowrap",
-                      }}>
+                      })}>
                         {s.zone === "green" ? "\ud83d\udfe2" : s.zone === "yellow" ? "\ud83d\udfe1" : "\ud83d\udd34"} {zoneBadge(String(s.zone || "green"))}
                       </span>
                       {(s.risk_reasons as string[] || []).length > 0 && (
-                        <div style={{ fontSize: "0.7rem", color: "#b91c1c", marginTop: "0.2rem", maxWidth: 150 }}>{(s.risk_reasons as string[]).join("; ")}</div>
+                        <div data-csp-style={JSON.stringify({ fontSize: "0.7rem", color: "#b91c1c", marginTop: "0.2rem", maxWidth: 150 })}>{(s.risk_reasons as string[]).join("; ")}</div>
                       )}
                     </td>
                   </tr>
@@ -15619,7 +15624,7 @@ function AdminResultsPanel({
   const [description, setDescription] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [mediaUrls, setMediaUrls] = useState<string[]>([]);
-  
+
   const [uploading, setUploading] = useState(false);
   const [rows, setRows] = useState<GenericRow[]>(items || []);
   const [rowsLoading, setRowsLoading] = useState(false);
@@ -15721,7 +15726,7 @@ function AdminResultsPanel({
     setImageUrl(String(item.image_url || ""));
     const initialMedia = Array.isArray(item.media) ? item.media : [];
     setMediaUrls(initialMedia.map((m: any) => String(m)));
-    
+
     setResultModalOpen(true);
   }
 
@@ -15740,7 +15745,7 @@ function AdminResultsPanel({
     setDescription("");
     setImageUrl("");
     setMediaUrls([]);
-    
+
     setResultModalOpen(true);
   }
 
@@ -15759,7 +15764,7 @@ function AdminResultsPanel({
     setDescription("");
     setImageUrl("");
     setMediaUrls([]);
-    
+
     setResultModalOpen(false);
   }
 
@@ -15944,7 +15949,7 @@ function AdminResultsPanel({
                       const next = normalizeAdminResultType(event.target.value);
                       setResultType(next);
                       if (next !== "Milliy Sertifikat") setSubjectText("Matematika");
-                      
+
                       if (next !== "Universitet") {
                         setUniversityName("");
                         setUniversityScope("foreign");
@@ -16116,16 +16121,16 @@ function AdminSupportTeachersPanel() {
   const [teachers, setTeachers] = useState<GenericRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTeacher, setSelectedTeacher] = useState<GenericRow | null>(null);
-  
+
   const [weekdays, setWeekdays] = useState<GenericRow[]>([]);
   const [slots, setSlots] = useState<GenericRow[]>([]);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [subjectFilter, setSubjectFilter] = useState("English");
-  
+
   useEffect(() => {
     loadTeachers();
   }, []);
-  
+
   async function loadTeachers() {
     setLoading(true);
     const token = localStorage.getItem("diamond_token");
@@ -16137,7 +16142,7 @@ function AdminSupportTeachersPanel() {
     }
     setLoading(false);
   }
-  
+
   async function loadTeacherSettings(tId: number, sub: string) {
     setSettingsLoading(true);
     const token = localStorage.getItem("diamond_token");
@@ -16150,13 +16155,13 @@ function AdminSupportTeachersPanel() {
     }
     setSettingsLoading(false);
   }
-  
+
   useEffect(() => {
     if (selectedTeacher) {
       loadTeacherSettings(Number(selectedTeacher.id), subjectFilter);
     }
   }, [selectedTeacher, subjectFilter]);
-  
+
   async function toggleWeekday(weekday: number, active: boolean, branch: string) {
     if (!selectedTeacher) return;
     const token = localStorage.getItem("diamond_token");
@@ -16180,7 +16185,7 @@ function AdminSupportTeachersPanel() {
   }
 
   const WEEKDAYS_UZ = ['Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba', 'Yakshanba'];
-  
+
   const generateTimeSlots = () => {
     const res = [];
     for (let h = 8; h <= 20; h++) {
@@ -16230,10 +16235,10 @@ function AdminSupportTeachersPanel() {
           </div>
           <button className="btn btn-soft" onClick={() => setSelectedTeacher(null)}>← Ortga</button>
         </div>
-        
+
         <div className="mt-4 flex items-center gap-3">
           <span className="text-sm font-medium">Fan:</span>
-          <select 
+          <select
             className="px-3 py-1.5 border rounded-lg bg-white dark:bg-gray-800 dark:border-gray-700 text-sm"
             value={subjectFilter}
             onChange={e => setSubjectFilter(e.target.value)}
@@ -16256,15 +16261,15 @@ function AdminSupportTeachersPanel() {
             <section key={wdIdx} className="panel-card relative overflow-hidden">
               <div className="flex items-center justify-between mb-3 border-b border-gray-100 dark:border-gray-800 pb-3">
                 <div className="flex items-center gap-2">
-                  <input 
-                    type="checkbox" 
-                    checked={isActive} 
+                  <input
+                    type="checkbox"
+                    checked={isActive}
                     onChange={e => toggleWeekday(wdIdx, e.target.checked, String(wSetting.branch || "Chilonzor"))}
                   />
                   <span className="font-bold">{dayName}</span>
                 </div>
                 {isActive && (
-                  <select 
+                  <select
                     className="px-2 py-1 border rounded bg-white dark:bg-gray-800 dark:border-gray-700 text-xs"
                     value={String(wSetting.branch || "Chilonzor")}
                     onChange={e => toggleWeekday(wdIdx, true, e.target.value)}
@@ -16275,7 +16280,7 @@ function AdminSupportTeachersPanel() {
                   </select>
                 )}
               </div>
-              
+
               <div className={`grid grid-cols-4 sm:grid-cols-5 gap-2 transition-opacity ${isActive ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
                 {ALL_TIME_SLOTS.map(tm => {
                   const sActive = activeSlots.has(tm);
@@ -16284,8 +16289,8 @@ function AdminSupportTeachersPanel() {
                       key={tm}
                       onClick={() => toggleSlot(wdIdx, tm, !sActive)}
                       className={`py-1.5 px-2 text-xs rounded-md border font-medium transition-colors ${
-                        sActive 
-                        ? 'bg-blue-500 text-white border-blue-600' 
+                        sActive
+                        ? 'bg-blue-500 text-white border-blue-600'
                         : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700'
                       }`}
                     >
@@ -16347,7 +16352,7 @@ function AdminSection({
   const [selectedGroupSnapshot, setSelectedGroupSnapshot] = useState<GenericRow | null>(null);
   const [manageGroupTeachers, setManageGroupTeachers] = useState<GenericRow[]>([]);
   const [manageGroupCourses, setManageGroupCourses] = useState<GenericRow[]>([]);
-  
+
   useEffect(() => {
     if (selectedGroupId && (!manageGroupTeachers.length || !manageGroupCourses.length)) {
       const token = localStorage.getItem("diamond_token");
@@ -16679,10 +16684,6 @@ function AdminSection({
     } finally {
       setAppReviewDemoQrLoading(false);
     }
-  }
-
-  function appReviewQrImageUrl(payload: string) {
-    return `https://api.qrserver.com/v1/create-qr-code/?size=900x900&format=png&data=${encodeURIComponent(payload)}`;
   }
 
   useEffect(() => {
@@ -17466,28 +17467,28 @@ function AdminSection({
   const loadPaymentsStudentsList = useCallback(async (pageOverride?: number) => {
     const token = localStorage.getItem("diamond_token");
     if (!token) return;
-    
+
     paymentsStudentsListReqRef.current += 1;
     const requestId = paymentsStudentsListReqRef.current;
-    
+
     if (paymentsStudentsListAbortRef.current) {
       paymentsStudentsListAbortRef.current.abort();
     }
     const controller = new AbortController();
     paymentsStudentsListAbortRef.current = controller;
-    
+
     setPaymentsStudentListLoading(true);
     setPaymentsGeneralError("");
-    
+
     const pageNum = pageOverride ?? paymentsStudentPage;
     const limit = 8;
     const offset = (pageNum - 1) * limit;
-    
+
     const params = new URLSearchParams();
     params.set("ym", paymentsMonthFilter);
     params.set("limit", String(limit));
     params.set("offset", String(offset));
-    
+
     if (paymentsStudentSearch.trim()) {
       params.set("q", paymentsStudentSearch.trim());
     }
@@ -17500,17 +17501,17 @@ function AdminSection({
     if (paymentsTeacherFilter.trim()) {
       params.set("teacher_name", paymentsTeacherFilter.trim());
     }
-    
+
     try {
       const payload = await requestJson<GenericRow>(`/admin/payments/students?${params.toString()}`, {
         token,
         signal: controller.signal,
       });
-      
+
       if (controller.signal.aborted || requestId !== paymentsStudentsListReqRef.current) {
         return;
       }
-      
+
       const items = (payload.items || []) as GenericRow[];
       setPaymentsStudentItems(items);
       setPaymentsStudentTotal(Number(payload.total || 0));
@@ -18574,7 +18575,6 @@ function AdminSection({
                       const qrPayload = String(item.qr_payload || "");
                       const role = String(item.role || "");
                       const title = String(item.title || (role === "teacher" ? "Diamond Teachers" : "Diamond Students"));
-                      const imageUrl = appReviewQrImageUrl(qrPayload);
                       return (
                         <section key={`${role}-${String(item.qr_token || "")}`} className="rounded-2xl border border-violet-200 bg-violet-50/60 p-4 dark:border-violet-400/20 dark:bg-violet-500/5">
                           <div className="mb-3 flex items-start justify-between gap-3">
@@ -18585,12 +18585,25 @@ function AdminSection({
                             <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-200">{tt("admin.reviewQr.permanent", "Doimiy")}</span>
                           </div>
                           <div className="flex flex-col items-center gap-3 rounded-xl bg-white p-3 dark:bg-navy-950/70">
-                            {qrPayload ? <img src={imageUrl} alt={`${title} App Review QR`} className="h-56 w-56 rounded-xl border border-line bg-white p-1" /> : null}
+                            {qrPayload ? <QRCodeSVG value={qrPayload} size={224} level="H" marginSize={2} aria-label={`${title} App Review QR`} className="h-56 w-56 rounded-xl border border-line bg-white p-1" /> : null}
                             <p className="text-center text-xs leading-5 text-ink-500 dark:text-navy-300">{tt("admin.reviewQr.scanHint", "Tegishli ilovaning QR login oynasida skanerlang. Apple’ga shu QR rasmni biriktiring.")}</p>
                           </div>
                           <div className="mt-3 flex flex-wrap gap-2">
                             <button type="button" className="rounded-xl bg-violet-700 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-violet-800" onClick={() => copyText(qrPayload)}>{tt("admin.reviewQr.copyPayload", "QR ma'lumotini nusxalash")}</button>
-                            <button type="button" className="rounded-xl border border-line bg-white px-3 py-2 text-xs font-bold text-ink-700 transition-colors hover:border-violet-400 hover:text-violet-700 dark:border-white/10 dark:bg-white/5 dark:text-navy-100" onClick={() => window.open(imageUrl, "_blank", "noopener,noreferrer")}>{tt("admin.reviewQr.openImage", "QR rasmini ochish")}</button>
+                            <button type="button" className="rounded-xl border border-line bg-white px-3 py-2 text-xs font-bold text-ink-700 transition-colors hover:border-violet-400 hover:text-violet-700 dark:border-white/10 dark:bg-white/5 dark:text-navy-100" onClick={(event) => {
+                              const svg = event.currentTarget.closest("section")?.querySelector("svg");
+                              if (!svg) return;
+                              const serialized = new XMLSerializer().serializeToString(svg);
+                              const imageUrl = URL.createObjectURL(new Blob([serialized], { type: "image/svg+xml;charset=utf-8" }));
+                              const link = document.createElement("a");
+                              link.href = imageUrl;
+                              link.target = "_blank";
+                              link.rel = "noopener noreferrer";
+                              document.body.appendChild(link);
+                              link.click();
+                              link.remove();
+                              window.setTimeout(() => URL.revokeObjectURL(imageUrl), 60_000);
+                            }}>{tt("admin.reviewQr.openImage", "QR rasmini ochish")}</button>
                           </div>
                         </section>
                       );
@@ -18664,7 +18677,7 @@ function AdminSection({
                     </div>
                     {resetPasswordInfo.qr_payload ? (
                       <div className="profile-qr-block admin-created-qr-block mb-4">
-                        <img src={`https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(String(resetPasswordInfo.qr_payload || ""))}`} alt="Reset password QR login" className="profile-qr-image" />
+                        <QRCodeSVG value={String(resetPasswordInfo.qr_payload || "")} size={240} level="H" marginSize={2} aria-label="Reset password QR login" className="profile-qr-image" />
                         <div className="profile-qr-meta">
                           <div className="kv"><span>QR expires</span><strong>{formatWhen(String(resetPasswordInfo.qr_expires_at || ""))}</strong></div>
                           <div className="kv"><span>QR token</span><strong>{String(resetPasswordInfo.qr_token || "-")}</strong></div>
@@ -19017,7 +19030,7 @@ function AdminSection({
             <table className="admin-users-table">
               <thead>
                 <tr>
-                  <th style={{width: 48}}>{tt("common.profileImage", "Rasm")}</th>
+                  <th data-csp-style={JSON.stringify({width: 48})}>{tt("common.profileImage", "Rasm")}</th>
                   <th>{tt("admin.users.table.name", "Ism")}</th>
                   <th>{tt("admin.users.table.role", "Role")}</th>
                   <th>{tt("admin.users.table.loginId", "Login ID")}</th>
@@ -19299,7 +19312,7 @@ function AdminSection({
 
 
   if (section === "family-groups") {
-    const visibleFamilyGroups = familyGroups.filter((group) => 
+    const visibleFamilyGroups = familyGroups.filter((group) =>
       !familyGroupsQuery || String(group.name || "").toLowerCase().includes(familyGroupsQuery.toLowerCase())
     );
     const pickerGroup = familyGroups.find((group) => Number(group.id || 0) === Number(familyMemberPickerGroupId || 0)) || null;
@@ -20021,7 +20034,7 @@ function AdminSection({
                     {/* Progress bar */}
                     <div className="pp-sc-progress-wrap">
                       <div className="pp-sc-progress-bar">
-                        <div className="pp-sc-progress-fill" style={{ width: `${paidPct}%` }} />
+                        <div className="pp-sc-progress-fill" data-csp-style={JSON.stringify({ width: `${paidPct}%` })} />
                       </div>
                       <span className="pp-sc-progress-pct">{paidPct}%</span>
                     </div>
@@ -20210,7 +20223,7 @@ function AdminSection({
               <div className="pp-chart-pie-donut">
                 <div
                   className="pp-chart-pie-ring"
-                  style={{ background: `conic-gradient(#22c55e 0% ${piePaidSweep}%, #ef4444 ${piePaidSweep}% ${piePaidSweep + pieDebtSweep}%, rgba(148,163,184,0.2) ${piePaidSweep + pieDebtSweep}% 100%)` }}
+                  data-csp-style={JSON.stringify({ background: `conic-gradient(#22c55e 0% ${piePaidSweep}%, #ef4444 ${piePaidSweep}% ${piePaidSweep + pieDebtSweep}%, rgba(148,163,184,0.2) ${piePaidSweep + pieDebtSweep}% 100%)` })}
                 />
                 <div className="pp-chart-pie-hole">
                   <strong>{piePaidSweep.toFixed(0)}%</strong>
@@ -20219,14 +20232,14 @@ function AdminSection({
               </div>
               <div className="pp-chart-pie-legend">
                 <div className="pp-legend-item">
-                  <span className="pp-legend-dot" style={{ background: "#22c55e" }} />
+                  <span className="pp-legend-dot" data-csp-style={JSON.stringify({ background: "#22c55e" })} />
                   <div>
                     <span>{pt("paid", "To'langan")}</span>
                     <strong>{piePaid.toFixed(2)}</strong>
                   </div>
                 </div>
                 <div className="pp-legend-item">
-                  <span className="pp-legend-dot" style={{ background: "#ef4444" }} />
+                  <span className="pp-legend-dot" data-csp-style={JSON.stringify({ background: "#ef4444" })} />
                   <div>
                     <span>{pt("debt", "Qarz")}</span>
                     <strong>{pieDebt.toFixed(2)}</strong>
@@ -20255,8 +20268,8 @@ function AdminSection({
                 />
               </svg>
               <div className="pp-chart-legend-row">
-                <span className="pp-legend-dot-inline" style={{ background: "#22c55e" }} /> {pt("paid", "To'langan")}
-                <span className="pp-legend-dot-inline" style={{ background: "#ef4444" }} /> {pt("debt", "Qarz")}
+                <span className="pp-legend-dot-inline" data-csp-style={JSON.stringify({ background: "#22c55e" })} /> {pt("paid", "To'langan")}
+                <span className="pp-legend-dot-inline" data-csp-style={JSON.stringify({ background: "#ef4444" })} /> {pt("debt", "Qarz")}
               </div>
             </div>
           ) : (
@@ -20269,11 +20282,11 @@ function AdminSection({
                     <span className="pp-bar-label">{row.label || row.month}</span>
                     <div className="pp-bar-tracks">
                       <div className="pp-bar-track">
-                        <div className="pp-bar-fill pp-bar-paid" style={{ width: `${paidW}%` }} />
+                        <div className="pp-bar-fill pp-bar-paid" data-csp-style={JSON.stringify({ width: `${paidW}%` })} />
                         <span className="pp-bar-val">{Number(row.paid_amount || 0).toFixed(0)}</span>
                       </div>
                       <div className="pp-bar-track">
-                        <div className="pp-bar-fill pp-bar-debt" style={{ width: `${debtW}%` }} />
+                        <div className="pp-bar-fill pp-bar-debt" data-csp-style={JSON.stringify({ width: `${debtW}%` })} />
                         <span className="pp-bar-val">{Number(row.debt_amount || 0).toFixed(0)}</span>
                       </div>
                     </div>
@@ -20312,7 +20325,7 @@ function AdminSection({
                       <span className="pp-cc-pct">{pct.toFixed(0)}%</span>
                     </div>
                     <div className="pp-cc-bar">
-                      <div className="pp-cc-bar-fill" style={{ width: `${Math.min(100, pct)}%` }} />
+                      <div className="pp-cc-bar-fill" data-csp-style={JSON.stringify({ width: `${Math.min(100, pct)}%` })} />
                     </div>
                     <div className="pp-cc-stats">
                       <span>{pt("students", "Studentlar")}: <b>{Number(row.student_count || 0)}</b></span>
@@ -20355,7 +20368,7 @@ function AdminSection({
                       <span className="pp-cc-pct">{pct.toFixed(0)}%</span>
                     </div>
                     <div className="pp-cc-bar">
-                      <div className="pp-cc-bar-fill" style={{ width: `${Math.min(100, pct)}%` }} />
+                      <div className="pp-cc-bar-fill" data-csp-style={JSON.stringify({ width: `${Math.min(100, pct)}%` })} />
                     </div>
                     <div className="pp-cc-stats">
                       <span>{pt("groups", "Guruhlar")}: <b>{Number(row.group_count || 0)}</b></span>
@@ -20426,7 +20439,7 @@ function AdminSection({
                 {tt("common.close", "Yopish")}
               </button>
             </div>
-            <div className="pp-filter-bar" style={{ marginBottom: "14px" }}>
+            <div className="pp-filter-bar" data-csp-style={JSON.stringify({ marginBottom: "14px" })}>
               <div className="pp-filter-field pp-filter-search">
                 <svg className="pp-filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
                 <input value={paymentsStatsSearch} onChange={(event) => setPaymentsStatsSearch(event.target.value)} placeholder={pt("studentNamePhone", "Student ismi / telefon")} className="pp-filter-input" />
@@ -20464,7 +20477,7 @@ function AdminSection({
                       </div>
                     )}
                     <div className="pp-sc-progress-wrap">
-                      <div className="pp-sc-progress-bar"><div className="pp-sc-progress-fill" style={{ width: `${paidPct}%` }} /></div>
+                      <div className="pp-sc-progress-bar"><div className="pp-sc-progress-fill" data-csp-style={JSON.stringify({ width: `${paidPct}%` })} /></div>
                       <span className="pp-sc-progress-pct">{paidPct}%</span>
                     </div>
                     <div className="pp-sc-money">
@@ -20816,7 +20829,7 @@ function AdminSection({
           ariaLabel="To'lov cheki"
         >
           <div className="overlay-modal-backdrop" onClick={() => !receiptBusy && setReceiptPreview(null)}>
-            <article className="overlay-modal-card" style={{ maxWidth: 440 }} onClick={(event) => event.stopPropagation()}>
+            <article className="overlay-modal-card" data-csp-style={JSON.stringify({ maxWidth: 440 })} onClick={(event) => event.stopPropagation()}>
               <div className="row-between gap-3">
                 <div>
                   <h3>{(receiptPreview?.snapshot as GenericRow | undefined)?.receipt_kind === "refund" ? "QAYTARISH CHEKI" : "TO'LOV CHEKI"}</h3>
@@ -20867,7 +20880,7 @@ function AdminSection({
             <span className="chip">{String(paymentsMonthFilter || new Date().toISOString().slice(0, 7))}</span>
           </div>
           <p className="table-scroll-hint">{pt("swipeTableHint", "Jadvalni yon tomonga suring")}</p>
-          <div className="table-wrap payments-transactions-table overflow-x-auto -mx-1 px-1 touch-pan-x" style={{ WebkitOverflowScrolling: 'touch' }}>
+          <div className="table-wrap payments-transactions-table overflow-x-auto -mx-1 px-1 touch-pan-x" data-csp-style={JSON.stringify({ WebkitOverflowScrolling: 'touch' })}>
             <table className="min-w-[820px] w-full">
               <thead>
                 <tr>
@@ -21497,7 +21510,7 @@ function AdminSection({
                 <section className="admin-modal-section">
                   <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">📋 Asosiy ma&apos;lumotlar</p>
                   <div className="admin-form-grid-2">
-                    <label className="admin-form-label" style={{gridColumn:"1/-1"}}>
+                    <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn:"1/-1"})}>
                       {tt("common.name", "Guruh nomi")}
                       <input value={String(groupDraft.name || "")} onChange={(event) => setGroupDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="Guruh nomi" />
                     </label>
@@ -21571,7 +21584,7 @@ function AdminSection({
                     {(() => {
                       const selCourse = manageGroupCourses.find((c) => String(c.id) === String(groupDraft.course_id));
                       return (
-                        <div className="flex flex-col gap-2" style={{gridColumn:"1/-1"}}>
+                        <div className="flex flex-col gap-2" data-csp-style={JSON.stringify({gridColumn:"1/-1"})}>
                           <label className="admin-form-label">
                             {tt("admin.groups.pricingType", "To'lov turi")}
                             <select value={String(groupDraft.pricing_type || "group")} onChange={(event) => setGroupDraft((prev) => ({ ...prev, pricing_type: event.target.value }))}>
@@ -21591,7 +21604,7 @@ function AdminSection({
                       );
                     })()}
                   </div>
-                  
+
                   <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-ink-200 dark:border-navy-600">
                     <button
                       className="admin-btn-primary"
@@ -21599,8 +21612,8 @@ function AdminSection({
                         await onAdminCall(`/admin/groups/${selectedGroupId}`, groupDraft, "PATCH", tt("admin.groups.updateSuccess", "Guruh yangilandi"));
                         const selCourse = manageGroupCourses.find((c) => String(c.id) === String(groupDraft.course_id));
                         const selTeacher = teacherUsers.find((t: GenericRow) => String(t.id) === String(groupDraft.teacher_id));
-                        setAdminGroupsFallback((prev) => (prev !== null ? prev : (data.groups || [])).map((g: GenericRow) => Number(g.id) === Number(selectedGroupId) ? { 
-                          ...g, 
+                        setAdminGroupsFallback((prev) => (prev !== null ? prev : (data.groups || [])).map((g: GenericRow) => Number(g.id) === Number(selectedGroupId) ? {
+                          ...g,
                           ...groupDraft,
                           course_title: selCourse?.title || g.course_title,
                           teacher_name: selTeacher ? String(selTeacher.full_name || selTeacher.login_id || selTeacher.id) : g.teacher_name
@@ -21624,7 +21637,7 @@ function AdminSection({
                   <div className="flex gap-2 flex-wrap items-center">
                     <input
                       className="admin-form-label [&>input]:!text-sm"
-                      style={{width: "180px"}}
+                      data-csp-style={JSON.stringify({width: "180px"})}
                       value={availableStudentQuery}
                       onChange={(event) => {
                         setAvailableStudentQuery(event.target.value);
@@ -21640,7 +21653,7 @@ function AdminSection({
                     Yuklanmoqda...
                   </div>
                 ) : null}
-                
+
                 <div className="table-wrap mb-4">
                   <table>
                     <thead>
@@ -21788,12 +21801,12 @@ function AdminSection({
                 </label>
                 <div className="flex justify-end gap-2">
                   <button className="admin-page-btn" onClick={() => setGroupStudentToAdd(null)}>Bekor qilish</button>
-                  <button 
-                    className="admin-btn-primary" 
+                  <button
+                    className="admin-btn-primary"
                     disabled={!groupAddJoinedAt}
                     onClick={async () => {
                       const sId = groupStudentToAdd.user_id || groupStudentToAdd.id;
-                      await onAdminCall(`/admin/groups/${selectedGroupId}/members/${sId}`, { 
+                      await onAdminCall(`/admin/groups/${selectedGroupId}/members/${sId}`, {
                         joined_at: groupAddJoinedAt
                       }, "POST", tt("admin.groups.studentAdded", "Talaba guruhga qo'shildi"));
                       setGroupStudentToAdd(null);
@@ -21817,22 +21830,22 @@ function AdminSection({
                 <p className="text-sm text-ink-500 dark:text-navy-300 mb-4">
                   <strong>{groupStudentToRemove.full_name || groupStudentToRemove.login_id}</strong> talabasi guruhdan chiqarilmoqda.
                 </p>
-                <label className="admin-form-label mb-4 flex items-center gap-2" style={{ flexDirection: "row", cursor: "pointer" }}>
+                <label className="admin-form-label mb-4 flex items-center gap-2" data-csp-style={JSON.stringify({ flexDirection: "row", cursor: "pointer" })}>
                   <input type="checkbox" checked={groupRemoveMistake} onChange={(e) => setGroupRemoveMistake(e.target.checked)} />
                   O'quvchi xatolik sabab qo'shilgan
                 </label>
-                
+
                 {!groupRemoveMistake && (
                   <label className="admin-form-label mb-4">
                     Chiqish sanasi
                     <input type="date" value={groupRemoveLeavingAt} onChange={(e) => setGroupRemoveLeavingAt(e.target.value)} max={new Date().toISOString().slice(0, 10)} />
                   </label>
                 )}
-                
+
                 <div className="flex justify-end gap-2 mt-4">
                   <button className="admin-page-btn" onClick={() => setGroupStudentToRemove(null)}>Bekor qilish</button>
-                  <button 
-                    className="admin-btn-delete" 
+                  <button
+                    className="admin-btn-delete"
                     disabled={!groupRemoveMistake && !groupRemoveLeavingAt}
                     onClick={async () => {
                       const sId = groupStudentToRemove.user_id || groupStudentToRemove.id;
@@ -22543,14 +22556,14 @@ function SupportSection({
               const name = row.student_name || row.full_name || row.name || "—";
               return (
                 <div key={`support-dash-pending-${row.id || `${name}-${row.date}-${row.time}`}`} className="admin-user-item cursor-pointer hover:opacity-80 transition-opacity" onClick={() => onNavigate?.("bookings")}>
-                  <div className="admin-user-avatar" style={{ background: "linear-gradient(135deg, #0284c7, #06b6d4)" }}>
+                  <div className="admin-user-avatar" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0284c7, #06b6d4)" })}>
                     {name.charAt(0).toUpperCase()}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="admin-user-name">{name}</div>
                     <div className="admin-user-sub">{String(row.date || "-")} · {String(row.time || "-")} · {String(row.subject || row.purpose || "-")}</div>
                   </div>
-                  <span className="admin-dash-panel-badge" style={{ background: "rgba(245,158,11,0.12)", color: "#d97706" }}>
+                  <span className="admin-dash-panel-badge" data-csp-style={JSON.stringify({ background: "rgba(245,158,11,0.12)", color: "#d97706" })}>
                     {String(row.status || "pending")}
                   </span>
                 </div>
@@ -24066,7 +24079,7 @@ function AdminUserCreatePanel({
         className="admin-btn-primary"
         onClick={() => createUser(false)}
         disabled={creating || checkingDuplicates}
-        style={{alignSelf: "flex-start"}}
+        data-csp-style={JSON.stringify({alignSelf: "flex-start"})}
       >
         {creating || checkingDuplicates ? (
           <><svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> {checkingDuplicates ? "Dublikat tekshirilmoqda..." : tt("common.loading", "Yaratilmoqda...")}</>
@@ -24095,7 +24108,7 @@ function AdminUserCreatePanel({
           </div>
           {created.qr_payload ? (
             <div className="profile-qr-block admin-created-qr-block mb-4">
-              <img src={`https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(String(created.qr_payload || ""))}`} alt="Created user QR login" className="profile-qr-image" />
+              <QRCodeSVG value={String(created.qr_payload || "")} size={240} level="H" marginSize={2} aria-label="Created user QR login" className="profile-qr-image" />
               <div className="profile-qr-meta">
                 <div className="kv"><span>QR expires</span><strong>{formatWhen(String(created.qr_expires_at || ""))}</strong></div>
                 <div className="kv"><span>QR token</span><strong>{String(created.qr_token || "-")}</strong></div>
@@ -24121,7 +24134,7 @@ function AdminUserCreatePanel({
 
       {/* Duplicate Warning Modal */}
       <ModalPortal open={duplicateModalOpen}>
-        <div className="overlay-modal-backdrop" style={{ zIndex: 99999 }} onClick={() => setDuplicateModalOpen(false)}>
+        <div className="overlay-modal-backdrop" data-csp-style={JSON.stringify({ zIndex: 99999 })} onClick={() => setDuplicateModalOpen(false)}>
           <article
             className="overlay-modal-card max-h-[90vh] w-[min(650px,calc(100vw-24px))] overflow-y-auto p-6 bg-white dark:bg-navy-900 border border-line dark:border-white/10 rounded-3xl shadow-2xl space-y-5 animate-fade-in"
             onClick={(e) => e.stopPropagation()}
@@ -24359,7 +24372,7 @@ function AdminUserEditPanel({
       <div className="admin-modal-section">
         <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">👤 Asosiy ma&apos;lumotlar</p>
         <div className="admin-form-grid-2">
-          <label className="admin-form-label" style={{ gridColumn: "1/-1" }}>
+          <label className="admin-form-label" data-csp-style={JSON.stringify({ gridColumn: "1/-1" })}>
             F.I.SH
             <input value={fullName} onChange={(e) => setFullName(normalizeNameInput(e.target.value))} placeholder="ISM FAMILIYA" autoCapitalize="characters" />
           </label>
@@ -24592,7 +24605,7 @@ function AdminGroupCreatePanel({
       <div className="admin-modal-section">
         <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">📋 Asosiy ma&apos;lumotlar</p>
         <div className="admin-form-grid-2">
-          <label className="admin-form-label" style={{gridColumn:"1/-1"}}>
+          <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn:"1/-1"})}>
             {tt("common.name", "Guruh nomi")}
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Masalan: English B2 Evening" />
           </label>
@@ -24683,7 +24696,7 @@ function AdminGroupCreatePanel({
       <div className="admin-modal-section">
         <p className="text-[11px] font-black uppercase tracking-widest text-ink-400 dark:text-navy-500">🌐 Guruh tili</p>
         <div className="admin-form-grid-2">
-          <label className="admin-form-label" style={{gridColumn:"1/-1"}}>
+          <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn:"1/-1"})}>
             {tt("admin.groups.langLabel", "O'quv tili (test tarjimalari shu tilda)")}
             <select value={groupLang} onChange={(e) => setGroupLang(e.target.value as "uz" | "ru")}>
               <option value="uz">{tt("admin.groups.langUz", "O'zbek guruh")}</option>
@@ -24704,7 +24717,7 @@ function AdminGroupCreatePanel({
         className="admin-btn-primary"
         onClick={createGroup}
         disabled={!teacherId || !courseId || !name.trim() || groupCreating}
-        style={{alignSelf:"flex-start"}}
+        data-csp-style={JSON.stringify({alignSelf:"flex-start"})}
       >
         {groupCreating ? (
           <><svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Yaratilmoqda...</>
@@ -25639,7 +25652,7 @@ function DashboardShell({
                   onClick={() => handleNavigate("chats")}
                   aria-label={t(locale, "section.chats", "Chatlar")}
                   title={t(locale, "section.chats", "Chatlar")}
-                  style={{ fontSize: "16px" }}
+                  data-csp-style={JSON.stringify({ fontSize: "16px" })}
                 >
                   💬
                 </button>
@@ -25735,7 +25748,7 @@ function DashboardShell({
               role="dialog"
               aria-modal="true"
               aria-label="Yangi e'lon"
-              style={{
+              data-csp-style={JSON.stringify({
                 position: "fixed",
                 inset: 0,
                 zIndex: 10000,
@@ -25743,18 +25756,18 @@ function DashboardShell({
                 placeItems: "center",
                 padding: 20,
                 background: "rgba(1, 9, 84, 0.54)",
-              }}
+              })}
             >
               <section
                 className="panel-card"
-                style={{ width: "min(520px, 100%)", position: "relative", padding: "28px 30px" }}
+                data-csp-style={JSON.stringify({ width: "min(520px, 100%)", position: "relative", padding: "28px 30px" })}
               >
                 <button
                   type="button"
                   aria-label="Yopish"
                   title="Yopish"
                   onClick={closeBroadcast}
-                  style={{
+                  data-csp-style={JSON.stringify({
                     position: "absolute",
                     top: 12,
                     right: 14,
@@ -25765,7 +25778,7 @@ function DashboardShell({
                     cursor: "pointer",
                     fontSize: 24,
                     lineHeight: 1,
-                  }}
+                  })}
                 >
                   ×
                 </button>
@@ -25849,8 +25862,8 @@ function DashboardShell({
               <div className="w-16 h-4 flex items-center justify-center">
                 <div className="w-4 h-4 border-2 border-amber-700/40 border-t-amber-700 rounded-full animate-spin" />
               </div>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 className="text-red-500 hover:text-red-700 p-1 rounded-full transition-colors"
                 title="To'xtatish"
                 onClick={async () => {
@@ -26062,7 +26075,7 @@ export default function DiamondEducationApp() {
         params.set("role", safeRole);
         window.history.replaceState(null, "", `/?${params.toString()}`);
       }
-      
+
       setSection((prevSection) => prevSection !== urlSection ? urlSection : prevSection);
       setActiveRole((prevRole) => prevRole !== safeRole ? safeRole : prevRole);
     };
@@ -26251,7 +26264,7 @@ export default function DiamondEducationApp() {
     const newParams = new URLSearchParams();
     newParams.set("role", nextRole);
     newParams.set("section", nextSection);
-    
+
     if (!currentRole && !currentSection) {
       window.history.replaceState(null, "", `/?${newParams.toString()}`);
     } else {
@@ -27264,12 +27277,12 @@ export default function DiamondEducationApp() {
     const startApp = params.get("startapp") || "";
     const tgParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param || "";
     const directSurvey = params.get("survey") || "";
-    
+
     let sid = "";
     if (tgParam.startsWith("survey_")) sid = tgParam.replace("survey_", "");
     else if (startApp.startsWith("survey_")) sid = startApp.replace("survey_", "");
     else if (directSurvey) sid = directSurvey;
-    
+
     setSurveyRouteId(sid);
   }, []);
 
@@ -27280,18 +27293,18 @@ export default function DiamondEducationApp() {
     content = <div className="min-h-screen bg-navy-50" />;
   } else if (surveyRouteId) {
     content = (
-      <StudentSurveyScreen 
-        user={user} 
-        surveyId={surveyRouteId} 
+      <StudentSurveyScreen
+        user={user}
+        surveyId={surveyRouteId}
         onFinish={() => {
           const url = new URL(window.location.href);
           url.searchParams.delete("survey");
           url.searchParams.delete("startapp");
           window.location.href = url.pathname;
-        }} 
+        }}
       />
     );
-  
+
   } else if (!user && isTelegramClient && authResolved && authStatus === "telegram-unregistered") {
     content = <TelegramUnregisteredScreen locale={locale} />;
   } else if (!user && isTelegramClient && authResolved && authStatus === "telegram-unavailable") {
@@ -27559,4 +27572,4 @@ export default function DiamondEducationApp() {
   );
 }
 
-  
+

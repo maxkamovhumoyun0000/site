@@ -281,7 +281,7 @@ export function StudentBookTest({
           </div>
         </div>
         <div className="h-2.5 rounded-full bg-slate-200/50 dark:bg-navy-950 overflow-hidden shadow-inner border border-white/10">
-          <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 shadow-[0_0_10px_rgba(34,211,238,0.5)]" style={{ width: `${progressPercent}%` }} />
+          <div className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500 transition-all duration-500 shadow-[0_0_10px_rgba(34,211,238,0.5)]" data-csp-style={JSON.stringify({ width: `${progressPercent}%` })} />
         </div>
         <div className="flex flex-wrap items-center justify-between text-xs font-bold text-slate-500 dark:text-slate-400">
           <span>Savol {current + 1} / {questions.length}</span>

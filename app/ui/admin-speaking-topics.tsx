@@ -867,7 +867,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
               <div className={`h-2 overflow-hidden rounded-full ${activeSubject === "russian" ? "bg-amber-200/80 dark:bg-amber-950/80" : "bg-blue-200/80 dark:bg-blue-950/80"}`}>
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${activeSubject === "russian" ? "bg-gradient-to-r from-amber-500 to-orange-600" : "bg-gradient-to-r from-blue-600 to-cyan-600"}`}
-                  style={{ width: `${catalogProgress}%` }}
+                  data-csp-style={JSON.stringify({ width: `${catalogProgress}%` })}
                 />
               </div>
               <p className={`text-[11px] font-medium ${activeSubject === "russian" ? "text-amber-800 dark:text-amber-200" : "text-blue-800 dark:text-blue-200"}`}>
@@ -1334,7 +1334,7 @@ export function AdminSpeakingTopics({ apiFetch }: AdminSpeakingTopicsProps) {
                           <span>Diamondvoy AI: {aiProgress}%</span>
                         </span>
                         <span className="h-1.5 w-full max-w-sm mx-auto overflow-hidden rounded-full bg-white/25">
-                          <span className="block h-full rounded-full bg-white transition-all duration-500" style={{ width: `${aiProgress}%` }} />
+                          <span className="block h-full rounded-full bg-white transition-all duration-500" data-csp-style={JSON.stringify({ width: `${aiProgress}%` })} />
                         </span>
                         <span className="text-[11px] font-medium text-white/85">{aiProgressStage || "AI savollarni yaratmoqda..."}</span>
                       </span>

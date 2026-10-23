@@ -16,6 +16,18 @@ const SUBJECT_MAP: Record<string, string> = {
   "Math": "Matematika"
 };
 
+function localVoiceAvatarUrl(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.startsWith("//")) return "";
+  if (raw.startsWith("/")) return raw.startsWith("/api/") ? raw : `/api${raw}`;
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    return parsed.origin === window.location.origin ? `${parsed.pathname}${parsed.search}${parsed.hash}` : "";
+  } catch {
+    return "";
+  }
+}
+
 export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "admin" | "support" }) {
   const t = useWebT();
   const router = useRouter();
@@ -62,7 +74,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
   } = useGlobalVoiceRoom();
 
   const [createSubject, setCreateSubject] = useState(userSubjects.length > 0 ? userSubjects[0] : "english");
-  
+
   useEffect(() => {
     if (userSubjects.length > 0 && !userSubjects.includes(createSubject)) {
       setCreateSubject(userSubjects[0]);
@@ -136,7 +148,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
 
     return (
       <div className="flex-1 w-full h-full flex flex-col bg-[#F6F8FD] dark:bg-[#0B111E] relative overflow-hidden">
-        
+
         {/* Top Header */}
         <div className="pt-6 pb-4 px-6 bg-white dark:bg-[#131C2E] shadow-sm border-b border-[#E6EBF5] dark:border-[#233352] flex items-center justify-between z-20">
            <button onClick={() => router.push('/dashboard')} className="text-slate-500 dark:text-slate-400 hover:text-[#1736E8] dark:hover:text-[#afc6ff] transition-colors">
@@ -176,7 +188,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                   onClick={() => setActiveSubTab(subj)}
                   className={cx(
                     "px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-all border",
-                    activeSubTab === subj 
+                    activeSubTab === subj
                       ? "bg-[#1736E8] text-white border-[#1736E8] shadow-md shadow-[#1736E8]/20"
                       : "bg-white dark:bg-[#131C2E] text-slate-600 dark:text-slate-300 border-[#E6EBF5] dark:border-[#233352] hover:bg-slate-50 dark:hover:bg-slate-700"
                   )}
@@ -230,7 +242,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
         </div>
 
         {/* FAB for Create Room */}
-        <button 
+        <button
           onClick={() => {
             if (userSubjects.length > 1) {
               setShowCreateModal(true);
@@ -255,12 +267,12 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                 </div>
-                
+
                 <div className="space-y-4 mb-6">
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">{t("voiceroom.roomName")}</label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={createName}
                       onChange={e => setCreateName(e.target.value)}
                       placeholder={t("voiceroom.name_placeholder") || "e.g. English Speaking Club"}
@@ -269,8 +281,8 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                   </div>
                   <div>
                     <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">{t("voiceroom.roomSubject")}</label>
-                    <select 
-                      value={createSubject} 
+                    <select
+                      value={createSubject}
                       onChange={e => setCreateSubject(e.target.value)}
                       className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3.5 text-sm text-slate-800 dark:text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all appearance-none"
                     >
@@ -326,7 +338,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
 
   return (
     <div className="flex-1 w-full h-full flex flex-col bg-slate-950 relative overflow-hidden">
-      
+
       {/* FLOATING REACTIONS ANIMATION */}
       <div className="pointer-events-none fixed inset-0 z-40 overflow-hidden">
         {reactions.map((r, i) => {
@@ -334,15 +346,15 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
            const sway = Math.random() * 40 - 20; // -20px to 20px sway
            const startRight = 20 + Math.random() * 20; // start between 20px and 40px from right
            return (
-             <div 
-               key={r.id} 
+             <div
+               key={r.id}
                className="absolute text-4xl"
-               style={{ 
+               data-csp-style={JSON.stringify({
                  bottom: '80px',
                  right: `${startRight}px`,
                  animation: `floatBubbleModerator 2.5s ease-in forwards`,
                  '--sway': `${sway}px`
-               } as React.CSSProperties}
+               } as React.CSSProperties)}
              >
                {r.emoji}
              </div>
@@ -371,7 +383,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
              <span className="text-xs font-medium text-slate-300">{roomState.listenersCount} {t("voiceroom.listeners").toLowerCase()}</span>
           </div>
         </div>
-        
+
         <div className="flex items-center">
           {/* Top Gifters Button */}
           <button onClick={() => { fetchTopGifters(); setShowTopGiftersModal(true); }} className="relative w-10 h-10 mr-2 rounded-full bg-slate-800/80 text-yellow-500 hover:text-yellow-400 flex items-center justify-center backdrop-blur-md border border-slate-700/50 hover:bg-slate-700 transition-colors">
@@ -408,7 +420,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
       </div>
 
       <div className="z-10 flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-        
+
         {/* STAGE AREA */}
         <div className="flex-none lg:flex-1 max-h-[35vh] lg:max-h-none overflow-y-auto px-2 lg:px-8 py-4 custom-scrollbar">
 
@@ -417,9 +429,11 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
               const isMe = peerId === myId;
               const isHostPeer = peerId === roomState.hostId;
               const isSpeaking = speakingPeers.includes(peerId);
+              const peerName = isMe ? (t("voiceroom.you") || "Siz") : (isHostPeer ? roomState.hostName : (roomState.peerInfo?.[peerId]?.name || (t("voiceroom.user") || "User")));
+              const peerAvatar = localVoiceAvatarUrl(roomState.peerInfo?.[peerId]?.avatar_url);
 
               const isGifter = topGifters.slice(0, 3).find(g => (isMe ? "You" : (roomState.peerInfo?.[peerId]?.name || "User")) === g.name || (g.name.includes("You")));
-              
+
               let borderColor = "border-slate-800/80";
               if (isHostPeer) borderColor = "border-yellow-500";
               else if (roomState.coHosts?.includes(peerId)) borderColor = "border-blue-500";
@@ -436,8 +450,8 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
               }
 
               return (
-                <div 
-                  key={peerId} 
+                <div
+                  key={peerId}
                   onClick={() => setSelectedProfile(peerId)}
               className="flex flex-col items-center justify-center relative cursor-pointer group"
                 >
@@ -445,28 +459,24 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                     "w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-slate-800 mb-2 flex items-center justify-center border-4 z-10 overflow-hidden relative transition-all duration-300 group-hover:scale-105",
                     borderColor, shadowClass, scaleClass
                   )}>
-                    <img 
-                      alt="Avatar"
-                      src={roomState.peerInfo?.[peerId]?.avatar_url ? (roomState.peerInfo[peerId].avatar_url.startsWith('http') ? roomState.peerInfo[peerId].avatar_url : `/api${roomState.peerInfo[peerId].avatar_url.startsWith('/') ? '' : '/'}${roomState.peerInfo[peerId].avatar_url}`) : `https://api.dicebear.com/7.x/avataaars/svg?seed=${peerId}&backgroundColor=transparent`} 
-                      className="w-full h-full object-cover relative z-10"
-                      onError={(e) => { e.currentTarget.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${peerId}&backgroundColor=transparent` }}
-                    />
+                    <span className="absolute inset-0 flex items-center justify-center font-bold text-white">{String(peerName || "U").trim().slice(0, 1).toUpperCase()}</span>
+                    {peerAvatar ? <img alt={`${peerName} avatar`} src={peerAvatar} className="absolute inset-0 z-10 h-full w-full object-cover" onError={(event) => event.currentTarget.remove()} /> : null}
                   </div>
-                  
+
                   <div className="flex flex-col items-center mt-2 relative z-20">
                   <div className="font-bold text-[11px] sm:text-xs text-white truncate max-w-[90%] text-center">
-                    {isMe ? (t("voiceroom.you") || "Siz") : (isHostPeer ? roomState.hostName : (roomState.peerInfo?.[peerId]?.name || (t("voiceroom.user") || "User")))}
+                    {peerName}
                   </div>
                   <div className="text-[9px] text-slate-400 mt-0.5 uppercase tracking-wider font-medium">
                     {isHostPeer ? t("voiceroom.host") : (roomState.peerInfo?.[peerId]?.role || "Speaker")}
                   </div>
                 </div>
-                  
+
                   {/* Removed floating badges as per request */}
                 </div>
               );
             })}
-            
+
             {/* Empty Spots */}
             {Array.from({ length: emptyStageSpots }).map((_, i) => (
               <div key={i} className="flex flex-col items-center justify-center opacity-50">
@@ -484,7 +494,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
           <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
             {chatMessages.map(msg => {
               const isSystem = msg.author === "Tizim";
-              const isMe = msg.author === myId; 
+              const isMe = msg.author === myId;
               return (
                 <div key={msg.id} className={cx("animate-in fade-in flex flex-col", isMe ? "items-end" : "items-start")}>
                   {!isSystem && (
@@ -540,15 +550,15 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                   <svg className="w-3.5 h-3.5 ml-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg>
                 </button>
               </form>
-              
+
               {/* CHAT CONTROLS (MIC & REACTIONS) */}
               <div className="flex items-center gap-1 shrink-0 ml-auto">
                 <button onClick={() => sendReaction("❤️")} className="w-7 h-7 shrink-0 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xs transition-transform active:scale-90">❤️</button>
                 <button onClick={() => sendReaction("👏")} className="w-7 h-7 shrink-0 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xs transition-transform active:scale-90">👏</button>
                 <button onClick={() => sendReaction("😂")} className="w-7 h-7 shrink-0 rounded-full bg-slate-800 hover:bg-slate-700 flex items-center justify-center text-xs transition-transform active:scale-90">😂</button>
-                
+
                 <div className="w-[1px] h-4 bg-slate-700 mx-0.5 shrink-0"></div>
-                
+
                 {isOnStage ? (
                   <>
                     <button onClick={toggleMute} className={cx("w-7 h-7 shrink-0 rounded-full flex items-center justify-center transition-all", isMuted ? "bg-red-500/20 text-red-500 hover:bg-red-500 hover:text-white" : "bg-emerald-500/20 text-emerald-500 hover:bg-emerald-500 hover:text-white")}>
@@ -582,7 +592,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
         </div>
 
       </div>
-      
+
       {/* HOST Raised Hands Modal */}
       {isHost && showHandsModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200">
@@ -596,7 +606,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
-              
+
               <div className="space-y-3 max-h-60 overflow-y-auto custom-scrollbar">
                 {raisedHands.length === 0 ? (
                   <p className="text-center text-slate-500 py-4">Sahnaga chiqmoqchi bo'lganlar yo'q.</p>
@@ -630,7 +640,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
-              
+
               <div className="space-y-3 max-h-72 overflow-y-auto custom-scrollbar">
                 {topGifters.length === 0 ? (
                   <p className="text-center text-slate-500 py-4">Hali hech kim sovg'a yubormadi.</p>
@@ -663,15 +673,11 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-slate-950/60 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setSelectedProfile(null)}>
           <div className="bg-slate-900 w-full sm:w-96 rounded-t-3xl sm:rounded-3xl p-6 sm:p-8 shadow-2xl border-t sm:border border-slate-800 animate-in slide-in-from-bottom sm:slide-in-from-bottom-0 sm:zoom-in-95" onClick={e => e.stopPropagation()}>
             <div className="w-12 h-1.5 bg-slate-800 rounded-full mx-auto mb-6 sm:hidden"></div>
-            
+
             <div className="flex flex-col items-center">
-              <div className="w-24 h-24 rounded-full bg-slate-800 mb-4 border-4 border-slate-700 overflow-hidden shadow-xl">
-                <img 
-                  alt="Avatar"
-                  src={roomState.peerInfo?.[selectedProfile]?.avatar_url ? (roomState.peerInfo[selectedProfile].avatar_url.startsWith('http') ? roomState.peerInfo[selectedProfile].avatar_url : `/api${roomState.peerInfo[selectedProfile].avatar_url.startsWith('/') ? '' : '/'}${roomState.peerInfo[selectedProfile].avatar_url}`) : `https://api.dicebear.com/7.x/avataaars/svg?seed=${selectedProfile}&backgroundColor=transparent`} 
-                  className="w-full h-full object-cover relative z-10"
-                  onError={(e) => { e.currentTarget.src = `https://api.dicebear.com/7.x/avataaars/svg?seed=${selectedProfile}&backgroundColor=transparent` }}
-                />
+              <div className="relative w-24 h-24 rounded-full bg-slate-800 mb-4 border-4 border-slate-700 overflow-hidden shadow-xl">
+                <span className="absolute inset-0 flex items-center justify-center text-2xl font-bold text-white">{String(roomState.peerInfo?.[selectedProfile]?.name || "User").trim().slice(0, 1).toUpperCase()}</span>
+                {localVoiceAvatarUrl(roomState.peerInfo?.[selectedProfile]?.avatar_url) ? <img alt="Avatar" src={localVoiceAvatarUrl(roomState.peerInfo?.[selectedProfile]?.avatar_url)} className="absolute inset-0 z-10 h-full w-full object-cover" onError={(event) => event.currentTarget.remove()} /> : null}
               </div>
               <div className="text-center">
                 <h2 className="text-2xl font-bold text-white mb-1">
@@ -698,7 +704,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                     </button>
                   </div>
                 )}
-                
+
                 {isHost && selectedProfile !== myId && selectedProfile !== roomState.hostId && (
                   <div className="grid grid-cols-2 gap-2 mt-4 pt-4 border-t border-slate-800">
                     {!roomState.coHosts?.includes(selectedProfile) && (

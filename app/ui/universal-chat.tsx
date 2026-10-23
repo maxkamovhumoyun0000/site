@@ -595,7 +595,7 @@ function DiamondVoyQuizModal({
           <div className="relative h-4 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-navy-800">
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-500 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
-              style={{ width: `${progressPercent}%` }}
+              data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
             >
               <div className="absolute top-1 left-2 right-2 h-1 rounded-full bg-white/40" />
             </div>
@@ -3640,7 +3640,7 @@ export function UniversalChat({
   );
 
   return (
-    <div className="universal-chat-root fixed inset-0 z-[60] flex bg-white dark:bg-navy-950 text-navy-900 dark:text-white overflow-hidden" style={{ height: "var(--tg-viewport-height, 100dvh)" }}>
+    <div className="universal-chat-root fixed inset-0 z-[60] flex bg-white dark:bg-navy-950 text-navy-900 dark:text-white overflow-hidden" data-csp-style={JSON.stringify({ height: "var(--tg-viewport-height, 100dvh)" })}>
       {!feedbackOnly && Sidebar}
       {DiamondvoyPane}
       {CommunityPane}

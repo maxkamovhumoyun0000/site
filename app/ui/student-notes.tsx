@@ -46,7 +46,7 @@ function NoteCard({
 
   return (
     <article
-      style={{
+      data-csp-style={JSON.stringify({
         position: "relative",
         background: "var(--surface-2,#16213e)",
         border: `1px solid ${isPinned ? tagColor + "66" : "var(--border-color,#2a2a3e)"}`,
@@ -55,14 +55,14 @@ function NoteCard({
         padding: "16px 18px",
         transition: "box-shadow .2s, transform .2s",
         cursor: "default",
-      }}
+      })}
     >
       {/* Top row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+      <div data-csp-style={JSON.stringify({ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 })}>
+        <div data-csp-style={JSON.stringify({ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" })}>
           {isTeacher && (
             <span
-              style={{
+              data-csp-style={JSON.stringify({
                 fontSize: 11,
                 fontWeight: 700,
                 background: "#6c63ff22",
@@ -70,51 +70,51 @@ function NoteCard({
                 borderRadius: 8,
                 padding: "2px 10px",
                 letterSpacing: 0.5,
-              }}
+              })}
             >
               👨‍🏫 O'qituvchi
             </span>
           )}
           {!isTeacher && (
             <span
-              style={{
+              data-csp-style={JSON.stringify({
                 fontSize: 11,
                 fontWeight: 700,
                 background: "#10b98122",
                 color: "#10b981",
                 borderRadius: 8,
                 padding: "2px 10px",
-              }}
+              })}
             >
               📓 Shaxsiy
             </span>
           )}
           {isPinned && (
-            <span style={{ fontSize: 11, background: "#f59e0b22", color: "#f59e0b", borderRadius: 8, padding: "2px 8px" }}>
+            <span data-csp-style={JSON.stringify({ fontSize: 11, background: "#f59e0b22", color: "#f59e0b", borderRadius: 8, padding: "2px 8px" })}>
               📌 Muhim
             </span>
           )}
           {tag && (
             <span
-              style={{
+              data-csp-style={JSON.stringify({
                 fontSize: 11,
                 borderRadius: 8,
                 padding: "2px 10px",
                 background: tagColor + "22",
                 color: tagColor,
                 fontWeight: 600,
-              }}
+              })}
             >
               {tag}
             </span>
           )}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span style={{ fontSize: 11, opacity: 0.45, whiteSpace: "nowrap" }}>{createdAt}</span>
+        <div data-csp-style={JSON.stringify({ display: "flex", gap: 8, alignItems: "center" })}>
+          <span data-csp-style={JSON.stringify({ fontSize: 11, opacity: 0.45, whiteSpace: "nowrap" })}>{createdAt}</span>
           {!isTeacher && onEdit && (
             <button
               onClick={() => onEdit(note)}
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, opacity: 0.7, color: "#3b82f6" }}
+              data-csp-style={JSON.stringify({ background: "none", border: "none", cursor: "pointer", fontSize: 13, opacity: 0.7, color: "#3b82f6" })}
               title="Tahrirlash"
             >
               ✏️
@@ -123,7 +123,7 @@ function NoteCard({
           {!isTeacher && onDelete && (
             <button
               onClick={() => onDelete(id)}
-              style={{
+              data-csp-style={JSON.stringify({
                 background: "none",
                 border: "none",
                 cursor: "pointer",
@@ -133,7 +133,7 @@ function NoteCard({
                 padding: "2px 4px",
                 borderRadius: 6,
                 color: "#ef4444",
-              }}
+              })}
               title="O'chirish"
             >
               ×
@@ -144,13 +144,13 @@ function NoteCard({
 
       {/* Teacher name */}
       {teacherName && (
-        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6 }}>
+        <div data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6, marginBottom: 6 })}>
           {teacherName}
         </div>
       )}
 
       {/* Text */}
-      <p style={{ margin: 0, lineHeight: 1.65, whiteSpace: "pre-wrap", fontSize: 14 }}>{text}</p>
+      <p data-csp-style={JSON.stringify({ margin: 0, lineHeight: 1.65, whiteSpace: "pre-wrap", fontSize: 14 })}>{text}</p>
     </article>
   );
 }
@@ -258,16 +258,16 @@ export function StudentNotesPanel() {
     <div className="page-stack">
       {/* Header */}
       <section className="panel-card">
-        <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>
+        <div className="row-between" data-csp-style={JSON.stringify({ flexWrap: "wrap", gap: 12 })}>
           <div>
-            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>📓 My Notes</h2>
-            <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 14 }}>
+            <h2 data-csp-style={JSON.stringify({ margin: 0, fontSize: 22, fontWeight: 700 })}>📓 My Notes</h2>
+            <p data-csp-style={JSON.stringify({ margin: "4px 0 0", opacity: 0.6, fontSize: 14 })}>
               O'qituvchi eslatmalari va shaxsiy qaydlarim
             </p>
           </div>
           <button
             onClick={() => setAddOpen((v) => !v)}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "9px 18px",
               borderRadius: 10,
               border: "none",
@@ -276,7 +276,7 @@ export function StudentNotesPanel() {
               cursor: "pointer",
               fontWeight: 700,
               fontSize: 13,
-            }}
+            })}
           >
             {addOpen ? "✕ Yopish" : "+ Yangi not"}
           </button>
@@ -284,20 +284,20 @@ export function StudentNotesPanel() {
 
         {/* Add Note Form */}
         {addOpen && (
-          <div className="note-add-form" style={{ marginTop: 18, paddingTop: 18, borderTop: "1px solid var(--border-color,#2a2a3e)" }}>
+          <div className="note-add-form" data-csp-style={JSON.stringify({ marginTop: 18, paddingTop: 18, borderTop: "1px solid var(--border-color,#2a2a3e)" })}>
             <textarea
               placeholder="Eslatmangizni yozing..."
               value={noteText}
               onChange={(e) => setNoteText(e.target.value)}
             />
             {/* Tag selector */}
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div data-csp-style={JSON.stringify({ display: "flex", gap: 8, flexWrap: "wrap" })}>
               {TAG_OPTIONS.map((t) => (
                 <button
                   key={t.label}
                   type="button"
                   onClick={() => setSelectedTag(t)}
-                  style={{
+                  data-csp-style={JSON.stringify({
                     padding: "4px 14px",
                     borderRadius: 20,
                     border: `2px solid ${t.color}`,
@@ -307,27 +307,27 @@ export function StudentNotesPanel() {
                     fontSize: 12,
                     fontWeight: 600,
                     transition: "all .15s",
-                  }}
+                  })}
                 >
                   {t.label}
                 </button>
               ))}
             </div>
             {/* Pinned toggle */}
-            <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 }}>
+            <label data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", fontSize: 13 })}>
               <input
                 type="checkbox"
                 checked={isPinned}
                 onChange={(e) => setIsPinned(e.target.checked)}
-                style={{ width: 16, height: 16, accentColor: "#f59e0b" }}
+                data-csp-style={JSON.stringify({ width: 16, height: 16, accentColor: "#f59e0b" })}
               />
               📌 Muhim (pinned) sifatida belgilash
             </label>
-            <div style={{ display: "flex", gap: 10 }}>
+            <div data-csp-style={JSON.stringify({ display: "flex", gap: 10 })}>
               <button
                 onClick={handleSave}
                 disabled={saving || !noteText.trim()}
-                style={{
+                data-csp-style={JSON.stringify({
                   padding: "9px 20px",
                   borderRadius: 10,
                   border: "none",
@@ -337,14 +337,14 @@ export function StudentNotesPanel() {
                   fontWeight: 700,
                   fontSize: 13,
                   opacity: saving || !noteText.trim() ? 0.6 : 1,
-                }}
+                })}
               >
                 {saving ? "Saqlanmoqda..." : "💾 Saqlash"}
               </button>
               <button
                 type="button"
                 onClick={() => { setAddOpen(false); setNoteText(""); }}
-                style={{
+                data-csp-style={JSON.stringify({
                   padding: "9px 16px",
                   borderRadius: 10,
                   border: "1px solid var(--border-color,#2a2a3e)",
@@ -352,7 +352,7 @@ export function StudentNotesPanel() {
                   color: "inherit",
                   cursor: "pointer",
                   fontSize: 13,
-                }}
+                })}
               >
                 Bekor
               </button>
@@ -362,9 +362,9 @@ export function StudentNotesPanel() {
       </section>
 
       {/* Tabs + Search */}
-      <section className="panel-card" style={{ paddingTop: 14, paddingBottom: 14 }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", gap: 8 }}>
+      <section className="panel-card" data-csp-style={JSON.stringify({ paddingTop: 14, paddingBottom: 14 })}>
+        <div data-csp-style={JSON.stringify({ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" })}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: 8 })}>
             <button
               className={`note-tab${tab === "teacher" ? " active" : ""}`}
               onClick={() => setTab("teacher")}
@@ -378,13 +378,13 @@ export function StudentNotesPanel() {
               📓 Mening notlarim ({myNotes.length})
             </button>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: 8 })}>
             <input
               type="search"
               placeholder="Qidirish..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "6px 14px",
                 borderRadius: 8,
                 border: "1px solid var(--border-color,#2a2a3e)",
@@ -393,12 +393,12 @@ export function StudentNotesPanel() {
                 fontSize: 13,
                 outline: "none",
                 width: 160,
-              }}
+              })}
             />
             <select
               value={filterTag}
               onChange={(e) => setFilterTag(e.target.value)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "6px 10px",
                 borderRadius: 8,
                 border: "1px solid var(--border-color,#2a2a3e)",
@@ -406,7 +406,7 @@ export function StudentNotesPanel() {
                 color: "inherit",
                 fontSize: 13,
                 cursor: "pointer",
-              }}
+              })}
             >
               <option value="">Barcha teglar</option>
               {TAG_OPTIONS.map((t) => (
@@ -420,14 +420,14 @@ export function StudentNotesPanel() {
       {/* Content */}
       {loading ? (
         <section className="panel-card">
-          <div style={{ textAlign: "center", padding: 48, opacity: 0.5 }}>⏳ Yuklanmoqda...</div>
+          <div data-csp-style={JSON.stringify({ textAlign: "center", padding: 48, opacity: 0.5 })}>⏳ Yuklanmoqda...</div>
         </section>
       ) : tab === "teacher" ? (
         teacherFiltered.length === 0 ? (
           <section className="panel-card">
-            <div style={{ textAlign: "center", padding: 48 }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>📭</div>
-              <p style={{ opacity: 0.6 }}>O'qituvchidan hech qanday eslatma yo'q</p>
+            <div data-csp-style={JSON.stringify({ textAlign: "center", padding: 48 })}>
+              <div data-csp-style={JSON.stringify({ fontSize: 48, marginBottom: 12 })}>📭</div>
+              <p data-csp-style={JSON.stringify({ opacity: 0.6 })}>O'qituvchidan hech qanday eslatma yo'q</p>
             </div>
           </section>
         ) : (
@@ -440,12 +440,12 @@ export function StudentNotesPanel() {
       ) : (
         myFiltered.length === 0 ? (
           <section className="panel-card">
-            <div style={{ textAlign: "center", padding: 48 }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>✍️</div>
-              <p style={{ opacity: 0.6 }}>Hali hech qanday not qo'shmagansiz</p>
+            <div data-csp-style={JSON.stringify({ textAlign: "center", padding: 48 })}>
+              <div data-csp-style={JSON.stringify({ fontSize: 48, marginBottom: 12 })}>✍️</div>
+              <p data-csp-style={JSON.stringify({ opacity: 0.6 })}>Hali hech qanday not qo'shmagansiz</p>
               <button
                 onClick={() => setAddOpen(true)}
-                style={{
+                data-csp-style={JSON.stringify({
                   marginTop: 16,
                   padding: "10px 24px",
                   borderRadius: 10,
@@ -454,7 +454,7 @@ export function StudentNotesPanel() {
                   color: "#fff",
                   cursor: "pointer",
                   fontWeight: 700,
-                }}
+                })}
               >
                 + Birinchi notni qo'shish
               </button>
@@ -472,8 +472,8 @@ export function StudentNotesPanel() {
 
       {/* Stats bar */}
       {!loading && (
-        <section className="panel-card" style={{ paddingTop: 12, paddingBottom: 12 }}>
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13, opacity: 0.7 }}>
+        <section className="panel-card" data-csp-style={JSON.stringify({ paddingTop: 12, paddingBottom: 12 })}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: 20, flexWrap: "wrap", fontSize: 13, opacity: 0.7 })}>
             <span>📌 Muhim: <strong>{[...teacherNotes, ...myNotes].filter((n) => n.is_pinned).length}</strong></span>
             <span>👨‍🏫 O'qituvchi: <strong>{teacherNotes.length}</strong></span>
             <span>📓 Shaxsiy: <strong>{myNotes.length}</strong></span>

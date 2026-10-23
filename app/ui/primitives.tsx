@@ -10,7 +10,7 @@ export function LogoMark({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
         width={size === "sm" ? 52 : size === "lg" ? 180 : 86}
         height={size === "sm" ? 52 : size === "lg" ? 180 : 86}
         className="w-full h-full object-cover"
-        style={{ display: "block", width: "100%", height: "100%" }}
+        data-csp-style={JSON.stringify({ display: "block", width: "100%", height: "100%" })}
       />
     </div>
   );
@@ -66,7 +66,7 @@ export function AssetIcon({
       className={`asset-icon asset-icon-${type} ${className}`.trim()}
       loading="lazy"
       decoding="async"
-      style={{ width: size, height: size }}
+      data-csp-style={JSON.stringify({ width: size, height: size })}
     />
   );
 }

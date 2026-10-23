@@ -10,6 +10,16 @@ import { AI_TEST_KIND_META, type AiTestKind, type AiTestQuestion } from "./ai-te
 type Row = Record<string, any>;
 type ApiFetch = (path: string, options?: any) => Promise<any>;
 const TRACKS_CACHE_KEY = "diamond_learning_tracks_cache_v2";
+function isSameOriginMediaUrl(value: string) {
+  const raw = value.trim();
+  if (!raw) return true;
+  if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("\\")) return true;
+  try {
+    return new URL(raw, window.location.origin).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
 const covers = ["star", "trophy", "chest", "dolphin", "jellyfish", "ship"];
 const image = (key: string) => `/learning-paths/${covers.includes(key) ? key : "star"}.png`;
 const COVER_LABELS: Record<string, string> = {
@@ -533,7 +543,7 @@ function DuolingoTrack({
           <div className="h-3.5 min-w-0 flex-1 overflow-hidden rounded-full bg-black/30 p-0.5">
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#38bdf8] to-[#00e5ff] transition-all duration-500 shadow-[0_0_10px_rgba(56,189,248,0.5)]"
-              style={{ width: `${progressPercent}%` }}
+              data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
             />
           </div>
           <span className="text-xs font-black text-white">{progressPercent}%</span>
@@ -864,7 +874,7 @@ function DuolingoTrack({
                       <div className="h-3 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-900">
                         <div
                           className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-300"
-                          style={{ width: `${progressPercent}%` }}
+                          data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
                         />
                       </div>
                       <p className="mt-2 text-[11px] font-bold text-[#002DFF] dark:text-[#38bdf8]">
@@ -1025,7 +1035,7 @@ function DuolingoNode({
   return (
     <div
       className="relative flex flex-col items-center transition-all duration-300"
-      style={{ transform: `translateX(${xOffset}px)` }}
+      data-csp-style={JSON.stringify({ transform: `translateX(${xOffset}px)` })}
     >
 
 
@@ -2386,7 +2396,7 @@ function LessonPlayerModal({
           <div className="relative h-4 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-500 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
-              style={{ width: `${progressPercent}%` }}
+              data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
             >
               {/* Glossy shine highlight stripe */}
               <div className="absolute top-1 left-2 right-2 h-1 rounded-full bg-white/40" />
@@ -3913,7 +3923,7 @@ function FinalExamPlayerModal({
           <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
               className="h-full rounded-full bg-gradient-to-r from-[#002DFF] to-[#38bdf8] transition-all duration-300 relative overflow-hidden shadow-[0_0_10px_rgba(56,189,248,0.4)]"
-              style={{ width: `${progressPercent}%` }}
+              data-csp-style={JSON.stringify({ width: `${progressPercent}%` })}
             >
               <div className="absolute top-1 left-2 right-2 h-1 rounded-full bg-white/40" />
             </div>
@@ -5969,7 +5979,7 @@ function CertificateSettingsModal({
             {/* Full name line preview */}
             <div
               className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
-              style={{ top: "43.5%" }}
+              data-csp-style={JSON.stringify({ top: "43.5%" })}
             >
               <span className="inline-block rounded-md bg-white/90 px-3 py-1 font-serif text-sm sm:text-base font-black text-[#0C188B] shadow border border-[#0C188B]/30 tracking-wide">
                 [ TALABA ISM FAMILIYASI ]
@@ -5982,7 +5992,7 @@ function CertificateSettingsModal({
             {/* Course Title */}
             <div
               className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 text-center"
-              style={{ top: "50%" }}
+              data-csp-style={JSON.stringify({ top: "50%" })}
             >
               <span className="inline-block rounded bg-white/80 px-2 py-0.5 text-xs font-bold text-[#0C188B] shadow-sm">
                 {track.title || "Diamond Education Track"}
@@ -5992,7 +6002,7 @@ function CertificateSettingsModal({
             {/* Date line preview */}
             <div
               className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-center"
-              style={{ left: "13.5%", top: "77.5%" }}
+              data-csp-style={JSON.stringify({ left: "13.5%", top: "77.5%" })}
             >
               <span className="inline-block rounded bg-white/90 px-2 py-0.5 font-mono text-[11px] font-black text-[#0C188B] border border-[#0C188B]/30 shadow-sm">
                 {new Date().toLocaleDateString("uz-UZ")}
@@ -6005,13 +6015,13 @@ function CertificateSettingsModal({
             {/* Live placed custom teacher text */}
             {text.trim() ? (
               <span
-                style={{
+                data-csp-style={JSON.stringify({
                   left: `${x * 100}%`,
                   top: `${(1 - y) * 100}%`,
                   color: previewColor,
                   fontSize: `${Math.max(10, size * 0.45)}px`,
                   fontWeight: bold ? 700 : 400,
-                }}
+                })}
                 className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 whitespace-nowrap drop-shadow bg-white/70 px-1.5 py-0.5 rounded"
               >
                 {text}
@@ -6022,7 +6032,7 @@ function CertificateSettingsModal({
             {text.trim() ? (
               <span
                 className="pointer-events-none absolute h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-cyan-500 animate-pulse"
-                style={{ left: `${x * 100}%`, top: `${(1 - y) * 100}%` }}
+                data-csp-style={JSON.stringify({ left: `${x * 100}%`, top: `${(1 - y) * 100}%` })}
               />
             ) : null}
           </div>
@@ -6314,6 +6324,10 @@ function LessonEditor({
       alert("Listening testi uchun audio fayl yuklash yoki audio URL kiritish shart!");
       return;
     }
+    if (!isSameOriginMediaUrl(editAudioUrl)) {
+      alert(t("learning_paths.teacher.media_source_error", "Media Diamond Education serveriga yuklangan bo‘lishi kerak."));
+      return;
+    }
 
     let choices: string[] = [];
     let answer = editCorrect.trim();
@@ -6464,6 +6478,10 @@ function LessonEditor({
     }
     if (curKindMeta.needsAudio && !audioUrl.trim()) {
       alert("Listening testi uchun audio fayl yuklash yoki audio URL kiritish shart!");
+      return;
+    }
+    if (!isSameOriginMediaUrl(audioUrl)) {
+      alert(t("learning_paths.teacher.media_source_error", "Media Diamond Education serveriga yuklangan bo‘lishi kerak."));
       return;
     }
 
@@ -7980,7 +7998,7 @@ function MaterialsLibraryModal({
           <div
             onClick={() => toggle(node.id)}
             className="flex items-center gap-2 rounded-xl px-2 py-2 transition hover:bg-surface-soft dark:hover:bg-slate-800/40 cursor-pointer select-none"
-            style={{ paddingLeft: depth * 18 + 8 }}
+            data-csp-style={JSON.stringify({ paddingLeft: depth * 18 + 8 })}
           >
             <span className="w-4 text-xs font-black text-ink-500 dark:text-slate-400">
               {isOpen ? "▾" : "▸"}
@@ -8013,7 +8031,7 @@ function MaterialsLibraryModal({
             ? "border-2 border-cyan-400 bg-cyan-500/15 shadow-sm dark:bg-cyan-950/30"
             : "hover:bg-cyan-500/5 dark:hover:bg-slate-800/40"
         }`}
-        style={{ paddingLeft: depth * 18 + 24 }}
+        data-csp-style={JSON.stringify({ paddingLeft: depth * 18 + 24 })}
       >
         <span className="text-base">🧪</span>
         <div className="min-w-0 flex-1">

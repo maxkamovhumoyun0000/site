@@ -90,13 +90,13 @@ export function StudentSurveyScreen({
 
   if (error) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" }}>
+      <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
         <div className="w-full max-w-[500px] mx-auto bg-white/5 backdrop-blur-xl border border-red-500/30 rounded-3xl p-8 text-center shadow-2xl">
           <div className="text-4xl mb-4">⚠️</div>
           <h2 className="text-xl font-bold text-red-400 mb-6">{error}</h2>
           <button 
             className="w-full py-3 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98]" 
-            style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)" }}
+            data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)" })}
             onClick={onFinish}
           >
             Asosiy sahifaga qaytish
@@ -108,14 +108,14 @@ export function StudentSurveyScreen({
 
   if (submitted) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" }}>
+      <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
         <div className="w-full max-w-[500px] mx-auto bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 text-center shadow-2xl">
           <div className="text-6xl mb-6">🎉</div>
           <h2 className="text-3xl font-black text-white mb-3">Rahmat!</h2>
           <p className="text-slate-400 mb-8">Sizning javoblaringiz muvaffaqiyatli qabul qilindi.</p>
           <button 
             className="w-full py-3 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98]" 
-            style={{ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" }}
+            data-csp-style={JSON.stringify({ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" })}
             onClick={onFinish}
           >
             Asosiy sahifaga o'tish →
@@ -153,11 +153,11 @@ export function StudentSurveyScreen({
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-4" style={{ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" }}>
+    <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
       <div className="w-full max-w-[680px] mx-auto">
         <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 md:p-10 shadow-2xl">
           <div className="text-center mb-8">
-            <span className="inline-block px-4 py-1.5 rounded-full text-xs font-bold tracking-wider uppercase mb-4" style={{ background: "rgba(99,102,241,0.2)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.4)" }}>
+            <span className="inline-block px-4 py-1.5 rounded-full text-xs font-bold tracking-wider uppercase mb-4" data-csp-style={JSON.stringify({ background: "rgba(99,102,241,0.2)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.4)" })}>
               📝 So'rovnoma
             </span>
             <h1 className="text-3xl font-black text-white mb-3">{survey.title}</h1>
@@ -166,13 +166,13 @@ export function StudentSurveyScreen({
 
           <div className="flex flex-col gap-5 mb-8">
             {questions.map((q: any, i: number) => (
-              <div key={q.id} className="p-5 rounded-2xl" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <div key={q.id} className="p-5 rounded-2xl" data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" })}>
                 <h3 className="text-base font-bold text-white mb-4">{i + 1}. {q.text}</h3>
                 
                 {q.type === "single_choice" ? (
                   <div className="flex flex-col gap-3">
                     {q.options.map((opt: string, oIdx: number) => (
-                      <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" style={{ background: answers[q.id] === opt ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${answers[q.id] === opt ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` }}>
+                      <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" data-csp-style={JSON.stringify({ background: answers[q.id] === opt ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${answers[q.id] === opt ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` })}>
                         <input 
                           type="radio" 
                           name={`q_${q.id}`} 
@@ -181,7 +181,7 @@ export function StudentSurveyScreen({
                           onChange={() => setAnswers(prev => ({ ...prev, [q.id]: opt }))}
                           className="w-5 h-5 text-indigo-500 bg-transparent border-white/20 focus:ring-indigo-500"
                         />
-                        <span className="text-sm font-medium" style={{ color: answers[q.id] === opt ? "#fff" : "#cbd5e1" }}>{opt}</span>
+                        <span className="text-sm font-medium" data-csp-style={JSON.stringify({ color: answers[q.id] === opt ? "#fff" : "#cbd5e1" })}>{opt}</span>
                       </label>
                     ))}
                   </div>
@@ -190,7 +190,7 @@ export function StudentSurveyScreen({
                     {q.options.map((opt: string, oIdx: number) => {
                       const isChecked = Array.isArray(answers[q.id]) && answers[q.id].includes(opt);
                       return (
-                        <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" style={{ background: isChecked ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${isChecked ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` }}>
+                        <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" data-csp-style={JSON.stringify({ background: isChecked ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${isChecked ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` })}>
                           <input 
                             type="checkbox" 
                             name={`q_${q.id}`} 
@@ -199,7 +199,7 @@ export function StudentSurveyScreen({
                             onChange={() => toggleCheckbox(q.id, opt)}
                             className="w-5 h-5 text-indigo-500 bg-transparent border-white/20 rounded focus:ring-indigo-500"
                           />
-                          <span className="text-sm font-medium" style={{ color: isChecked ? "#fff" : "#cbd5e1" }}>{opt}</span>
+                          <span className="text-sm font-medium" data-csp-style={JSON.stringify({ color: isChecked ? "#fff" : "#cbd5e1" })}>{opt}</span>
                         </label>
                       );
                     })}
@@ -214,7 +214,7 @@ export function StudentSurveyScreen({
                           type="button"
                           onClick={() => setAnswers(prev => ({ ...prev, [q.id]: star }))}
                           className="text-3xl transition-transform hover:scale-125 active:scale-95"
-                          style={{ color: selected ? "#f59e0b" : "#475569" }}
+                          data-csp-style={JSON.stringify({ color: selected ? "#f59e0b" : "#475569" })}
                         >
                           ★
                         </button>
@@ -235,7 +235,7 @@ export function StudentSurveyScreen({
 
           <button 
             className="w-full py-4 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none disabled:transform-none" 
-            style={{ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" }}
+            data-csp-style={JSON.stringify({ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" })}
             disabled={!allAnswered || loading}
             onClick={submitSurvey}
           >

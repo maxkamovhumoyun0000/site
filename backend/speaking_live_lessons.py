@@ -492,14 +492,25 @@ async def attach_live_lesson_recording(lesson_id: int, payload: LessonRecordingP
     user = _auth(authorization, staff=True)
     lesson = _get_lesson(lesson_id)
     parsed = urlparse(payload.recording_url.strip())
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise HTTPException(status_code=422, detail="Recording link must be a secure HTTPS URL")
+    try:
+        recording_port = parsed.port
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Recording link is invalid")
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in {"diamond-education.uz", "www.diamond-education.uz"}
+        or parsed.username is not None
+        or parsed.password is not None
+        or recording_port not in (None, 443)
+    ):
+        raise HTTPException(status_code=422, detail="Recording link must be hosted on Diamond Education")
     if str(lesson.get("status")) not in {"completed", "live"}:
         raise HTTPException(status_code=409, detail="Recording can only be attached to a live or completed lesson")
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("UPDATE speaking_live_lessons SET recording_url=?, recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP) + INTERVAL '7 days', updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (payload.recording_url.strip(), int(user.get("id") or 0), lesson_id))
+        recording_url = f"{parsed.path}{f'?{parsed.query}' if parsed.query else ''}{f'#{parsed.fragment}' if parsed.fragment else ''}"
+        cur.execute("UPDATE speaking_live_lessons SET recording_url=?, recording_expires_at=COALESCE(ended_at,CURRENT_TIMESTAMP) + INTERVAL '7 days', updated_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=? RETURNING *", (recording_url, int(user.get("id") or 0), lesson_id))
         updated = dict(cur.fetchone())
         conn.commit()
     finally:

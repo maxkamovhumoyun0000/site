@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { useWebT } from "./web-i18n";
 import { ModalPortal } from "./modal-portal";
 import { StudentPresenceProfile } from "./student-presence-profile";
@@ -314,11 +315,12 @@ export function TeacherStudents({ token, onApiCall }: { token: string; onApiCall
               </div>
               {resetPasswordInfo.qr_payload && (
                 <div className="flex flex-col md:flex-row gap-6 p-4 bg-surface-soft dark:bg-white/5 rounded-xl border border-line dark:border-white/10 mb-4">
-                  <img
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(
-                      String(resetPasswordInfo.qr_payload || "")
-                    )}`}
-                    alt="QR"
+                  <QRCodeSVG
+                    value={String(resetPasswordInfo.qr_payload || "")}
+                    size={192}
+                    level="H"
+                    marginSize={2}
+                    aria-label="QR"
                     className="w-48 h-48 rounded-lg bg-white p-2 shrink-0 border border-line dark:border-white/10"
                   />
                   <div className="flex flex-col gap-2 justify-center">

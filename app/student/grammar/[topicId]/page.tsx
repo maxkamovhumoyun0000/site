@@ -659,7 +659,7 @@ function StudentGrammarTopicContent() {
                   <div className="w-full h-3 bg-transparent rounded-full mb-10 overflow-hidden border border-line dark:border-white/10">
                     <div 
                       className="h-full bg-gradient-to-r from-cyan-400 to-cyan-500 transition-all duration-500 ease-out"
-                      style={{ width: `${Math.max(0, Math.min(100, ((quizSession.question_index || 1) / Math.max(1, quizSession.total_questions || 1)) * 100))}%` }}
+                      data-csp-style={JSON.stringify({ width: `${Math.max(0, Math.min(100, ((quizSession.question_index || 1) / Math.max(1, quizSession.total_questions || 1)) * 100))}%` })}
                     />
                   </div>
                   

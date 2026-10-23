@@ -56,7 +56,7 @@ function MaterialCard({
 
   return (
     <div
-      style={{
+      data-csp-style={JSON.stringify({
         background: "var(--card-bg, #1e1e2e)",
         border: "1px solid var(--border-color, #2a2a3e)",
         borderRadius: 14,
@@ -66,14 +66,14 @@ function MaterialCard({
         gap: 10,
         position: "relative",
         transition: "box-shadow .2s",
-      }}
+      })}
       className="material-card"
     >
       {/* Badge */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" })}>
+        <div data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", gap: 8 })}>
           <span
-            style={{
+            data-csp-style={JSON.stringify({
               width: 40,
               height: 40,
               borderRadius: 10,
@@ -84,21 +84,21 @@ function MaterialCard({
               fontSize: 20,
               flexShrink: 0,
               border: `1.5px solid ${color}55`,
-            }}
+            })}
           >
             {icon}
           </span>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14, lineHeight: 1.3 }}>{String(mat.title || "")}</div>
+            <div data-csp-style={JSON.stringify({ fontWeight: 600, fontSize: 14, lineHeight: 1.3 })}>{String(mat.title || "")}</div>
             {mat.description ? (
-              <div style={{ fontSize: 12, opacity: 0.6, marginTop: 2 }}>{String(mat.description).slice(0, 60)}</div>
+              <div data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6, marginTop: 2 })}>{String(mat.description).slice(0, 60)}</div>
             ) : null}
           </div>
         </div>
       </div>
 
       {/* Meta */}
-      <div style={{ display: "flex", gap: 12, fontSize: 12, opacity: 0.55, flexWrap: "wrap" }}>
+      <div data-csp-style={JSON.stringify({ display: "flex", gap: 12, fontSize: 12, opacity: 0.55, flexWrap: "wrap" })}>
         {mat.subject ? <span>📚 {String(mat.subject)}</span> : null}
         {mat.file_size ? <span>{formatFileSize(Number(mat.file_size))}</span> : null}
         {typeof mat.download_count === "number" ? (
@@ -112,12 +112,12 @@ function MaterialCard({
       </div>
 
       {/* Actions */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+      <div data-csp-style={JSON.stringify({ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 })}>
         <a
           href={String(mat.file_url || "#")}
           target="_blank"
           rel="noopener noreferrer"
-          style={{
+          data-csp-style={JSON.stringify({
             padding: "6px 14px",
             borderRadius: 8,
             fontSize: 12,
@@ -125,7 +125,7 @@ function MaterialCard({
             color: "#fff",
             textDecoration: "none",
             fontWeight: 600,
-          }}
+          })}
         >
           ⬇ Download
         </a>
@@ -133,7 +133,7 @@ function MaterialCard({
           <>
             <button
               onClick={() => onEdit(mat)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "6px 12px",
                 borderRadius: 8,
                 fontSize: 12,
@@ -141,13 +141,13 @@ function MaterialCard({
                 background: "transparent",
                 cursor: "pointer",
                 color: "inherit",
-              }}
+              })}
             >
               ✏️ Edit
             </button>
             <button
               onClick={() => setSendOpen((p) => !p)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "6px 12px",
                 borderRadius: 8,
                 fontSize: 12,
@@ -155,13 +155,13 @@ function MaterialCard({
                 background: "#10b98111",
                 cursor: "pointer",
                 color: "#10b981",
-              }}
+              })}
             >
               📤 {tt("teacher.materials.send", "Send")}
             </button>
             <button
               onClick={() => onDelete(mat)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "6px 10px",
                 borderRadius: 8,
                 fontSize: 12,
@@ -169,7 +169,7 @@ function MaterialCard({
                 background: "#ef444411",
                 cursor: "pointer",
                 color: "#ef4444",
-              }}
+              })}
             >
               🗑
             </button>
@@ -180,21 +180,21 @@ function MaterialCard({
       {/* Send Modal */}
       {sendOpen && groups.length > 0 ? (
         <div
-          style={{
+          data-csp-style={JSON.stringify({
             marginTop: 8,
             padding: "12px",
             borderRadius: 10,
             background: "var(--surface-2, #16213e)",
             border: "1px solid var(--border-color,#2a2a3e)",
-          }}
+          })}
         >
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+          <div data-csp-style={JSON.stringify({ fontSize: 13, fontWeight: 600, marginBottom: 8 })}>
             {tt("teacher.materials.selectGroup", "Select group")}
           </div>
           <select
             value={sendGroupId}
             onChange={(e) => setSendGroupId(Number(e.target.value))}
-            style={{
+            data-csp-style={JSON.stringify({
               width: "100%",
               padding: "7px 10px",
               borderRadius: 8,
@@ -203,7 +203,7 @@ function MaterialCard({
               color: "inherit",
               fontSize: 13,
               marginBottom: 8,
-            }}
+            })}
           >
             <option value={0}>— tanlang —</option>
             {groups.map((g) => (
@@ -212,7 +212,7 @@ function MaterialCard({
               </option>
             ))}
           </select>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: 8 })}>
             <button
               disabled={!sendGroupId}
               onClick={() => {
@@ -221,7 +221,7 @@ function MaterialCard({
                   setSendOpen(false);
                 }
               }}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "7px 16px",
                 borderRadius: 8,
                 fontSize: 13,
@@ -230,13 +230,13 @@ function MaterialCard({
                 border: "none",
                 cursor: sendGroupId ? "pointer" : "not-allowed",
                 fontWeight: 600,
-              }}
+              })}
             >
               📤 Yuborish
             </button>
             <button
               onClick={() => setSendOpen(false)}
-              style={{
+              data-csp-style={JSON.stringify({
                 padding: "7px 12px",
                 borderRadius: 8,
                 fontSize: 13,
@@ -244,7 +244,7 @@ function MaterialCard({
                 background: "transparent",
                 cursor: "pointer",
                 color: "inherit",
-              }}
+              })}
             >
               ✕
             </button>
@@ -329,7 +329,7 @@ function UploadModal({
 
   return (
     <div
-      style={{
+      data-csp-style={JSON.stringify({
         position: "fixed",
         inset: 0,
         background: "#0009",
@@ -338,10 +338,10 @@ function UploadModal({
         alignItems: "center",
         justifyContent: "center",
         padding: 16,
-      }}
+      })}
     >
       <div
-        style={{
+        data-csp-style={JSON.stringify({
           background: "var(--card-bg,#1e1e2e)",
           borderRadius: 18,
           padding: 28,
@@ -349,9 +349,9 @@ function UploadModal({
           maxWidth: 520,
           boxShadow: "0 24px 60px #0006",
           border: "1px solid var(--border-color,#2a2a3e)",
-        }}
+        })}
       >
-        <h3 style={{ margin: "0 0 20px", fontSize: 18, fontWeight: 700 }}>
+        <h3 data-csp-style={JSON.stringify({ margin: "0 0 20px", fontSize: 18, fontWeight: 700 })}>
           {editItem ? "✏️ Material tahrirlash" : tt("teacher.materials.add", "New Material")}
         </h3>
 
@@ -365,7 +365,7 @@ function UploadModal({
               const f = e.dataTransfer.files[0];
               if (f) handleFileSelect(f);
             }}
-            style={{
+            data-csp-style={JSON.stringify({
               border: `2px dashed ${fileUrl ? "#10b981" : "var(--border-color,#2a2a3e)"}`,
               borderRadius: 12,
               padding: "24px",
@@ -374,39 +374,39 @@ function UploadModal({
               marginBottom: 16,
               transition: "border .2s",
               background: fileUrl ? "#10b98111" : "transparent",
-            }}
+            })}
           >
             <input
               ref={fileRef}
               type="file"
-              style={{ display: "none" }}
+              data-csp-style={JSON.stringify({ display: "none" })}
               onChange={(e) => {
                 const f = e.target.files?.[0];
                 if (f) handleFileSelect(f);
               }}
             />
             {uploading ? (
-              <div style={{ color: "#a78bfa" }}>⏳ Yuklanmoqda...</div>
+              <div data-csp-style={JSON.stringify({ color: "#a78bfa" })}>⏳ Yuklanmoqda...</div>
             ) : fileUrl ? (
-              <div style={{ color: "#10b981" }}>✅ Fayl yuklandi</div>
+              <div data-csp-style={JSON.stringify({ color: "#10b981" })}>✅ Fayl yuklandi</div>
             ) : (
-              <div style={{ opacity: 0.6, fontSize: 14 }}>
+              <div data-csp-style={JSON.stringify({ opacity: 0.6, fontSize: 14 })}>
                 📎 {tt("teacher.materials.uploadDrop", "Select file or drag here")}
               </div>
             )}
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div data-csp-style={JSON.stringify({ display: "flex", flexDirection: "column", gap: 12 })}>
           <div>
-            <label style={{ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" }}>
+            <label data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" })}>
               {tt("teacher.materials.titleLabel", "Title")} *
             </label>
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Material nomi"
-              style={{
+              data-csp-style={JSON.stringify({
                 width: "100%",
                 padding: "9px 12px",
                 borderRadius: 9,
@@ -415,18 +415,18 @@ function UploadModal({
                 color: "inherit",
                 fontSize: 14,
                 boxSizing: "border-box",
-              }}
+              })}
             />
           </div>
           <div>
-            <label style={{ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" }}>
+            <label data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" })}>
               {tt("teacher.materials.descLabel", "Description")}
             </label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
-              style={{
+              data-csp-style={JSON.stringify({
                 width: "100%",
                 padding: "9px 12px",
                 borderRadius: 9,
@@ -436,18 +436,18 @@ function UploadModal({
                 fontSize: 14,
                 resize: "vertical",
                 boxSizing: "border-box",
-              }}
+              })}
             />
           </div>
-          <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" }}>
+          <div data-csp-style={JSON.stringify({ display: "flex", gap: 12 })}>
+            <div data-csp-style={JSON.stringify({ flex: 1 })}>
+              <label data-csp-style={JSON.stringify({ fontSize: 12, opacity: 0.6, marginBottom: 4, display: "block" })}>
                 {tt("teacher.materials.subjectLabel", "Subject")}
               </label>
               <select
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                style={{
+                data-csp-style={JSON.stringify({
                   width: "100%",
                   padding: "9px 10px",
                   borderRadius: 9,
@@ -455,7 +455,7 @@ function UploadModal({
                   background: "var(--surface-2,#16213e)",
                   color: "inherit",
                   fontSize: 14,
-                }}
+                })}
               >
                 <option value="">— Fan —</option>
                 {subjects.map((s) => (
@@ -466,13 +466,13 @@ function UploadModal({
           </div>
         </div>
 
-        {error ? <p style={{ color: "#ef4444", fontSize: 13, marginTop: 10, marginBottom: 0 }}>{error}</p> : null}
+        {error ? <p data-csp-style={JSON.stringify({ color: "#ef4444", fontSize: 13, marginTop: 10, marginBottom: 0 })}>{error}</p> : null}
 
-        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <div data-csp-style={JSON.stringify({ display: "flex", gap: 10, marginTop: 20 })}>
           <button
             onClick={handleSave}
             disabled={saving || uploading}
-            style={{
+            data-csp-style={JSON.stringify({
               flex: 1,
               padding: "10px",
               borderRadius: 10,
@@ -483,13 +483,13 @@ function UploadModal({
               fontSize: 14,
               cursor: saving || uploading ? "not-allowed" : "pointer",
               opacity: saving || uploading ? 0.7 : 1,
-            }}
+            })}
           >
             {saving ? "Saqlanmoqda..." : tt("teacher.materials.saveBtn", "Save")}
           </button>
           <button
             onClick={onClose}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "10px 18px",
               borderRadius: 10,
               border: "1px solid var(--border-color,#2a2a3e)",
@@ -497,7 +497,7 @@ function UploadModal({
               cursor: "pointer",
               fontSize: 14,
               color: "inherit",
-            }}
+            })}
           >
             {tt("teacher.materials.cancelBtn", "Cancel")}
           </button>
@@ -563,18 +563,18 @@ export function TeacherMaterialsPanel({
     <div className="page-stack">
       {/* Header */}
       <section className="panel-card">
-        <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>
+        <div className="row-between" data-csp-style={JSON.stringify({ flexWrap: "wrap", gap: 12 })}>
           <div>
-            <h2 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>
+            <h2 data-csp-style={JSON.stringify({ margin: 0, fontSize: 22, fontWeight: 700 })}>
               📚 {tt("teacher.materials.title", "Materials Library")}
             </h2>
-            <p style={{ margin: "4px 0 0", opacity: 0.6, fontSize: 14 }}>
+            <p data-csp-style={JSON.stringify({ margin: "4px 0 0", opacity: 0.6, fontSize: 14 })}>
               Materiallaringizni boshqaring va ulashing
             </p>
           </div>
           <button
             onClick={() => { setEditItem(null); setModalOpen(true); }}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "10px 20px",
               borderRadius: 10,
               border: "none",
@@ -583,17 +583,17 @@ export function TeacherMaterialsPanel({
               fontWeight: 700,
               fontSize: 14,
               cursor: "pointer",
-            }}
+            })}
           >
             + {tt("teacher.materials.add", "New Material")}
           </button>
         </div>
 
         {/* Filters */}
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 16 }}>
+        <div data-csp-style={JSON.stringify({ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 16 })}>
           <button
             onClick={() => setMyOnly(false)}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "7px 16px",
               borderRadius: 20,
               border: "1px solid var(--border-color,#2a2a3e)",
@@ -602,13 +602,13 @@ export function TeacherMaterialsPanel({
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 600,
-            }}
+            })}
           >
             {tt("teacher.materials.filterAll", "All")}
           </button>
           <button
             onClick={() => setMyOnly(true)}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "7px 16px",
               borderRadius: 20,
               border: "1px solid var(--border-color,#2a2a3e)",
@@ -617,14 +617,14 @@ export function TeacherMaterialsPanel({
               cursor: "pointer",
               fontSize: 13,
               fontWeight: 600,
-            }}
+            })}
           >
             {tt("teacher.materials.filterMy", "My materials")}
           </button>
           <select
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
-            style={{
+            data-csp-style={JSON.stringify({
               padding: "7px 12px",
               borderRadius: 20,
               border: "1px solid var(--border-color,#2a2a3e)",
@@ -632,7 +632,7 @@ export function TeacherMaterialsPanel({
               color: "inherit",
               fontSize: 13,
               cursor: "pointer",
-            }}
+            })}
           >
             <option value="">Barcha fanlar</option>
             {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -643,18 +643,18 @@ export function TeacherMaterialsPanel({
       {/* Grid */}
       <section className="panel-card">
         {loading ? (
-          <div style={{ textAlign: "center", padding: 40, opacity: 0.5 }}>⏳ Yuklanmoqda...</div>
+          <div data-csp-style={JSON.stringify({ textAlign: "center", padding: 40, opacity: 0.5 })}>⏳ Yuklanmoqda...</div>
         ) : items.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 40, opacity: 0.5 }}>
+          <div data-csp-style={JSON.stringify({ textAlign: "center", padding: 40, opacity: 0.5 })}>
             📭 {tt("teacher.materials.noItems", "No materials found")}
           </div>
         ) : (
           <div
-            style={{
+            data-csp-style={JSON.stringify({
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
               gap: 16,
-            }}
+            })}
           >
             {items.map((mat) => (
               <MaterialCard

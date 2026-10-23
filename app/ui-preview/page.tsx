@@ -43,7 +43,7 @@ function MockTable() {
 
 function LoginPreview() {
   return (
-    <section className="auth-page" style={{ minHeight: "auto", padding: 14 }}>
+    <section className="auth-page" data-csp-style={JSON.stringify({ minHeight: "auto", padding: 14 })}>
       <div className="auth-card compact">
         <p className="pill-label">Diamond Education</p>
         <h1>Tizimga Kirish</h1>
@@ -149,7 +149,7 @@ export default function UiPreviewPage() {
         <p>Logo ranglaridan olingan yangi dizayn tizimi: yengil fon, yuqori kontrast, premium kartalar va responsiv oqim.</p>
       </section>
 
-      <section className="panel-card" style={{ maxWidth: 1280, margin: "0 auto 14px" }}>
+      <section className="panel-card" data-csp-style={JSON.stringify({ maxWidth: 1280, margin: "0 auto 14px" })}>
         <h3>Dizayn Tizimi (Asosiy Ranglar)</h3>
         <div className="grid grid-4">
           {[
@@ -162,8 +162,8 @@ export default function UiPreviewPage() {
             "#FFFFFF",
             "#283B9A",
           ].map((hex) => (
-            <div key={hex} className="panel-card" style={{ gap: 8 }}>
-              <div style={{ background: hex, borderRadius: 10, border: "1px solid var(--line)", height: 56 }} />
+            <div key={hex} className="panel-card" data-csp-style={JSON.stringify({ gap: 8 })}>
+              <div data-csp-style={JSON.stringify({ background: hex, borderRadius: 10, border: "1px solid var(--line)", height: 56 })} />
               <strong>{hex}</strong>
             </div>
           ))}
@@ -176,19 +176,19 @@ export default function UiPreviewPage() {
         <Frame label="Login - Mobile" mode="mobile"><LoginPreview /></Frame>
       </section>
 
-      <section className="preview-grid" style={{ marginTop: 14 }}>
+      <section className="preview-grid" data-csp-style={JSON.stringify({ marginTop: 14 })}>
         <Frame label="Homepage - Desktop" mode="desktop"><HomePreview /></Frame>
         <Frame label="Homepage - Tablet" mode="tablet"><HomePreview /></Frame>
         <Frame label="Homepage - Mobile" mode="mobile"><HomePreview /></Frame>
       </section>
 
-      <section className="preview-grid" style={{ marginTop: 14 }}>
+      <section className="preview-grid" data-csp-style={JSON.stringify({ marginTop: 14 })}>
         <Frame label="Admin Dashboard" mode="desktop"><RolePreview role="Admin" subtitle="Foydalanuvchilar, guruhlar, maqolalar va hisobotlarni boshqarish." /></Frame>
         <Frame label="Teacher Dashboard" mode="desktop"><RolePreview role="O'qituvchi" subtitle="Davomat, testlar va guruh natijalarini boshqarish." /></Frame>
         <Frame label="Student Dashboard" mode="desktop"><RolePreview role="Talaba" subtitle="O'qish progressi, testlar va support darslariga tezkor kirish." /></Frame>
       </section>
 
-      <section className="preview-grid" style={{ marginTop: 14 }}>
+      <section className="preview-grid" data-csp-style={JSON.stringify({ marginTop: 14 })}>
         <Frame label="Support Dashboard" mode="desktop"><RolePreview role="Support Teacher" subtitle="Bronlar, kalendar va bonus jarayonlarini yuritish." /></Frame>
         <Frame label="Admin - Tablet" mode="tablet"><RolePreview role="Admin" subtitle="Mobilga yaqin o'lchamda qulay nazorat." /></Frame>
         <Frame label="Student - Mobile" mode="mobile"><RolePreview role="Talaba" subtitle="Bir qo'lda ishlashga moslashtirilgan tartib." /></Frame>

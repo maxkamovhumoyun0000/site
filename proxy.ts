@@ -7,12 +7,11 @@ function contentSecurityPolicy(nonce: string, isDevelopment: boolean) {
     "object-src 'none'",
     "frame-ancestors 'self'",
     "form-action 'self'",
-    // User-provided profile/book thumbnails may live on external HTTPS hosts.
-    // Images are non-executable; keep this broader than script/connect sources.
-    "img-src 'self' data: blob: https: https://api.dicebear.com https://api.qrserver.com",
+    // Render user uploads and locally-generated QR codes from this origin only.
+    "img-src 'self' data: blob:",
     "font-src 'self' data: https://fonts.gstatic.com",
-    // Teachers can attach hosted audio/video URLs to lessons and learning paths.
-    "media-src 'self' blob: https:",
+    // Lesson audio/video is served by Diamond Education or captured locally.
+    "media-src 'self' blob:",
     `connect-src 'self' https://live.diamond-education.uz wss://diamond-education.uz wss://live.diamond-education.uz${isDevelopment ? " ws://localhost:3001 http://127.0.0.1:18765" : ""}`,
     "worker-src 'self' blob:",
     "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org https://www.google.com https://maps.google.com https://view.officeapps.live.com",
@@ -20,7 +19,7 @@ function contentSecurityPolicy(nonce: string, isDevelopment: boolean) {
     "script-src-attr 'none'",
     `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
     `style-src-elem 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
-    "style-src-attr 'unsafe-inline'",
+    "style-src-attr 'none'",
   ].join("; ");
 }
 

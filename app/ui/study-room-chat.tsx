@@ -645,12 +645,12 @@ export function StudyRoomChat({
             <div
               key={r.id}
               className="absolute text-4xl"
-              style={{
+              data-csp-style={JSON.stringify({
                 bottom: "80px",
                 right: `${startRight}px`,
                 animation: `floatBubble 4s ease-out forwards`,
                 "--sway": `${sway}px`,
-              } as React.CSSProperties}
+              } as React.CSSProperties)}
             >
               {r.emoji}
             </div>
