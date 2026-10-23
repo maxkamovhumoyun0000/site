@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { headers } from "next/headers";
 import Script from "next/script";
 import PwaRegister from "./pwa-register";
 import { ThemeProvider } from "./ui/theme-provider";
@@ -34,11 +35,16 @@ export const viewport: Viewport = {
 
 import { GlobalVoiceRoomProvider } from "./ui/voice-room/GlobalVoiceRoomContext";
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  // Nonce-based CSP requires per-request rendering; keep the nonce available
+  // to external scripts while Next applies it to its hydration bootstrap.
+  const requestHeaders = await headers();
+  const nonce = requestHeaders.get("x-nonce") || undefined;
+
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "EducationalOrganization",
@@ -79,6 +85,7 @@ export default function RootLayout({
         <Script
           src="https://telegram.org/js/telegram-web-app.js"
           strategy="beforeInteractive"
+          nonce={nonce}
           integrity="sha384-PyI6uk8O3pfRRl4+CaepaS++FqtEbco/HaV3jzdYl4y+U7HMQvn3gWVfKhjuzfzG"
           crossOrigin="anonymous"
         />
