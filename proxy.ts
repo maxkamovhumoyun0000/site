@@ -41,7 +41,9 @@ export function proxy(request: NextRequest) {
 export const config = {
   matcher: [
     {
-      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      // Exclude actual backend API paths, but keep similarly-prefixed page
+      // paths (for example `/api$`) under the same nonce-based CSP policy.
+      source: "/((?!api(?:/|$)|_next/static|_next/image|favicon.ico).*)",
       missing: [
         { type: "header", key: "next-router-prefetch" },
         { type: "header", key: "purpose", value: "prefetch" },
