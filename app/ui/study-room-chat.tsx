@@ -657,19 +657,6 @@ export function StudyRoomChat({
           );
         })}
       </div>
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `
-        @keyframes floatBubble {
-          0% { transform: translateY(0) translateX(0) scale(0.5); opacity: 0; }
-          15% { transform: translateY(-30px) translateX(calc(var(--sway) * 0.3)) scale(1.1); opacity: 1; }
-          60% { transform: translateY(-180px) translateX(var(--sway)) scale(1); opacity: 0.7; }
-          100% { transform: translateY(-350px) translateX(calc(var(--sway) * -0.5)) scale(0.8); opacity: 0; }
-        }
-      `,
-        }}
-      />
-
       {/* Voice Room Top Header Bar */}
       <header className="z-20 px-4 py-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between gap-3 shadow-sm">
         <div className="flex items-center gap-3 min-w-0">

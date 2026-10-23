@@ -17298,7 +17298,7 @@ function AdminSection({
     }
     popup.opener = null;
     popup.document.open();
-    popup.document.write(`<!doctype html><html><head><title>${escapeReceiptHtml(receiptId)}</title><style>html,body,iframe{width:100%;height:100%;margin:0;border:0;overflow:hidden}</style></head><body><iframe title="Chek" src="${objectUrl}"></iframe></body></html>`);
+    popup.document.write(`<!doctype html><html style="width:100%;height:100%;margin:0;overflow:hidden"><head><title>${escapeReceiptHtml(receiptId)}</title></head><body style="width:100%;height:100%;margin:0;overflow:hidden"><iframe title="Chek" src="${objectUrl}" style="display:block;width:100%;height:100%;border:0"></iframe></body></html>`);
     popup.document.close();
     const frame = popup.document.querySelector("iframe");
     frame?.addEventListener("load", () => {

@@ -256,15 +256,6 @@ export function StudentNotesPanel() {
 
   return (
     <div className="page-stack">
-      <style>{`
-        .note-tab { cursor:pointer; padding: 8px 20px; border-radius:20px; font-weight:600; font-size:13px; border:1px solid var(--border-color,#2a2a3e); transition:all .2s; background:transparent; color:inherit; }
-        .note-tab.active { background: linear-gradient(135deg,#6c63ff,#a855f7); color:#fff; border-color:transparent; }
-        .notes-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
-        .note-add-form { display:flex; flex-direction:column; gap:12px; }
-        .note-add-form textarea { background:var(--surface-2,#16213e); border:1px solid var(--border-color,#2a2a3e); border-radius:10px; padding:12px; font-size:14px; color:inherit; resize:vertical; min-height:100px; outline:none; transition:border .2s; }
-        .note-add-form textarea:focus { border-color:#6c63ff; }
-      `}</style>
-
       {/* Header */}
       <section className="panel-card">
         <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>

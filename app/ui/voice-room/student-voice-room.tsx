@@ -419,15 +419,6 @@ export function StudentVoiceRoom({ data, userSubjects = [] }: { data: Record<str
            );
         })}
       </div>
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes floatBubble {
-          0% { transform: translateY(0) translateX(0) scale(0.5); opacity: 0; }
-          15% { transform: translateY(-30px) translateX(calc(var(--sway) * 0.3)) scale(1.1); opacity: 1; }
-          60% { transform: translateY(-180px) translateX(var(--sway)) scale(1); opacity: 0.7; }
-          100% { transform: translateY(-350px) translateX(calc(var(--sway) * -0.5)) scale(0.8); opacity: 0; }
-        }
-      `}} />
-
       {/* Room Header */}
       <div className="z-20 pt-6 pb-4 px-6 flex items-center justify-between bg-gradient-to-b from-slate-950 to-transparent">
         <button

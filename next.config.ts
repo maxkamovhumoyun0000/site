@@ -12,6 +12,9 @@ const nextConfig: NextConfig = {
 
   // Og'ir kutubxonalar uchun tree-shaking yaxshilansin
   experimental: {
+    // Hash-based script integrity lets production use a strict script-src
+    // policy without forcing every route into dynamic rendering.
+    sri: { algorithm: "sha256" },
     optimizePackageImports: [
       "three",
       "@react-three/fiber",
@@ -41,9 +44,8 @@ const nextConfig: NextConfig = {
   },
 
   async headers() {
-    // Keep compatibility with Next's inline bootstrap, but do not grant
-    // eval-based script execution in production. Development gets eval only
-    // when running the local dev server.
+    // Keep third-party permissions narrow and separate executable scripts,
+    // stylesheet elements, and React's style attributes.
     const isDevelopment = process.env.NODE_ENV !== "production";
     const csp = [
       "default-src 'self'",
@@ -51,14 +53,20 @@ const nextConfig: NextConfig = {
       "object-src 'none'",
       "frame-ancestors 'self'",
       "form-action 'self'",
-      "img-src 'self' data: blob: https:",
-      "font-src 'self' data: https:",
+      // User-provided profile/book thumbnails may live on external HTTPS hosts.
+      // Images are non-executable; keep this broader than script/connect sources.
+      "img-src 'self' data: blob: https: https://api.dicebear.com https://api.qrserver.com",
+      "font-src 'self' data: https://fonts.gstatic.com",
+      // Teachers can attach hosted audio/video URLs to lessons and learning paths.
       "media-src 'self' blob: https:",
-      `connect-src 'self' https: wss:${isDevelopment ? " http://127.0.0.1:18765" : ""}`,
+      `connect-src 'self' https://live.diamond-education.uz wss://diamond-education.uz wss://live.diamond-education.uz${isDevelopment ? " ws://localhost:3001 http://127.0.0.1:18765" : ""}`,
       "worker-src 'self' blob:",
-      "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org https://www.google.com https://maps.google.com",
-      `script-src 'self' 'unsafe-inline'${isDevelopment ? " 'unsafe-eval'" : ""}`,
-      "style-src 'self' 'unsafe-inline'",
+      "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org https://www.google.com https://maps.google.com https://view.officeapps.live.com",
+      `script-src 'self' https://telegram.org${isDevelopment ? " 'unsafe-eval'" : ""}`,
+      "script-src-attr 'none'",
+      "style-src 'self' https://fonts.googleapis.com",
+      "style-src-elem 'self' https://fonts.googleapis.com",
+      "style-src-attr 'unsafe-inline'",
     ].join("; ");
     return [{
       source: "/:path*",

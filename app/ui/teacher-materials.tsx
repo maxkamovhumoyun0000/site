@@ -561,10 +561,6 @@ export function TeacherMaterialsPanel({
 
   return (
     <div className="page-stack">
-      <style>{`
-        .material-card:hover { box-shadow: 0 8px 32px #6c63ff22; }
-      `}</style>
-
       {/* Header */}
       <section className="panel-card">
         <div className="row-between" style={{ flexWrap: "wrap", gap: 12 }}>

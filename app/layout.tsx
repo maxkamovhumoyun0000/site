@@ -76,7 +76,12 @@ export default function RootLayout({
         />
       </head>
       <body>
-        <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
+        <Script
+          src="https://telegram.org/js/telegram-web-app.js"
+          strategy="beforeInteractive"
+          integrity="sha384-PyI6uk8O3pfRRl4+CaepaS++FqtEbco/HaV3jzdYl4y+U7HMQvn3gWVfKhjuzfzG"
+          crossOrigin="anonymous"
+        />
         <PwaRegister />
         <RootWebLocaleProvider>
           <ThemeProvider>

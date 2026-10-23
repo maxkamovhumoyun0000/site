@@ -340,7 +340,7 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
                style={{ 
                  bottom: '80px',
                  right: `${startRight}px`,
-                 animation: `floatBubble 2.5s ease-in forwards`,
+                 animation: `floatBubbleModerator 2.5s ease-in forwards`,
                  '--sway': `${sway}px`
                } as React.CSSProperties}
              >
@@ -349,15 +349,6 @@ export function ModeratorVoiceRoom({ role = "teacher" }: { role?: "teacher" | "a
            );
         })}
       </div>
-      <style dangerouslySetInnerHTML={{__html: `
-        @keyframes floatBubble {
-          0% { transform: translateY(0) translateX(0) scale(0.5); opacity: 0; }
-          10% { transform: translateY(-20px) translateX(calc(var(--sway) * 0.2)) scale(1.2); opacity: 1; }
-          50% { transform: translateY(-150px) translateX(var(--sway)) scale(1); opacity: 0.8; }
-          100% { transform: translateY(-300px) translateX(calc(var(--sway) * -0.5)) scale(0.8); opacity: 0; }
-        }
-      `}} />
-
       {/* Room Header */}
       <div className="z-20 pt-6 pb-4 px-6 flex items-center justify-between bg-gradient-to-b from-slate-950 to-transparent">
         <button
