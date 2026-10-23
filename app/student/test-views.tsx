@@ -2,6 +2,7 @@
 
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { storeBrowserSessionToken } from "@/lib/auth-session";
 import { AssetIcon } from "../ui/primitives";
 import { resolveLocale, useWebT } from "../ui/web-i18n";
 import { TestCompletionActions, type TestReviewItem } from "../ui/test-completion-actions";
@@ -610,9 +611,7 @@ async function ensureStandaloneStudentToken() {
       sync_bot_session: true,
     },
   });
-  const token = String(response?.access_token || "");
-  if (token) localStorage.setItem("diamond_token", token);
-  return token;
+  return storeBrowserSessionToken(response?.access_token || "");
 }
 
 type SpeechLang = "en-GB" | "ru-RU";

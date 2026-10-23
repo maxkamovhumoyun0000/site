@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { isCookieSessionMarker, migrateBrowserSessionToCookie } from "@/lib/auth-session";
 
 export type VoiceRoomState = "lobby" | "room";
 
@@ -82,6 +83,7 @@ export function useVoiceRoom({ role, wsUrl }: UseVoiceRoomProps) {
   
   // WebRTC
   const wsRef = useRef<WebSocket | null>(null);
+  const wsConnectingRef = useRef(false);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioElementsRef = useRef<Map<string, HTMLAudioElement>>(new Map());
@@ -207,14 +209,23 @@ export function useVoiceRoom({ role, wsUrl }: UseVoiceRoomProps) {
     }
   };
 
-  const connectWebSocket = useCallback((roomId: string) => {
-    if (wsRef.current) return;
-    const token = getToken();
-    const urlWithToken = `${wsUrl}?token=${token || ""}`;
-    const ws = new WebSocket(urlWithToken);
+  const connectWebSocket = useCallback(async (roomId: string) => {
+    if (wsRef.current || wsConnectingRef.current) return;
+    wsConnectingRef.current = true;
+    const token = await migrateBrowserSessionToCookie(getToken());
+    const query = token && !isCookieSessionMarker(token) ? `?token=${encodeURIComponent(token)}` : "";
+    const urlWithToken = `${wsUrl}${query}`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(urlWithToken);
+    } catch (error) {
+      wsConnectingRef.current = false;
+      throw error;
+    }
     wsRef.current = ws;
 
     ws.onopen = () => {
+      wsConnectingRef.current = false;
       ws.send(JSON.stringify({ action: "join_room", room_id: roomId }));
     };
 
@@ -337,6 +348,7 @@ export function useVoiceRoom({ role, wsUrl }: UseVoiceRoomProps) {
     };
 
     ws.onclose = () => {
+      wsConnectingRef.current = false;
       wsRef.current = null;
     };
   }, [wsUrl]);

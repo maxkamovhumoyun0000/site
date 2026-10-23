@@ -20,6 +20,7 @@ from db import (
 )
 from logging_config import get_logger
 from login_id_validator import generate_secure_login_id, validate_login_id, audit_login_id
+from passwords import hash_password
 
 logger = get_logger(__name__)
 IS_POSTGRES = (DATABASE_URL or "").strip().lower().startswith(("postgresql://", "postgres://"))
@@ -413,7 +414,7 @@ def create_user_sync(
     cur = conn.cursor()
     cur.execute('''
         UPDATE users SET login_id=?, password=? WHERE id=?
-    ''', (login_id, password, result['id']))
+    ''', (login_id, hash_password(password), result['id']))
     conn.commit()
     conn.close()
     

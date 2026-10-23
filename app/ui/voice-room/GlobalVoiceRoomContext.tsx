@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useWebT } from "../web-i18n";
+import { isCookieSessionMarker, migrateBrowserSessionToCookie } from "@/lib/auth-session";
 
 export type VoiceRoomState = "lobby" | "room";
 
@@ -155,6 +156,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
   
   // WebRTC
   const wsRef = useRef<WebSocket | null>(null);
+  const wsConnectingRef = useRef(false);
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingIceRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const iceServersRef = useRef<RTCIceServer[]>([
@@ -348,14 +350,23 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     }
   };
 
-  const connectWebSocket = useCallback((roomId: string) => {
-    if (wsRef.current) return;
-    const token = getToken();
-    const urlWithToken = `${wsUrl}?token=${token || ""}`;
-    const ws = new WebSocket(urlWithToken);
+  const connectWebSocket = useCallback(async (roomId: string) => {
+    if (wsRef.current || wsConnectingRef.current) return;
+    wsConnectingRef.current = true;
+    const token = await migrateBrowserSessionToCookie(getToken());
+    const query = token && !isCookieSessionMarker(token) ? `?token=${encodeURIComponent(token)}` : "";
+    const urlWithToken = `${wsUrl}${query}`;
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(urlWithToken);
+    } catch (error) {
+      wsConnectingRef.current = false;
+      throw error;
+    }
     wsRef.current = ws;
 
     ws.onopen = () => {
+      wsConnectingRef.current = false;
       ws.send(JSON.stringify({ action: "join_room", room_id: roomId }));
     };
 
@@ -524,6 +535,7 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     };
 
     ws.onclose = () => {
+      wsConnectingRef.current = false;
       wsRef.current = null;
     };
   }, [wsUrl]);

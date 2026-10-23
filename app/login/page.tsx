@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { migrateBrowserSessionToCookie, storeBrowserSessionToken } from "@/lib/auth-session";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 const DEVICE_ID_KEY = "diamond_device_id";
@@ -121,11 +122,12 @@ export default function LoginPage() {
   useEffect(() => {
     let cancelled = false;
     async function checkToken() {
-      const token = localStorage.getItem("diamond_token");
+      const token = await migrateBrowserSessionToCookie(localStorage.getItem("diamond_token"), API_BASE);
       if (!token) return;
       const telegramAuthPayload = getTelegramMiniAppAuthPayload();
       try {
         const response = await fetch(`${API_BASE}/auth/me`, {
+          credentials: "include",
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -167,7 +169,7 @@ export default function LoginPage() {
   const completeLogin = useCallback((token: string) => {
     const telegramAuthPayload = getTelegramMiniAppAuthPayload();
     if (telegramAuthPayload) clearTelegramAutoLoginSuppression(Number(telegramAuthPayload.telegram_id || 0));
-    localStorage.setItem("diamond_token", token);
+    storeBrowserSessionToken(token);
     window.location.replace("/");
   }, []);
 
@@ -187,6 +189,7 @@ export default function LoginPage() {
         try {
           response = await fetch(`${API_BASE}/auth/telegram`, {
             method: "POST",
+            credentials: "include",
             signal: controller.signal,
             headers: {
               "Content-Type": "application/json",
@@ -208,9 +211,7 @@ export default function LoginPage() {
           }
           return;
         }
-        const token = String(body.access_token || "");
-        if (!token) return;
-        if (!cancelled) completeLogin(token);
+        if (!cancelled) completeLogin(String(body.access_token || ""));
       } catch {
         // silent fallback to manual login
       } finally {
@@ -242,6 +243,7 @@ export default function LoginPage() {
       try {
         response = await fetch(`${API_BASE}/auth/qr/consume`, {
           method: "POST",
+          credentials: "include",
           signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
@@ -263,7 +265,6 @@ export default function LoginPage() {
         throw new Error("Qayta urinib ko'ring");
       }
       const token = String(body.access_token || "");
-      if (!token) throw new Error("Token qaytmadi");
       completeLogin(token);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -381,6 +382,7 @@ export default function LoginPage() {
       try {
         response = await fetch(`${API_BASE}/auth/login`, {
           method: "POST",
+          credentials: "include",
           signal: controller.signal,
           headers: {
             "Content-Type": "application/json",
@@ -405,7 +407,6 @@ export default function LoginPage() {
         throw new Error(detail);
       }
       const token = String(body.access_token || "");
-      if (!token) throw new Error("Token qaytmadi");
       completeLogin(token);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {

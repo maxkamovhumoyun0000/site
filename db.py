@@ -18,6 +18,7 @@ from logging_config import get_logger
 from passwords import (
     generate_password as _generate_secure_password,
     hash_password,
+    is_password_hash,
     verify_password,
 )
 import psycopg
@@ -10487,7 +10488,27 @@ def verify_login(login_id, password):
         return None, 'invalid'
     clear_login_throttle(throttle_key)
     clear_failed_logins(int(user['id'] or 0))
-    return dict(user), 'ok'
+    result = dict(user)
+    if stored_password and not is_password_hash(stored_password):
+        # Preserve legacy case-insensitive password behavior while migrating
+        # old plaintext rows at the first successful login through any client.
+        try:
+            upgraded = hash_password(password_clean.upper())
+            upgrade_conn = get_conn()
+            upgrade_cur = upgrade_conn.cursor()
+            try:
+                upgrade_cur.execute(
+                    "UPDATE users SET password=? WHERE id=? AND password=?",
+                    (upgraded, int(user['id'] or 0), stored_password),
+                )
+                upgrade_conn.commit()
+                if int(getattr(upgrade_cur, "rowcount", 0) or 0) == 1:
+                    result['password'] = upgraded
+            finally:
+                upgrade_conn.close()
+        except Exception:
+            logger.exception("legacy password upgrade failed user_id=%s", int(user['id'] or 0))
+    return result, 'ok'
 
 def activate_user(user_id, telegram_id):
     logger.info(f"db.activate_user(user_id={user_id}, telegram_id={telegram_id})")
@@ -17039,9 +17060,19 @@ def get_scheduled_arena_run(run_id: int) -> dict | None:
 
 
 def update_scheduled_arena_run(run_id: int, **kwargs: Any) -> None:
-    ensure_arena_extras_schema()
     if not kwargs:
         return
+    allowed_columns = {
+        "status",
+        "started_at",
+        "finished_at",
+        "current_stage",
+        "questions_generated_at",
+    }
+    unknown_columns = set(kwargs) - allowed_columns
+    if unknown_columns:
+        raise ValueError("Unsupported scheduled arena run fields")
+    ensure_arena_extras_schema()
     keys = [k for k in kwargs if kwargs[k] is not None]
     if not keys:
         return

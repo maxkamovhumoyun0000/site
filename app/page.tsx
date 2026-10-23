@@ -3,6 +3,7 @@
 import { Fragment, FormEvent, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { migrateBrowserSessionToCookie, storeBrowserSessionToken } from "@/lib/auth-session";
 import {
   DEFAULT_SECTIONS,
   DEFAULT_SUBJECT_SUGGESTIONS,
@@ -945,6 +946,9 @@ async function requestJson<T>(path: string, options?: {
   suppressAuthRedirect?: boolean;
 }): Promise<T> {
   const language = resolveLocale(typeof window === "undefined" ? "uz" : localStorage.getItem(LOCALE_KEY));
+  const storedToken = typeof window !== "undefined" ? localStorage.getItem("diamond_token") : null;
+  const sourceToken = options?.token || storedToken;
+  const authToken = await migrateBrowserSessionToCookie(sourceToken, API_BASE);
   const attempts = Math.max(1, Number(options?.retries || 0) + 1);
   let lastError: Error | null = null;
   const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
@@ -970,10 +974,11 @@ async function requestJson<T>(path: string, options?: {
         method: options?.method || "GET",
         signal: controller.signal,
         headers: {
-          ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
           ...(options?.body && !isFormData ? { "Content-Type": "application/json" } : {}),
           "X-Language": language,
         },
+        credentials: "include",
         ...(options?.body ? { body: (isFormData ? options.body : JSON.stringify(options.body)) as BodyInit } : {}),
       });
     } catch (error) {
@@ -999,7 +1004,7 @@ async function requestJson<T>(path: string, options?: {
         // a fresh login has replaced the token. Never let that stale 401 erase
         // the newer, valid session or redirect its user to the login page.
         const currentToken = localStorage.getItem("diamond_token");
-        const failedTokenIsCurrent = currentToken === options.token;
+        const failedTokenIsCurrent = currentToken === authToken || currentToken === options?.token;
         if (failedTokenIsCurrent) localStorage.removeItem("diamond_token");
         if (failedTokenIsCurrent && !options.suppressAuthRedirect && typeof window !== "undefined" && window.location.pathname !== "/login") {
           window.location.replace("/login?reason=session_expired");
@@ -10858,9 +10863,7 @@ function RoleProfilePanel({
         body: { new_password: nextPassword },
       });
       const rotated = String(payload.access_token || "");
-      if (rotated) {
-        localStorage.setItem("diamond_token", rotated);
-      }
+      storeBrowserSessionToken(rotated);
       setNewPassword("");
       setPasswordMessage("Parol yangilandi. Boshqa qurilmalardagi sessiyalar chiqarildi.");
     } catch (err) {
@@ -26487,7 +26490,7 @@ export default function DiamondEducationApp() {
               timeoutMs: 30000,
               retries: 0,
             });
-            localStorage.setItem("diamond_token", response.access_token);
+            storeBrowserSessionToken(response.access_token);
             setUser(response.user);
             const userRole = roleFromUser(response.user);
             const roleToUse = userRole;
@@ -26579,7 +26582,7 @@ export default function DiamondEducationApp() {
               timeoutMs: 30000,
               retries: 0,
             });
-            localStorage.setItem("diamond_token", response.access_token);
+            storeBrowserSessionToken(response.access_token);
             setUser(response.user);
             const userRole = roleFromUser(response.user);
             setActiveRole(userRole);

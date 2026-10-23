@@ -783,6 +783,65 @@ def _cors_allowed_origins() -> list[str]:
     return list(dict.fromkeys(origins))
 
 
+def _is_first_party_origin(origin: str) -> bool:
+    """True only for an origin explicitly served by this first-party site."""
+    origin = str(origin or "").strip().rstrip("/")
+    if not origin or origin not in _cors_allowed_origins() or origin == "https://web.telegram.org":
+        return False
+    parsed = urlparse(origin)
+    known_host = (parsed.hostname or "").lower() in {
+        "diamond-education.uz",
+        "www.diamond-education.uz",
+        "localhost",
+        "127.0.0.1",
+    }
+    is_secure_origin = parsed.scheme.lower() == "https" or (
+        parsed.scheme.lower() == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+    )
+    return bool(parsed.netloc and not parsed.path and not parsed.query and not parsed.fragment and known_host and is_secure_origin)
+
+
+def _is_first_party_web_request(request: Request) -> bool:
+    """True only for a browser request whose origin exactly matches this host."""
+    return _is_first_party_origin(str(request.headers.get("origin") or ""))
+
+
+def _set_web_auth_cookie(response: Response, request: Request, token: str) -> bool:
+    """Store first-party browser sessions in an HttpOnly, host-only cookie."""
+    if not _is_first_party_web_request(request):
+        return False
+    response.set_cookie(
+        key=WEB_AUTH_COOKIE_NAME,
+        value=str(token),
+        max_age=WEB_SESSION_TOKEN_TTL_HOURS * 60 * 60,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="lax",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return True
+
+
+def _auth_token_response(
+    request: Request,
+    response: Response,
+    token: str,
+    user: dict,
+    *,
+    token_type: str = "bearer",
+) -> TokenResponse:
+    cookie_session = _set_web_auth_cookie(response, request, token)
+    response.headers["Cache-Control"] = "no-store"
+    return TokenResponse(
+        # Do not expose the bearer secret to first-party browser JavaScript.
+        # Native clients and external Telegram webviews continue to receive it.
+        access_token="" if cookie_session else token,
+        token_type=token_type,
+        user=_build_user_payload(user),
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed_origins(),
@@ -790,6 +849,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def cookie_session_auth_and_csrf(request: Request, call_next):
+    """Use HttpOnly web cookies and require same-origin writes (CSRF defense)."""
+    cookie_token = str(request.cookies.get(WEB_AUTH_COOKIE_NAME) or "").strip()
+    authorization = str(request.headers.get("authorization") or "").strip()
+    bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    use_cookie = bool(cookie_token and (not bearer or bearer.lower().startswith(WEB_AUTH_COOKIE_MARKER)))
+
+    if use_cookie and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        if not _is_first_party_web_request(request):
+            return JSONResponse(status_code=403, content={"detail": "Cross-site request blocked"})
+
+    if use_cookie:
+        forwarded_headers = [
+            (key, value)
+            for key, value in request.scope.get("headers", [])
+            if key.lower() != b"authorization"
+        ]
+        forwarded_headers.append((b"authorization", f"Bearer {cookie_token}".encode("latin-1")))
+        request.scope["headers"] = forwarded_headers
+
+    response = await call_next(request)
+    if request.url.path.rstrip("/") == "/auth/logout" or (use_cookie and response.status_code == 401):
+        response.delete_cookie(
+            key=WEB_AUTH_COOKIE_NAME,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="lax",
+        )
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.middleware("http")
@@ -840,6 +933,8 @@ PAYMENT_AUTOCALC_INTERVAL_SEC = 6 * 60 * 60
 # Password changes, explicit logout, session limits and account blocking still
 # invalidate a session immediately.
 WEB_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
+WEB_AUTH_COOKIE_NAME = "diamond_session"
+WEB_AUTH_COOKIE_MARKER = "cookie-session:"
 # Mobile apps (Android/iOS) send a device_id on login and use the same 30-day
 # session lifetime so users stay signed in between daily/weekly app opens.
 MOBILE_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
@@ -20287,7 +20382,11 @@ async def start_speaking_registration(payload: SpeakingRegistrationRequest, req:
 
 
 @app.post("/auth/speaking-registration/verify", response_model=TokenResponse)
-async def verify_speaking_registration(payload: SpeakingRegistrationVerificationRequest):
+async def verify_speaking_registration(
+    payload: SpeakingRegistrationVerificationRequest,
+    req: Request,
+    response: Response,
+):
     """Consume the email code, creating or restoring the dedicated account."""
     _ensure_speaking_account_schema()
     conn = get_conn(); cur = conn.cursor()
@@ -20361,7 +20460,8 @@ async def verify_speaking_registration(payload: SpeakingRegistrationVerification
     except Exception as exc:
         logger.warning("speaking welcome credentials email failed error=%s", type(exc).__name__)
     session_id, ttl_hours = _issue_web_session(created, device_id=None, source="speaking_registration")
-    return TokenResponse(access_token=_create_access_token(created, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(created))
+    token = _create_access_token(created, session_id=session_id, ttl_hours=ttl_hours)
+    return _auth_token_response(req, response, token, created)
 
 
 @app.post("/auth/speaking-forgot-password/start")
@@ -20371,12 +20471,24 @@ async def start_speaking_forgot_password(payload: SpeakingForgotPasswordRequest,
     throttle_key = f"speaking-forgot-pwd:{client_ip}" if client_ip else ""
     if throttle_key and is_login_throttled(throttle_key, max_failures=10):
         raise HTTPException(status_code=429, detail="Too many recovery attempts. Please try again later.")
+    if throttle_key:
+        # Count successful as well as unsuccessful submissions; otherwise an
+        # attacker can bypass the throttle by repeatedly naming a real account.
+        record_login_failure(throttle_key)
 
     _ensure_speaking_account_schema()
     raw = payload.login_or_email.strip()
     conn = get_conn(); cur = conn.cursor()
     target_user = None
     target_email = None
+    verification_id = f"spw_{secrets.token_urlsafe(24)}"
+    code = ""
+    generic_response = {
+        "verification_id": verification_id,
+        "masked_email": "registered email",
+        "expires_in_seconds": 600,
+        "message": "If the account has a verified email, a reset code has been sent.",
+    }
     try:
         # Check if entered as email
         if "@" in raw and "." in raw:
@@ -20403,12 +20515,14 @@ async def start_speaking_forgot_password(payload: SpeakingForgotPasswordRequest,
                     target_email = str(dict(contact)["email"])
 
         if not target_user or not target_email:
-            if throttle_key: record_login_failure(throttle_key)
-            raise HTTPException(status_code=404, detail="Ushbu login yoki emailga bog‘langan Speaking hisobi topilmadi.")
+            return generic_response
 
         user_id = int(target_user.get("id") or 0)
+        account_throttle_key = f"speaking-forgot-pwd-user:{user_id}"
+        if is_login_throttled(account_throttle_key, max_failures=5):
+            return generic_response
+        record_login_failure(account_throttle_key)
         code = f"{secrets.randbelow(1_000_000):06d}"
-        verification_id = f"spw_{secrets.token_urlsafe(24)}"
 
         cur.execute("DELETE FROM speaking_password_resets WHERE user_id=? AND consumed_at IS NULL", (user_id,))
         cur.execute(
@@ -20419,21 +20533,20 @@ async def start_speaking_forgot_password(payload: SpeakingForgotPasswordRequest,
     finally:
         conn.close()
 
-    _send_speaking_password_reset_email(recipient=target_email, code=code, language=payload.language)
-    if throttle_key: clear_login_throttle(throttle_key)
-
-    parts = target_email.split("@")
-    masked = parts[0][:1] + "***" + parts[0][-1:] + "@" + parts[1] if len(parts[0]) > 2 else target_email
-    return {
-        "verification_id": verification_id,
-        "masked_email": masked,
-        "expires_in_seconds": 600,
-        "message": f"Tiklash kodi {masked} manziliga yuborildi."
-    }
+    if code and target_email:
+        try:
+            _send_speaking_password_reset_email(recipient=target_email, code=code, language=payload.language)
+        except Exception as exc:
+            logger.warning("speaking password recovery email failed error=%s", type(exc).__name__)
+    return generic_response
 
 
 @app.post("/auth/speaking-forgot-password/verify", response_model=TokenResponse)
-async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyRequest):
+async def verify_speaking_forgot_password(
+    payload: SpeakingForgotPasswordVerifyRequest,
+    req: Request,
+    response: Response,
+):
     """Verify code and set new password, returning active session token."""
     _ensure_speaking_account_schema()
     conn = get_conn(); cur = conn.cursor()
@@ -20447,18 +20560,42 @@ async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyR
             raise HTTPException(status_code=400, detail="Tiklash kodi muddati o‘tgan. Qaytadan so‘rang.")
 
         if not hmac.compare_digest(str(reset.get("code_hash") or ""), hashlib.sha256(payload.code.strip().encode()).hexdigest()):
-            cur.execute("UPDATE speaking_password_resets SET attempts=attempts+1 WHERE id=?", (payload.verification_id,))
+            cur.execute(
+                """
+                UPDATE speaking_password_resets
+                SET attempts=attempts+1
+                WHERE id=? AND consumed_at IS NULL AND attempts<5 AND expires_at>?
+                RETURNING attempts
+                """,
+                (payload.verification_id, _now_utc().isoformat()),
+            )
+            attempt_row = cur.fetchone()
             conn.commit()
+            if not attempt_row:
+                raise HTTPException(status_code=400, detail="Tiklash kodi muddati o‘tgan. Qaytadan so‘rang.")
             raise HTTPException(status_code=400, detail="Tasdiqlash kodi noto‘g‘ri.")
 
-        user_id = int(reset.get("user_id") or 0)
+        consumed_at = _now_utc().isoformat()
+        cur.execute(
+            """
+            UPDATE speaking_password_resets
+            SET consumed_at=?
+            WHERE id=? AND consumed_at IS NULL AND attempts<5 AND expires_at>?
+            RETURNING user_id
+            """,
+            (consumed_at, payload.verification_id, consumed_at),
+        )
+        consumed_row = cur.fetchone()
+        if not consumed_row:
+            raise HTTPException(status_code=400, detail="Tiklash kodi muddati o‘tgan. Qaytadan so‘rang.")
+        user_id = int(dict(consumed_row).get("user_id") or 0)
+        if user_id <= 0:
+            raise HTTPException(status_code=400, detail="Tiklash so‘rovi topilmadi.")
         new_pwd_hash = hash_password(str(payload.new_password))
 
         cur.execute("UPDATE users SET password=? WHERE id=?", (new_pwd_hash, user_id))
-        cur.execute(
-            "UPDATE speaking_password_resets SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
-            (_now_utc().isoformat(), payload.verification_id),
-        )
+        if int(getattr(cur, "rowcount", 0) or 0) != 1:
+            raise HTTPException(status_code=400, detail="Tiklash so‘rovi topilmadi.")
         conn.commit()
     except HTTPException:
         with suppress(Exception): conn.rollback()
@@ -20470,6 +20607,7 @@ async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyR
     finally:
         conn.close()
 
+    clear_login_throttle(f"speaking-forgot-pwd-user:{user_id}")
     _revoke_web_sessions(user_id, keep_session_id=None, reason="speaking_forgot_password")
 
     user = get_user_by_id(user_id)
@@ -20484,11 +20622,8 @@ async def verify_speaking_forgot_password(payload: SpeakingForgotPasswordVerifyR
         device_model=device_model,
         source="speaking_app",
     )
-    return TokenResponse(
-        access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours),
-        token_type="bearer",
-        user=_build_user_payload(user),
-    )
+    token = _create_access_token(user, session_id=session_id, ttl_hours=ttl_hours)
+    return _auth_token_response(req, response, token, user)
 
 
 @app.patch("/admin/speaking-users/{user_id}")
@@ -20693,7 +20828,11 @@ async def approve_speaking_student_link(
 
 
 @app.post("/auth/speaking-link/complete", response_model=TokenResponse)
-async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
+async def complete_speaking_student_link(
+    payload: SpeakingLinkCompleteRequest,
+    req: Request,
+    response: Response,
+):
     """Issue a normal Speaking session only after Student App approval."""
     try:
         code = normalize_speaking_link_code(payload.code)
@@ -20740,7 +20879,8 @@ async def complete_speaking_student_link(payload: SpeakingLinkCompleteRequest):
     finally:
         conn.close()
     session_id, ttl_hours = _issue_web_session(user, device_id=payload.device_id, device_model=payload.device_model, source="speaking_student_link")
-    return TokenResponse(access_token=_create_access_token(user, session_id=session_id, ttl_hours=ttl_hours), token_type="bearer", user=_build_user_payload(user))
+    token = _create_access_token(user, session_id=session_id, ttl_hours=ttl_hours)
+    return _auth_token_response(req, response, token, user)
 
 
 @app.post("/auth/speaking/add-subject")
@@ -20790,7 +20930,7 @@ async def deprecated_speaking_registration(payload: SpeakingRegistrationRequest)
 
 
 @app.post("/auth/public-registration", response_model=PublicRegistrationResponse)
-async def public_registration(payload: PublicRegistrationRequest, req: Request):
+async def public_registration(payload: PublicRegistrationRequest, req: Request, response: Response):
     """Create a self-service Student/Teacher account awaiting admin approval."""
     client_ip = _client_ip(req)
     throttle_key = f"registration:{client_ip}" if client_ip else ""
@@ -20892,8 +21032,10 @@ async def public_registration(payload: PublicRegistrationRequest, req: Request):
     asyncio.create_task(
         _notify_admins_public_registration(created, account_type=account_type)
     )
+    cookie_session = _set_web_auth_cookie(response, req, token)
+    response.headers["Cache-Control"] = "no-store"
     return PublicRegistrationResponse(
-        access_token=token,
+        access_token="" if cookie_session else token,
         token_type="bearer",
         user=_build_user_payload(created),
         issued_credentials=IssuedCredentials(
@@ -20964,47 +21106,10 @@ async def student_group_join_request(
     return {"requested": True, "already_requested": False}
 
 
-@app.post("/auth/register", response_model=TokenResponse)
-async def register(user: UserCreate):
-    login_id = (user.login_id or "").strip().upper()
-    if not login_id:
-        login_id = "WEB" + "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
-    if get_user_by_login_id(login_id):
-        raise HTTPException(status_code=409, detail="Login ID already exists")
-
-    first_name = (user.first_name or user.full_name.split(" ")[0] or "User").strip()
-    last_name = (user.last_name or " ".join(user.full_name.split(" ")[1:]) or "").strip()
-    _ensure_user_web_columns()
-
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO users (login_id, password, first_name, last_name, phone, subject, login_type, blocked, access_enabled)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)
-        RETURNING id
-        """,
-        (
-            login_id,
-            hash_password((user.password or "").strip()),
-            first_name,
-            last_name,
-            (user.phone or "").strip() or None,
-            _normalize_subject_label(user.subject) or "English",
-            int(user.login_type or 1),
-        ),
-    )
-    row = cur.fetchone()
-    conn.commit()
-    conn.close()
-
-    created = _safe_call(lambda: get_user_by_id(int(row["id"])), None) if row else None
-    if not created:
-        raise HTTPException(status_code=500, detail="User was created but could not be loaded")
-
-    session_id, _ = _issue_web_session(created, device_id=None, source="register")
-    token = _create_access_token(created, session_id=session_id)
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(created))
+@app.post("/auth/register")
+async def register():
+    """Retired insecure self-service route; use the approval-gated flow instead."""
+    raise HTTPException(status_code=410, detail="Use /auth/public-registration to request an account")
 
 
 def _client_ip(req: Request) -> str:
@@ -21027,7 +21132,7 @@ LOGIN_IP_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_IP_THROTTLE_MAX_FAI
 
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(request: LoginRequest, req: Request):
+async def login(request: LoginRequest, req: Request, response: Response):
     # Brute-force throttle: per login_id (targeted guessing) and per IP
     # (password spraying across many accounts from one host).
     login_id_raw = (request.login_id or "").strip()
@@ -21186,7 +21291,7 @@ async def login(request: LoginRequest, req: Request):
         device_model=request.device_model,
     )
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+    return _auth_token_response(req, response, token, user)
 
 
 @app.post("/auth/reauthenticate")
@@ -22307,7 +22412,7 @@ async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteReq
 
 
 @app.post("/auth/telegram", response_model=TokenResponse)
-async def telegram_login(request: TelegramLoginRequest):
+async def telegram_login(request: TelegramLoginRequest, req: Request, response: Response):
     _parse_and_validate_telegram_init_data(request.init_data, request.telegram_id)
     user = _resolve_env_admin_user_for_telegram(request.telegram_id) or get_user_by_telegram(str(request.telegram_id))
     if not user:
@@ -22325,7 +22430,7 @@ async def telegram_login(request: TelegramLoginRequest):
         _sync_bot_login_state(int(user.get("id") or 0), request.telegram_id)
     session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="telegram")
     token = _create_access_token(user, telegram_id=request.telegram_id, session_id=session_id, ttl_hours=ttl_hours)
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+    return _auth_token_response(req, response, token, user)
 
 
 @app.post("/auth/telegram/sync", response_model=User)
@@ -22387,7 +22492,7 @@ async def auth_qr_generate(authorization: str | None = Header(default=None)):
 
 
 @app.post("/auth/qr/consume", response_model=TokenResponse)
-async def auth_qr_consume(payload: QrConsumeRequest):
+async def auth_qr_consume(payload: QrConsumeRequest, req: Request, response: Response):
     user = _consume_qr_login_token(payload.qr_token, used_device_id=payload.device_id)
     if int(user.get("login_type") or 0) == 6:
         raise HTTPException(status_code=403, detail="Accountless student cannot log in")
@@ -22428,7 +22533,7 @@ async def auth_qr_consume(payload: QrConsumeRequest):
     user = _apply_web_login_policy(user, device_id)
     session_id, ttl_hours = _issue_web_session(user, device_id=device_id, source="qr", device_model=payload.device_model)
     token = _create_access_token(user, telegram_id=requested_telegram_id or None, session_id=session_id, ttl_hours=ttl_hours)
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(user))
+    return _auth_token_response(req, response, token, user)
 
 
 @app.post("/auth/logout")
@@ -22472,6 +22577,26 @@ async def presence_heartbeat(authorization: str | None = Header(default=None)):
 @app.get("/auth/me", response_model=User)
 async def get_current_user(authorization: str | None = Header(default=None)):
     return _build_user_payload(_user_row_from_bearer(authorization))
+
+
+@app.post("/auth/session/cookie")
+async def exchange_web_session_cookie(
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+):
+    """Upgrade an existing browser bearer session to a host-only HttpOnly cookie."""
+    if not _is_first_party_web_request(request):
+        raise HTTPException(status_code=403, detail="First-party browser session required")
+    raw_token = str(authorization or "").strip()
+    if not raw_token.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Bearer session required")
+    token = raw_token.split(" ", 1)[1].strip()
+    if not token or token.lower().startswith(WEB_AUTH_COOKIE_MARKER):
+        raise HTTPException(status_code=401, detail="Bearer session required")
+    _user_row_from_bearer(raw_token)
+    _set_web_auth_cookie(response, request, token)
+    return {"ok": True}
 
 
 def _student_channel_membership_config() -> tuple[bool, str, str, str]:
@@ -22816,7 +22941,12 @@ async def delete_user_session(session_id: str, authorization: str | None = Heade
 
 
 @app.patch("/user/password", response_model=TokenResponse)
-async def update_user_password(payload: UserPasswordUpdateRequest, authorization: str | None = Header(default=None)):
+async def update_user_password(
+    payload: UserPasswordUpdateRequest,
+    req: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+):
     user = _user_row_from_bearer(authorization)
     role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
     if role not in {"teacher", "support"}:
@@ -22887,7 +23017,7 @@ async def update_user_password(payload: UserPasswordUpdateRequest, authorization
         telegram_id=bearer_payload.get("telegram_id"),
         session_id=next_session_id,
     )
-    return TokenResponse(access_token=token, token_type="bearer", user=_build_user_payload(refreshed))
+    return _auth_token_response(req, response, token, refreshed)
 
 
 @app.get("/student/proctoring/status")
@@ -24133,6 +24263,12 @@ async def community_chat_events(
 async def community_chat_websocket(websocket: WebSocket, channel: str = Query(default="speaking", max_length=20)):
     """Authenticated cross-worker realtime feed; message writes stay on REST."""
     auth = (websocket.headers.get("authorization") or "").strip()
+    bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not bearer or bearer.lower().startswith(WEB_AUTH_COOKIE_MARKER):
+        origin = str(websocket.headers.get("origin") or "")
+        cookie_token = str(websocket.cookies.get(WEB_AUTH_COOKIE_NAME) or "").strip()
+        if cookie_token and _is_first_party_origin(origin):
+            auth = f"Bearer {cookie_token}"
     try:
         if not auth.lower().startswith("bearer "):
             await websocket.close(code=4401, reason="Authorization required")
@@ -60018,10 +60154,23 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
     # handshake; keeps the JWT out of proxy/access logs). The query-param
     # form is kept only so already-shipped browser mini-app builds keep
     # working.
+    cookie_token = str(websocket.cookies.get(WEB_AUTH_COOKIE_NAME) or "").strip()
+    origin = str(websocket.headers.get("origin") or "")
+    if cookie_token and not _is_first_party_origin(origin):
+        await websocket.close(code=4403, reason="Web session origin not allowed")
+        return
+    auth_header = (websocket.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        header_token = auth_header.split(" ", 1)[1].strip()
+        if not header_token.lower().startswith(WEB_AUTH_COOKIE_MARKER):
+            token = header_token
+        elif not token or token.lower().startswith(WEB_AUTH_COOKIE_MARKER):
+            token = None
+    if token and token.lower().startswith(WEB_AUTH_COOKIE_MARKER):
+        token = None
     if not token:
-        auth_header = (websocket.headers.get("authorization") or "").strip()
-        if auth_header.lower().startswith("bearer "):
-            token = auth_header.split(" ", 1)[1].strip()
+        if cookie_token and _is_first_party_origin(origin):
+            token = cookie_token
     elif str(token or "").strip():
         logger.warning("voice-room-ws: token received via query param (deprecated); use Authorization header")
 

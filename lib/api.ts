@@ -1,3 +1,5 @@
+import { migrateBrowserSessionToCookie } from "@/lib/auth-session";
+
 const API_REQUEST_TIMEOUT_MS = 45000;
 
 function isHtmlPayload(value: string) {
@@ -15,8 +17,9 @@ function friendlyStatusMessage(status: number, fallback?: string) {
 }
 
 export async function apiFetch(path: string, options?: any) {
-  const token = typeof window !== 'undefined' ? localStorage.getItem("diamond_token") : null;
   const baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
+  const storedToken = typeof window !== 'undefined' ? localStorage.getItem("diamond_token") : null;
+  const token = await migrateBrowserSessionToCookie(storedToken, baseUrl);
   const url = `${baseUrl}${path}`;
   const {
     signal: externalSignal,
@@ -57,6 +60,7 @@ export async function apiFetch(path: string, options?: any) {
     res = await fetch(url, {
       ...fetchOptions,
       method: method || "GET",
+      credentials: "include",
       headers,
       body: requestBody ? (isFormData ? requestBody : JSON.stringify(requestBody)) : undefined,
       signal: controller.signal,

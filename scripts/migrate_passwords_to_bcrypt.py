@@ -29,6 +29,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="faqat ko'rsatadi, yozmaydi")
     parser.add_argument("--batch-size", type=int, default=100, help="har bir UPDATE oldin nechta qator (default 100)")
     args = parser.parse_args()
+    if args.batch_size < 1:
+        parser.error("--batch-size kamida 1 bo'lishi kerak")
 
     conn = get_conn()
     cur = conn.cursor()
@@ -37,15 +39,14 @@ def main() -> int:
 
     total = len(rows)
     already_hashed = 0
-    to_migrate: list[tuple[int, str, str]] = []
+    to_migrate: list[tuple[int, str]] = []
     for row in rows:
         uid = int(row["id"])
-        login_id = str(row["login_id"] or "")
         stored = str(row["password"] or "")
         if is_password_hash(stored):
             already_hashed += 1
         else:
-            to_migrate.append((uid, login_id, stored))
+            to_migrate.append((uid, stored))
 
     print(f"Foydalanuvchilar (paroli bor): {total}")
     print(f"  Allaqachon bcrypt:           {already_hashed}")
@@ -53,26 +54,28 @@ def main() -> int:
 
     if args.dry_run:
         print("\n[DRY RUN] Hech narsa yozilmadi. Haqiqiy migratsiya uchun --dry-run siz ishlating.")
-        for uid, login_id, _ in to_migrate[:20]:
-            print(f"  - id={uid} login_id={login_id}")
-        if len(to_migrate) > 20:
-            print(f"  ... va yana {len(to_migrate) - 20} ta")
         conn.close()
         return 0
 
     done = 0
     errors = 0
-    for uid, login_id, stored in to_migrate:
+    for uid, stored in to_migrate:
         try:
-            cur.execute("UPDATE users SET password=? WHERE id=?", (hash_password(stored), uid))
-            done += 1
+            # Legacy authentication intentionally compared passwords without
+            # case sensitivity. Hash the normalized value so that migration
+            # preserves that long-standing login behavior.
+            cur.execute(
+                "UPDATE users SET password=? WHERE id=? AND password=?",
+                (hash_password(stored.strip().upper()), uid, stored),
+            )
+            done += int(getattr(cur, "rowcount", 0) == 1)
             if done % args.batch_size == 0:
                 conn.commit()
                 print(f"  ... {done}/{len(to_migrate)}")
         except Exception as exc:
             conn.rollback()
             errors += 1
-            print(f"  XATO id={uid} login_id={login_id}: {exc}")
+            print(f"  XATO id={uid} type={type(exc).__name__}")
     conn.commit()
     conn.close()
 

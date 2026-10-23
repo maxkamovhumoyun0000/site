@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { storeBrowserSessionToken } from "@/lib/auth-session";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
@@ -12,6 +13,7 @@ type AuthResult = {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -40,8 +42,7 @@ export default function SpeakingAccountPage() {
 
   function complete(result: AuthResult) {
     const token = String(result.access_token || "");
-    if (!token) throw new Error("Kirish sessiyasi olinmadi. Qayta urinib ko‘ring.");
-    localStorage.setItem("diamond_token", token);
+    storeBrowserSessionToken(token);
     if (result.user) localStorage.setItem("diamond_user", JSON.stringify(result.user));
     window.location.assign("/?role=speaking_user");
   }
