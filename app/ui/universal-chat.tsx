@@ -49,7 +49,7 @@ const DIAMONDVOY_FILE_EXTENSIONS = new Set([
   "jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt",
 ]);
 
-type ActivePane = "diamondvoy" | "community" | "speaking-direct" | "feedback" | null;
+type ActivePane = "diamondvoy" | "diamondvoy-admin" | "community" | "speaking-direct" | "feedback" | null;
 type CommunityChannel = "general" | "speaking";
 
 const feedbackStatusMeta = (value?: string | null) => {
@@ -82,6 +82,31 @@ type DiamondvoyChat = {
   expires_at?: string | null;
   pinned_at?: string | null;
   pinned?: boolean;
+};
+
+type AdminDiamondvoyAccount = {
+  user_id: number;
+  full_name: string;
+  login_id: string;
+  role: string;
+  account_type: "speaking" | "student_app" | string;
+  subject?: string;
+  chat_count: number;
+  message_count: number;
+  last_activity?: string | null;
+  last_question?: string | null;
+  last_message_preview?: string | null;
+};
+
+type AdminDiamondvoyChat = DiamondvoyChat & { user_id: number };
+
+type AdminDiamondvoyMessage = {
+  id: number;
+  chat_id: number;
+  role: "user" | "assistant" | "system";
+  content: string;
+  created_at?: string | null;
+  attachments?: ChatAttachment[];
 };
 
 type DiamondvoyMessage = {
@@ -1796,6 +1821,7 @@ export function UniversalChat({
   apiFetch,
   userId,
   userRole,
+  isMainAdmin = false,
   feedbackOnly = false,
   onOpenFeedback,
   onExitFeedback,
@@ -1803,6 +1829,7 @@ export function UniversalChat({
   apiFetch: (path: string, options?: any) => Promise<any>;
   userId: number;
   userRole: string;
+  isMainAdmin?: boolean;
   /** Opens feedback as its own application page instead of a chat sub-pane. */
   feedbackOnly?: boolean;
   onOpenFeedback?: () => void;
@@ -1813,6 +1840,20 @@ export function UniversalChat({
   const isAdmin = role === "admin";
   const isStudent = role === "student";
   const canRegenerate = ["admin", "teacher", "support"].includes(role);
+  const adminDiamondvoyAccountLabel = (account: AdminDiamondvoyAccount) => {
+    if (account.account_type === "speaking" || account.role === "speaking") {
+      return tt("chat.adminDiamondvoy.speakingAccount", "Speaking akkaunt");
+    }
+    const labels: Record<string, [string, string]> = {
+      student: ["chat.adminDiamondvoy.studentAccount", "Student akkaunt"],
+      teacher: ["chat.adminDiamondvoy.teacherAccount", "Teacher akkaunt"],
+      support: ["chat.adminDiamondvoy.supportAccount", "Support akkaunt"],
+      admin: ["chat.adminDiamondvoy.adminAccount", "Admin akkaunt"],
+      developer: ["chat.adminDiamondvoy.developerAccount", "Developer akkaunt"],
+    };
+    const label = labels[account.role];
+    return label ? tt(label[0], label[1]) : account.role || tt("chat.adminDiamondvoy.studentAccount", "Student akkaunt");
+  };
 
   const [activePane, setActivePane] = useState<ActivePane>(feedbackOnly ? "feedback" : null);
   const [aiChats, setAiChats] = useState<DiamondvoyChat[]>([]);
@@ -1837,6 +1878,21 @@ export function UniversalChat({
   const [adminThreads, setAdminThreads] = useState<FeedbackThreadSummary[]>([]);
   const [activeFeedbackThreadId, setActiveFeedbackThreadId] = useState<number | null>(null);
   const [adminFeedbackDetail, setAdminFeedbackDetail] = useState<FeedbackDetail | null>(null);
+  const [adminDiamondvoyAccounts, setAdminDiamondvoyAccounts] = useState<AdminDiamondvoyAccount[]>([]);
+  const [adminDiamondvoyTotal, setAdminDiamondvoyTotal] = useState(0);
+  const [adminDiamondvoySearch, setAdminDiamondvoySearch] = useState("");
+  const [adminDiamondvoyLoading, setAdminDiamondvoyLoading] = useState(false);
+  const [adminDiamondvoyError, setAdminDiamondvoyError] = useState("");
+  const [adminDiamondvoyModalOpen, setAdminDiamondvoyModalOpen] = useState(false);
+  const [adminDiamondvoySelectedAccount, setAdminDiamondvoySelectedAccount] = useState<AdminDiamondvoyAccount | null>(null);
+  const [adminDiamondvoyChats, setAdminDiamondvoyChats] = useState<AdminDiamondvoyChat[]>([]);
+  const [adminDiamondvoySelectedChat, setAdminDiamondvoySelectedChat] = useState<AdminDiamondvoyChat | null>(null);
+  const [adminDiamondvoyMessages, setAdminDiamondvoyMessages] = useState<AdminDiamondvoyMessage[]>([]);
+  const [adminDiamondvoyMessagesMore, setAdminDiamondvoyMessagesMore] = useState(false);
+  const [adminDiamondvoyMessagesLoading, setAdminDiamondvoyMessagesLoading] = useState(false);
+  const [adminDiamondvoyChatsMore, setAdminDiamondvoyChatsMore] = useState(false);
+  const [adminDiamondvoyChatsLoading, setAdminDiamondvoyChatsLoading] = useState(false);
+  const [adminDiamondvoyAccountsMore, setAdminDiamondvoyAccountsMore] = useState(false);
 
   const [input, setInput] = useState("");
   const [diamondvoyMode, setDiamondvoyMode] = useState<"standard" | "study" | "web_search" | "deep_research">("standard");
@@ -1898,6 +1954,95 @@ export function UniversalChat({
     }
     setActivePane(null);
   }, [feedbackOnly, onExitFeedback]);
+
+  const loadAdminDiamondvoyAccounts = useCallback(async (search: string, offset = 0, append = false) => {
+    if (!isMainAdmin) return;
+    setAdminDiamondvoyLoading(true);
+    setAdminDiamondvoyError("");
+    try {
+      const params = new URLSearchParams({ search: search.trim(), limit: "50", offset: String(offset) });
+      const payload = await apiFetch(`/admin/diamondvoy/conversations?${params.toString()}`);
+      const rows = Array.isArray(payload?.items) ? payload.items as AdminDiamondvoyAccount[] : [];
+      setAdminDiamondvoyAccounts((previous) => append ? [...previous, ...rows] : rows);
+      setAdminDiamondvoyTotal(Number(payload?.total || 0));
+      setAdminDiamondvoyAccountsMore(Boolean(payload?.has_more));
+    } catch (err) {
+      setAdminDiamondvoyError(parseError(err, tt("chat.adminDiamondvoy.loadError", "Diamondvoy suhbatlari ro‘yxatini yuklab bo‘lmadi.")));
+    } finally {
+      setAdminDiamondvoyLoading(false);
+    }
+  }, [apiFetch, isMainAdmin, tt]);
+
+  const loadAdminDiamondvoyMessages = useCallback(async (
+    account: AdminDiamondvoyAccount,
+    chat: AdminDiamondvoyChat,
+    options: { beforeId?: number; prepend?: boolean } = {},
+  ) => {
+    setAdminDiamondvoyMessagesLoading(true);
+    setAdminDiamondvoyError("");
+    try {
+      const params = new URLSearchParams({ limit: "100" });
+      if (options.beforeId) params.set("before_id", String(options.beforeId));
+      const payload = await apiFetch(`/admin/diamondvoy/users/${account.user_id}/chats/${chat.id}/messages?${params.toString()}`);
+      const rows = Array.isArray(payload?.items) ? payload.items as AdminDiamondvoyMessage[] : [];
+      setAdminDiamondvoyMessages((previous) => options.prepend ? [...rows, ...previous] : rows);
+      setAdminDiamondvoyMessagesMore(Boolean(payload?.has_more));
+    } catch (err) {
+      setAdminDiamondvoyError(parseError(err, tt("chat.adminDiamondvoy.loadMessagesError", "Suhbat tarixini yuklab bo‘lmadi.")));
+    } finally {
+      setAdminDiamondvoyMessagesLoading(false);
+    }
+  }, [apiFetch, tt]);
+
+  async function openAdminDiamondvoyAccount(account: AdminDiamondvoyAccount) {
+    if (!isMainAdmin) return;
+    setAdminDiamondvoySelectedAccount(account);
+    setAdminDiamondvoySelectedChat(null);
+    setAdminDiamondvoyChats([]);
+    setAdminDiamondvoyMessages([]);
+    setAdminDiamondvoyModalOpen(true);
+    setAdminDiamondvoyChatsLoading(true);
+    setAdminDiamondvoyError("");
+    try {
+      const payload = await apiFetch(`/admin/diamondvoy/users/${account.user_id}/chats?limit=50&offset=0`);
+      const rows = Array.isArray(payload?.items) ? payload.items as AdminDiamondvoyChat[] : [];
+      setAdminDiamondvoyChats(rows);
+      setAdminDiamondvoyChatsMore(Boolean(payload?.has_more));
+      if (rows[0]) {
+        setAdminDiamondvoySelectedChat(rows[0]);
+        await loadAdminDiamondvoyMessages(account, rows[0]);
+      }
+    } catch (err) {
+      setAdminDiamondvoyError(parseError(err, tt("chat.adminDiamondvoy.loadChatsError", "Foydalanuvchi chatlarini yuklab bo‘lmadi.")));
+    } finally {
+      setAdminDiamondvoyChatsLoading(false);
+    }
+  }
+
+  async function loadMoreAdminDiamondvoyChats() {
+    const account = adminDiamondvoySelectedAccount;
+    if (!account || !adminDiamondvoyChatsMore || adminDiamondvoyChatsLoading) return;
+    setAdminDiamondvoyChatsLoading(true);
+    try {
+      const offset = adminDiamondvoyChats.length;
+      const payload = await apiFetch(`/admin/diamondvoy/users/${account.user_id}/chats?limit=50&offset=${offset}`);
+      const rows = Array.isArray(payload?.items) ? payload.items as AdminDiamondvoyChat[] : [];
+      setAdminDiamondvoyChats((previous) => [...previous, ...rows]);
+      setAdminDiamondvoyChatsMore(Boolean(payload?.has_more));
+    } catch (err) {
+      setAdminDiamondvoyError(parseError(err, tt("chat.adminDiamondvoy.loadChatsError", "Foydalanuvchi chatlarini yuklab bo‘lmadi.")));
+    } finally {
+      setAdminDiamondvoyChatsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (activePane !== "diamondvoy-admin" || !isMainAdmin) return;
+    const timer = window.setTimeout(() => {
+      loadAdminDiamondvoyAccounts(adminDiamondvoySearch, 0, false).catch(() => null);
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [activePane, adminDiamondvoySearch, isMainAdmin, loadAdminDiamondvoyAccounts]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setAdminSearchQuery(adminSearch.trim()), 250);
@@ -2836,6 +2981,30 @@ export function UniversalChat({
           <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{isAdmin ? tt("chat.feedback.adminReview", "Admin review") : tt("chat.feedback.subtitle", "Anonim yoki anonimmas xabar yuborish")}</p>
         </button>
 
+        {isMainAdmin && (
+          <button
+            type="button"
+            onClick={() => {
+              setActivePane("diamondvoy-admin");
+              setActiveChatId(null);
+              setSpeakingActiveChatId(null);
+              setAdminDiamondvoyError("");
+            }}
+            className={cx(
+              "w-full text-left rounded-2xl border px-4 py-3.5 shadow-sm transition",
+              activePane === "diamondvoy-admin"
+                ? "bg-[#E9EEFF] dark:bg-[#1736E8]/15 border-[#1736E8] dark:border-[#1736E8]/50 shadow-md shadow-[#1736E8]/10"
+                : "bg-white dark:bg-white/5 border-[#E6EBF5] dark:border-white/10 hover:border-[#1736E8]/40",
+            )}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <p className="font-black text-sm text-navy-900 dark:text-white">{tt("chat.adminDiamondvoy.title", "Diamondvoy so‘rovlari")}</p>
+              <span className="rounded-full bg-[#1736E8]/10 px-2 py-0.5 text-[10px] font-bold text-[#1736E8] dark:bg-[#1736E8]/25 dark:text-blue-200">{adminDiamondvoyTotal}</span>
+            </div>
+            <p className="text-xs text-ink-600 dark:text-navy-300 mt-1">{tt("chat.adminDiamondvoy.hint", "Akkauntlar va suhbat tarixini ko‘rish")}</p>
+          </button>
+        )}
+
         {(["general", "speaking"] as const).map((channel) => (
           <button
             key={channel}
@@ -3536,6 +3705,140 @@ export function UniversalChat({
     </section>
   );
 
+  const AdminDiamondvoyPane = (
+    <section className={cx("flex-1 min-w-0 min-h-0 flex-col bg-slate-50/70 dark:bg-navy-950", activePane === "diamondvoy-admin" && isMainAdmin ? "flex" : "hidden")}>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-white px-4 py-4 dark:border-white/10 dark:bg-navy-900 sm:px-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <button type="button" onClick={() => setActivePane(null)} className="rounded-xl border border-line px-3 py-2 text-sm font-bold text-ink-700 dark:border-white/15 dark:text-white lg:hidden">‹</button>
+          <div className="min-w-0">
+            <h2 className="truncate text-lg font-black text-navy-900 dark:text-white">{tt("chat.adminDiamondvoy.title", "Diamondvoy so‘rovlari")}</h2>
+            <p className="text-xs text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.hint", "Akkauntlar va suhbat tarixini ko‘rish")}</p>
+          </div>
+        </div>
+        <span className="rounded-full bg-[#1736E8]/10 px-3 py-1.5 text-xs font-black text-[#1736E8] dark:bg-[#1736E8]/25 dark:text-blue-200">{adminDiamondvoyTotal} {tt("chat.adminDiamondvoy.accounts", "akkaunt")}</span>
+      </header>
+      <div className="border-b border-line bg-white px-4 py-3 dark:border-white/10 dark:bg-navy-900 sm:px-6">
+        <input
+          value={adminDiamondvoySearch}
+          onChange={(event) => setAdminDiamondvoySearch(event.target.value)}
+          placeholder={tt("chat.adminDiamondvoy.search", "Ism yoki login bo‘yicha qidirish")}
+          className="w-full max-w-xl rounded-xl border border-line bg-slate-50 px-3 py-2.5 text-sm text-navy-900 outline-none focus:border-[#1736E8] dark:border-white/15 dark:bg-white/5 dark:text-white"
+        />
+      </div>
+      {adminDiamondvoyError && <div role="alert" className="mx-4 mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200 sm:mx-6">{adminDiamondvoyError}</div>}
+      <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-6">
+        <div className="overflow-hidden rounded-2xl border border-line bg-white shadow-sm dark:border-white/10 dark:bg-white/5">
+          <table className="w-full min-w-[850px] border-collapse text-left">
+            <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-ink-500 dark:bg-white/5 dark:text-navy-300">
+              <tr>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.account", "Akkaunt")}</th>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.type", "Turi")}</th>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.chats", "Chatlar")}</th>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.messages", "Xabarlar")}</th>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.lastQuestion", "Oxirgi so‘rov")}</th>
+                <th className="px-4 py-3">{tt("chat.adminDiamondvoy.lastActive", "Oxirgi faollik")}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line dark:divide-white/10">
+              {adminDiamondvoyAccounts.map((account) => (
+                <tr
+                  key={account.user_id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${account.full_name || account.login_id}: ${tt("chat.adminDiamondvoy.history", "Diamondvoy suhbat tarixi")}`}
+                  onClick={() => openAdminDiamondvoyAccount(account).catch(() => null)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openAdminDiamondvoyAccount(account).catch(() => null);
+                    }
+                  }}
+                  className="cursor-pointer transition hover:bg-[#1736E8]/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#1736E8] dark:hover:bg-[#1736E8]/10"
+                >
+                  <td className="px-4 py-3.5">
+                    <p className="font-bold text-navy-900 dark:text-white">{account.full_name || `#${account.user_id}`}</p>
+                    <p className="mt-0.5 text-xs text-ink-500 dark:text-navy-300">@{account.login_id || account.user_id} · ID {account.user_id}</p>
+                  </td>
+                  <td className="px-4 py-3.5"><span className={cx("rounded-full px-2.5 py-1 text-xs font-bold", account.account_type === "speaking" ? "bg-violet-100 text-violet-800 dark:bg-violet-500/15 dark:text-violet-200" : "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-200")}>{adminDiamondvoyAccountLabel(account)}</span></td>
+                  <td className="px-4 py-3.5 text-sm font-semibold text-navy-900 dark:text-white">{account.chat_count}</td>
+                  <td className="px-4 py-3.5 text-sm font-semibold text-navy-900 dark:text-white">{account.message_count}</td>
+                  <td className="max-w-[320px] px-4 py-3.5 text-sm text-ink-600 dark:text-navy-200"><p className="line-clamp-2">{account.last_question || account.last_message_preview || "—"}</p></td>
+                  <td className="whitespace-nowrap px-4 py-3.5 text-xs text-ink-500 dark:text-navy-300">{formatWhen(account.last_activity)}</td>
+                </tr>
+              ))}
+              {!adminDiamondvoyAccounts.length && (
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-sm text-ink-500 dark:text-navy-300">{adminDiamondvoyLoading ? tt("common.loading", "Yuklanmoqda...") : tt("chat.adminDiamondvoy.empty", "Diamondvoy bilan suhbat topilmadi.")}</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-1 py-3 text-xs text-ink-500 dark:text-navy-300">
+          <span>{tt("chat.adminDiamondvoy.showing", "Ko‘rsatilmoqda")}: {adminDiamondvoyAccounts.length} / {adminDiamondvoyTotal}</span>
+          {adminDiamondvoyAccountsMore && <button type="button" disabled={adminDiamondvoyLoading} onClick={() => loadAdminDiamondvoyAccounts(adminDiamondvoySearch, adminDiamondvoyAccounts.length, true).catch(() => null)} className="rounded-xl border border-line bg-white px-4 py-2 font-bold text-navy-900 disabled:opacity-50 dark:border-white/15 dark:bg-white/5 dark:text-white">{adminDiamondvoyLoading ? "…" : tt("chat.adminDiamondvoy.loadMore", "Ko‘proq yuklash")}</button>}
+        </div>
+      </div>
+
+      {adminDiamondvoyModalOpen && adminDiamondvoySelectedAccount && (
+        <div className="fixed inset-0 z-[120] flex items-end justify-center bg-navy-950/65 p-2 backdrop-blur-sm sm:items-center sm:p-5" onClick={() => setAdminDiamondvoyModalOpen(false)}>
+          <section className="flex max-h-[94dvh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-line bg-white shadow-2xl dark:border-white/10 dark:bg-navy-950" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={tt("chat.adminDiamondvoy.history", "Diamondvoy suhbat tarixi")}>
+            <header className="flex items-center justify-between gap-3 border-b border-line px-4 py-3 dark:border-white/10 sm:px-5">
+              <div className="min-w-0">
+                <h3 className="truncate font-black text-navy-900 dark:text-white">{adminDiamondvoySelectedAccount.full_name || `#${adminDiamondvoySelectedAccount.user_id}`}</h3>
+                <p className="truncate text-xs text-ink-500 dark:text-navy-300">@{adminDiamondvoySelectedAccount.login_id} · {adminDiamondvoyAccountLabel(adminDiamondvoySelectedAccount)} · ID {adminDiamondvoySelectedAccount.user_id}</p>
+              </div>
+              <button type="button" onClick={() => setAdminDiamondvoyModalOpen(false)} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-line text-xl text-ink-600 dark:border-white/15 dark:text-white" aria-label={tt("common.close", "Yopish")}>×</button>
+            </header>
+            <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+              <aside className="max-h-40 shrink-0 overflow-y-auto border-b border-line p-2 dark:border-white/10 md:max-h-none md:w-[280px] md:border-b-0 md:border-r">
+                <p className="px-2 py-2 text-[11px] font-black uppercase tracking-wide text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.chats", "Chatlar")} ({adminDiamondvoyChats.length})</p>
+                {adminDiamondvoyChatsLoading && !adminDiamondvoyChats.length && <p className="px-2 py-3 text-sm text-ink-500">{tt("common.loading", "Yuklanmoqda...")}</p>}
+                <div className="space-y-1">
+                  {adminDiamondvoyChats.map((chat) => (
+                    <button key={chat.id} type="button" onClick={() => { setAdminDiamondvoySelectedChat(chat); setAdminDiamondvoyMessages([]); loadAdminDiamondvoyMessages(adminDiamondvoySelectedAccount, chat).catch(() => null); }} className={cx("w-full rounded-xl px-3 py-2.5 text-left", adminDiamondvoySelectedChat?.id === chat.id ? "bg-[#1736E8]/10 ring-1 ring-[#1736E8]/30 dark:bg-[#1736E8]/20" : "hover:bg-slate-50 dark:hover:bg-white/5")}>
+                      <p className="line-clamp-1 text-sm font-bold text-navy-900 dark:text-white">{chat.title || tt("chat.new", "Yangi chat")}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-ink-500 dark:text-navy-300">{chat.last_message_preview || "—"}</p>
+                      <p className="mt-1 text-[10px] text-ink-400 dark:text-navy-400">{formatWhen(chat.updated_at || chat.created_at)}</p>
+                    </button>
+                  ))}
+                </div>
+                {!adminDiamondvoyChats.length && !adminDiamondvoyChatsLoading && <p className="px-2 py-3 text-xs text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.emptyChats", "Bu akkauntda ko‘rsatiladigan chat yo‘q.")}</p>}
+                {adminDiamondvoyChatsMore && <button type="button" disabled={adminDiamondvoyChatsLoading} onClick={() => loadMoreAdminDiamondvoyChats().catch(() => null)} className="mt-2 w-full rounded-xl border border-line px-3 py-2 text-xs font-bold dark:border-white/15">{tt("chat.adminDiamondvoy.loadMore", "Ko‘proq yuklash")}</button>}
+              </aside>
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5 dark:border-white/10">
+                  <div className="min-w-0"><p className="truncate text-sm font-bold text-navy-900 dark:text-white">{adminDiamondvoySelectedChat?.title || tt("chat.adminDiamondvoy.history", "Diamondvoy suhbat tarixi")}</p><p className="text-[11px] text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.userAndAi", "Foydalanuvchi so‘rovlari va Diamondvoy javoblari")}</p></div>
+                  {adminDiamondvoySelectedChat && <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-ink-600 dark:bg-white/10 dark:text-navy-200">ID {adminDiamondvoySelectedChat.id}</span>}
+                </div>
+                {adminDiamondvoyError && <p role="alert" className="mx-3 mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:bg-rose-500/10 dark:text-rose-200">{adminDiamondvoyError}</p>}
+                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
+                  {adminDiamondvoyMessagesMore && adminDiamondvoyMessages[0] && <div className="mb-4 text-center"><button type="button" disabled={adminDiamondvoyMessagesLoading} onClick={() => loadAdminDiamondvoyMessages(adminDiamondvoySelectedAccount, adminDiamondvoySelectedChat!, { beforeId: adminDiamondvoyMessages[0].id, prepend: true }).catch(() => null)} className="rounded-xl border border-line px-3 py-2 text-xs font-bold text-ink-700 disabled:opacity-50 dark:border-white/15 dark:text-white">{adminDiamondvoyMessagesLoading ? "…" : tt("chat.adminDiamondvoy.older", "Oldingi xabarlarni yuklash")}</button></div>}
+                  {adminDiamondvoyMessagesLoading && !adminDiamondvoyMessages.length && <p className="py-10 text-center text-sm text-ink-500">{tt("common.loading", "Yuklanmoqda...")}</p>}
+                  <div className="space-y-3">
+                    {adminDiamondvoyMessages.map((message) => {
+                      const assistant = message.role === "assistant";
+                      return (
+                        <div key={message.id} className={cx("flex", assistant ? "justify-start" : "justify-end")}>
+                          <article className={cx("max-w-[92%] rounded-2xl border px-4 py-3 sm:max-w-[78%]", assistant ? "border-line bg-slate-50 text-navy-900 dark:border-white/10 dark:bg-white/5 dark:text-white" : "border-[#1736E8] bg-[#1736E8] text-white")}>
+                            <p className={cx("mb-1 text-[10px] font-black uppercase tracking-wide", assistant ? "text-[#1736E8] dark:text-blue-200" : "text-white/75")}>{assistant ? "Diamondvoy" : tt("chat.adminDiamondvoy.user", "Foydalanuvchi")}</p>
+                            <div className="whitespace-pre-wrap break-words text-sm leading-6">{message.content || "—"}</div>
+                            {message.attachments?.length ? <div className="mt-2 space-y-1">{message.attachments.map((attachment) => <a key={`${message.id}-${attachment.url}`} href={apiUrl(attachment.url)} target="_blank" rel="noreferrer" className={cx("block truncate text-xs underline", assistant ? "text-[#1736E8] dark:text-blue-200" : "text-white/90")}>{attachment.mime_type?.startsWith("image/") ? tt("chat.image", "Rasm") : tt("chat.community.file", "Fayl")}</a>)}</div> : null}
+                            <p className={cx("mt-2 text-[10px]", assistant ? "text-ink-400 dark:text-navy-400" : "text-white/65")}>{formatWhen(message.created_at)}</p>
+                          </article>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {!adminDiamondvoyMessages.length && !adminDiamondvoyMessagesLoading && adminDiamondvoySelectedChat && <p className="py-10 text-center text-sm text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.emptyMessages", "Bu suhbatda hali xabar yo‘q.")}</p>}
+                  {!adminDiamondvoySelectedChat && !adminDiamondvoyChatsLoading && <p className="py-10 text-center text-sm text-ink-500 dark:text-navy-300">{tt("chat.adminDiamondvoy.selectChat", "Tarixni ko‘rish uchun chatni tanlang.")}</p>}
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+    </section>
+  );
+
   const AdminFeedbackPane = (
     <section className={cx("universal-admin-feedback-pane flex-1 min-w-0 min-h-0 bg-slate-50/70 dark:bg-navy-950", activePane === "feedback" && isAdmin ? "flex" : "hidden")}>
       <div className={cx("universal-admin-feedback-list w-full md:w-[320px] xl:w-[360px] border-r border-line dark:border-white/10 flex-col min-h-0", activeFeedbackThreadId ? "hidden md:flex" : "flex")}>
@@ -3646,6 +3949,7 @@ export function UniversalChat({
       {CommunityPane}
       {SpeakingDirectPane}
       {UserFeedbackPane}
+      {AdminDiamondvoyPane}
       {AdminFeedbackPane}
       {!activePane && (
         <div className="hidden sm:grid flex-1 place-items-center px-6 text-center text-ink-500 dark:text-navy-300">

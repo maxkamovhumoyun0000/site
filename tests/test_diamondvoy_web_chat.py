@@ -9,6 +9,57 @@ def _student_user(user_id: int = 11) -> dict:
     return {"id": user_id, "login_type": 1, "login_id": f"STU{user_id}", "language": "uz", "access_enabled": 1, "blocked": 0}
 
 
+def test_speaking_diamondvoy_uses_open_speaking_context_not_student_plan() -> None:
+    speaking_user = {"id": 17, "login_type": 1, "speaking_app_account": 1, "subject": "English"}
+
+    prompt = api._diamondvoy_speaking_system_prompt(speaking_user, "uz")
+    role_hint = api._diamondvoy_role_context_hint(speaking_user, "student")
+
+    assert prompt is not None
+    assert "tasdiqlangan reja shart emas" in prompt
+    assert "A confirmed/approved plan is not required to answer" in role_hint
+    assert "school lessons" not in role_hint
+
+
+def test_student_diamondvoy_keeps_verified_student_context() -> None:
+    student_user = _student_user()
+
+    assert api._diamondvoy_speaking_system_prompt(student_user, "uz") is None
+    assert api._diamondvoy_role_context_hint(student_user, "student") == (
+        "You are assisting a student. Answer educational and school-related questions only."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "args"),
+    [
+        ("admin_diamondvoy_conversation_accounts", {}),
+        ("admin_diamondvoy_user_chats", {"user_id": 17}),
+        ("admin_diamondvoy_user_chat_messages", {"user_id": 17, "chat_id": 5}),
+    ],
+)
+async def test_admin_diamondvoy_history_endpoints_require_main_admin(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    args: dict,
+) -> None:
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(api, "_user_row_from_bearer", lambda _auth: {"id": 2, "login_type": 4})
+
+    def reject_non_main_admin(_user: dict) -> int:
+        raise HTTPException(status_code=403, detail="Only main admins can access system settings")
+
+    monkeypatch.setattr(api, "_require_main_admin", reject_non_main_admin)
+    monkeypatch.setattr(api, "_ensure_final_chat_schema", lambda: pytest.fail("DB must not be queried before admin authorization"))
+
+    with pytest.raises(HTTPException) as exc:
+        await getattr(api, endpoint)(authorization="Bearer test", **args)
+
+    assert exc.value.status_code == 403
+
+
 @pytest.mark.asyncio
 async def test_student_diamondvoy_chats_returns_items_without_cleanup_field(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api, "_user_row_from_bearer", lambda _auth: _student_user())

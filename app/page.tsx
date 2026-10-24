@@ -25385,7 +25385,12 @@ function DashboardShell({
 
   let content: React.ReactNode = null;
   if (currentSection === "chats" || currentSection === "diamondvoy") {
-    content = <UniversalChat apiFetch={authedApiFetch} userId={Number(user?.id || 0)} userRole={roleFromUser(user)} />;
+    content = <UniversalChat
+      apiFetch={authedApiFetch}
+      userId={Number(user?.id || 0)}
+      userRole={roleFromUser(user)}
+      isMainAdmin={Boolean((appState?.admin?.admin_scope as GenericRow | undefined)?.is_main_admin)}
+    />;
   } else if (currentSection === "study-room") {
     content = <StudyRoomChat apiFetch={authedApiFetch} role={activeRole} userId={Number(user?.id || 0)} />;
   } else if (activeRole === "speaking_user") {

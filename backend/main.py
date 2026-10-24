@@ -418,6 +418,7 @@ from backend.proctoring.schemas import (
     VerifyCheckRequest,
 )
 from diamondvoy_helpers import (
+    _diamondvoy_rich_markup_instructions,
     default_subjects_for_diamondvoy,
     detect_query_language,
     diamondvoy_gemini_answer,
@@ -24962,6 +24963,67 @@ def _diamondvoy_is_personal_learning_query(text: str) -> bool:
     ))
 
 
+def _diamondvoy_is_speaking_account(user: dict | None) -> bool:
+    return bool(user and is_speaking_app_account(user.get("speaking_app_account")))
+
+
+def _diamondvoy_role_context_hint(user: dict, role: str) -> str:
+    """Build AI context from the actual account type, not only login_type.
+
+    Speaking app accounts intentionally share the normal student login type,
+    but they do not use the Student app's verified weekly learning plans.
+    """
+    if _diamondvoy_is_speaking_account(user):
+        subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=[])
+        subject_hint = f"\nThe user's selected Speaking subjects are: {', '.join(subjects)}." if subjects else ""
+        return (
+            "You are Diamondvoy in the Diamond Speaking app. Answer naturally and helpfully in the user's language. "
+            "You may answer general questions as well as questions about speaking practice, IELTS, CEFR, pronunciation, "
+            "vocabulary, lessons, and Diamond Speaking features. Do not restrict replies to school lessons or a pre-approved plan. "
+            "A confirmed/approved plan is not required to answer. Never claim the user has or lacks a confirmed plan, score, "
+            "course, progress, or live lesson unless that fact is present in verified context. For personal account/progress questions, "
+            "be clear about what profile data is actually available and do not invent results."
+            f"{subject_hint}"
+        )
+    return {
+        "student": "You are assisting a student. Answer educational and school-related questions only.",
+        "teacher": "You are assisting a teacher. Answer educational, teaching, and role-work questions only.",
+        "support": "You are assisting a support teacher. Answer educational, support lesson, and role-work questions only.",
+        "admin": "You are assisting an admin. You may answer education, platform, management, payment, users, and group questions.",
+    }.get(role, "You are assisting an education platform user.")
+
+
+def _diamondvoy_speaking_system_prompt(user: dict, lang: str) -> str | None:
+    if not _diamondvoy_is_speaking_account(user):
+        return None
+    lc = str(lang or "uz").lower()[:2]
+    if lc == "ru":
+        base_prompt = (
+            "Ты Diamondvoy в приложении Diamond Speaking. Отвечай полезно и естественно на языке пользователя. "
+            "Помогай с разговорной практикой, IELTS, CEFR, произношением, словарным запасом, уроками и функциями приложения, "
+            "но также отвечай на обычные вопросы. Не ограничивай ответы только уроками и не требуй заранее утверждённый план: "
+            "подтверждённый план не нужен, чтобы ответить. Не утверждай, что у пользователя есть или нет план, балл, курс, прогресс "
+            "или live-урок, если этого нет в проверенном контексте. Не выдумывай личные результаты. Используй Markdown, когда это улучшает ясность."
+        )
+    elif lc == "en":
+        base_prompt = (
+            "You are Diamondvoy in the Diamond Speaking app. Reply helpfully and naturally in the user's language. "
+            "Help with speaking practice, IELTS, CEFR, pronunciation, vocabulary, lessons, and app features, and also answer general questions. "
+            "Do not restrict replies to lessons or require a pre-approved plan; no confirmed plan is needed to answer. "
+            "Never claim the user has or lacks a plan, score, course, progress, or live lesson unless verified context contains that fact. "
+            "Do not invent personal results. Use Markdown when it improves clarity."
+        )
+    else:
+        base_prompt = (
+            "Sen Diamond Speaking ilovasidagi Diamondvoy yordamchisisan. Foydalanuvchining tilida tabiiy va foydali javob ber. "
+            "Speaking mashqi, IELTS, CEFR, talaffuz, lug‘at, darslar va ilova funksiyalariga yordam ber, lekin umumiy savollarga ham javob ber. "
+            "Faqat darslar bilan cheklanma va oldindan tasdiqlangan reja talab qilma: javob berish uchun tasdiqlangan reja shart emas. "
+            "Tekshirilgan kontekstda bo‘lmasa, foydalanuvchida reja, ball, kurs, progress yoki live dars bor/yo‘qligini da’vo qilma. "
+            "Shaxsiy natijalarni to‘qima. Aniqlikni yaxshilasa Markdown ishlat."
+        )
+    return base_prompt + _diamondvoy_rich_markup_instructions(lc)
+
+
 def _diamondvoy_resolve_mode(requested_mode: str, user_text: str) -> str:
     """Resolve automatic Diamondvoy research depth without a UI mode toggle."""
     requested = str(requested_mode or "auto").strip().lower()
@@ -25037,12 +25099,9 @@ async def _diamondvoy_run_generation_job(
 
     try:
         style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
-        role_context_hint = {
-            "student": "You are assisting a student. Answer educational and school-related questions only.",
-            "teacher": "You are assisting a teacher. Answer educational, teaching, and role-work questions only.",
-            "support": "You are assisting a support teacher. Answer educational, support lesson, and role-work questions only.",
-            "admin": "You are assisting an admin. You may answer education, platform, management, payment, users, and group questions.",
-        }.get(role, "You are assisting an education platform user.")
+        speaking_account = _diamondvoy_is_speaking_account(user)
+        speaking_system_prompt = _diamondvoy_speaking_system_prompt(user, query_lang)
+        role_context_hint = _diamondvoy_role_context_hint(user, role)
         if role == "teacher":
             teacher_groups = _safe_call(lambda: get_groups_by_teacher(int(user_id)), []) or []
             if teacher_groups:
@@ -25050,7 +25109,7 @@ async def _diamondvoy_run_generation_job(
                 role_context_hint += f"\nSizning guruhlaringiz: {group_names}."
             else:
                 role_context_hint += "\nSizda hozircha faol guruhlar yo'q."
-        if role == "student":
+        if role == "student" and not speaking_account:
             learning_context = _diamondvoy_student_learning_context(user_id)
             role_context_hint += (
                 "\nThe following is the student's private, verified learning data. "
@@ -25167,8 +25226,8 @@ async def _diamondvoy_run_generation_job(
                             ai_user_text,
                             session=session,
                             system_content=(
-                                "You are Diamondvoy, an educational assistant. Reply in the user's language. "
-                                "Use only facts supported by retrieved sources, include inline citations, "
+                                (speaking_system_prompt or "You are Diamondvoy, an educational assistant. Reply in the user's language.\n")
+                                + "Use only facts supported by retrieved sources, include inline citations, "
                                 "and never invent sources or citation counts.\n" + role_context_hint
                             ),
                             deep_research=mode == "deep_research",
@@ -25192,7 +25251,12 @@ async def _diamondvoy_run_generation_job(
             elif image_urls:
                 vision_images = [_chat_media_data_url(url) for url in image_urls]
                 async with aiohttp.ClientSession() as session:
-                    gen = _xai_generate_text_stream_with_images(ai_user_text, vision_images, session=session)
+                    gen = _xai_generate_text_stream_with_images(
+                        ai_user_text,
+                        vision_images,
+                        session=session,
+                        system_content=speaking_system_prompt,
+                    )
                     while True:
                         try:
                             chunk, cancelled = await next_chunk_or_cancel(gen)
@@ -25212,6 +25276,7 @@ async def _diamondvoy_run_generation_job(
                     lang=query_lang,
                     is_admin_context=role in {"admin", "teacher", "support"},
                     conversation=prior_context,
+                    system_prompt_override=speaking_system_prompt,
                 )
                 while True:
                     try:
@@ -25334,7 +25399,8 @@ async def _diamondvoy_stream_events(
         if Path(_chat_media_filename_from_url(url) or "").suffix.lower() in CHAT_IMAGE_MIME_BY_EXT
     ][:3]
     document_context = _diamondvoy_attachment_text(attachment_rows)
-    personal_learning_query = role == "student" and _diamondvoy_is_personal_learning_query(user_text)
+    speaking_account = _diamondvoy_is_speaking_account(user)
+    personal_learning_query = role == "student" and not speaking_account and _diamondvoy_is_personal_learning_query(user_text)
     if not user_text and not attachment_urls:
         raise HTTPException(status_code=400, detail="Xabar yoki fayl yuboring")
 
@@ -25423,7 +25489,7 @@ async def _diamondvoy_stream_events(
             subjects = default_subjects_for_diamondvoy(user)
             
             from teacher_hw import handle_web_diamondvoy_hw_fsm
-            hw_fsm_reply = await handle_web_diamondvoy_hw_fsm(user_id, int(chat_id), user_text, image_urls, role)
+            hw_fsm_reply = None if speaking_account else await handle_web_diamondvoy_hw_fsm(user_id, int(chat_id), user_text, image_urls, role)
             if hw_fsm_reply:
                 _diamondvoy_insert_message(int(chat_id), "assistant", hw_fsm_reply)
                 full = ""
@@ -25435,7 +25501,7 @@ async def _diamondvoy_stream_events(
                 yield _sse_pack("done", {"content": hw_fsm_reply, "chat_id": int(chat_id), "chat_title": current_chat_title})
                 return
 
-            if mode == "standard" and not image_urls and not document_context and not personal_learning_query:
+            if mode == "standard" and not speaking_account and not image_urls and not document_context and not personal_learning_query:
                 info_text = try_diamondvoy_bot_info(
                     user_text,
                     user=user,
@@ -25457,7 +25523,7 @@ async def _diamondvoy_stream_events(
                     return
 
             style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
-            if mode == "standard" and user_text and not image_urls and not document_context and not personal_learning_query:
+            if mode == "standard" and not speaking_account and user_text and not image_urls and not document_context and not personal_learning_query:
                 cached = _safe_call(lambda: _diamondvoy_find_cached_answer(user_id, user_text), None)
                 if cached:
                     _safe_call(lambda: _diamondvoy_touch_memory(int(cached.get("id") or 0)), None)
@@ -25481,12 +25547,7 @@ async def _diamondvoy_stream_events(
                     )
                     return
 
-            role_context_hint = {
-                "student": "You are assisting a student. Answer educational and school-related questions only.",
-                "teacher": "You are assisting a teacher. Answer educational, teaching, and role-work questions only.",
-                "support": "You are assisting a support teacher. Answer educational, support lesson, and role-work questions only.",
-                "admin": "You are assisting an admin. You may answer education, platform, management, payment, users, and group questions.",
-            }.get(role, "You are assisting an education platform user.")
+            role_context_hint = _diamondvoy_role_context_hint(user, role)
             
             if role == "teacher":
                 teacher_groups = _safe_call(lambda: get_groups_by_teacher(int(user_id)), []) or []
@@ -25498,7 +25559,11 @@ async def _diamondvoy_stream_events(
             history_lines = []
             for item in prior_context[-8:]:
                 history_lines.append(f"{item['role']}: {item['content'][:1200]}")
-            image_note = "\nImages are attached. Analyze them only if they are educational." if image_urls else ""
+            image_note = (
+                "\nImages are attached. Analyze relevant content accurately; do not infer personal account facts from an image."
+                if image_urls and speaking_account else
+                ("\nImages are attached. Analyze them only if they are educational." if image_urls else "")
+            )
             memory_note = "" if image_urls else _diamondvoy_related_memory_prompt(user_id, user_text, limit=3)
             ai_user_text = (
                 f"{role_context_hint}\n"
@@ -25603,6 +25668,200 @@ async def final_diamondvoy_create_chat(
     if elapsed_ms > 500:
         logger.info("perf final_chat.diamondvoy.create ms=%.2f", elapsed_ms)
     return {"chat": _diamondvoy_serialize_chat_final(row)}
+
+
+@app.get("/admin/diamondvoy/conversations")
+async def admin_diamondvoy_conversation_accounts(
+    search: str = Query(default="", max_length=100),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    """List accounts that have retained Diamondvoy conversations.
+
+    This sensitive cross-account view is intentionally restricted to the
+    explicitly configured main admin, not every admin/limited-admin account.
+    """
+    admin = _user_row_from_bearer(authorization)
+    _require_main_admin(admin)
+    _ensure_final_chat_schema()
+    query = str(search or "").strip()[:100]
+    params: list[Any] = []
+    search_sql = ""
+    if query:
+        like = f"%{query.lower()}%"
+        search_sql = " AND (LOWER(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')) LIKE ? OR LOWER(COALESCE(u.login_id, '')) LIKE ?)"
+        params.extend([like, like])
+    params.extend([int(limit), int(offset)])
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            WITH active_chats AS (
+                SELECT id, user_id, title, created_at, updated_at, persistent
+                FROM diamondvoy_chats
+                WHERE deleted_at IS NULL
+                  AND (COALESCE(persistent, 0)=1 OR expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            ), chat_rollup AS (
+                SELECT c.user_id,
+                       COUNT(DISTINCT c.id) AS chat_count,
+                       COUNT(m.id) AS message_count,
+                       MAX(COALESCE(c.updated_at, c.created_at)) AS last_activity,
+                       (SELECT lm.content FROM diamondvoy_chat_messages lm
+                        JOIN active_chats lc ON lc.id=lm.chat_id
+                        WHERE lc.user_id=c.user_id AND lm.role='user'
+                        ORDER BY lm.id DESC LIMIT 1) AS last_question,
+                       (SELECT lm.content FROM diamondvoy_chat_messages lm
+                        JOIN active_chats lc ON lc.id=lm.chat_id
+                        WHERE lc.user_id=c.user_id
+                        ORDER BY lm.id DESC LIMIT 1) AS last_message_preview
+                FROM active_chats c
+                LEFT JOIN diamondvoy_chat_messages m ON m.chat_id=c.id
+                GROUP BY c.user_id
+            )
+            SELECT u.id AS user_id, u.first_name, u.last_name, u.login_id,
+                   u.login_type, COALESCE(u.speaking_app_account, 0) AS speaking_app_account,
+                   COALESCE(u.subject, '') AS subject,
+                   r.chat_count, r.message_count, r.last_activity,
+                   r.last_question, r.last_message_preview,
+                   COUNT(*) OVER() AS total_count
+            FROM chat_rollup r
+            JOIN users u ON u.id=r.user_id
+            WHERE 1=1 {search_sql}
+            ORDER BY r.last_activity DESC NULLS LAST, u.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            tuple(params),
+        )
+        rows = [dict(row) for row in (cur.fetchall() or [])]
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+    finally:
+        conn.close()
+
+    items = []
+    for row in rows:
+        is_speaking = is_speaking_app_account(row.get("speaking_app_account"))
+        login_role = _role_from_login_type(int(row.get("login_type") or 1), str(row.get("login_id") or ""))
+        items.append({
+            "user_id": int(row.get("user_id") or 0),
+            "full_name": _display_name(row),
+            "login_id": str(row.get("login_id") or ""),
+            "role": "speaking" if is_speaking else login_role,
+            "account_type": "speaking" if is_speaking else "platform",
+            "subject": str(row.get("subject") or ""),
+            "chat_count": int(row.get("chat_count") or 0),
+            "message_count": int(row.get("message_count") or 0),
+            "last_activity": _as_iso_timestamp(row.get("last_activity")),
+            "last_question": str(row.get("last_question") or "")[:500],
+            "last_message_preview": str(row.get("last_message_preview") or "")[:500],
+        })
+    return {
+        "items": items,
+        "total": total,
+        "limit": int(limit),
+        "offset": int(offset),
+        "has_more": int(offset) + len(items) < total,
+    }
+
+
+@app.get("/admin/diamondvoy/users/{user_id}/chats")
+async def admin_diamondvoy_user_chats(
+    user_id: int,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    admin = _user_row_from_bearer(authorization)
+    _require_main_admin(admin)
+    _ensure_final_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE id=? LIMIT 1", (int(user_id),))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Diamondvoy account not found")
+        cur.execute(
+            """
+            SELECT c.id, c.user_id, c.title, c.created_at, c.updated_at, c.expires_at,
+                   c.deleted_at, c.pinned_at, c.persistent,
+                   (SELECT m.content FROM diamondvoy_chat_messages m
+                    WHERE m.chat_id=c.id ORDER BY m.id DESC LIMIT 1) AS last_message_preview,
+                   COUNT(*) OVER() AS total_count
+            FROM diamondvoy_chats c
+            WHERE c.user_id=? AND c.deleted_at IS NULL
+              AND (COALESCE(c.persistent, 0)=1 OR c.expires_at IS NULL OR c.expires_at > CURRENT_TIMESTAMP)
+            ORDER BY COALESCE(c.updated_at, c.created_at) DESC, c.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (int(user_id), int(limit), int(offset)),
+        )
+        rows = [dict(row) for row in (cur.fetchall() or [])]
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+    finally:
+        conn.close()
+    return {
+        "items": [_diamondvoy_serialize_chat_final(row) for row in rows],
+        "total": total,
+        "limit": int(limit),
+        "offset": int(offset),
+        "has_more": int(offset) + len(rows) < total,
+    }
+
+
+@app.get("/admin/diamondvoy/users/{user_id}/chats/{chat_id}/messages")
+async def admin_diamondvoy_user_chat_messages(
+    user_id: int,
+    chat_id: int,
+    limit: int = Query(default=100, ge=1, le=300),
+    before_id: int | None = Query(default=None, ge=1),
+    authorization: str | None = Header(default=None),
+):
+    admin = _user_row_from_bearer(authorization)
+    _require_main_admin(admin)
+    _ensure_final_chat_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, user_id, title, created_at, updated_at, expires_at,
+                   deleted_at, pinned_at, persistent
+            FROM diamondvoy_chats
+            WHERE id=? AND user_id=? AND deleted_at IS NULL
+              AND (COALESCE(persistent, 0)=1 OR expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            LIMIT 1
+            """,
+            (int(chat_id), int(user_id)),
+        )
+        chat_row = dict(cur.fetchone() or {})
+        if not chat_row:
+            raise HTTPException(status_code=404, detail="Diamondvoy conversation not found")
+        if before_id is None:
+            cur.execute(
+                "SELECT id, chat_id, role, content, created_at, edited_at FROM diamondvoy_chat_messages WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+                (int(chat_id), int(limit) + 1),
+            )
+        else:
+            cur.execute(
+                "SELECT id, chat_id, role, content, created_at, edited_at FROM diamondvoy_chat_messages WHERE chat_id=? AND id<? ORDER BY id DESC LIMIT ?",
+                (int(chat_id), int(before_id), int(limit) + 1),
+            )
+        newest_first = [dict(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+    has_more = len(newest_first) > int(limit)
+    rows = newest_first[: int(limit)]
+    rows.reverse()
+    attachments = _diamondvoy_message_attachments([int(row.get("id") or 0) for row in rows])
+    return {
+        "chat": _diamondvoy_serialize_chat_final(chat_row),
+        "items": [_diamondvoy_serialize_message_final(row, attachments) for row in rows],
+        "has_more": has_more,
+        "next_before_id": int(rows[0].get("id") or 0) if rows and has_more else None,
+    }
 
 
 @app.post("/chats/diamondvoy/fresh-session")
