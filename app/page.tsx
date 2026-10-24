@@ -231,12 +231,6 @@ function upsertAdminGroupRow(existing: GenericRow[], incoming: GenericRow): Gene
 }
 const FACEID_GATE_ENABLED = false;
 
-function escapeReceiptHtml(value: unknown): string {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-  }[char] || char));
-}
-
 type ApiUser = {
   id: string | number;
   full_name?: string;
@@ -17291,6 +17285,11 @@ function AdminSection({
       : `/admin/receipts/${encodeURIComponent(receiptId)}/pdf`;
     const response = await fetch(`${API_BASE}${pdfPath}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!response.ok) throw new Error("Server chek PDFini tayyorlay olmadi");
+    const contentType = String(response.headers.get("content-type") || "")
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== "application/pdf") throw new Error("Server PDF o'rniga boshqa format qaytardi");
     const objectUrl = URL.createObjectURL(await response.blob());
     const popup = fallbackPopup || window.open("", "_blank");
     if (!popup) {
@@ -17298,18 +17297,16 @@ function AdminSection({
       throw new Error("Print oynasi bloklangan");
     }
     popup.opener = null;
-    popup.document.open();
-    popup.document.write(`<!doctype html><html style="width:100%;height:100%;margin:0;overflow:hidden"><head><title>${escapeReceiptHtml(receiptId)}</title></head><body style="width:100%;height:100%;margin:0;overflow:hidden"><iframe title="Chek" src="${objectUrl}" style="display:block;width:100%;height:100%;border:0"></iframe></body></html>`);
-    popup.document.close();
-    const frame = popup.document.querySelector("iframe");
-    frame?.addEventListener("load", () => {
+    // A blocked or abandoned print dialog must not pin blob memory indefinitely.
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 5 * 60_000);
+    popup.addEventListener("load", () => {
       popup.focus();
       window.setTimeout(() => {
-        frame.contentWindow?.focus();
-        frame.contentWindow?.print();
+        popup.print();
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
       }, 150);
     }, { once: true });
+    popup.location.replace(objectUrl);
   }
 
   async function printReceipt(receipt: GenericRow, fallbackPopup: Window | null = null) {
@@ -17342,6 +17339,7 @@ function AdminSection({
       }
       await openServerReceiptPdfForPrint(receipt, token, fallbackPopup);
     } catch (error) {
+      fallbackPopup?.close();
       const normalized = normalizeNetworkError(error);
       setPaymentsGeneralError(String(normalized.message || "Chekni chop etib bo'lmadi"));
     }

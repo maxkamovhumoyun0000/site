@@ -4,23 +4,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
-import threading
-import time
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
+from backend.rate_limiting import consume_rate_limit
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 LANGUAGE_NAMES = {"en": "English", "ru": "Russian", "uz": "Uzbek"}
-_TRANSLATION_REQUESTS: dict[str, list[float]] = {}
-_TRANSLATION_REQUESTS_LOCK = threading.Lock()
 _TRANSLATION_RATE_WINDOW_SECONDS = 60 * 60
-_TRANSLATION_RATE_LIMIT_PER_IP = 20
-_TRANSLATION_RATE_MAX_KEYS = 10_000
+_TRANSLATION_RATE_LIMIT_PER_IP = max(
+    1, int(os.getenv("SPEAKING_TRANSLATION_REQUESTS_PER_HOUR", "20") or 20)
+)
 
 
 class TranslationRequest(BaseModel):
@@ -36,7 +35,7 @@ def _clean_translation(text: str) -> str:
     return value.strip().strip('"“”')
 
 
-def _translation_rate_allowed(request: Request) -> bool:
+def _translation_rate_allowed(request: Request) -> tuple[bool, int]:
     # Do not trust the app-provided device ID: callers can rotate it to evade
     # quotas. Reuse the site's proxy-aware client-IP resolver instead.
     try:
@@ -45,25 +44,22 @@ def _translation_rate_allowed(request: Request) -> bool:
         identity = _client_ip(request)
     except Exception:
         identity = (request.client.host if request.client else "") or "unknown"
-    key = identity[:128]
-    now = time.time()
-    cutoff = now - _TRANSLATION_RATE_WINDOW_SECONDS
-    with _TRANSLATION_REQUESTS_LOCK:
-        # Periodically prune expired keys so unique IPs cannot grow this map
-        # without bound. Once full, reject new keys until an entry expires.
-        if len(_TRANSLATION_REQUESTS) >= _TRANSLATION_RATE_MAX_KEYS and key not in _TRANSLATION_REQUESTS:
-            for stale_key, stamps in list(_TRANSLATION_REQUESTS.items()):
-                if not stamps or stamps[-1] <= cutoff:
-                    _TRANSLATION_REQUESTS.pop(stale_key, None)
-            if len(_TRANSLATION_REQUESTS) >= _TRANSLATION_RATE_MAX_KEYS:
-                return False
-        recent = [stamp for stamp in _TRANSLATION_REQUESTS.get(key, []) if stamp > cutoff]
-        if len(recent) >= _TRANSLATION_RATE_LIMIT_PER_IP:
-            _TRANSLATION_REQUESTS[key] = recent
-            return False
-        recent.append(now)
-        _TRANSLATION_REQUESTS[key] = recent
-        return True
+    allowed, retry_after = consume_rate_limit(
+        _translation_redis_client(),
+        f"speaking-translation:ip:{identity[:128]}",
+        limit=_TRANSLATION_RATE_LIMIT_PER_IP,
+        window_seconds=_TRANSLATION_RATE_WINDOW_SECONDS,
+    )
+    return allowed, retry_after
+
+
+def _translation_redis_client():
+    try:
+        from backend.main import _REDIS_CLIENT
+
+        return _REDIS_CLIENT
+    except Exception:
+        return None
 
 
 @router.post("/speaking/translate")
@@ -77,8 +73,13 @@ async def translate_speaking_text(
         raise HTTPException(status_code=422, detail="Enter text to translate")
     if payload.source_language == payload.target_language:
         raise HTTPException(status_code=422, detail="Choose two different languages")
-    if not _translation_rate_allowed(request):
-        raise HTTPException(status_code=429, detail="Translation limit reached. Please try again later.")
+    allowed, retry_after = _translation_rate_allowed(request)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Translation limit reached. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
     source = LANGUAGE_NAMES[payload.source_language]
     target = LANGUAGE_NAMES[payload.target_language]

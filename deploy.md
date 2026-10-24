@@ -26,6 +26,25 @@ Bu loyiha production serverda ishlaydi:
 - **Backend Uvicorn worker soni 4 ta bo‘lib qoladi.** Xotira optimizatsiyasi
   uchun workerlarni kamaytirmang va systemd override’ni o‘zgartirmang.
 
+## XSS, trusted proxy va rate limiting
+
+Inbound email HTML serverda allowlist asosida tozalanadi va admin inboxga
+qaytarishdan oldin yana sanitizatsiya qilinadi. Sayt CSP nonce bilan ishlaydi;
+inline script/event handler va inline style bloklangan. `X-Forwarded-For` faqat
+loopback peer yoki `TRUSTED_PROXY_CIDRS` dagi aniq proxy CIDR’idan kelganda
+ishlatiladi. Reverse proxy boshqa private IP’dan ulansa, `.env` ga faqat o‘sha
+proxy manzili/CIDR’ini yozing; `0.0.0.0/0` yoki barcha private tarmoqlarni
+ishonchli deb belgilamang.
+
+Endpoint limitlari mavjud Redis’da atomic sliding-window sifatida saqlanadi va
+4 ta Uvicorn worker o‘rtasida bo‘lishiladi: login — 300/15 daqiqa/IP (ustiga
+login xatosi uchun DB limiti), self-registration — 30/soat/IP, Diamondvoy —
+30/daqiqa/account va 120/daqiqa/IP, speaking tarjimoni — 20/soat/IP. Limitlar
+tegishli `*_REQUESTS_*` environment sozlamalari bilan o‘zgartirilishi mumkin.
+Redis ishlamasa endpointlar ishlashda davom etadi, lekin limit vaqtincha har
+worker uchun alohida fallback’ga tushadi va backend logida warning chiqadi;
+productionda Redis sog‘lomligini monitoring qilish kerak.
+
 ## Speaking live yozuv xizmati
 
 Rejalashtirilgan Speaking live darslari uchun LiveKit Egress **asosiy serverda**

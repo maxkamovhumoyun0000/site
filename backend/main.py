@@ -12,6 +12,7 @@ import fcntl
 import html
 import hashlib
 import hmac
+import ipaddress
 import io
 import json
 import logging
@@ -51,6 +52,7 @@ from pydantic import BaseModel, Field
 
 import push_notifications
 from backend.community_safety import SafetyStore, validate_public_text
+from backend.rate_limiting import consume_rate_limit
 from backend.system_metrics import build_system_advice, collect_system_metrics, find_latest_pressure_event
 import userbot_manager
 from userbot_manager import (
@@ -906,6 +908,9 @@ async def production_https_guard(request: Request, call_next):
     if is_secure or loopback:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
     return response
 GRAMMAR_TOPIC_ATTEMPT_LIMIT = 1
 ARTICLE_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "article_uploads"
@@ -20960,6 +20965,12 @@ async def deprecated_speaking_registration(payload: SpeakingRegistrationRequest)
 async def public_registration(payload: PublicRegistrationRequest, req: Request, response: Response):
     """Create a self-service Student/Teacher account awaiting admin approval."""
     client_ip = _client_ip(req)
+    _enforce_ip_rate_limit(
+        req,
+        bucket="public-registration",
+        limit=max(1, int(os.getenv("PUBLIC_REGISTRATION_REQUESTS_PER_HOUR", "30") or 30)),
+        window_seconds=3600,
+    )
     throttle_key = f"registration:{client_ip}" if client_ip else ""
     if throttle_key and is_login_throttled(
         throttle_key, max_failures=PUBLIC_REGISTRATION_IP_MAX_FAILURES
@@ -21142,17 +21153,87 @@ async def register():
 def _client_ip(req: Request) -> str:
     """Client IP for rate limiting.
 
-    Uses the LAST X-Forwarded-For entry — the address appended by our own
-    nginx proxy — so a client cannot spoof earlier entries; falls back to
-    the socket peer address when no proxy header is present.
+    Forwarded headers are trusted only when the socket peer is loopback or is
+    explicitly listed in TRUSTED_PROXY_CIDRS. This prevents direct callers
+    from spoofing X-Forwarded-For when the application port is reachable.
     """
-    xff = (req.headers.get("x-forwarded-for") or "").strip()
-    if xff:
-        for candidate in reversed(xff.split(",")):
-            cleaned = candidate.strip()
-            if cleaned:
-                return cleaned
-    return (req.client.host if req.client else "") or ""
+    peer = (req.client.host if req.client else "") or ""
+    try:
+        peer_ip = ipaddress.ip_address(peer.split("%", 1)[0])
+    except ValueError:
+        return peer
+    trusted_proxy = peer_ip.is_loopback
+    if not trusted_proxy:
+        for entry in (os.getenv("TRUSTED_PROXY_CIDRS") or "").split(","):
+            value = entry.strip()
+            if not value:
+                continue
+            try:
+                if peer_ip in ipaddress.ip_network(value, strict=False):
+                    trusted_proxy = True
+                    break
+            except ValueError:
+                continue
+    if trusted_proxy:
+        xff = (req.headers.get("x-forwarded-for") or "").strip()
+        if xff:
+            for candidate in reversed(xff.split(",")):
+                cleaned = candidate.strip()
+                if cleaned:
+                    try:
+                        return str(ipaddress.ip_address(cleaned.split("%", 1)[0]))
+                    except ValueError:
+                        break
+    return peer
+
+
+def _enforce_ip_rate_limit(
+    req: Request,
+    *,
+    bucket: str,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    client_ip = _client_ip(req) or "unknown"
+    allowed, retry_after = consume_rate_limit(
+        _REDIS_CLIENT,
+        f"{bucket}:ip:{client_ip}",
+        limit=limit,
+        window_seconds=window_seconds,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _enforce_diamondvoy_rate_limit(req: Request, user_id: int) -> None:
+    client_ip = _client_ip(req)
+    policies = [
+        (
+            f"diamondvoy:user:{int(user_id)}",
+            max(1, int(os.getenv("DIAMONDVOY_USER_REQUESTS_PER_MINUTE", "30") or 30)),
+        ),
+    ]
+    if client_ip:
+        policies.append(
+            (
+                f"diamondvoy:ip:{client_ip}",
+                max(1, int(os.getenv("DIAMONDVOY_IP_REQUESTS_PER_MINUTE", "120") or 120)),
+            )
+        )
+    for key, limit in policies:
+        allowed, retry_after = consume_rate_limit(
+            _REDIS_CLIENT, key, limit=limit, window_seconds=60
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Diamondvoy request limit reached. Please try again shortly.",
+                headers={"Retry-After": str(retry_after)},
+            )
 
 
 LOGIN_IP_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_IP_THROTTLE_MAX_FAILURES", "20") or 20))
@@ -21161,14 +21242,21 @@ LOGIN_IP_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_IP_THROTTLE_MAX_FAI
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(request: LoginRequest, req: Request, response: Response):
     # Brute-force throttle: per login_id (targeted guessing) and per IP
-    # (password spraying across many accounts from one host).
+    # (password spraying across many accounts from one host). This request
+    # cap also counts successful and demo logins; no user-supplied login text
+    # can opt out of the protections.
+    _enforce_ip_rate_limit(
+        req,
+        bucket="auth-login",
+        limit=max(1, int(os.getenv("LOGIN_REQUESTS_PER_15_MINUTES", "300") or 300)),
+        window_seconds=900,
+    )
     login_id_raw = (request.login_id or "").strip()
     login_id_upper = login_id_raw.upper()
-    is_demo_attempt = "JONDOE" in login_id_upper or "JOHNDOE" in login_id_upper
     login_key = f"login:{login_id_upper}"
     client_ip = _client_ip(req)
     ip_key = f"ip:{client_ip}" if client_ip else ""
-    if not is_demo_attempt and (
+    if (
         is_login_throttled(login_key) or (
             ip_key and is_login_throttled(ip_key, max_failures=LOGIN_IP_THROTTLE_MAX_FAILURES)
         )
@@ -21213,10 +21301,9 @@ async def login(request: LoginRequest, req: Request, response: Response):
             finally:
                 conn.close()
     if not user:
-        if not is_demo_attempt:
-            record_login_failure(login_key)
-            if ip_key:
-                record_login_failure(ip_key)
+        record_login_failure(login_key)
+        if ip_key:
+            record_login_failure(ip_key)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     incoming = (request.password or "").strip()
     stored = (user.get("password") or "").strip()
@@ -21228,11 +21315,10 @@ async def login(request: LoginRequest, req: Request, response: Response):
                 pw_ok = True
                 break
     if not pw_ok:
-        if not is_demo_attempt:
-            record_login_failure(login_key)
-            if ip_key:
-                record_login_failure(ip_key)
-            increment_failed_logins(int(user.get("id") or 0))
+        record_login_failure(login_key)
+        if ip_key:
+            record_login_failure(ip_key)
+        increment_failed_logins(int(user.get("id") or 0))
         raise HTTPException(status_code=401, detail="Invalid credentials")
     # Upgrade legacy plaintext credentials on successful authentication. This
     # only rewrites the password representation; it deliberately does not
@@ -25403,6 +25489,8 @@ async def _diamondvoy_stream_events(
     personal_learning_query = role == "student" and not speaking_account and _diamondvoy_is_personal_learning_query(user_text)
     if not user_text and not attachment_urls:
         raise HTTPException(status_code=400, detail="Xabar yoki fayl yuboring")
+    if request is not None:
+        _enforce_diamondvoy_rate_limit(request, user_id)
 
     if not regenerate:
         _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
@@ -54719,7 +54807,16 @@ def _serialize_inbound_email(row: dict, include_body: bool = False) -> dict:
     }
     if include_body:
         payload["text_body"] = str(row.get("text_body") or "")
-        payload["html_body_sanitized"] = str(row.get("html_body_sanitized") or "")
+        # Sanitize again at read time so older rows written before the
+        # allowlist sanitizer cannot execute when rendered in the admin inbox.
+        try:
+            from backend.html_sanitizer import sanitize_email_html
+
+            payload["html_body_sanitized"] = sanitize_email_html(
+                str(row.get("html_body_sanitized") or "")
+            )
+        except Exception:
+            payload["html_body_sanitized"] = ""
     return payload
 
 

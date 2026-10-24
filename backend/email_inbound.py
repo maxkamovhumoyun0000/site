@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import html
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from email import policy
@@ -42,6 +40,8 @@ def _load_env_file(path: Path) -> None:
 _load_env_file(MAIL_ENV_PATH)
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.html_sanitizer import sanitize_email_html  # noqa: E402
 
 try:  # noqa: E402
     from db import _execute_ddl_candidates, get_conn  # type: ignore
@@ -162,20 +162,7 @@ def _decode_part(part: Any) -> str:
 
 
 def _sanitize_html(value: str) -> str:
-    text = str(value or "")
-    text = re.sub(r"(?is)<(script|style|iframe|object|embed|form|meta|link)[^>]*>.*?</\1>", "", text)
-    text = re.sub(r"(?is)<(script|style|iframe|object|embed|form|meta|link)[^>]*/?>", "", text)
-    # The app's CSP denies style attributes. Also remove the internal
-    # data-csp-style bridge attribute so untrusted email HTML can never ask
-    # the nonce-authorized bridge to apply author-controlled CSS.
-    text = re.sub(
-        r"(?is)\s(?:style|data-csp-style)\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
-        "",
-        text,
-    )
-    text = re.sub(r"(?i)\son\w+\s*=\s*(['\"]).*?\1", "", text)
-    text = re.sub(r"(?i)\s(href|src)\s*=\s*(['\"])\s*javascript:.*?\2", r" \1=\"#\"", text)
-    return text[:MAX_BODY_CHARS]
+    return sanitize_email_html(str(value or "")[:MAX_BODY_CHARS])
 
 
 def _first_address(*values: str) -> str:

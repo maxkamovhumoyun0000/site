@@ -5,11 +5,15 @@ function contentSecurityPolicy(nonce: string, isDevelopment: boolean) {
     "default-src 'self'",
     "base-uri 'self'",
     "object-src 'none'",
-    "frame-ancestors 'self'",
+    // The product has no supported embedding use case; prevent clickjacking.
+    "frame-ancestors 'none'",
     "form-action 'self'",
+    "manifest-src 'self'",
+    "upgrade-insecure-requests",
     // Render user uploads and locally-generated QR codes from this origin only.
     "img-src 'self' data: blob:",
-    "font-src 'self' data: https://fonts.gstatic.com",
+    // Fonts are served by this site or use the user's local system fonts.
+    "font-src 'self'",
     // Lesson audio/video is served by Diamond Education or captured locally.
     "media-src 'self' blob:",
     `connect-src 'self' https://live.diamond-education.uz wss://diamond-education.uz wss://live.diamond-education.uz${isDevelopment ? " ws://localhost:3001 http://127.0.0.1:18765" : ""}`,
@@ -17,8 +21,8 @@ function contentSecurityPolicy(nonce: string, isDevelopment: boolean) {
     "frame-src 'self' blob: https://www.youtube.com https://www.youtube-nocookie.com https://web.telegram.org https://www.google.com https://maps.google.com https://view.officeapps.live.com",
     `script-src 'self' 'nonce-${nonce}' https://telegram.org${isDevelopment ? " 'unsafe-eval'" : ""}`,
     "script-src-attr 'none'",
-    `style-src 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
-    `style-src-elem 'self' 'nonce-${nonce}' https://fonts.googleapis.com`,
+    `style-src 'self' 'nonce-${nonce}'`,
+    `style-src-elem 'self' 'nonce-${nonce}'`,
     "style-src-attr 'none'",
   ].join("; ");
 }
