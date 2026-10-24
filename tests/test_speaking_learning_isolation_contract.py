@@ -19,9 +19,15 @@ def test_speaking_learning_has_isolated_storage_and_namespaced_routes():
 def test_speaking_learning_is_test_only_and_requires_progression():
     source = (ROOT / "backend" / "speaking_learning.py").read_text()
     admin = (ROOT / "app" / "ui" / "speaking-learning-paths.tsx").read_text()
-    assert 'pattern="^(multiple_choice|true_false|short_answer)$"' in source
+    assert '"word_order", "matching", "translation", "spelling"' in source
+    assert "data_json" in source
+    assert '"/speaking/learning/modules/{module_id}/check"' in source
+    assert '"/speaking/learning/upload-audio"' in source
+    assert '"/speaking/learning/tracks/{track_id}/final-exam"' in source
+    assert "speaking_learning_final_attempts" in source
     assert "_require_unlocked_module" in source
     assert "speaking_learning_attempts" in source
+    assert "speaking_learning_answer_checks" in source
     assert "speaking_prompt" not in admin
     assert "speaking_learning_tracks" in source
 
