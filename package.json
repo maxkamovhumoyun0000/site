@@ -37,6 +37,7 @@
     "typescript": "^5.0.0"
   },
   "overrides": {
-    "@xmldom/xmldom": "0.9.12"
+    "@xmldom/xmldom": "0.9.12",
+    "zod": "4.6.7"
   }
 }
