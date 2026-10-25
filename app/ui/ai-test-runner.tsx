@@ -201,18 +201,21 @@ export function AiTestRunner({
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-6">
-      <header className="mb-5">
-        <div className="mb-2 flex items-center justify-between">
-          <button onClick={exitTest} className="text-sm font-black text-ink-500 dark:text-navy-300">← {tt("aitest.exit", "Chiqish")}</button>
-          <span className="text-sm font-black text-navy-900 dark:text-white">
-            {attempt.solved_count} / {attempt.total_questions}
+      <header className="mb-6 p-4 bg-white dark:bg-[#131C2E] rounded-3xl border border-[#E6EBF5] dark:border-[#233352] shadow-sm">
+        <div className="mb-2.5 flex items-center justify-between">
+          <button onClick={exitTest} className="text-xs font-bold px-3 py-1.5 rounded-xl bg-[#F6F8FD] dark:bg-[#1B273F] text-[#68758D] hover:text-[#1736E8] transition-all">← {tt("aitest.exit", "Chiqish")}</button>
+          <span className="text-xs font-bold text-[#68758D] dark:text-[#A1B0CC]">
+            Savol {attempt.solved_count + 1} / {attempt.total_questions}
+          </span>
+          <span className="text-xs font-extrabold text-[#1736E8] dark:text-[#00D2FF]">
+            {Math.round(progress)}% yakunlandi
           </span>
         </div>
-        <div className="h-2 overflow-hidden rounded-full bg-surface-soft dark:bg-white/10">
-          <div className="h-full rounded-full bg-cyan-500 transition-all" data-csp-style={JSON.stringify({ width: `${progress}%` })} />
+        <div className="h-2 overflow-hidden rounded-full bg-[#E6EBF5] dark:bg-[#233352]">
+          <div className="h-full rounded-full bg-gradient-to-r from-[#1736E8] to-[#00D2FF] transition-all duration-300" data-csp-style={JSON.stringify({ width: `${progress}%` })} />
         </div>
         {q.retry_until_correct && (
-          <p className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-300">
+          <p className="mt-2 text-xs font-bold text-[#E8A33D]">
             {`Urinishlar: ${currentTries} / 5`}
           </p>
         )}
@@ -1014,8 +1017,24 @@ function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUp
   const [uploading, setUploading] = useState(false);
   const [ready, setReady] = useState(false);
   const [err, setErr] = useState("");
+  const [seconds, setSeconds] = useState(0);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (recording) {
+      setSeconds(0);
+      timerRef.current = window.setInterval(() => {
+        setSeconds((s) => s + 1);
+      }, 1000);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [recording]);
 
   const startRec = async () => {
     setErr("");
@@ -1052,21 +1071,61 @@ function Recorder({ attemptId, onUploaded, disabled }: { attemptId: number; onUp
     setRecording(false);
   };
 
+  const timeFormatted = `${Math.floor(seconds / 60).toString().padStart(2, "0")}:${(seconds % 60).toString().padStart(2, "0")}`;
+
   return (
-    <div className="flex flex-col items-center gap-2">
-      <button
-        onClick={recording ? stopRec : startRec}
-        disabled={disabled || uploading}
-        className={`flex h-20 w-20 items-center justify-center rounded-full text-3xl text-white shadow-lg transition disabled:opacity-60 ${
-          recording ? "animate-pulse bg-red-500" : "bg-cyan-600"
-        }`}
-      >
-        {recording ? "⏹" : "🎙️"}
-      </button>
-      <span className="text-sm font-bold text-ink-500 dark:text-navy-300">
-        {uploading ? tt("aitest.uploading", "Yuklanmoqda…") : recording ? tt("aitest.recording", "Yozilmoqda… tugatish uchun bosing") : ready ? tt("aitest.recorded", "Yozildi ✓ — qaytadan yozish mumkin") : tt("aitest.speakToStart", "Gapirish uchun bosing")}
+    <div className="flex flex-col items-center justify-center p-6 bg-white dark:bg-[#131C2E] rounded-3xl border border-[#E6EBF5] dark:border-[#233352] shadow-sm">
+      {/* Recording status pill */}
+      <div className="flex items-center gap-2 mb-4">
+        <span className={`w-2.5 h-2.5 rounded-full ${recording ? "bg-[#E53935] animate-ping" : "bg-[#13A879]"}`} />
+        <span className={`text-xs font-bold ${recording ? "text-[#E53935]" : "text-[#13A879]"}`}>
+          {recording ? `Yozib olinmoqda • ${timeFormatted}` : ready ? "Yozib olindi ✓" : "Mikrofon tayyor"}
+        </span>
+      </div>
+
+      {/* Waveform bars simulation */}
+      <div className="flex items-center justify-center gap-1.5 h-12 w-full px-4 mb-5">
+        {[16, 28, 40, 22, 48, 32, 44, 26, 36, 18, 12].map((h, i) => (
+          <span
+            key={i}
+            className={`w-1.5 rounded-full transition-all duration-200 ${
+              recording
+                ? "bg-[#1736E8] dark:bg-[#00D2FF]"
+                : "bg-[#E6EBF5] dark:bg-[#233352]"
+            }`}
+            style={{ height: recording ? `${h}px` : "6px" }}
+          />
+        ))}
+      </div>
+
+      {/* Center Record Button */}
+      <div className="relative flex items-center justify-center mb-3">
+        {recording && (
+          <div className="absolute w-24 h-24 rounded-full bg-[#E53935]/20 animate-ping pointer-events-none" />
+        )}
+        <button
+          onClick={recording ? stopRec : startRec}
+          disabled={disabled || uploading}
+          className={`relative flex h-16 w-16 items-center justify-center rounded-full text-2xl text-white shadow-xl transition active:scale-95 disabled:opacity-60 ${
+            recording
+              ? "bg-gradient-to-br from-[#E53935] to-[#D32F2F] shadow-[0_6px_20px_rgba(229,57,53,0.4)]"
+              : "bg-gradient-to-br from-[#1736E8] to-[#384BD4] shadow-[0_6px_20px_rgba(23,54,232,0.4)]"
+          }`}
+        >
+          {recording ? "⏹" : "🎙️"}
+        </button>
+      </div>
+
+      <span className="text-xs font-bold text-[#68758D] dark:text-[#A1B0CC]">
+        {uploading
+          ? tt("aitest.uploading", "Yuklanmoqda…")
+          : recording
+          ? tt("aitest.recording", "Tugatish uchun bosing")
+          : ready
+          ? tt("aitest.recorded", "Qaytadan yozish mumkin")
+          : tt("aitest.speakToStart", "Gapirish uchun bosing")}
       </span>
-      {err && <span className="text-sm font-bold text-red-500">{err}</span>}
+      {err && <span className="text-xs font-bold text-red-500 mt-2">{err}</span>}
     </div>
   );
 }

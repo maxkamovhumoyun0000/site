@@ -1182,7 +1182,7 @@ function maybeRedirectLegacyStudentRuntimeRoute(
   requestedSection: string,
   onRedirect?: (target: string) => void,
 ) {
-  if (typeof window === "undefined" || role !== "student") return false;
+  if (typeof window === "undefined" || (role !== "student" && role !== "speaking_user")) return false;
   const currentParams = new URLSearchParams(window.location.search);
   const target = buildLegacyStudentRuntimeTarget(requestedSection, currentParams);
   if (!target) return false;
@@ -22389,6 +22389,23 @@ function SpeakingUserWorkspace({ user, onNavigate }: { user: ApiUser; onNavigate
       </section>
 
       <section className="grid gap-4 sm:grid-cols-2">
+        <article className="rounded-3xl border border-[#1736E8]/30 bg-gradient-to-br from-white to-[#F6F8FD] p-6 shadow-sm dark:border-[#1736E8]/40 dark:bg-[#131C2E]">
+          <div className="flex items-center justify-between">
+            <div className="text-3xl" aria-hidden="true">⚔️</div>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#13A879]/12 text-[#13A879] text-xs font-black">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#13A879] animate-pulse" />
+              LIVE
+            </span>
+          </div>
+          <h2 className="mt-3 text-lg font-black text-navy-950 dark:text-white">Arena &amp; Duellar</h2>
+          <p className="mt-2 text-sm leading-6 text-ink-600 dark:text-slate-300">
+            1v1, 3v3, 5v5 va Boss jangi. Grammatika va leksika bo‘yicha jonli duel maydonida bellashing!
+          </p>
+          <button type="button" className="btn btn-primary mt-4 flex items-center gap-2" onClick={() => onNavigate("arena")}>
+            <span>Arenaga kirish</span>
+            <span>→</span>
+          </button>
+        </article>
         <article className="rounded-3xl border border-line bg-surface p-6 shadow-sm dark:border-white/10 dark:bg-navy-950">
           <div className="text-3xl" aria-hidden="true">📱</div>
           <h2 className="mt-3 text-lg font-black text-navy-950 dark:text-white">Mobil ilova</h2>
@@ -25394,6 +25411,16 @@ function DashboardShell({
   } else if (activeRole === "speaking_user") {
     if (currentSection === "profile") {
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="SPEAKING" />;
+    } else if (currentSection === "arena") {
+      content = <StudentArena data={roleData} onNavigate={handleNavigate} />;
+    } else if (currentSection === "arena-boss") {
+      content = <StudentCompetitionPage data={roleData} mode="boss" onNavigate={handleNavigate} />;
+    } else if (currentSection === "duel-1v1") {
+      content = <StudentCompetitionPage data={roleData} mode="duel-1v1" onNavigate={handleNavigate} />;
+    } else if (currentSection === "duel-3v3") {
+      content = <StudentCompetitionPage data={roleData} mode="duel-3v3" onNavigate={handleNavigate} />;
+    } else if (currentSection === "duel-5v5") {
+      content = <StudentCompetitionPage data={roleData} mode="duel-5v5" onNavigate={handleNavigate} />;
     } else {
       content = <SpeakingUserWorkspace user={user} onNavigate={handleNavigate} />;
     }

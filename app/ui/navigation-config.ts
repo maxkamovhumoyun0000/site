@@ -69,7 +69,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   ],
   // Standalone Speaking registrations use the same verified identity in the
   // mobile client and on the website, without inheriting school-only gates.
-  speaking_user: ["home", "profile"],
+  speaking_user: ["home", "arena", "profile"],
   teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   limited_admin: ["home", "chats", "users", "groups", "payments", "attendance", "profile"],

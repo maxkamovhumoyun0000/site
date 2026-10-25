@@ -7,6 +7,15 @@ import { AssetIcon } from "../ui/primitives";
 import { resolveLocale, useWebT } from "../ui/web-i18n";
 import { TestCompletionActions, type TestReviewItem } from "../ui/test-completion-actions";
 import { StudentTestProctoring, useStudentProctoringStatus } from "./proctoring";
+import {
+  StitchWebArenaHeader,
+  StitchWebArenaCard,
+  StitchWebRadarMatchmaking,
+  StitchWebGeneratingState,
+  StitchWebResultView,
+  StitchWebAnswerReview,
+  StitchWebSubjectModal,
+} from "../ui/stitch-arena-components";
 
 export type GenericRow = Record<string, any>;
 
@@ -3707,7 +3716,6 @@ export function StudentArena({
 }) {
   const tt = useWebT();
   const router = useRouter();
-  void data;
 
   function runtimeStartPath(sectionId: string) {
     const path = studentSectionToPath(sectionId, { autoJoin: false });
@@ -3716,40 +3724,92 @@ export function StudentArena({
     return `${path}${joiner}arena_mode=${encodeURIComponent(sectionId)}`;
   }
 
+  const arenaModes = [
+    {
+      id: "duel-1v1",
+      title: "1v1 Quick Duel",
+      subtitle: tt("duel.duel-1v1.subtitle", "Grammatika va so'z boyligi bo'yicha yakkama-yakka intellektual to'qnashuv."),
+      badge: "+25 D'Coin • +50 XP",
+      activeInfo: "Hozir onlayn: 142 o'quvchi",
+      icon: "🤺",
+      gradient: "bg-gradient-to-br from-[#1736E8] to-[#384BD4]",
+    },
+    {
+      id: "duel-3v3",
+      title: "3v3 Team Battle",
+      subtitle: tt("duel.duel-3v3.subtitle", "Jamoaviy duel: 3 kishilik guruh bilan raqib jamoaga qarshi bilim bellashuvi."),
+      badge: "+75 D'Coin • +150 XP",
+      activeInfo: "Hozir onlayn: 86 o'quvchi",
+      icon: "👥",
+      gradient: "bg-gradient-to-br from-[#007A55] to-[#13A879]",
+    },
+    {
+      id: "duel-5v5",
+      title: "5v5 Grand Arena",
+      subtitle: tt("duel.duel-5v5.subtitle", "Katta jamoaviy jang: 10 nafar o'quvchi o'rtasidagi shiddatli aql jangi."),
+      badge: "+150 D'Coin • +300 XP",
+      activeInfo: "Hozir onlayn: 54 o'quvchi",
+      icon: "🔥",
+      gradient: "bg-gradient-to-br from-[#7C3AED] to-[#9333EA]",
+    },
+    {
+      id: "arena-boss",
+      title: "Boss Battle Arena",
+      subtitle: tt("arena.boss.subtitle", "AI Titan bilan aql jangi: 15 ta eng murakkab topshiriq va yirik sovrinlar."),
+      badge: "+500 D'Coin • +1000 XP",
+      activeInfo: "Haftalik maxsus tadbir",
+      icon: "👹",
+      gradient: "bg-gradient-to-br from-[#F59E0B] to-[#D97706]",
+    },
+  ];
+
+  const [selectedModeForSubject, setSelectedModeForSubject] = useState<string | null>(null);
+  const studentSubjects = useMemo(() => studentSubjectNames(data), [data]);
+  const langSubjects = useMemo(() => {
+    const filtered = studentSubjects.filter((s) => {
+      const lower = s.toLowerCase();
+      return lower.includes("eng") || lower.includes("rus") || lower.includes("ingliz");
+    });
+    return filtered.length > 0 ? filtered : ["English", "Russian"];
+  }, [studentSubjects]);
+
   return (
-    <div className="flex flex-col gap-4 pb-12 animate-fade-in">
-      <section className="grid grid-cols-2 gap-3 sm:gap-4 arena-duel-grid">
-        {[
-          { id: "arena-boss", title: tt("arena.boss.title", "Boss Arena"), description: tt("arena.boss.subtitle", "Kamida 5 o'quvchi, 15 qiyin savol."), icon: "👹" },
-          { id: "duel-1v1", title: tt("duel.duel-1v1.title", "Duel 1v1"), description: tt("duel.duel-1v1.subtitle", "Fan bo'yicha 1 ga 1 duel. Level faqat ma'lumot uchun ko'rsatiladi."), icon: "🤺" },
-          { id: "duel-3v3", title: tt("duel.duel-3v3.title", "Duel 3v3"), description: tt("duel.duel-3v3.subtitle", "Fan bo'yicha 6 o'quvchilik jamoaviy duel. Level faqat ma'lumot uchun ko'rsatiladi."), icon: "👥" },
-          { id: "duel-5v5", title: tt("duel.duel-5v5.title", "Duel 5v5"), description: tt("duel.duel-5v5.subtitle", "Fan bo'yicha 10 o'quvchilik jamoaviy duel."), icon: "🔥" },
-        ].map((battle) => (
-          <article className="relative flex min-w-0 flex-col justify-between p-3.5 sm:p-4 bg-gradient-to-br from-navy-800 to-navy-900 border border-white/10 rounded-2xl shadow-premium group overflow-hidden transition-all hover:-translate-y-1 hover:shadow-[0_10px_40px_rgba(0,11,59,0.3)]" key={battle.id}>
-            <div className="absolute -top-10 -right-10 w-32 h-32 bg-cyan-500/10 blur-[40px] group-hover:bg-cyan-500/20 transition-colors pointer-events-none" />
-            
-            <div className="relative z-10 flex flex-col h-full">
-              <div className="flex items-start justify-between mb-2.5 gap-2">
-                <div className="arena-menu-icon flex items-center justify-center w-10 h-10 bg-white/10 rounded-lg text-xl backdrop-blur-sm border border-white/10 shrink-0">
-                  {battle.icon}
-                </div>
-              </div>
-              
-              <h3 className="text-sm sm:text-base font-bold text-white font-display mb-1.5 break-words leading-snug">{battle.title}</h3>
-              <p className="text-[11px] sm:text-xs font-medium text-navy-100 mb-3 leading-snug flex-grow line-clamp-3 break-words">{battle.description}</p>
-              
-              <button 
-                className="w-full px-3 py-2.5 text-xs sm:text-sm font-bold text-navy-900 bg-white hover:bg-cyan-50 rounded-xl shadow-[0_0_15px_rgba(255,255,255,0.1)] transition-colors mt-auto whitespace-nowrap overflow-hidden text-ellipsis" 
-                onClick={() => router.push(runtimeStartPath(String(battle.id)))}
-              >
-                {String(battle.id).startsWith("duel-") ? tt("duel.start", "Duel boshlash") : tt("arena.startShort", "Start")} {battle.title}
-              </button>
-            </div>
-          </article>
+    <div className="flex flex-col pb-12 animate-fade-in max-w-6xl mx-auto">
+      <StitchWebArenaHeader
+        dcoin={Number(data?.dcoin || data?.balance?.dcoin || 0)}
+        dpoint={Number(data?.dpoints || data?.dpoint || data?.xp || 0)}
+        onOpenHistory={() => router.push(runtimeStartPath("duel-1v1") + "&view=history")}
+      />
+
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {arenaModes.map((battle) => (
+          <StitchWebArenaCard
+            key={battle.id}
+            title={battle.title}
+            subtitle={battle.subtitle}
+            badgeText={battle.badge}
+            activeInfo={battle.activeInfo}
+            icon={battle.icon}
+            gradientClass={battle.gradient}
+            btnText={tt("arena.startShort", "Boshlash")}
+            onStart={() => setSelectedModeForSubject(String(battle.id))}
+          />
         ))}
       </section>
 
-      <section className="mt-8 bg-surface-soft dark:bg-navy-950/40 rounded-[2rem] border border-line dark:border-white/5 overflow-hidden">
+      <StitchWebSubjectModal
+        isOpen={Boolean(selectedModeForSubject)}
+        subjects={langSubjects}
+        onSelect={(sub) => {
+          if (selectedModeForSubject) {
+            router.push(`${runtimeStartPath(selectedModeForSubject)}&subject=${encodeURIComponent(sub)}`);
+            setSelectedModeForSubject(null);
+          }
+        }}
+        onClose={() => setSelectedModeForSubject(null)}
+      />
+
+      <section className="mt-8 bg-white dark:bg-[#131C2E] rounded-3xl border border-[#E6EBF5] dark:border-[#233352] overflow-hidden shadow-[0_8px_24px_-4px_rgba(23,35,60,0.06)]">
         <div className="p-5 sm:p-8 border-b border-line dark:border-white/5">
           <h2 className="text-xl sm:text-2xl font-black text-navy-900 dark:text-white">
             {tt("arena.faq.title", "Ko'p so'raladigan savollar va Qoidalar")}
@@ -4073,6 +4133,8 @@ export function StudentCompetitionPage({
   }, [mode]);
 
   const [sessionId, setSessionId] = useState("");
+  const [showAnswerReview, setShowAnswerReview] = useState(false);
+  const lastFinishedSessionIdRef = useRef("");
   const [theme, setTheme] = useState("core");
   const [status, setStatus] = useState<CompetitionStatusPayload | null>(null);
   const [question, setQuestion] = useState<CompetitionQuestionPayload | null>(null);
@@ -4309,6 +4371,7 @@ export function StudentCompetitionPage({
       if (phaseNow === "finished" || String(statusPayload.status || "") === "finished") {
         const resultPayload = await requestJson<GenericRow>(`/competition/runtime/${encodeURIComponent(resolvedSessionId)}/result`, { token });
         if (resultPayload.ready) {
+          lastFinishedSessionIdRef.current = resolvedSessionId;
           setResult(resultPayload);
           setSessionId("");
           setQuestion(null);
@@ -4413,6 +4476,7 @@ export function StudentCompetitionPage({
       if (payload.completed) {
         const resultPayload = await requestJson<GenericRow>(`/competition/runtime/${encodeURIComponent(requestedSessionId)}/result`, { token });
         if (resultPayload.ready) {
+          lastFinishedSessionIdRef.current = requestedSessionId;
           setResult(resultPayload);
           setSessionId("");
           setQuestion(null);
@@ -4974,6 +5038,26 @@ export function StudentCompetitionPage({
           )}
 
           {showPending && (
+            isDuel || mode === "boss" ? (
+              <div className="animate-fade-in py-6">
+                {generationStarted ? (
+                  <StitchWebGeneratingState
+                    percent={generationPercent}
+                    playerName={String((data?.user?.name as string) || (data?.user?.first_name as string) || "Siz")}
+                    opponentName={participants.find((p) => Number(p.user_id) !== Number(data?.user?.id || data?.id))?.name || "Raqib"}
+                  />
+                ) : (
+                  <StitchWebRadarMatchmaking
+                    participantCount={participantsCount}
+                    requiredPlayers={requiredPlayers || (mode === "duel-3v3" ? 6 : mode === "duel-5v5" ? 10 : 2)}
+                    secondsLeft={waitingRemaining ?? 60}
+                    playerName={String((data?.user?.name as string) || (data?.user?.first_name as string) || "Siz")}
+                    opponentName={participants.find((p) => Number(p.user_id) !== Number(data?.user?.id || data?.id))?.name}
+                    onCancel={leaveCompetitionQueue}
+                  />
+                )}
+              </div>
+            ) : (
             <div className={`bg-white dark:bg-slate-950/80 rounded-[2rem] shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(6,182,212,0.15)] border border-line dark:border-cyan-500/20 overflow-hidden backdrop-blur-xl relative`}>
               <div className="absolute top-0 inset-x-0 h-40 bg-gradient-to-b from-indigo-500/10 to-transparent dark:from-indigo-500/20 pointer-events-none" />
               
@@ -5217,6 +5301,7 @@ export function StudentCompetitionPage({
                 ) : null}
               </div>
             </div>
+            )
           )}
 
           {showRuntime && (
@@ -5408,6 +5493,33 @@ export function StudentCompetitionPage({
 	          )}
 
           {result?.ready && (
+            isDuel || mode === "boss" ? (
+              <div className="animate-fade-in py-4 max-w-2xl mx-auto">
+                {showAnswerReview ? (
+                  <StitchWebAnswerReview
+                    items={testReviewItems((historyReview?.items || historyReview?.review || result?.review || []) as GenericRow[])}
+                    onClose={() => setShowAnswerReview(false)}
+                  />
+                ) : (
+                  <StitchWebResultView
+                    isWinner={isWinner}
+                    isTie={isTie}
+                    correctCount={Number(result.result?.correct ?? result.correct ?? 0)}
+                    wrongCount={Number(result.result?.wrong ?? result.wrong ?? 0)}
+                    skippedCount={Number(result.result?.unanswered ?? result.unanswered ?? 0)}
+                    dcoinEarned={Number(result.dcoin_delta ?? result.reward_dcoin ?? (isWinner ? 25 : 5))}
+                    dpointEarned={Number(result.result?.dpoints_delta ?? result.dpoints_delta ?? (isWinner ? 50 : 10))}
+                    onReview={() => {
+                      if (sessionId || lastFinishedSessionIdRef.current) {
+                        openHistoryReview({ session_id: sessionId || lastFinishedSessionIdRef.current });
+                      }
+                      setShowAnswerReview(true);
+                    }}
+                    onDone={() => onNavigate("arena")}
+                  />
+                )}
+              </div>
+            ) : (
             <div className="competition-surface-card test-result-card bg-white dark:bg-navy-950/90 rounded-[2rem] p-4 sm:p-6 shadow-premium border border-line dark:border-white/10 text-center relative overflow-hidden">
               <div className={`absolute top-0 left-0 right-0 h-40 bg-gradient-to-b ${isRefunded ? "from-cyan-500/20" : isTie ? "from-slate-500/20" : isWinner ? "from-yellow-500/20" : "from-slate-500/10"} to-transparent`} />
               
@@ -5618,6 +5730,7 @@ export function StudentCompetitionPage({
                 </div>
               </div>
             </div>
+            )
           )}
         </div>
       </div>
