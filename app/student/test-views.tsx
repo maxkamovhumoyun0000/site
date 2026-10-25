@@ -5493,7 +5493,7 @@ export function StudentCompetitionPage({
 	          )}
 
           {result?.ready && (
-            isDuel || mode === "boss" ? (
+            isDuel || (mode as string) === "boss" ? (
               <div className="animate-fade-in py-4 max-w-2xl mx-auto">
                 {showAnswerReview ? (
                   <StitchWebAnswerReview
@@ -5557,7 +5557,7 @@ export function StudentCompetitionPage({
                   </div>
                 )}
 
-                {mode === "boss" && bossSummary && Object.keys(bossSummary).length > 0 ? (
+                {(mode as string) === "boss" && bossSummary && Object.keys(bossSummary).length > 0 ? (
                   <div className="mb-10 rounded-2xl border border-line bg-surface-soft p-5 text-left dark:border-white/10 dark:bg-navy-950/60">
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                       <h4 className="text-sm font-black uppercase tracking-wider text-ink-600 dark:text-navy-200">

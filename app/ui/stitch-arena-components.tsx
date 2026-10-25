@@ -445,7 +445,7 @@ export function StitchWebAnswerReview({
     question_index?: number;
     prompt?: string;
     passage?: string;
-    options?: string[];
+    options?: any[];
     selected_option?: number | null;
     correct_option?: number | null;
     is_correct?: boolean;
