@@ -30,6 +30,18 @@ def test_telegram_hash_is_a_first_class_login_source_not_just_the_sdk_object() -
     assert "init_data: initData" in source
 
 
+def test_cookie_migration_cannot_hold_telegram_auth_loading_forever() -> None:
+    source = (ROOT / "lib" / "auth-session.ts").read_text(encoding="utf-8")
+    page = (ROOT / "app" / "page.tsx").read_text(encoding="utf-8")
+
+    assert "COOKIE_SESSION_MIGRATION_TIMEOUT_MS = 4_000" in source
+    assert "signal: controller.signal" in source
+    assert "const runAuthSafely = () =>" in page
+    assert "initAuth().catch(() => settleUnexpectedAuthFailure())" in page
+    assert "if (isTgClient && !userRef.current)" in page
+    assert "finishTelegramAuthError();" in page
+
+
 def test_deploy_runbook_releases_a_committed_snapshot_with_relative_paths() -> None:
     source = (ROOT / "deploy.md").read_text(encoding="utf-8")
 

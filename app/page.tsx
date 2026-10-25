@@ -26337,9 +26337,36 @@ export default function DiamondEducationApp() {
       setInitialStateReady(true);
     };
 
+    const settleUnexpectedAuthFailure = () => {
+      if (disposed) return;
+      authAttemptInFlight = false;
+      authFinished = true;
+      if (userRef.current) {
+        setAuthStatus("authenticated");
+        setAuthResolved(true);
+        setInitialStateReady(roleFromUser(userRef.current) !== "admin" || Boolean(appStateRef.current?.admin?.admin_scope));
+        setAuthInitError("Sessiyani tekshirish yakunlanmadi. Qayta urinib ko‘rishingiz mumkin.");
+        setShowAuthRetry(true);
+        return;
+      }
+      if (getTelegramRuntimeAuth().isTelegramClient) {
+        finishTelegramAuthError();
+        return;
+      }
+      setAuthStatus("unauthenticated");
+      setAuthResolved(true);
+      setInitialStateReady(true);
+      setAuthInitError("Kirishni tekshirib bo‘lmadi. Qayta urinib ko‘ring.");
+      setShowAuthRetry(true);
+    };
+
+    const runAuthSafely = () => {
+      void initAuth().catch(() => settleUnexpectedAuthFailure());
+    };
+
     const scheduleTelegramSdkRetry = () => {
       window.setTimeout(() => {
-        if (!disposed) initAuth().catch(() => null);
+        if (!disposed) runAuthSafely();
       }, 750);
     };
 
@@ -26446,7 +26473,7 @@ export default function DiamondEducationApp() {
         if (disposed) return;
         window.setTimeout(() => {
           if (disposed) return;
-          initAuth().catch(() => null);
+          runAuthSafely();
         }, 900);
       };
       try {
@@ -26631,7 +26658,7 @@ export default function DiamondEducationApp() {
       }
     }
 
-    initAuth();
+    runAuthSafely();
 
     const splashFailSafe = window.setTimeout(() => {
       if (disposed || authFinished) return;
@@ -26644,8 +26671,12 @@ export default function DiamondEducationApp() {
       const telegramAutoLoginSuppressed = Boolean(
         manualTelegramLogoutKey && sessionStorage.getItem(manualTelegramLogoutKey) === "1",
       );
-      if (isTgClient && (!initData || !telegramId)) {
-        holdCheckingState("Telegram ma'lumoti yuklanmoqda. Iltimos, sahifani yopmang.");
+      // Never leave a Telegram Mini App behind the checking splash. If Telegram
+      // data or the auth endpoint is still unavailable after the boot window,
+      // show the retry screen and let the user retry without reopening the app.
+      if (isTgClient && !userRef.current) {
+        authFinished = true;
+        finishTelegramAuthError();
         return;
       }
       if (!userRef.current && !token && !(TELEGRAM_AUTO_AUTH_ENABLED && telegramId && initData && !telegramAutoLoginSuppressed)) {
