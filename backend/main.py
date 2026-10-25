@@ -2807,6 +2807,10 @@ def _require_enabled_competition_mode(mode: str | None) -> None:
 
 class CompetitionAnswerRequest(BaseModel):
     selected_option_index: int | None = None
+    answer_text: str | None = Field(default=None, max_length=4000)
+    audio_url: str | None = Field(default=None, max_length=2048)
+    matching_answer: dict[str, str] | None = None
+    timed_out: bool = False
     proctoring_session_id: int | None = None
     question_index: int | None = None  # Client-side index for double-submit guard
 
@@ -4922,8 +4926,20 @@ TEST_MCQ_QUESTION_TYPES = {
     "synonym",
     "antonym",
     "gap_fill",
+    "gap_filling",
     "vocab_definition",
+    "definition",
 }
+
+COMPETITION_VOCABULARY_QUESTION_TYPES = frozenset({
+    "word_practice",
+    "spelling",
+    "translation",
+    "matching",
+    "speak_sentence",
+    "read_aloud",
+    "write_sentence",
+})
 
 
 def _row_value(row: Any, key: str, default: Any = None) -> Any:
@@ -4990,6 +5006,12 @@ def _test_instruction_for_type(question_type: Any, subject: Any, fallback: Any =
             "find_mistake": "Найдите ошибку и выберите правильный вариант.",
             "error_spotting": "Определите, в какой части предложения есть ошибка.",
             "gap_filling": "Выберите правильный вариант для пропуска.",
+            "spelling": "Напишите слово без ошибок.",
+            "translation": "Переведите слово.",
+            "matching": "Сопоставьте каждое слово с правильным переводом.",
+            "speak_sentence": "Составьте и произнесите предложение с этим словом.",
+            "read_aloud": "Произнесите слово чётко и разборчиво.",
+            "write_sentence": "Напишите осмысленное предложение с этим словом.",
             "definition": "Выберите правильное значение.",
             "translation": "Выберите правильный перевод.",
             "reading": "Прочитайте текст и выберите правильный ответ.",
@@ -5002,6 +5024,12 @@ def _test_instruction_for_type(question_type: Any, subject: Any, fallback: Any =
             "find_mistake": "Find the mistake and choose the correct version.",
             "error_spotting": "Identify which part of the sentence has the error.",
             "gap_filling": "Choose the best option for the gap.",
+            "spelling": "Write the word with correct spelling.",
+            "translation": "Translate the word.",
+            "matching": "Match each word with the correct translation.",
+            "speak_sentence": "Make and say a sentence using this word.",
+            "read_aloud": "Pronounce the word clearly.",
+            "write_sentence": "Write a meaningful sentence using this word.",
             "definition": "Choose the correct meaning.",
             "translation": "Choose the correct translation.",
             "reading": "Read the passage and choose the correct answer.",
@@ -5104,7 +5132,7 @@ def _duel_enrich_reading_questions(rows: list[dict[str, Any]], subject: str) -> 
 def _mcq_question_from_row(row: dict[str, Any]) -> dict[str, Any]:
     payload = _safe_json_object(_row_value(row, "payload_json"))
     qtype = str(payload.get("question_type") or _row_value(row, "question_type") or _row_value(row, "type") or "multiple_choice").strip().lower()
-    if qtype not in TEST_MCQ_QUESTION_TYPES:
+    if qtype not in TEST_MCQ_QUESTION_TYPES and qtype not in COMPETITION_VOCABULARY_QUESTION_TYPES:
         qtype = "multiple_choice"
         payload = {}
 
@@ -5135,7 +5163,7 @@ def _mcq_question_from_row(row: dict[str, Any]) -> dict[str, Any]:
         if len(parts) == 2:
             passage = re.sub(r"(?i)^\s*passage\s*:\s*", "", parts[0]).strip()
             prompt = parts[1].strip()
-    return {
+    result = {
         "question_type": qtype,
         "subject": str(payload.get("subject") or _row_value(row, "subject") or "").strip(),
         "prompt": prompt,
@@ -5145,27 +5173,317 @@ def _mcq_question_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "options": options,
         "correct_option_index": correct_idx,
         "correct": str(payload.get("correct") or _row_value(row, "correct") or "").strip(),
+        "payload": payload,
     }
+    # Competition payloads are kept server-side for grading. The public
+    # serializer below deliberately selects only student-safe display fields.
+    for key in (
+        "kind", "test_type", "input", "answer", "correct_answer",
+        "accepted_answers", "reference_answer", "target_word", "word",
+        "translation", "translation_uz", "translation_ru", "meaning",
+        "example_sentence", "pairs", "direction", "condition",
+    ):
+        if key in payload:
+            result[key] = payload[key]
+    return result
+
+
+def _competition_uses_vocabulary_response(question: dict[str, Any]) -> bool:
+    """Distinguish random word-practice inputs from legacy MCQ translation rows."""
+    qtype = str(question.get("question_type") or "").strip().lower()
+    input_type = str(question.get("input") or "").strip().lower()
+    if qtype not in COMPETITION_VOCABULARY_QUESTION_TYPES:
+        return False
+    if input_type in {"choice", "mcq", "multiple_choice"} or question.get("options"):
+        return False
+    return input_type in {"text", "audio", "matching"}
 
 
 def _competition_question_key(row: dict[str, Any]) -> str:
     """Return a stable, human-visible signature used to prevent repeats."""
     q = _mcq_question_from_row(row)
-    text = "\n".join(
-        [
-            str(q.get("passage") or "").strip(),
-            str(q.get("prompt") or q.get("question") or "").strip(),
-        ]
-    )
+    parts = [
+        str(q.get("passage") or "").strip(),
+        str(q.get("prompt") or q.get("question") or "").strip(),
+    ]
+    # Matching exercises often share a generic instruction. Include the actual
+    # word pairs so different complete matching boards are not mistaken for
+    # duplicates of one another (or of a bank question with the same heading).
+    if str(q.get("question_type") or "").strip().lower() == "matching":
+        pairs = q.get("pairs") or []
+        pair_signature = sorted(
+            (
+                str(pair.get("left") or "").strip(),
+                str(pair.get("right") or "").strip(),
+            )
+            for pair in pairs
+            if isinstance(pair, dict)
+        )
+        parts.append(json.dumps(pair_signature, ensure_ascii=False, separators=(",", ":")))
+    text = "\n".join(parts)
     return _normalize_answer_text(text)
 
 
+def _competition_random_vocabulary_questions(
+    *, subject: str, level: str, count: int, seed: int
+) -> list[dict[str, Any]]:
+    """Create competition-ready random word-practice questions from the vocab bank.
+
+    The six polymorphic Library/learning-path exercises are materialized at
+    generation time so both competitors receive the same concrete exercise:
+    spelling, translation, matching, spoken sentence, read-aloud, or written
+    sentence. Gap-fill is also included as an MCQ-native vocabulary type.
+    Answer keys stay in payload_json and are never included in public payloads.
+    """
+    import random as _random
+
+    try:
+        from vocabulary import get_available_vocabulary_levels, get_words_by_subject
+        from backend.library_ai import WORD_PRACTICE_VARIANTS, _materialize_word_practice
+
+        allowed_levels = {
+            str(item or "").strip().upper()
+            for item in get_available_vocabulary_levels(level)
+            if str(item or "").strip()
+        }
+        source_words = get_words_by_subject(subject)
+    except Exception:
+        logger.exception("competition vocabulary bank unavailable subject=%s", subject)
+        return []
+
+    def _translation(item: dict[str, Any]) -> str:
+        if str(subject or "").strip().lower() == "russian":
+            return str(item.get("translation_uz") or "").strip()
+        # Use the Uzbek translation as the competition default; the course
+        # itself remains in English and the question type is explicit.
+        return str(item.get("translation_uz") or item.get("translation_ru") or "").strip()
+
+    pool: list[dict[str, Any]] = []
+    all_translatable_words: list[dict[str, Any]] = []
+    seen_vocab_words: set[str] = set()
+    for raw in source_words or []:
+        item = dict(raw)
+        word = str(item.get("word") or "").strip()
+        translation = _translation(item)
+        item_level = str(item.get("level") or "").strip().upper()
+        word_key = _normalize_answer_text(word)
+        if not word or not translation or not word_key or word_key in seen_vocab_words:
+            continue
+        seen_vocab_words.add(word_key)
+        item["word"] = word
+        item["translation"] = translation
+        item["example_sentence"] = str(item.get("example_sentence") or item.get("example") or "").strip()
+        all_translatable_words.append(item)
+        if not allowed_levels or not item_level or item_level in allowed_levels:
+            pool.append(item)
+
+    # Level labels have changed over time in the vocabulary bank. If a legacy
+    # label leaves too few examples, retain the subject's real bank rather
+    # than aborting a match or generating malformed placeholder questions.
+    if len(pool) < 2:
+        pool = all_translatable_words
+
+    if len(pool) < 2:
+        logger.warning(
+            "competition vocabulary pool too small subject=%s level=%s words=%s",
+            subject, level, len(pool),
+        )
+        return []
+
+    rng = _random.Random(f"{seed}:{subject}:{level}:{_now_utc().date().isoformat()}")
+    rng.shuffle(pool)
+    variants = [*WORD_PRACTICE_VARIANTS, "gap_filling"]
+    # Shuffle a full cycle first to avoid a match consisting of only one task
+    # type; additional slots continue with another random cycle.
+    type_plan: list[str] = []
+    while len(type_plan) < int(count):
+        cycle = list(variants)
+        rng.shuffle(cycle)
+        type_plan.extend(cycle)
+    type_plan = type_plan[: int(count)]
+
+    results: list[dict[str, Any]] = []
+    word_cursor = 0
+    matching_candidates = pool[:]
+    for index, kind in enumerate(type_plan):
+        if kind == "matching":
+            pairs: list[dict[str, str]] = []
+            seen_words: set[str] = set()
+            seen_translations: set[str] = set()
+            for candidate in matching_candidates:
+                word = str(candidate.get("word") or "").strip()
+                translation = str(candidate.get("translation") or "").strip()
+                key = _normalize_answer_text(word)
+                translation_key = _normalize_answer_text(translation)
+                if (
+                    not key
+                    or key in seen_words
+                    or not translation
+                    or translation_key in seen_translations
+                ):
+                    continue
+                seen_words.add(key)
+                seen_translations.add(translation_key)
+                pairs.append({"left": word, "right": translation})
+                if len(pairs) == 4:
+                    break
+            if len(pairs) < 2:
+                # A malformed/duplicated translation bank must not abort the
+                # whole Arena/Duel round or produce an impossible match task.
+                # Fall back to a concrete spelling exercise for this slot.
+                item = pool[word_cursor % len(pool)]
+                word_cursor += 1
+                payload = _materialize_word_practice(
+                    item,
+                    lang="Uzbek",
+                    study_lang=subject,
+                    chosen_kind="spelling",
+                    translation_language="uz",
+                )
+                question_type = "spelling"
+            else:
+                question_type = "matching"
+                prompt = (
+                    "Сопоставьте каждое слово с правильным переводом."
+                    if str(subject).lower() == "russian"
+                    else "Match each word with its correct translation."
+                )
+                payload = {
+                    "question_type": question_type,
+                    "kind": question_type,
+                    "test_type": question_type,
+                    "input": "matching",
+                    "prompt": prompt,
+                    "instruction": prompt,
+                    "pairs": pairs,
+                    "subject": subject,
+                    "time_limit_sec": 60,
+                }
+        else:
+            item = pool[word_cursor % len(pool)]
+            word_cursor += 1
+            materialized = _materialize_word_practice(
+                item,
+                lang="Uzbek",
+                study_lang=subject,
+                chosen_kind=None if kind == "gap_filling" else kind,
+                translation_language="uz",
+            )
+            payload = dict(materialized)
+            question_type = kind
+            if kind == "gap_filling":
+                example = str(item.get("example_sentence") or "").strip()
+                word = str(item.get("word") or "").strip()
+                if not word:
+                    # The vocabulary row is validated above, so the translation
+                    # can always form a complete, answerable gap prompt.
+                    continue
+                import re as _re
+                blanked, substitutions = _re.subn(
+                    _re.escape(word), "_____", example, count=1, flags=_re.IGNORECASE
+                )
+                if substitutions != 1:
+                    translation = str(item.get("translation") or "").strip()
+                    if str(subject).lower() == "russian":
+                        blanked = f'Русское слово для «{translation}» — _____.'
+                    else:
+                        blanked = f'The English word for “{translation}” is _____.'
+                if "_____" not in blanked:
+                    continue
+                candidates = list(dict.fromkeys(
+                    str(row.get("word") or "").strip()
+                    for row in pool
+                    if str(row.get("word") or "").strip()
+                ))
+                distractors = [
+                    value for value in candidates
+                    if _normalize_answer_text(value) != _normalize_answer_text(word)
+                ]
+                rng.shuffle(distractors)
+                options = [word, *distractors[:3]]
+                if len(options) < 2:
+                    continue
+                rng.shuffle(options)
+                payload.update({
+                    "question_type": question_type,
+                    "kind": question_type,
+                    "test_type": question_type,
+                    "input": "choice",
+                    "prompt": blanked,
+                    "question": blanked,
+                    "instruction": "Choose the word that completes the sentence.",
+                    "options": options,
+                    "answer": word,
+                    "correct_answer": word,
+                    "correct_option_index": options.index(word) + 1,
+                    "accepted_answers": [word],
+                    "subject": subject,
+                })
+            elif kind == "spelling":
+                word = str(item.get("word") or "").strip()
+                clue = str(item.get("translation") or "").strip()
+                prompt = (
+                    f"Напишите слово по значению: {clue}"
+                    if str(subject).lower() == "russian"
+                    else f"Write the vocabulary word that means: {clue}"
+                )
+                payload.update({
+                    "prompt": prompt, "question": prompt, "instruction": prompt,
+                    "word": None, "target_word": word, "answer": word,
+                    "correct_answer": word, "accepted_answers": [word],
+                    "reference_answer": word, "input": "text", "subject": subject,
+                })
+            payload["question_type"] = question_type
+            payload["kind"] = question_type
+            payload["test_type"] = question_type
+            payload["subject"] = subject
+            payload.setdefault("input", "audio" if kind in {"speak_sentence", "read_aloud"} else "text")
+            payload.setdefault("instruction", _test_instruction_for_type(question_type, subject))
+            payload.setdefault("time_limit_sec", 60 if payload.get("input") == "audio" else 45)
+
+        prompt = str(payload.get("prompt") or payload.get("question") or "").strip()
+        if not prompt:
+            logger.warning(
+                "competition vocabulary question has no prompt type=%s subject=%s",
+                question_type, subject,
+            )
+            continue
+        row = {
+            "subject": subject,
+            "question": prompt,
+            "question_type": question_type,
+            "option_a": "",
+            "option_b": "",
+            "option_c": "",
+            "option_d": "",
+            "correct_option_index": int(payload.get("correct_option_index") or 1),
+            "payload_json": json.dumps(payload, ensure_ascii=False),
+        }
+        results.append(row)
+
+    return results
+
+
 def _competition_question_is_valid(row: dict[str, Any]) -> bool:
-    """Accept only unambiguous MCQ questions that the Arena UI can render."""
+    """Accept only complete, unambiguous questions supported by Arena clients."""
     q = _mcq_question_from_row(row)
     prompt = str(q.get("prompt") or q.get("question") or "").strip()
     options = [str(option).strip() for option in (q.get("options") or [])]
     normalized_options = [_normalize_answer_text(option) for option in options]
+    qtype = str(q.get("question_type") or "multiple_choice").strip().lower()
+    if _competition_uses_vocabulary_response(q):
+        if qtype == "matching":
+            pairs = q.get("pairs") or []
+            return bool(prompt and isinstance(pairs, list) and len(pairs) >= 2 and all(
+                isinstance(pair, dict)
+                and str(pair.get("left") or "").strip()
+                and str(pair.get("right") or "").strip()
+                for pair in pairs
+            ))
+        if qtype in {"speak_sentence", "read_aloud", "write_sentence"}:
+            return bool(prompt and (q.get("word") or q.get("target_word") or q.get("reference_answer")))
+        accepted = q.get("accepted_answers") or []
+        return bool(prompt and (q.get("answer") or q.get("correct_answer") or accepted))
     try:
         correct_index = int(q.get("correct_option_index") or 0)
     except (TypeError, ValueError):
@@ -5209,7 +5527,23 @@ def _public_question_payload(row: dict[str, Any], *, question_index: int | None 
         "subject": subject,
         "options": [str(opt) for opt in (q.get("options") or [])][:4],
         "tts_language": _test_tts_language_for_subject(subject),
+        "input_type": str(q.get("input") or ("choice" if q.get("options") else "text")),
     }
+    if qtype == "matching":
+        pairs = [pair for pair in (q.get("pairs") or []) if isinstance(pair, dict)]
+        left_items = [str(pair.get("left") or "").strip() for pair in pairs]
+        right_items = [str(pair.get("right") or "").strip() for pair in pairs]
+        import random as _random
+        _random.shuffle(right_items)
+        out["matching_left"] = left_items
+        out["matching_options"] = right_items
+    elif qtype in {"spelling", "translation"}:
+        # The prompt already carries the clue. Never return the expected word
+        # or translations used to grade it.
+        out["direction"] = str(q.get("direction") or "").strip()
+    elif qtype in {"speak_sentence", "read_aloud", "write_sentence"}:
+        out["word"] = str(q.get("word") or q.get("target_word") or "").strip()
+        out["condition"] = str(q.get("condition") or instruction).strip()
     passage = str(q.get("passage") or "").strip()
     if passage:
         out["passage"] = passage
@@ -5335,6 +5669,43 @@ async def _runtime_generate_questions(
 
     target_count = max(1, int(count))
 
+    def _with_random_vocabulary(base_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not (mode == "boss" or _duel_is_mode(mode)):
+            return base_rows[:target_count]
+        # A standard Arena/Duel round includes all six random word-practice
+        # formats plus a vocabulary gap-fill. Short rounds use every format
+        # that fits while keeping at least one non-vocabulary question.
+        required_variants = 7
+        vocabulary_count = min(
+            max(1, target_count - 1),
+            max(required_variants, int(math.ceil(target_count * 0.45))),
+        )
+        session_seed = sum(
+            (index + 1) * ord(char)
+            for index, char in enumerate(str(competition_session_id or ""))
+        )
+        vocabulary_rows = _competition_random_vocabulary_questions(
+            subject=safe_subject,
+            level=safe_level,
+            count=vocabulary_count,
+            seed=session_seed or int(created_by or 0),
+        )
+        vocabulary_rows = _competition_valid_unique_rows(
+            vocabulary_rows,
+            excluded_keys={_competition_question_key(row) for row in base_rows},
+        )
+        if len(vocabulary_rows) < vocabulary_count:
+            logger.error(
+                "_runtime_generate_questions: incomplete vocabulary set "
+                "subject=%s level=%s required=%s generated=%s mode=%s",
+                safe_subject, safe_level, vocabulary_count, len(vocabulary_rows), mode,
+            )
+            return []
+        result = base_rows[:max(0, target_count - vocabulary_count)]
+        result.extend(vocabulary_rows[:vocabulary_count])
+        _random.shuffle(result)
+        return result
+
     # ── Step 1: Record timestamp BEFORE generation ──────────────────────────
     # Anything inserted after this moment belongs to THIS session only.
     start_ts = _now_utc()
@@ -5425,7 +5796,7 @@ async def _runtime_generate_questions(
                 )
         # ─────────────────────────────────────────────────────────────────────
 
-        return rows
+        return _with_random_vocabulary(rows)
 
     # If we still don't have enough questions and require_fresh is True:
     # Instead of returning [] (which aborts the duel), let's fill the remaining
@@ -5449,19 +5820,10 @@ async def _runtime_generate_questions(
 
         pool = _competition_valid_unique_rows(fallback, excluded_keys=current_seen)
 
-        for row in pool[:needed]:
-            rows.append({
-                "question": str(row.get("question") or "").strip(),
-                "subject": safe_subject,
-                "option_a": str(row.get("option_a") or "").strip(),
-                "option_b": str(row.get("option_b") or "").strip(),
-                "option_c": str(row.get("option_c") or "").strip(),
-                "option_d": str(row.get("option_d") or "").strip(),
-                "correct_option_index": int(row.get("correct_option_index") or 1),
-            })
+        rows.extend(dict(row) for row in pool[:needed])
 
         if len(rows) >= target_count:
-            return rows[:target_count]
+            return _with_random_vocabulary(rows[:target_count])
         return []
 
     # ── Step 3: Absolute last-resort fallback (AI completely failed) ─────────
@@ -5474,18 +5836,8 @@ async def _runtime_generate_questions(
     _random.shuffle(fallback)
     pool = _competition_valid_unique_rows(fallback, excluded_keys=seen_questions)
 
-    mapped = []
-    for row in pool[:target_count]:
-        mapped.append({
-            "question": str(row.get("question") or "").strip(),
-            "subject": safe_subject,
-            "option_a": str(row.get("option_a") or "").strip(),
-            "option_b": str(row.get("option_b") or "").strip(),
-            "option_c": str(row.get("option_c") or "").strip(),
-            "option_d": str(row.get("option_d") or "").strip(),
-            "correct_option_index": int(row.get("correct_option_index") or 1),
-        })
-    return mapped if len(mapped) >= target_count else []
+    mapped = [dict(row) for row in pool[:target_count]]
+    return _with_random_vocabulary(mapped) if len(mapped) >= target_count else []
 
 
 def _competition_theme(mode: str) -> str:
@@ -31308,7 +31660,8 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
         try:
             cur.execute(
                 """
-                SELECT question_index, selected_option_index, is_correct, is_unanswered
+                SELECT question_index, selected_option_index, answer_text, audio_url, matching_answer_json,
+                       is_correct, is_unanswered
                 FROM web_competition_answers
                 WHERE session_id=? AND user_id=?
                 ORDER BY question_index ASC
@@ -31335,6 +31688,29 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
             selected_index = int(selected_index) if selected_index is not None else None
         except (TypeError, ValueError):
             selected_index = None
+        selected_answer = (
+            options[selected_index]
+            if selected_index is not None and 0 <= selected_index < len(options)
+            else str(answer.get("answer_text") or "").strip() or None
+        )
+        if not selected_answer and answer.get("matching_answer_json"):
+            try:
+                selected_answer = json.loads(str(answer.get("matching_answer_json")))
+            except Exception:
+                selected_answer = None
+        if not selected_answer and answer.get("audio_url"):
+            selected_answer = None
+        matching_pairs = question.get("pairs") or []
+        correct_answer: Any = (
+            options[correct_index]
+            if options and 0 <= correct_index < len(options)
+            else str(question.get("answer") or question.get("correct_answer") or "") or None
+        )
+        if str(question.get("question_type") or "").strip().lower() == "matching":
+            correct_answer = {
+                str(pair.get("left") or ""): str(pair.get("right") or "")
+                for pair in matching_pairs if isinstance(pair, dict)
+            }
         review.append(
             {
                 "question_index": question_index,
@@ -31343,8 +31719,9 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
                 "options": options,
                 "selected_index": selected_index,
                 "correct_index": correct_index,
-                "selected_answer": options[selected_index] if selected_index is not None and 0 <= selected_index < len(options) else None,
-                "correct_answer": options[correct_index] if 0 <= correct_index < len(options) else None,
+                "selected_answer": selected_answer,
+                "correct_answer": correct_answer,
+                "has_audio_answer": bool(answer.get("audio_url")),
                 "is_correct": bool(answer.get("is_correct")),
                 "is_skipped": bool(answer.get("is_unanswered")),
                 "question_type": str(question.get("question_type") or "multiple_choice"),
@@ -31672,6 +32049,9 @@ def _ensure_web_competition_runtime_schema() -> None:
                     user_id BIGINT NOT NULL,
                     question_index INTEGER NOT NULL,
                     selected_option_index INTEGER,
+                    answer_text TEXT,
+                    audio_url TEXT,
+                    matching_answer_json TEXT,
                     is_correct INTEGER DEFAULT 0,
                     is_unanswered INTEGER DEFAULT 0,
                     is_late INTEGER DEFAULT 0,
@@ -31682,6 +32062,9 @@ def _ensure_web_competition_runtime_schema() -> None:
                 )
                 """
             )
+            cur.execute("ALTER TABLE web_competition_answers ADD COLUMN IF NOT EXISTS answer_text TEXT")
+            cur.execute("ALTER TABLE web_competition_answers ADD COLUMN IF NOT EXISTS audio_url TEXT")
+            cur.execute("ALTER TABLE web_competition_answers ADD COLUMN IF NOT EXISTS matching_answer_json TEXT")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS web_competition_history (
@@ -32138,6 +32521,9 @@ def _competition_persist_answer_db(
     is_unanswered: bool,
     is_late: bool,
     timer_state: dict[str, Any],
+    answer_text: str | None = None,
+    audio_url: str | None = None,
+    matching_answer: dict[str, str] | None = None,
 ) -> None:
     _ensure_web_competition_runtime_schema()
     conn = get_conn()
@@ -32146,11 +32532,14 @@ def _competition_persist_answer_db(
         cur.execute(
             """
             INSERT INTO web_competition_answers
-            (session_id, user_id, question_index, selected_option_index, is_correct, is_unanswered, is_late,
-             allowed_seconds, deadline_at, answered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (session_id, user_id, question_index, selected_option_index, answer_text, audio_url,
+             matching_answer_json, is_correct, is_unanswered, is_late, allowed_seconds, deadline_at, answered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, user_id, question_index) DO UPDATE SET
                 selected_option_index=excluded.selected_option_index,
+                answer_text=excluded.answer_text,
+                audio_url=excluded.audio_url,
+                matching_answer_json=excluded.matching_answer_json,
                 is_correct=excluded.is_correct,
                 is_unanswered=excluded.is_unanswered,
                 is_late=excluded.is_late,
@@ -32163,6 +32552,9 @@ def _competition_persist_answer_db(
                 int(user_id),
                 int(question_index),
                 None if selected is None else int(selected),
+                str(answer_text or "")[:4000] or None,
+                str(audio_url or "")[:2048] or None,
+                json.dumps(matching_answer, ensure_ascii=False) if matching_answer else None,
                 1 if is_correct else 0,
                 1 if is_unanswered else 0,
                 1 if is_late else 0,
@@ -32404,6 +32796,9 @@ def _ensure_web_duel_runtime_schema() -> None:
                     user_id BIGINT NOT NULL,
                     question_index INTEGER NOT NULL,
                     selected_option_index INTEGER,
+                    answer_text TEXT,
+                    audio_url TEXT,
+                    matching_answer_json TEXT,
                     is_correct INTEGER DEFAULT 0,
                     is_unanswered INTEGER DEFAULT 0,
                     is_late INTEGER DEFAULT 0,
@@ -32414,6 +32809,9 @@ def _ensure_web_duel_runtime_schema() -> None:
                 )
                 """
             )
+            cur.execute("ALTER TABLE web_duel_answers ADD COLUMN IF NOT EXISTS answer_text TEXT")
+            cur.execute("ALTER TABLE web_duel_answers ADD COLUMN IF NOT EXISTS audio_url TEXT")
+            cur.execute("ALTER TABLE web_duel_answers ADD COLUMN IF NOT EXISTS matching_answer_json TEXT")
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS web_duel_history (
@@ -32957,6 +33355,9 @@ def _duel_persist_answer(
     is_unanswered: bool,
     is_late: bool,
     timer_state: dict[str, Any],
+    answer_text: str | None = None,
+    audio_url: str | None = None,
+    matching_answer: dict[str, str] | None = None,
 ) -> None:
     _competition_persist_answer_db(
         session,
@@ -32967,6 +33368,9 @@ def _duel_persist_answer(
         is_unanswered=is_unanswered,
         is_late=is_late,
         timer_state=timer_state,
+        answer_text=answer_text,
+        audio_url=audio_url,
+        matching_answer=matching_answer,
     )
     if not _duel_is_mode(session.get("mode")):
         return
@@ -32977,11 +33381,14 @@ def _duel_persist_answer(
         cur.execute(
             """
             INSERT INTO web_duel_answers
-            (session_id, user_id, question_index, selected_option_index, is_correct, is_unanswered, is_late,
-             allowed_seconds, deadline_at, answered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (session_id, user_id, question_index, selected_option_index, answer_text, audio_url,
+             matching_answer_json, is_correct, is_unanswered, is_late, allowed_seconds, deadline_at, answered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, user_id, question_index) DO UPDATE SET
                 selected_option_index=excluded.selected_option_index,
+                answer_text=excluded.answer_text,
+                audio_url=excluded.audio_url,
+                matching_answer_json=excluded.matching_answer_json,
                 is_correct=excluded.is_correct,
                 is_unanswered=excluded.is_unanswered,
                 is_late=excluded.is_late,
@@ -32994,6 +33401,9 @@ def _duel_persist_answer(
                 int(user_id),
                 int(question_index),
                 None if selected is None else int(selected),
+                str(answer_text or "")[:4000] or None,
+                str(audio_url or "")[:2048] or None,
+                json.dumps(matching_answer, ensure_ascii=False) if matching_answer else None,
                 1 if is_correct else 0,
                 1 if is_unanswered else 0,
                 1 if is_late else 0,
@@ -34494,15 +34904,148 @@ async def competition_runtime_question(
 
 
 
+async def _competition_grade_vocabulary_answer(
+    question: dict[str, Any],
+    *,
+    answer_text: str | None,
+    audio_url: str | None,
+    matching_answer: dict[str, str] | None,
+    subject: str,
+    user: dict[str, Any],
+) -> bool:
+    """Grade the non-MCQ word-practice formats using the same LP grader."""
+    qtype = str(question.get("question_type") or "").strip().lower()
+    payload_data = question.get("payload") if isinstance(question.get("payload"), dict) else {}
+    if qtype == "matching":
+        expected_pairs = payload_data.get("pairs") or question.get("pairs") or []
+        expected = {
+            _normalize_answer_text(str(pair.get("left") or "")): _normalize_answer_text(str(pair.get("right") or ""))
+            for pair in expected_pairs if isinstance(pair, dict)
+        }
+        submitted = {
+            _normalize_answer_text(str(left or "")): _normalize_answer_text(str(right or ""))
+            for left, right in (matching_answer or {}).items()
+        }
+        return bool(expected and len(submitted) == len(expected) and submitted == expected)
+
+    answer = str(answer_text or "").strip()
+    if qtype in {"spelling", "translation"}:
+        accepted = payload_data.get("accepted_answers") or question.get("accepted_answers") or []
+        if not isinstance(accepted, list):
+            accepted = [accepted]
+        normalized_expected: set[str] = set()
+        for value in accepted:
+            candidate = str(value or "").strip()
+            if candidate:
+                normalized_expected.add(_normalize_answer_text(candidate))
+                normalized_expected.update(
+                    _normalize_answer_text(part)
+                    for part in re.split(r"[,;\n/|]+", candidate)
+                    if part.strip()
+                )
+        return bool(answer and _normalize_answer_text(answer) in normalized_expected)
+
+    if qtype not in {"speak_sentence", "read_aloud", "write_sentence"}:
+        return False
+    if not answer and not audio_url:
+        raise HTTPException(status_code=400, detail="A text or audio answer is required")
+
+    # Audio URLs must point at our authenticated upload area; the grader reads
+    # the file by basename from HOMEWORK_UPLOAD_DIR and never fetches arbitrary
+    # user-provided network URLs.
+    if audio_url:
+        parsed = urlparse(str(audio_url))
+        upload_path = parsed.path if parsed.scheme or parsed.netloc else str(audio_url)
+        if parsed.scheme or parsed.netloc or not upload_path.startswith("/homework/voices/"):
+            raise HTTPException(status_code=400, detail="Audio must be uploaded through the app")
+        filename = Path(upload_path).name
+        if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid audio upload")
+        audio_url = f"/homework/voices/{filename}"
+
+    try:
+        from backend.library_ai import AiTestAnswerRequest, _check_with_ai, _student_lang
+
+        ai_question = dict(payload_data)
+        ai_question.update({
+            "kind": qtype,
+            "prompt": str(question.get("prompt") or ""),
+            "instruction": str(question.get("instruction") or payload_data.get("instruction") or ""),
+            "word": str(payload_data.get("word") or payload_data.get("target_word") or ""),
+            "clean_word": str(payload_data.get("clean_word") or payload_data.get("target_word") or payload_data.get("word") or ""),
+            "target_word": str(payload_data.get("target_word") or payload_data.get("word") or ""),
+            "reference_answer": str(payload_data.get("reference_answer") or payload_data.get("example_sentence") or payload_data.get("answer") or ""),
+            "accepted_answers": payload_data.get("accepted_answers") or [],
+        })
+        verdict, _feedback = await _check_with_ai(
+            ai_question,
+            AiTestAnswerRequest(question_index=0, answer_text=answer, audio_url=audio_url),
+            subject,
+            _student_lang(user),
+        )
+        return str(verdict).strip().lower() == "correct"
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("competition vocabulary answer grading failed type=%s", qtype)
+        raise HTTPException(status_code=503, detail="Could not grade this answer right now; retry")
+
+
 @app.post("/competition/runtime/{session_id}/answer")
 async def competition_runtime_answer(session_id: str, payload: CompetitionAnswerRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_student_learning_access(user)
     uid = int(user.get("id") or 0)
+    if payload.matching_answer is not None:
+        if len(payload.matching_answer) > 8 or any(
+            len(str(left)) > 200 or len(str(right)) > 200
+            for left, right in payload.matching_answer.items()
+        ):
+            raise HTTPException(status_code=400, detail="Invalid vocabulary matching answer")
     sess = await _competition_ensure_session_for_user(session_id, user)
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
+
+    # AI grading may take several seconds. Grade before taking the shared
+    # session lock so one student's voice/writing response cannot block the
+    # opponent from submitting a response in parallel.
+    pregraded_correct: bool | None = None
+    pregraded_question_index: int | None = None
+    if _competition_session_phase(sess) == "active":
+        pre_progress = _competition_user_progress(sess, uid) or {}
+        pre_index = int(pre_progress.get("index") or 1)
+        pre_questions = _competition_questions_for_user(sess, uid)
+        if 0 < pre_index <= len(pre_questions):
+            pre_question = _mcq_question_from_row(pre_questions[pre_index - 1])
+            pre_type = str(pre_question.get("question_type") or "").strip().lower()
+            if _competition_uses_vocabulary_response(pre_question):
+                timer_check = _competition_timer_state(
+                    sess, uid, pre_index, pre_questions[pre_index - 1], create=False
+                )
+                timeout_submission = bool(payload.timed_out or timer_check.get("is_late"))
+                has_text = bool(str(payload.answer_text or "").strip())
+                has_audio = bool(str(payload.audio_url or "").strip())
+                has_matching = bool(payload.matching_answer)
+                if not timeout_submission and pre_type == "matching" and not has_matching:
+                    raise HTTPException(status_code=400, detail="Complete every vocabulary match before submitting")
+                if not timeout_submission and pre_type in {"spelling", "translation", "write_sentence"} and not has_text:
+                    raise HTTPException(status_code=400, detail="A written answer is required")
+                if not timeout_submission and pre_type in {"speak_sentence", "read_aloud"} and not (has_text or has_audio):
+                    raise HTTPException(status_code=400, detail="Record or enter your answer before submitting")
+                if timeout_submission:
+                    pregraded_correct = False
+                else:
+                    pregraded_correct = await _competition_grade_vocabulary_answer(
+                        pre_question,
+                        answer_text=payload.answer_text,
+                        audio_url=payload.audio_url,
+                        matching_answer=payload.matching_answer,
+                        subject=str(sess.get("subject") or pre_question.get("subject") or "English"),
+                        user=user,
+                    )
+                pregraded_question_index = pre_index
+
     with _competition_session_advisory_lock(actual_sid):
         if _duel_is_mode(sess.get("mode")):
             _require_student_learning_access(user)
@@ -34597,7 +35140,30 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
         sel = payload.selected_option_index
         mode = str(sess.get("mode") or "")
         timer_state = _competition_timer_state(sess, uid, q_index, q, create=True)
-        _competition_apply_question_outcome(sess, uid, q_index, None if sel is None else int(sel), timer_state)
+        current_question = _mcq_question_from_row(q or {})
+        current_type = str(current_question.get("question_type") or "").strip().lower()
+        has_non_option_answer = bool(
+            str(payload.answer_text or "").strip()
+            or str(payload.audio_url or "").strip()
+            or payload.matching_answer
+        )
+        is_special_answer = _competition_uses_vocabulary_response(current_question)
+        _competition_apply_question_outcome(
+            sess,
+            uid,
+            q_index,
+            None if is_special_answer or sel is None else int(sel),
+            timer_state,
+            submitted=(has_non_option_answer if is_special_answer else sel is not None),
+            is_correct_override=(
+                pregraded_correct
+                if is_special_answer and pregraded_question_index == q_index
+                else None
+            ),
+            answer_text=payload.answer_text if is_special_answer else None,
+            audio_url=payload.audio_url if is_special_answer else None,
+            matching_answer=payload.matching_answer if is_special_answer else None,
+        )
         _duel_persist_session(sess)
 
         # Progress is per participant. A student goes straight to their next
@@ -34899,6 +35465,12 @@ def _competition_apply_question_outcome(
     question_index: int,
     selected: int | None,
     timer_state: dict[str, Any],
+    *,
+    submitted: bool | None = None,
+    is_correct_override: bool | None = None,
+    answer_text: str | None = None,
+    audio_url: str | None = None,
+    matching_answer: dict[str, str] | None = None,
 ) -> bool:
     uid = int(user_id)
     progress = _competition_user_progress(session, uid)
@@ -34916,16 +35488,20 @@ def _competition_apply_question_outcome(
     q = questions[q_index - 1]
     is_late = bool(timer_state.get("is_late"))
     is_correct = False
-    is_unanswered = selected is None or is_late
+    has_submission = selected is not None if submitted is None else bool(submitted)
+    is_unanswered = not has_submission or is_late
     if is_unanswered:
         progress["unanswered"] = int(progress.get("unanswered") or 0) + 1
     else:
-        selected_idx = int(selected)
-        if selected_idx < 0 or selected_idx > 3:
-            raise HTTPException(status_code=400, detail="selected_option_index must be between 0 and 3")
-        if _selected_option_is_correct(q, selected_idx):
+        if is_correct_override is not None:
+            is_correct = bool(is_correct_override)
+        elif selected is not None:
+            selected_idx = int(selected)
+            if selected_idx < 0 or selected_idx > 3:
+                raise HTTPException(status_code=400, detail="selected_option_index must be between 0 and 3")
+            is_correct = _selected_option_is_correct(q, selected_idx)
+        if is_correct:
             progress["correct"] = int(progress.get("correct") or 0) + 1
-            is_correct = True
         else:
             progress["wrong"] = int(progress.get("wrong") or 0) + 1
 
@@ -34938,6 +35514,9 @@ def _competition_apply_question_outcome(
         is_unanswered=is_unanswered,
         is_late=is_late,
         timer_state=timer_state,
+        answer_text=answer_text,
+        audio_url=audio_url,
+        matching_answer=matching_answer,
     )
     if not is_correct:
         options = [str(item) for item in (q.get("options") or [])]
@@ -34951,8 +35530,14 @@ def _competition_apply_question_outcome(
             topic_key=str(q.get("topic") or q.get("topic_id") or mode),
             prompt=str(q.get("prompt") or q.get("question") or ""),
             options=options,
-            selected_answer=options[int(selected)] if selected is not None and 0 <= int(selected) < len(options) else None,
-            correct_answer=options[correct_index] if 0 <= correct_index < len(options) else None,
+            selected_answer=(
+                options[int(selected)] if selected is not None and 0 <= int(selected) < len(options)
+                else str(answer_text or "") or (json.dumps(matching_answer, ensure_ascii=False) if matching_answer else None)
+            ),
+            correct_answer=(
+                options[correct_index] if 0 <= correct_index < len(options)
+                else str(q.get("answer") or q.get("correct_answer") or q.get("reference_answer") or "") or None
+            ),
         )
     if str(session.get("mode") or "") == "group" and int(session.get("external_group_arena_session_id") or 0) > 0:
         _safe_call(
