@@ -5181,7 +5181,8 @@ def _mcq_question_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "kind", "test_type", "input", "answer", "correct_answer",
         "accepted_answers", "reference_answer", "target_word", "word",
         "translation", "translation_uz", "translation_ru", "meaning",
-        "example_sentence", "pairs", "direction", "condition",
+        "example_sentence", "pairs", "direction", "condition", "hint",
+        "explanation",
     ):
         if key in payload:
             result[key] = payload[key]
@@ -5537,13 +5538,24 @@ def _public_question_payload(row: dict[str, Any], *, question_index: int | None 
         _random.shuffle(right_items)
         out["matching_left"] = left_items
         out["matching_options"] = right_items
-    elif qtype in {"spelling", "translation"}:
+    elif qtype == "spelling":
+        # Spelling is a listen-and-type task. Keep the answer out of the
+        # visible question fields and only provide it to the audio control.
+        out["direction"] = str(q.get("direction") or "").strip()
+        pronunciation = str(q.get("target_word") or q.get("word") or "").strip()
+        if pronunciation:
+            out["pronunciation_text"] = pronunciation
+    elif qtype == "translation":
         # The prompt already carries the clue. Never return the expected word
         # or translations used to grade it.
         out["direction"] = str(q.get("direction") or "").strip()
     elif qtype in {"speak_sentence", "read_aloud", "write_sentence"}:
         out["word"] = str(q.get("word") or q.get("target_word") or "").strip()
         out["condition"] = str(q.get("condition") or instruction).strip()
+    if q.get("hint"):
+        hint = str(q.get("hint") or "").strip()
+        if hint and len(hint) <= 500:
+            out["hint"] = hint
     passage = str(q.get("passage") or "").strip()
     if passage:
         out["passage"] = passage
@@ -8597,6 +8609,23 @@ def _require_student_learning_access(user: dict) -> None:
     if _student_has_group_access(user):
         return
     raise HTTPException(status_code=403, detail="Siz hali guruhga biriktirilmagansiz")
+
+
+def _require_competition_learning_access(user: dict) -> None:
+    """Apply student group gating, except for independent Speaking accounts.
+
+    Speaking app registrations use login_type 7 and have their own subject and
+    access flag; they are not enrolled in the Student app's class groups.
+    Keep the exception limited to Arena/Duel endpoints and still honor account
+    blocking, access enablement, and expiry.
+    """
+    if not is_speaking_app_account(user.get("speaking_app_account")):
+        _require_student_learning_access(user)
+        return
+    if int(user.get("blocked") or 0) == 1:
+        raise HTTPException(status_code=403, detail="Akkaunt bloklangan")
+    if not is_access_active(user):
+        raise HTTPException(status_code=403, detail="Speaking akkauntining kirish huquqi faol emas")
 
 
 def _require_student_vocabulary_preview_access(user: dict) -> None:
@@ -31647,6 +31676,47 @@ def _competition_questions_for_user(session: dict[str, Any], user_id: int | None
     return list(rows or questions[:5])
 
 
+def _competition_review_correct_answer(question: dict[str, Any]) -> Any:
+    """Return a post-match answer key for both choice and rich-input items."""
+    options = [str(option) for option in (question.get("options") or [])]
+    try:
+        correct_index = int(question.get("correct_option_index") or 1) - 1
+    except (TypeError, ValueError):
+        correct_index = -1
+    if options and 0 <= correct_index < len(options):
+        return options[correct_index]
+
+    qtype = str(question.get("question_type") or "").strip().lower()
+    pairs = question.get("pairs") or []
+    if qtype == "matching":
+        return {
+            str(pair.get("left") or ""): str(pair.get("right") or "")
+            for pair in pairs if isinstance(pair, dict)
+        }
+
+    if qtype in COMPETITION_VOCABULARY_QUESTION_TYPES:
+        payload = question.get("payload") if isinstance(question.get("payload"), dict) else {}
+        candidates = (
+            question.get("answer"),
+            question.get("correct_answer"),
+            payload.get("answer"),
+            payload.get("correct_answer"),
+            payload.get("reference_answer"),
+            payload.get("example_sentence"),
+            payload.get("target_word"),
+            payload.get("word"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        accepted = payload.get("accepted_answers") or question.get("accepted_answers") or []
+        if isinstance(accepted, list):
+            accepted = next((str(value).strip() for value in accepted if str(value or "").strip()), None)
+        return accepted or None
+
+    return None
+
+
 def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[dict[str, Any]]:
     """Build a result-only answer review without exposing answers mid-match."""
     uid = int(user_id or 0)
@@ -31682,7 +31752,10 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
             continue
         question = _mcq_question_from_row(raw_question)
         options = [str(option) for option in (question.get("options") or [])]
-        correct_index = max(0, int(question.get("correct_option_index") or 1) - 1)
+        try:
+            correct_index = max(0, int(question.get("correct_option_index") or 1) - 1)
+        except (TypeError, ValueError):
+            correct_index = 0
         selected_index = answer.get("selected_option_index")
         try:
             selected_index = int(selected_index) if selected_index is not None else None
@@ -31700,17 +31773,9 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
                 selected_answer = None
         if not selected_answer and answer.get("audio_url"):
             selected_answer = None
-        matching_pairs = question.get("pairs") or []
-        correct_answer: Any = (
-            options[correct_index]
-            if options and 0 <= correct_index < len(options)
-            else str(question.get("answer") or question.get("correct_answer") or "") or None
-        )
-        if str(question.get("question_type") or "").strip().lower() == "matching":
-            correct_answer = {
-                str(pair.get("left") or ""): str(pair.get("right") or "")
-                for pair in matching_pairs if isinstance(pair, dict)
-            }
+        correct_answer = _competition_review_correct_answer(question)
+        payload_data = question.get("payload") if isinstance(question.get("payload"), dict) else {}
+        explanation = str(payload_data.get("explanation") or question.get("explanation") or "").strip()
         review.append(
             {
                 "question_index": question_index,
@@ -31725,6 +31790,7 @@ def _competition_review_for_user(session: dict[str, Any], user_id: int) -> list[
                 "is_correct": bool(answer.get("is_correct")),
                 "is_skipped": bool(answer.get("is_unanswered")),
                 "question_type": str(question.get("question_type") or "multiple_choice"),
+                "explanation": explanation or None,
             }
         )
     return review
@@ -34096,7 +34162,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     mode = payload.mode
     _require_enabled_competition_mode(mode)
     is_duel = _duel_is_mode(mode)
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     user = _require_student_face_setup_complete(user)
 
     user_subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=["English"])
@@ -34493,7 +34559,7 @@ async def competition_runtime_my_active(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     sid = WEB_DUEL_PLAYER_SESSION.get(uid)
     if not sid:
@@ -34561,8 +34627,7 @@ async def competition_runtime_duel_history(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     mode_value = str(mode or "").strip()
     if mode_value and not _duel_is_mode(mode_value):
@@ -34581,7 +34646,7 @@ async def competition_runtime_history(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     mode_value = str(mode or "").strip()
     _require_enabled_competition_mode(mode_value)
@@ -34630,7 +34695,7 @@ async def competition_runtime_history_review(
     """
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     sid = str(session_id or "").strip()
     if not sid or len(sid) > 160:
@@ -34710,7 +34775,7 @@ async def _competition_ensure_session_for_user(session_id: str, user: dict) -> d
 async def competition_runtime_leave(session_id: str, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     with _competition_session_advisory_lock(session_id):
         sess = _competition_load_session_from_db(session_id) or _competition_load_active_session_for_user(uid)
@@ -34733,7 +34798,7 @@ async def competition_runtime_leave(session_id: str, authorization: str | None =
 async def competition_runtime_status(session_id: str, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
@@ -34792,14 +34857,14 @@ async def competition_runtime_question(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
         if _duel_is_mode(sess.get("mode")):
-            _require_student_learning_access(user)
+            _require_competition_learning_access(user)
         expired_now = _duel_expire_session_if_needed(sess) if _duel_is_mode(sess.get("mode")) else _competition_expire_waiting_session_if_needed(sess)
         if expired_now:
             return {"completed": True, "phase": _competition_session_phase(sess), "status": sess.get("status"), "result": _competition_user_result(sess, uid)}
@@ -34995,7 +35060,7 @@ async def _competition_grade_vocabulary_answer(
 async def competition_runtime_answer(session_id: str, payload: CompetitionAnswerRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     if payload.matching_answer is not None:
         if len(payload.matching_answer) > 8 or any(
@@ -35048,7 +35113,7 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
 
     with _competition_session_advisory_lock(actual_sid):
         if _duel_is_mode(sess.get("mode")):
-            _require_student_learning_access(user)
+            _require_competition_learning_access(user)
         expired_now = _duel_expire_session_if_needed(sess) if _duel_is_mode(sess.get("mode")) else _competition_expire_waiting_session_if_needed(sess)
         if expired_now:
             return {"completed": True, "phase": _competition_session_phase(sess), "status": sess.get("status"), "result": _competition_user_result(sess, uid)}
@@ -35216,7 +35281,7 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
 async def competition_runtime_result(session_id: str, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     sess = await _competition_ensure_session_for_user(session_id, user)
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
@@ -57127,7 +57192,7 @@ async def tests_list(authorization: str | None = Header(default=None)):
 async def submit_test(test_id: str, answers: dict, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     correct = int(answers.get("correct") or answers.get("correct_answers") or 0)
     skipped = int(answers.get("skipped") or answers.get("skipped_answers") or 0)
     wrong = int(answers.get("wrong") or answers.get("wrong_answers") or 0)
@@ -57163,7 +57228,7 @@ async def test_results(authorization: str | None = Header(default=None)):
 async def available_battles(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     return {
         "items": [
             {
@@ -57206,7 +57271,7 @@ async def available_battles(authorization: str | None = Header(default=None)):
 async def join_battle(battle_id: str, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     user_id = int(user.get("id") or 0)
     subject = _user_subjects_from_row(user)[0] if _user_subjects_from_row(user) else "English"
     level = str(user.get("level") or "PRE-INTERMEDIATE").strip().upper()
@@ -57272,7 +57337,7 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
 async def arena_history(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
-    _require_student_learning_access(user)
+    _require_competition_learning_access(user)
     items = _get_dcoin_transactions(int(user.get("id") or 0), limit=20)
     return {"items": [item for item in items if "arena" in str(item.get("transaction_type") or "").lower()][:20]}
 
