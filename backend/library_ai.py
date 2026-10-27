@@ -715,6 +715,9 @@ async def library_assign(node_id: int, payload: LibraryAssignRequest, authorizat
     group_id = int(payload.group_id or 0) or None
     if not student_ids and not group_id:
         raise HTTPException(status_code=400, detail="Student yoki guruh tanlanmadi")
+    from backend.main import _require_teacher_assignment_targets
+
+    _require_teacher_assignment_targets(user, group_id=group_id, student_ids=student_ids)
 
     title = str(payload.title or node.get("title") or "Kutubxona vazifasi").strip()
     description = str(payload.description or node.get("description") or "").strip() or None

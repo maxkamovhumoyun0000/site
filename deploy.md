@@ -90,7 +90,7 @@ faqat root kira oladigan `/root/diamond-backups/` papkasiga yoziladi; u
 `data/`, media va upload fayllariga tegmaydi.
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   "cd /root/diamond-site && .venv/bin/python - <<'PY'
 import os
 import subprocess
@@ -183,7 +183,7 @@ ishlatilmaydi.
 ## Serverda Tekshirish
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'cd /root/diamond-site && python3 -m py_compile admin_bot.py student_bot.py teacher_bot.py support_lesson.py attendance_manager.py payment.py db.py backend/main.py bot_runtime.py'
 ```
 
@@ -196,7 +196,7 @@ ishga tushiradi va DB-ready hamda frontend smoke tekshiruvini o‘zi bajaradi.
 Parallel deploy/build bo‘lsa u to‘xtaydi.
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   "cd /root/diamond-site && bash scripts/activate_production_release.sh '$DEPLOY_COMMIT'"
 ```
 
@@ -228,7 +228,7 @@ ichidagi eski build artefaktlari va cache'i tozalanadi. Bu buyruq `.env`,
 database, `data/`, upload/media va `node_modules/`ga tegmaydi:
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'systemctl stop diamond-site-frontend && cd /root/diamond-site && if [ -d .next ]; then find .next -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +; fi && echo next-cache:cleared'
 ```
 
@@ -239,7 +239,7 @@ chunklariga ulab, sahifani ochilmaydigan holatga keltirishi mumkin.
 Frontend build muvaffaqiyatli tugagachgina frontendni ishga tushiring:
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'cd /root/diamond-site && npm run build && systemctl start diamond-site-frontend'
 ```
 
@@ -250,7 +250,7 @@ upload va backup fayllariga tegilmaydi.
 ## Relaunch
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'systemctl restart diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot'
 ```
 
@@ -265,11 +265,11 @@ fayllari 14 kunlik, siqilgan rotation bilan boshqariladi.
 ```bash
 cd /home/xumoyun-maxkamov/Desktop/diamond-site
 
-rsync -az -e 'ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no' \
+rsync -az -e 'ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new' \
   ops/systemd/diamond-site-log-security.conf ops/logrotate/diamond-site \
   root@31.220.87.193:/tmp/
 
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'for service in diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot; do install -d -m 0755 /etc/systemd/system/${service}.service.d; install -m 0644 /tmp/diamond-site-log-security.conf /etc/systemd/system/${service}.service.d/log-security.conf; done; install -m 0644 /tmp/diamond-site /etc/logrotate.d/diamond-site; find /root/diamond-site/logs -maxdepth 1 -type f -exec chmod 0600 -- {} +; systemctl daemon-reload'
 ```
 
@@ -281,7 +281,7 @@ migratsiya kerak bo‘ladi.
 ## Deploydan Keyingi Smoke Test
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   "curl -sS -o /dev/null -w 'home:%{http_code}\n' http://127.0.0.1:3000/ && \
    curl -sS -o /dev/null -w 'dashboard:%{http_code}\n' http://127.0.0.1:3000/dashboard && \
    curl -sS -o /dev/null -w 'backend:%{http_code}\n' http://127.0.0.1:3001/health"
@@ -290,14 +290,14 @@ ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root
 Servis status:
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'systemctl --no-pager --quiet is-active diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot && echo services:active'
 ```
 
 Restart loop tekshiruvi:
 
 ```bash
-ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=no root@31.220.87.193 \
+ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
   'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot -p ActiveState -p SubState -p NRestarts --no-pager'
 ```
 

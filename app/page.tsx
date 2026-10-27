@@ -27271,6 +27271,22 @@ export default function DiamondEducationApp() {
     }
     localStorage.removeItem("diamond_token");
     localStorage.removeItem("diamond_user");
+    // Shared devices: never leave another account's cached data behind.
+    for (const key of [
+      "diamond_admin_analytics_cache",
+      "diamond_teacher_analytics_cache",
+      "diamond_homework_note_draft",
+      "diamond_homework_proof_draft",
+      "diamond_homework_voice_draft",
+    ]) {
+      try { localStorage.removeItem(key); } catch {}
+    }
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+        const key = localStorage.key(i) || "";
+        if (key.startsWith("diamond_app_state_cache_")) localStorage.removeItem(key);
+      }
+    } catch {}
     setUser(null);
     setAppState(null);
     setAuthResolved(true);

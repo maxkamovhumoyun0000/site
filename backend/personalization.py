@@ -505,6 +505,13 @@ def ensure_schema() -> None:
         except Exception:
             pass
         try:
+            cur.execute("ALTER TABLE parent_access_links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE parent_access_links ADD COLUMN expires_at TIMESTAMP")
+            except Exception:
+                pass
+        try:
             cur.execute("ALTER TABLE student_badges ADD COLUMN IF NOT EXISTS notified INTEGER DEFAULT 0")
         except Exception:
             try:
@@ -584,6 +591,13 @@ def ensure_schema() -> None:
 
 def _user(authorization: str | None) -> dict[str, Any]:
     return _runtime["user_from_bearer"](authorization)
+
+
+def _ai_rate_limit(user: dict[str, Any], bucket: str, *, limit: int, window_seconds: int) -> None:
+    """Per-account cap on paid AI calls (shared Redis limiter via runtime)."""
+    limiter = _runtime.get("rate_limit")
+    if limiter:
+        limiter(int(user.get("id") or 0), bucket, limit, window_seconds)
 
 
 def _role(user: dict[str, Any]) -> str:
@@ -818,20 +832,69 @@ def _sync_student_badges(cur: Any, user_id: int) -> None:
         pass
 
 
-def _get_or_create_parent_token(student_id: int, created_by: int | None = None) -> str:
+# A parent progress link is a bearer secret sent by SMS/Telegram, so it must
+# not live forever: it is valid for 30 days, after which a fresh link is
+# issued automatically with the next notification.
+PARENT_LINK_TTL_DAYS = 30
+
+
+def _db_utc_naive(value: datetime) -> str:
+    """UTC timestamp in the same naive form as the TIMESTAMP columns."""
+    return value.astimezone(timezone.utc).replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
+
+
+def _parse_db_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _issue_parent_link(cur: Any, student_id: int, created_by: int | None) -> tuple[str, datetime]:
+    """Rotate (or create) the single link row of a student; returns token+expiry."""
+    token = new_parent_access_token()
+    now = _now()
+    expires_at = now + timedelta(days=PARENT_LINK_TTL_DAYS)
+    cur.execute(
+        "UPDATE parent_access_links SET access_token=?, active=1, created_by=?, created_at=?, expires_at=?, rotated_at=? WHERE student_id=?",
+        (token, created_by, _db_utc_naive(now), _db_utc_naive(expires_at), _db_utc_naive(now), int(student_id)),
+    )
+    if int(getattr(cur, "rowcount", 0) or 0) == 0:
+        cur.execute(
+            "INSERT INTO parent_access_links(student_id, access_token, active, created_by, created_at, expires_at) VALUES(?,?,1,?,?,?)",
+            (int(student_id), token, created_by, _db_utc_naive(now), _db_utc_naive(expires_at)),
+        )
+    return token, expires_at
+
+
+def get_or_create_parent_link(student_id: int, created_by: int | None = None) -> tuple[str, datetime]:
+    """Return the student's still-valid parent link, rotating it if expired."""
     ensure_schema()
     conn = get_conn(); cur = conn.cursor()
     try:
-        cur.execute("SELECT access_token FROM parent_access_links WHERE student_id=? AND active=1", (student_id,))
+        cur.execute("SELECT access_token, expires_at FROM parent_access_links WHERE student_id=? AND active=1", (student_id,))
         row = cur.fetchone()
         if row:
-            return str(dict(row).get("access_token"))
-        token = new_parent_access_token()
-        cur.execute("INSERT INTO parent_access_links(student_id, access_token, active, created_by) VALUES(?,?,1,?)", (student_id, token, created_by))
+            item = dict(row)
+            expires_at = _parse_db_timestamp(item.get("expires_at"))
+            # Keep a margin so a link is never sent with only hours left.
+            if expires_at and expires_at - _now() > timedelta(days=1):
+                return str(item.get("access_token")), expires_at
+        token, expires_at = _issue_parent_link(cur, int(student_id), created_by)
         conn.commit()
-        return token
+        return token, expires_at
     finally:
         conn.close()
+
+
+def _get_or_create_parent_token(student_id: int, created_by: int | None = None) -> str:
+    return get_or_create_parent_link(student_id, created_by)[0]
 
 
 def _build_plan(student_id: int) -> dict[str, Any]:
@@ -1092,6 +1155,7 @@ async def ai_explanation(payload: ExplanationRequest, authorization: str | None 
               " Tanlangan javob: " + str(payload.selected_answer or "—") +
               " To‘g‘ri javob: " + str(payload.correct_answer or "—") +
               ". Fan: " + str(payload.subject or "umumiy"))
+    _ai_rate_limit(user, "ai-explanations", limit=40, window_seconds=3600)
     explain = _runtime.get("explain")
     text = None
     if explain:
@@ -1709,16 +1773,23 @@ async def report_study_room(room_id: int, payload: StudyRoomReport, authorizatio
 async def parent_progress(access_token: str):
     ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT u.id,u.first_name,u.last_name,u.login_id,u.subject FROM parent_access_links p JOIN users u ON u.id=p.student_id WHERE p.access_token=? AND p.active=1",(access_token,)); row=cur.fetchone()
-        if not row: raise HTTPException(status_code=404, detail="Parent progress link is invalid")
+        token_text = str(access_token or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9]{20,80}", token_text):
+            raise HTTPException(status_code=404, detail="Havola noto‘g‘ri yoki muddati tugagan")
+        cur=conn.cursor(); cur.execute("SELECT u.id,u.first_name,u.last_name,u.login_id,u.subject,p.expires_at FROM parent_access_links p JOIN users u ON u.id=p.student_id WHERE p.access_token=? AND p.active=1",(token_text,)); row=cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Havola noto‘g‘ri yoki muddati tugagan")
         student=dict(row); sid=int(student["id"])
+        link_expires_at = _parse_db_timestamp(student.get("expires_at"))
+        # 30-day lifetime; links created before expiry tracking are invalid.
+        if not link_expires_at or link_expires_at <= _now():
+            raise HTTPException(status_code=404, detail="Havola muddati tugagan (30 kun). Yangi havola keyingi xabar bilan yuboriladi.")
         cur.execute("SELECT date,status,group_id FROM attendance WHERE user_id=? ORDER BY date DESC LIMIT 40",(sid,)); attendance=_dicts(cur.fetchall())
         cur.execute("SELECT h.id,h.title,h.status,h.due_at,s.review_note,COALESCE(s.updated_at,h.updated_at) AS updated_at,COALESCE(s.status,'pending') AS submission_status FROM web_homeworks h LEFT JOIN web_homework_submissions s ON s.homework_id=h.id AND s.student_id=? WHERE h.student_id=? ORDER BY COALESCE(s.updated_at,h.updated_at) DESC LIMIT 40",(sid,sid)); homework=_dicts(cur.fetchall())
         cur.execute("SELECT test_type,topic_id,correct_count,wrong_count,skipped_count,created_at FROM test_history WHERE user_id=? ORDER BY created_at DESC LIMIT 40",(sid,)); tests=_dicts(cur.fetchall())
         cur.execute("SELECT subject,topic_key,COUNT(*) AS mistakes FROM mistake_notebook_items WHERE user_id=? AND resolved_at IS NULL GROUP BY subject,topic_key ORDER BY mistakes DESC LIMIT 5",(sid,)); weak=_dicts(cur.fetchall())
         cur.execute("SELECT course_title,certificate_id,issued_at FROM certificates WHERE user_id=? ORDER BY issued_at DESC",(sid,)); certificates=_dicts(cur.fetchall())
         plan=_build_plan(sid)
-        return {"student":{"name":_student_name(student),"login_id":student.get("login_id"),"subject":student.get("subject")},"attendance":attendance,"homework":homework,"tests":tests,"weak_topics":weak,"certificates":certificates,"plan":plan}
+        return {"student":{"name":_student_name(student),"login_id":student.get("login_id"),"subject":student.get("subject")},"attendance":attendance,"homework":homework,"tests":tests,"weak_topics":weak,"certificates":certificates,"plan":plan,"link_expires_at":link_expires_at.isoformat(),"link_ttl_days":PARENT_LINK_TTL_DAYS}
     finally: conn.close()
 
 
@@ -1726,7 +1797,8 @@ async def parent_progress(access_token: str):
 async def regenerate_parent_access(authorization: str | None = Header(default=None)):
     user=_user(authorization); _require(user,{"student"}); ensure_schema(); conn=get_conn()
     try:
-        token=new_parent_access_token(); cur=conn.cursor(); cur.execute("UPDATE parent_access_links SET active=0,rotated_at=? WHERE student_id=? AND active=1",(_now().isoformat(),int(user["id"]))); cur.execute("INSERT INTO parent_access_links(student_id,access_token,active,created_by) VALUES(?,?,1,?)",(int(user["id"]),token,int(user["id"]))); conn.commit(); return {"access_token":token}
+        cur=conn.cursor(); token, expires_at = _issue_parent_link(cur, int(user["id"]), int(user["id"])); conn.commit()
+        return {"access_token":token, "expires_at":expires_at.isoformat(), "ttl_days":PARENT_LINK_TTL_DAYS}
     finally: conn.close()
 
 
@@ -1735,7 +1807,8 @@ async def staff_parent_access(student_id: int, authorization: str | None = Heade
     user=_user(authorization); _require(user,{"teacher","support","admin"})
     if not _staff_can_access_student(user, student_id):
         raise HTTPException(status_code=403, detail="Student is outside your access scope")
-    return {"access_token":_get_or_create_parent_token(student_id, int(user["id"]))}
+    token, expires_at = get_or_create_parent_link(student_id, int(user["id"]))
+    return {"access_token":token, "expires_at":expires_at.isoformat(), "ttl_days":PARENT_LINK_TTL_DAYS}
 
 
 @router.post("/staff/students/{student_id}/parent-access/regenerate")
@@ -1745,10 +1818,8 @@ async def staff_regenerate_parent_access(student_id: int, authorization: str | N
         raise HTTPException(status_code=403, detail="Student is outside your access scope")
     conn=get_conn()
     try:
-        token=new_parent_access_token(); cur=conn.cursor()
-        cur.execute("UPDATE parent_access_links SET active=0,rotated_at=? WHERE student_id=? AND active=1",(_now().isoformat(),student_id))
-        cur.execute("INSERT INTO parent_access_links(student_id,access_token,active,created_by) VALUES(?,?,1,?)",(student_id,token,int(user["id"]))); conn.commit()
-        return {"access_token":token}
+        cur=conn.cursor(); token, expires_at = _issue_parent_link(cur, int(student_id), int(user["id"])); conn.commit()
+        return {"access_token":token, "expires_at":expires_at.isoformat(), "ttl_days":PARENT_LINK_TTL_DAYS}
     finally: conn.close()
 
 
@@ -3494,6 +3565,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     import re
     user = _user(authorization)
     _require(user, LEARNING_MANAGER_ROLES)
+    _ai_rate_limit(user, "learning-ai-question", limit=60, window_seconds=3600)
     ensure_schema()
     conn = get_conn()
     try:
@@ -4695,6 +4767,7 @@ async def check_learning_lesson_ai(
 ):
     user = _user(authorization)
     _require(user, {"student", "teacher", "admin", "superadmin", "director", "mentor", "support", "staff"})
+    _ai_rate_limit(user, "learning-check-ai", limit=150, window_seconds=3600)
     conn = get_conn()
     try:
         cur = conn.cursor()
@@ -6170,6 +6243,7 @@ async def get_weekly_analysis(subject: str | None = Query(default=None), authori
 async def generate_weekly_analysis(subject: str | None = Query(default=None), authorization: str | None = Header(default=None)):
     """Queue a weekly Diamondvoy analysis for the specified subject and return immediately for UI polling."""
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    _ai_rate_limit(user, "weekly-analysis-generate", limit=10, window_seconds=3600)
     uid = int(user["id"]); week_start, week_end = _current_week_range()
     user_name = _student_name(user)
     conn = get_conn()
@@ -6297,6 +6371,7 @@ class WeeklyAnalysisAskRequest(BaseModel):
 async def ask_weekly_analysis(payload: WeeklyAnalysisAskRequest, authorization: str | None = Header(default=None)):
     """Diamondvoy answers with the student's current-week learning context only."""
     user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    _ai_rate_limit(user, "weekly-analysis-ask", limit=30, window_seconds=3600)
     week_start, _ = _current_week_range()
     conn = get_conn()
     try:

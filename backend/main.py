@@ -36,7 +36,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
-from urllib.parse import parse_qs, parse_qsl, quote, urlparse
+from urllib.parse import parse_qs, parse_qsl, quote, unquote, urlparse
 from uuid import uuid4
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
@@ -912,7 +912,12 @@ async def production_https_guard(request: Request, call_next):
     enforce = os.getenv("ENFORCE_HTTPS", "true" if production else "false").strip().lower() in {"1", "true", "yes", "on"}
     client_host = str((request.client.host if request.client else "") or "")
     loopback = client_host in {"127.0.0.1", "::1", "localhost"}
-    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    # X-Forwarded-Proto is only meaningful from the local reverse proxy.
+    forwarded_proto = (
+        str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+        if loopback
+        else ""
+    )
     is_secure = request.url.scheme == "https" or forwarded_proto == "https"
     if enforce and not loopback and not is_secure:
         return JSONResponse(status_code=400, content={"detail": "HTTPS is required"})
@@ -956,6 +961,8 @@ WEB_AUTH_COOKIE_MARKER = "cookie-session:"
 # Mobile apps (Android/iOS) send a device_id on login and use the same 30-day
 # session lifetime so users stay signed in between daily/weekly app opens.
 MOBILE_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
+# Hard upper bound for any session/token, whatever a caller requests.
+MAX_SESSION_TOKEN_TTL_HOURS = 720  # 30 days
 # QR login tokens are one-time and short-lived, but 5 minutes was too strict for
 # real-world Telegram camera/share flow. Keep security by one-time use and
 # signature checks, while allowing enough time to scan on mobile.
@@ -3211,6 +3218,36 @@ def _ordered_admin_ids() -> list[int]:
     return list(dict.fromkeys([int(x) for x in (ADMIN_CHAT_IDS + LIMITED_ADMIN_CHAT_IDS)]))
 
 
+def _env_admin_login_ref(login_id: str) -> int | None:
+    """Map an env-configured admin web login to its admin chat id.
+
+    MAIN_ADMIN_WEB_LOGIN_N / LIMITED_ADMIN_WEB_LOGIN_N may use any login text.
+    Without this mapping such an account resolved to its users.id and was
+    silently treated as "general" (unscoped) admin.
+    """
+    lid = str(login_id or "").strip().upper()
+    if not lid:
+        return None
+    mapping = (
+        ("ADMIN_LOGIN_ID", ADMIN_CHAT_IDS, 0),
+        ("ADMIN_LOGIN", ADMIN_CHAT_IDS, 0),
+        ("MAIN_ADMIN_WEB_LOGIN_1", ADMIN_CHAT_IDS, 0),
+        ("MAIN_ADMIN_WEB_LOGIN_2", ADMIN_CHAT_IDS, 1),
+        ("LIMITED_ADMIN_WEB_LOGIN_1", LIMITED_ADMIN_CHAT_IDS, 0),
+        ("LIMITED_ADMIN_WEB_LOGIN_2", LIMITED_ADMIN_CHAT_IDS, 1),
+    )
+    for env_key, ordered, index in mapping:
+        configured = str(os.getenv(env_key) or "").strip().upper()
+        if configured and configured == lid:
+            if 0 <= index < len(ordered):
+                return int(ordered[index])
+            # Second main admin configured without its own chat id: keep it a
+            # main admin (same as before), never a silently unscoped account.
+            if ordered is ADMIN_CHAT_IDS and ordered:
+                return int(ordered[0])
+    return None
+
+
 def _admin_ref_id(user: dict) -> int:
     lid = str(user.get("login_id") or "").strip().upper()
     match = re.match(r"^DIAMOND-(ADM|LIM)-(\d+)$", lid)
@@ -3220,6 +3257,10 @@ def _admin_ref_id(user: dict) -> int:
         ordered = ADMIN_CHAT_IDS if kind == "ADM" else LIMITED_ADMIN_CHAT_IDS
         if 1 <= idx <= len(ordered):
             return int(ordered[idx - 1])
+    if int(user.get("login_type") or 0) == 4:
+        env_ref = _env_admin_login_ref(lid)
+        if env_ref is not None:
+            return env_ref
 
     tg_raw = user.get("telegram_id")
     if tg_raw is not None and str(tg_raw).strip().isdigit():
@@ -3246,6 +3287,9 @@ def _require_main_admin(user: dict) -> int:
 
 
 def _is_general_admin_scope(admin_ref_id: int) -> bool:
+    # Env-configured admin logins now resolve to their chat ids
+    # (_env_admin_login_ref), so main admins are recognised explicitly and
+    # limited admins can no longer fall through to unscoped access.
     return _is_main_admin(admin_ref_id) or not _is_limited_admin(admin_ref_id)
 
 
@@ -3489,8 +3533,19 @@ def _can_manage_user(admin_ref_id: int, user_row: dict | None) -> bool:
 
 
 def _can_manage_user_globally(admin_ref_id: int, user_row: dict | None) -> bool:
-    """Admin user-management screens are shared; group/payment screens stay owner-scoped."""
-    return bool(user_row)
+    """User management: main admins manage everyone; a limited admin manages
+    staff (shared) and only students visible in its own scope.
+
+    Previously this returned True for any row, so a limited admin could edit,
+    block, reset the password of, or delete another branch's students.
+    """
+    if not user_row:
+        return False
+    if _is_general_admin_scope(admin_ref_id):
+        return True
+    if int(user_row.get("login_type") or 0) in (1, 2, 6):
+        return _limited_admin_owner_visible(int(admin_ref_id), user_row.get("owner_admin_id"))
+    return True
 
 
 def _is_protected_admin_row(user_row: dict | None) -> bool:
@@ -6983,7 +7038,7 @@ def _generate_unique_student_credentials() -> tuple[str, str]:
         login_id = "ST" + "".join(secrets.choice(alphabet) for _ in range(4))
         if _safe_call(lambda lid=login_id: get_user_by_login_id(lid), None):
             continue
-        password = generate_password(6)
+        password = generate_password(8)
         return login_id, password
     raise HTTPException(status_code=500, detail="Could not generate unique login credentials")
 
@@ -7353,6 +7408,7 @@ def _issue_web_session(user: dict, device_id: str | None, source: str = "web", t
     model = str(device_model or "").strip()[:120] or None
     if ttl_hours is None:
         ttl_hours = MOBILE_SESSION_TOKEN_TTL_HOURS if device else WEB_SESSION_TOKEN_TTL_HOURS
+    ttl_hours = max(1, min(int(ttl_hours), MAX_SESSION_TOKEN_TTL_HOURS))
     expires_at = (now + timedelta(hours=ttl_hours)).isoformat()
     session_id = f"ws_{uuid4().hex}"
     conn = get_conn()
@@ -7900,13 +7956,18 @@ def _create_access_token(
 ) -> str:
     payload = _build_user_payload(user)
     session_version = int(user.get("session_version") or 1)
+    issued_at = _now_utc()
+    # Sessions last at most 30 days in every client (web, mobile, Telegram);
+    # the matching web_user_sessions row enforces the same expiry server-side.
+    lifetime_hours = max(1, min(int(ttl_hours), MAX_SESSION_TOKEN_TTL_HOURS))
     token_payload = {
         "sub": str(payload.id),
         "role": payload.role,
         "login_type": payload.login_type,
         "login_id": payload.login_id,
         "sv": session_version,
-        "exp": _now_utc() + timedelta(hours=int(ttl_hours)),
+        "iat": issued_at,
+        "exp": issued_at + timedelta(hours=lifetime_hours),
     }
     sid = str(session_id or "").strip()
     if sid:
@@ -8058,7 +8119,13 @@ def _decode_bearer_payload(authorization: str | None) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.split(" ", 1)[1].strip()
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"require": ["exp", "sub"]},
+            leeway=30,
+        )
     except Exception as exc:
         raise HTTPException(status_code=401, detail="Invalid token") from exc
 
@@ -8320,14 +8387,11 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
             _AUTH_USER_ROW_CACHE[token] = (time.time() + 8.0, dict(row))
         return row
 
-    # Legacy fallback for old tokens without sid.
-    token_sv = int(payload.get("sv") or 1)
-    row_sv = int(row.get("session_version") or 1)
-    if token_sv != row_sv:
-        raise HTTPException(status_code=401, detail="Session expired. Please login again")
-    if token:
-        _AUTH_USER_ROW_CACHE[token] = (time.time() + 8.0, dict(row))
-    return row
+    # Every token issued since May 2026 carries a server-side session id
+    # (web_user_sessions), and the session lifetime is 30 days, so a valid
+    # token without "sid" can only be a forged/legacy one that logout and
+    # session revocation cannot reach. Refuse it.
+    raise HTTPException(status_code=401, detail="Session expired. Please login again")
 
 
 ALLOWED_NO_GROUP_PATH_PREFIXES = (
@@ -21115,6 +21179,7 @@ async def admin_update_speaking_user(
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
     if not is_speaking_app_account(target.get("speaking_app_account")):
         raise HTTPException(status_code=404, detail="Speaking foydalanuvchisi topilmadi.")
+    _assert_not_protected_admin_target(target)
 
     conn = get_conn(); cur = conn.cursor()
     try:
@@ -21128,6 +21193,12 @@ async def admin_update_speaking_user(
             params.append(payload.last_name.strip())
         if payload.login_id is not None and payload.login_id.strip():
             new_login = payload.login_id.strip()
+            # Same reserved-ID rules as self-registration: renaming a Speaking
+            # account to DIAMOND-SP-1 / DEVELOPER-* / ADMIN* would grant a role.
+            normalized_new_login = new_login.upper()
+            if normalized_new_login.startswith(("ADMIN", "SUP", "DIAMOND-ADM", "DIAMOND-LIM")):
+                raise HTTPException(status_code=422, detail="This Login ID prefix is reserved")
+            _public_registration_login_id(normalized_new_login.lstrip("@") or normalized_new_login)
             existing = get_user_by_login_id(new_login)
             if existing and int(existing.get("id") or 0) != user_id:
                 raise HTTPException(status_code=409, detail="Ushbu Login ID allaqachon mavjud.")
@@ -21191,6 +21262,7 @@ async def admin_reset_speaking_user_password(
         raise HTTPException(status_code=404, detail="Foydalanuvchi topilmadi.")
     if not is_speaking_app_account(target.get("speaking_app_account")):
         raise HTTPException(status_code=404, detail="Speaking foydalanuvchisi topilmadi.")
+    _assert_not_protected_admin_target(target)
 
     new_pwd_hash = hash_password(str(payload.new_password))
     conn = get_conn(); cur = conn.cursor()
@@ -22460,14 +22532,29 @@ async def developer_trigger_backup(authorization: str | None = Header(default=No
     try:
         old_umask = os.umask(0o077)
         try:
+            # Pass the connection string through the environment, not argv:
+            # argv (with the DB password) is visible to every local process.
+            parsed_db = urlparse(database_url)
+            dump_env = {**os.environ}
+            if parsed_db.hostname:
+                dump_env["PGHOST"] = parsed_db.hostname
+            if parsed_db.port:
+                dump_env["PGPORT"] = str(parsed_db.port)
+            if parsed_db.username:
+                dump_env["PGUSER"] = unquote(parsed_db.username)
+            if parsed_db.password:
+                dump_env["PGPASSWORD"] = unquote(parsed_db.password)
+            dump_env["PGDATABASE"] = unquote((parsed_db.path or "/").lstrip("/").split("?", 1)[0])
             res = subprocess.run(
-                ["pg_dump", database_url, "--format=custom", "--file", str(backup_path)],
+                ["pg_dump", "--format=custom", "--file", str(backup_path)],
                 capture_output=True,
                 text=True,
                 timeout=120,
+                env=dump_env,
             )
             if res.returncode != 0:
-                raise RuntimeError(f"pg_dump failed: {res.stderr}")
+                logger.error("developer backup pg_dump failed rc=%s", res.returncode)
+                raise RuntimeError("pg_dump failed (see server log)")
         finally:
             os.umask(old_umask)
 
@@ -22494,9 +22581,9 @@ async def developer_trigger_backup(authorization: str | None = Header(default=No
             "created_at": datetime.now(timezone.utc).isoformat(),
             "removed_old_backups": removed,
         }
-    except Exception as e:
+    except Exception:
         logger.exception("developer backup error")
-        raise HTTPException(status_code=500, detail=f"Backup error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Backup error (see server log)")
 
 
 @app.get("/developer/server/status")
@@ -24714,6 +24801,19 @@ async def open_direct_chat(target_user_id: int, authorization: str | None = Head
     if int(target_user_id) in community_safety.blocked_ids(source_id, either_direction=True):
         raise HTTPException(status_code=404, detail="User not found")
     target_role = _role_from_login_type(int(target.get("login_type") or 1), str(target.get("login_id") or ""))
+    # Staff accounts with elevated rights are not open for unsolicited DMs
+    # (phishing / social engineering of admins): only admins, or users the
+    # normal chat directory already allows, can open them.
+    if role != "admin" and target_role in {"admin", "developer", "speaking_admin"}:
+        allowed_ids = _safe_call(lambda: _chat_allowed_direct_user_ids(user, role, {int(target_user_id): target}), set()) or set()
+        if int(target_user_id) not in allowed_ids:
+            raise HTTPException(status_code=404, detail="User not found")
+    # Bound how many new conversations one account can open (spam/enumeration).
+    allowed_open, retry_after = consume_rate_limit(
+        _REDIS_CLIENT, f"chat-direct-open:user:{source_id}", limit=60, window_seconds=3600
+    )
+    if not allowed_open:
+        raise HTTPException(status_code=429, detail="Too many new chats. Please try again later.", headers={"Retry-After": str(retry_after)})
     thread = get_or_create_direct_chat_thread(
         source_id, int(target_user_id), role_a=role, role_b=target_role, created_by=source_id,
     )
@@ -28378,6 +28478,16 @@ async def admin_feedback_dpoint_adjust(
     amount = float(payload.amount or 0.0)
     if abs(amount) < 1e-9:
         raise HTTPException(status_code=400, detail="Amount must not be zero")
+    if not math.isfinite(amount) or abs(amount) > 10000:
+        raise HTTPException(status_code=400, detail="Amount must be between -10000 and 10000")
+    # A double click / network retry must not apply the same adjustment twice.
+    if not _REDIS_CLIENT.set(
+        f"feedback-dpoint-adjust:{int(feedback_id)}:{int(user.get('id') or 0)}:{amount:.2f}",
+        "1",
+        nx=True,
+        ex=30,
+    ):
+        raise HTTPException(status_code=409, detail="Duplicate adjustment submission detected")
 
     _ensure_web_tables()
     conn = get_conn()
@@ -37231,8 +37341,10 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
     teacher_can_manage_group = bool(group_id > 0 and _teacher_can_manage_group(user, _safe_call(lambda: get_group(group_id), None)))
     
     if not is_owner and not teacher_can_manage_group:
+        # The shared-student fallback applies to individual homework only;
+        # another teacher's group homework stays owner/group controlled.
         student_id = int(homework.get("student_id") or 0)
-        if student_id <= 0 or student_id not in _teacher_student_ids(teacher_id):
+        if group_id > 0 or student_id <= 0 or student_id not in _teacher_student_ids(teacher_id):
             raise HTTPException(status_code=403, detail="Only homework owner or active temporary teacher can edit")
 
     title = str(payload.title or "").strip()
@@ -37696,7 +37808,9 @@ async def teacher_homework_groups(
 @app.get("/teacher/homework/groups/{group_id}/voiceroom-preview")
 async def teacher_homework_voiceroom_preview(group_id: int, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
+    role = _require_role(user, TEACHER_STAFF_ROLES | {"admin"})
+    if role != "admin" and not _teacher_can_manage_group(user, _safe_call(lambda: get_group(int(group_id)), None)):
+        raise HTTPException(status_code=403, detail="Teacher can only view own or temporary groups")
     import random
     users = _safe_call(lambda: get_group_users(group_id), []) or []
     students = [u for u in users if u.get('role') == 'student' or int(u.get('login_type') or 0) in (1, 2, 6)]
@@ -37904,7 +38018,7 @@ async def teacher_review_homework(
             raise HTTPException(status_code=400, detail="Select a valid student submission for group homework")
             
     if not is_owner and not teacher_can_manage_group:
-        if student_id <= 0 or student_id not in _teacher_student_ids(teacher_id):
+        if group_id > 0 or student_id <= 0 or student_id not in _teacher_student_ids(teacher_id):
             raise HTTPException(status_code=403, detail="Only homework owner or active temporary teacher can review")
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), student_id), None)
     if not submission:
@@ -37974,9 +38088,7 @@ async def teacher_ai_review_homework(
     """Allows teacher to manually trigger AI auto-grading for any student submission."""
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
-    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-    if not homework:
-        raise HTTPException(status_code=404, detail="Homework not found")
+    homework = _require_teacher_homework_student_access(user, int(homework_id), int(student_id))
     if not _homework_auto_grade_enabled(homework):
         raise HTTPException(status_code=409, detail="AI avto-tekshiruv o'chirilgan")
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
@@ -38221,11 +38333,13 @@ async def teacher_group_available_students(
     query = str(q or "").strip().lower()
     has_left_date = _db_has_column("user_groups", "left_date")
     active_join_clause = "AND (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='')" if has_left_date else ""
-    where_sql = ["u.login_type IN (1,2,6)", "ug.user_id IS NULL"]
+    where_sql = ["u.login_type IN (1,2,6)", "ug.user_id IS NULL", "COALESCE(u.screenshot_demo, 0)=0"]
     params: list[Any] = [int(group_id)]
     if query:
+        # Name / login search only: phone and Telegram ID lookups would let a
+        # teacher test whether a number belongs to any student in the school.
         where_sql.append(
-            "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,'') || ' ' || COALESCE(CAST(u.telegram_id AS TEXT),'')) LIKE ?"
+            "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.login_id,'')) LIKE ?"
         )
         params.append(f"%{query}%")
     conn = get_conn()
@@ -38246,7 +38360,15 @@ async def teacher_group_available_students(
     )
     rows = [dict(row) for row in (cur.fetchall() or [])]
     conn.close()
-    return {"items": [_serialize_user_row_light(row) for row in rows]}
+    # This is a school-wide picker: return only what is needed to choose a
+    # student, never contact details (phone, parent phone, Telegram ID, email).
+    items = []
+    for row in rows:
+        item = _serialize_user_row_light(row)
+        for private_key in ("phone", "parent_phone", "telegram_id", "email"):
+            item.pop(private_key, None)
+        items.append(item)
+    return {"items": items}
 
 
 @app.patch("/teacher/groups/{group_id}")
@@ -41034,12 +41156,7 @@ async def _upload_web_image(file: UploadFile, upload_dir: Path, prefix: str) -> 
 
 
 async def _upload_web_file(file: UploadFile, upload_dir: Path, prefix: str, max_size_mb: int = 20) -> tuple[str, str]:
-    raw = await file.read()
     max_bytes = int(max_size_mb) * 1024 * 1024
-    if not raw:
-        raise HTTPException(status_code=400, detail="Fayl bo'sh.")
-    if len(raw) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"Fayl hajmi juda katta. Maksimal hajm: {int(max_size_mb)}MB.")
     original_name = Path(file.filename or "upload.bin").name
     ext = Path(original_name).suffix.lower()
     if not ext or len(ext) > 10 or not re.match(r"^\.[a-z0-9]{1,9}$", ext):
@@ -41049,8 +41166,25 @@ async def _upload_web_file(file: UploadFile, upload_dir: Path, prefix: str, max_
         raise HTTPException(status_code=422, detail="Bu faol kontent fayl turi yuklash uchun ruxsat etilmagan.")
     filename = f"{prefix}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(5)}{ext}"
     path = upload_dir / filename
-    with open(path, "wb") as handle:
-        handle.write(raw)
+    # Stream to disk in 1 MB chunks: reading a 2 GB video into memory let a
+    # few concurrent uploads exhaust worker RAM (DoS).
+    written = 0
+    try:
+        with open(path, "wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=413, detail=f"Fayl hajmi juda katta. Maksimal hajm: {int(max_size_mb)}MB.")
+                handle.write(chunk)
+        if written == 0:
+            raise HTTPException(status_code=400, detail="Fayl bo'sh.")
+    except BaseException:
+        with suppress(OSError):
+            path.unlink()
+        raise
     content_type = str(file.content_type or "").strip().lower()
     if not content_type:
         content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -43635,6 +43769,11 @@ async def add_student_member(
 async def set_teacher_permissions(teacher_id: int, payload: TeacherPermissionRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    # Permissions are only meaningful for teacher/support accounts; refuse to
+    # grant upload/AI rights to students or other account types.
+    permission_target = _safe_call(lambda: get_user_by_id(int(teacher_id)), None)
+    if not permission_target or int(permission_target.get("login_type") or 0) not in (3, 5):
+        raise HTTPException(status_code=404, detail="Teacher not found")
     if payload.can_upload_daily_tests is not None:
         set_daily_test_upload_permission(int(teacher_id), bool(payload.can_upload_daily_tests))
     if payload.can_generate_ai is not None:
@@ -53414,6 +53553,21 @@ async def admin_update_user(user_id: int, payload: AdminUserUpdateRequest, autho
         raise HTTPException(status_code=403, detail="You cannot manage this user")
     _assert_not_protected_admin_target(target)
     current_login_type = int(target.get("login_type") or 0)
+    # Privilege boundary: this endpoint can never create an administrator.
+    # Only student/teacher/support types are assignable, and moving an account
+    # between staff and student roles is reserved for main admins.
+    if payload.login_type is not None:
+        requested_type = int(payload.login_type)
+        if requested_type not in (1, 2, 3, 5):
+            raise HTTPException(status_code=403, detail="This account type cannot be assigned")
+        staff_types = {3, 5}
+        if (requested_type in staff_types) != (current_login_type in staff_types) and not _is_main_admin(admin_ref):
+            raise HTTPException(status_code=403, detail="Only main admins can change staff roles")
+    if payload.telegram_id is not None:
+        requested_tg = str(payload.telegram_id).strip()
+        env_admin_ids = {str(int(x)) for x in [*ADMIN_CHAT_IDS, *LIMITED_ADMIN_CHAT_IDS] if int(x or 0) > 0}
+        if requested_tg and requested_tg in env_admin_ids:
+            raise HTTPException(status_code=403, detail="This Telegram ID belongs to an administrator")
     target_login_type = int(payload.login_type) if payload.login_type is not None else current_login_type
     if target_login_type in (1, 2, 6) and payload.subjects is not None:
         raise HTTPException(status_code=400, detail="Student subjects are derived from active groups")
@@ -53683,7 +53837,7 @@ async def admin_reset_password(user_id: int, payload: AdminPasswordResetRequest,
 
     password = (payload.password or "").strip().upper()
     if not password:
-        password = generate_password(6)
+        password = generate_password(8)
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     _ensure_user_web_columns()
@@ -53913,7 +54067,8 @@ async def admin_inactive_students_preview(
 ):
     """Global inactive queue across all admin-owned student records."""
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
+    # Global, cross-branch list of names and phone numbers: main admins only.
+    _require_main_admin(user)
     if months < 1 or months > 24:
         raise HTTPException(status_code=400, detail="months must be between 1 and 24")
     students = _find_inactive_students(months=months)
@@ -53929,8 +54084,8 @@ async def admin_inactive_students_purge(
     """Globally purge inactive student records across every admin scope.
     dry_run=true bo'lsa faqat preview, o'chirish amalga oshirilmaydi."""
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin"})
-    admin_ref = _admin_ref_id(user)
+    # Irreversible, global hard delete: main admins only.
+    admin_ref = _require_main_admin(user)
     if months < 1 or months > 24:
         raise HTTPException(status_code=400, detail="months must be between 1 and 24")
     students = _find_inactive_students(months=months)
@@ -54679,8 +54834,13 @@ async def post_admin_userbot_send_code(req: UserbotSendCodeRequest, authorizatio
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     settings = get_userbot_settings()
-    api_id = req.api_id or settings.get("api_id") or os.environ.get("TELEGRAM_API_ID") or 2040
-    api_hash = req.api_hash or settings.get("api_hash") or os.environ.get("TELEGRAM_API_HASH") or "b18441a1ed607e10e394949103722e18"
+    # No built-in fallback: impersonating the official Telegram Desktop client
+    # credentials risks the account being banned. Configure your own app at
+    # https://my.telegram.org (TELEGRAM_API_ID / TELEGRAM_API_HASH) or enter it.
+    api_id = req.api_id or settings.get("api_id") or os.environ.get("TELEGRAM_API_ID")
+    api_hash = req.api_hash or settings.get("api_hash") or os.environ.get("TELEGRAM_API_HASH")
+    if not api_id or not str(api_hash or "").strip():
+        raise HTTPException(status_code=400, detail="Telegram API ID va API hash kiritilishi kerak (my.telegram.org).")
     try:
         res = await send_userbot_otp_code(int(api_id), str(api_hash), req.phone_number)
         if not res.get("ok"):
@@ -57162,9 +57322,22 @@ async def students_list(authorization: str | None = Header(default=None)):
 @app.get("/students/{student_id}")
 async def get_student(student_id: int, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"admin", "teacher", "support", "student"})
+    role = _require_role(user, {"admin", "teacher", "support", "student"})
     row = _safe_call(lambda: get_user_by_id(int(student_id)), None)
     if not row or bool(int(row.get("screenshot_demo") or 0)):
+        raise HTTPException(status_code=404, detail="Student not found")
+    # Object-level authorization: the full record (phone, parent phone,
+    # Telegram ID) is only for the student themself, their teachers and
+    # admins whose scope includes them. Everyone else gets 404.
+    viewer_id = int(user.get("id") or 0)
+    allowed = int(student_id) == viewer_id
+    if not allowed and role == "admin":
+        allowed = _can_manage_user_globally(_admin_ref_id(user), row)
+    elif not allowed and role in {"teacher", "support"}:
+        allowed = int(student_id) in _teacher_student_ids(viewer_id) or bool(
+            _safe_call(lambda: _personalization_staff_can_access_student(user, int(student_id)), False)
+        )
+    if not allowed:
         raise HTTPException(status_code=404, detail="Student not found")
     payload = _serialize_user_row(row)
     payload.update(_presence_summary_for_user(int(student_id)))
@@ -57210,6 +57383,11 @@ async def user_presence_profile(user_id: int, authorization: str | None = Header
 
     selected_badge = badge_data.get("selected_badge")
     profile = _serialize_user_row(target)
+    actor_role = _role_from_login_type(int(actor.get("login_type") or 0), str(actor.get("login_id") or ""))
+    if actor_role == "student" and int(actor.get("id") or 0) != uid:
+        # A classmate's profile card must not expose contact details.
+        for private_key in ("phone", "parent_phone", "telegram_id", "email"):
+            profile.pop(private_key, None)
     profile.update(presence)
     profile["selected_badge"] = selected_badge
     profile["badge_asset_url"] = badge_data.get("badge_asset_url")
@@ -58625,9 +58803,15 @@ async def transfer_dcoins(
         recipient_id=recipient_id,
         amount=amount,
         subject=chosen_subject,
+        daily_limit=float(_TRANSFER_DAILY_MAX),
     )
     if not result.get("ok"):
         reason = str(result.get("reason") or "transaction_failed")
+        if reason == "daily_limit":
+            raise HTTPException(
+                status_code=429,
+                detail=f"Daily transfer limit reached. You can still send {float(result.get('remaining') or 0):.1f} D'coin today.",
+            )
         if reason == "insufficient_balance":
             raise HTTPException(status_code=400, detail="Insufficient Dcoin balance")
         if reason == "user_not_found":
@@ -60917,18 +61101,22 @@ async def _personalization_explain(prompt: str, user: dict[str, Any]) -> str:
     )
 
 def _notify_parent_progress_event(student_id: int, event_type: str, detail: str) -> None:
-    """Best-effort parent alert with a permanent, opaque progress URL."""
+    """Best-effort parent alert with an opaque progress URL valid for 30 days."""
     try:
         student = _safe_call(lambda: get_user_by_id(int(student_id)), None) or {}
         if not student:
             return
-        token = personalization_api._get_or_create_parent_token(int(student_id))
+        token, link_expires_at = personalization_api.get_or_create_parent_link(int(student_id))
         base = str(WEBAPP_URL or "").rstrip("/")
         url = f"{base}/parent/{token}" if base else f"/parent/{token}"
+        expires_label = link_expires_at.astimezone(TASHKENT_TZ).strftime("%d.%m.%Y")
         from userbot_manager import get_target_phones_for_user
         message = (
             f"Hurmatli ota-ona! { _display_name(student) } uchun {detail}.\n\n"
-            f"To‘liq progress, davomat, homework va testlar: {url}"
+            f"To‘liq progress, davomat, homework va testlar: {url}\n\n"
+            f"Havola {personalization_api.PARENT_LINK_TTL_DAYS} kun amal qiladi ({expires_label} gacha). "
+            "Muddati tugagach, keyingi xabar bilan yangi havola yuboriladi. "
+            "Havolani boshqalarga bermang."
         )
         for phone in get_target_phones_for_user(student):
             queue_userbot_notification(str(phone), message, event_type=event_type)
@@ -61004,7 +61192,23 @@ async def _personalization_notify_certificate(user: dict[str, Any], certificate:
         url=f"{base}/certificates/share/{share}/download" if base and share else (f"{base}{target}" if base else None)
         await _send_telegram_text(bot_token, telegram_id, message, button_text="Sertifikatni yuklash", button_url=url, button_web_app=False)
 
+def _personalization_rate_limit(user_id: int, bucket: str, limit: int, window_seconds: int) -> None:
+    allowed, retry_after = consume_rate_limit(
+        _REDIS_CLIENT,
+        f"ai:{bucket}:user:{int(user_id)}",
+        limit=max(1, int(limit)),
+        window_seconds=max(1, int(window_seconds)),
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="AI so'rovlar limiti tugadi. Birozdan keyin qayta urinib ko'ring.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
 personalization_api.configure_runtime(
+    rate_limit=_personalization_rate_limit,
     user_from_bearer=_user_row_from_bearer,
     role_for_user=_personalization_role_for_user,
     staff_visible_student_ids=_personalization_visible_student_ids,
@@ -62238,7 +62442,7 @@ async def teacher_reset_student_password(student_id: int, authorization: str | N
     if not target:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    password = generate_password(6)
+    password = generate_password(8)
     _ensure_user_web_columns()
     reset_user_password(int(student_id), password)
     # A teacher-assisted reset must not unexpectedly sign a student out.
@@ -62314,6 +62518,8 @@ async def teacher_create_student_note(
     teacher_id = int(user.get("id") or 0)
     if not payload.note_text or not payload.note_text.strip():
         raise HTTPException(status_code=400, detail="note_text majburiy")
+    if int(student_id) not in _teacher_student_ids(teacher_id):
+        raise HTTPException(status_code=403, detail="Faqat o'z guruhingizdagi o'quvchiga note yozish mumkin")
     ensure_teacher_notes_schema()
     note = _safe_call(lambda: create_teacher_note(teacher_id, int(student_id), payload.note_text.strip(), bool(payload.is_visible)), None)
     if not note:
@@ -62800,6 +63006,11 @@ async def teacher_send_material(
         raise HTTPException(status_code=403, detail="Bu materialni yuborish uchun ruxsat yo'q")
     if not payload.group_id and not payload.student_id:
         raise HTTPException(status_code=400, detail="group_id yoki student_id majburiy")
+    _require_teacher_assignment_targets(
+        user,
+        group_id=int(payload.group_id or 0) or None,
+        student_ids=[int(payload.student_id)] if payload.student_id else [],
+    )
     title = str(mat.get("title") or "Material")
     description = str(mat.get("description") or title)
     file_url = str(mat.get("file_url") or "")
@@ -63150,9 +63361,7 @@ async def teacher_ai_analyze_voice(
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
     teacher_id = int(user.get("id") or 0)
-    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-    if not homework:
-        raise HTTPException(status_code=404, detail="Homework topilmadi")
+    homework = _require_teacher_homework_student_access(user, int(homework_id), int(student_id))
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission topilmadi")
@@ -63449,12 +63658,52 @@ async def _run_teacher_writing_analysis(
     return result
 
 
+def _require_teacher_assignment_targets(
+    user: dict,
+    *,
+    group_id: int | None,
+    student_ids: list[int],
+) -> None:
+    """A teacher may assign work only to their own (or substitute) groups and
+    to students of those groups. Admins are unrestricted."""
+    role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
+    if role == "admin":
+        return
+    if group_id and not _teacher_can_manage_group(user, _safe_call(lambda: get_group(int(group_id)), None)):
+        raise HTTPException(status_code=403, detail="Teacher can only assign to own or temporary groups")
+    if student_ids:
+        allowed = _teacher_student_ids(int(user.get("id") or 0))
+        if any(int(sid) not in allowed for sid in student_ids):
+            raise HTTPException(status_code=403, detail="Teacher can only assign to students of own groups")
+
+
+def _require_teacher_homework_student_access(user: dict, homework_id: int, student_id: int) -> dict:
+    """Owner/group check for a homework, plus "the student belongs to it".
+
+    Used by teacher AI review/analysis routes so a teacher cannot read or
+    re-grade another teacher's student submissions by changing ids.
+    """
+    _require_content_test_manage_access(user, "homework", int(homework_id))
+    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+    if not homework:
+        raise HTTPException(status_code=404, detail="Homework not found")
+    group_id = int(homework.get("group_id") or 0)
+    if group_id > 0:
+        member_ids = {
+            int(member.get("id") or 0)
+            for member in (_safe_call(lambda: get_group_users(group_id), []) or [])
+        }
+        if int(student_id) not in member_ids:
+            raise HTTPException(status_code=404, detail="Submission not found")
+    elif int(homework.get("student_id") or 0) != int(student_id):
+        raise HTTPException(status_code=404, detail="Submission not found")
+    return homework
+
+
 def _teacher_ai_submission(homework_id: int, student_id: int, authorization: str | None) -> dict:
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
-    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-    if not homework:
-        raise HTTPException(status_code=404, detail="Homework topilmadi")
+    homework = _require_teacher_homework_student_access(user, int(homework_id), int(student_id))
     submission = _safe_call(lambda: get_homework_submission(int(homework_id), int(student_id)), None)
     if not submission:
         raise HTTPException(status_code=404, detail="Submission topilmadi")

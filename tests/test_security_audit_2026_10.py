@@ -213,3 +213,109 @@ def test_log_filter_redacts_additional_secret_shapes(message: str, secret: str) 
 
 def test_log_filter_keeps_plain_text() -> None:
     assert SensitiveDataFilter.redact("student opened lesson 12") == "student opened lesson 12"
+
+
+# --- Sessions: 30-day bound and server-side session id required --------------
+
+def test_token_without_session_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jwt as pyjwt
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(api, "_auth_user_row_cached", lambda _uid: {"id": 5, "login_type": 1, "session_version": 1, "blocked": 0})
+    api._AUTH_USER_ROW_CACHE.clear()
+    legacy = pyjwt.encode(
+        {"sub": "5", "sv": 1, "exp": datetime.now(timezone.utc) + timedelta(days=1)},
+        api.SECRET_KEY,
+        algorithm=api.ALGORITHM,
+    )
+    with pytest.raises(HTTPException) as error:
+        api._user_row_from_bearer(f"Bearer {legacy}")
+    assert error.value.status_code == 401
+
+
+def test_token_without_exp_is_rejected() -> None:
+    import jwt as pyjwt
+
+    token = pyjwt.encode({"sub": "5", "sid": "ws_x"}, api.SECRET_KEY, algorithm=api.ALGORITHM)
+    with pytest.raises(HTTPException) as error:
+        api._decode_bearer_payload(f"Bearer {token}")
+    assert error.value.status_code == 401
+
+
+def test_access_token_lifetime_is_capped_at_30_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jwt as pyjwt
+
+    user = {"id": 8, "login_type": 1, "login_id": "ST0008", "session_version": 1}
+    monkeypatch.setattr(api, "_build_user_payload", lambda _u: type("P", (), {"id": 8, "role": "student", "login_type": 1, "login_id": "ST0008"})())
+    token = api._create_access_token(user, session_id="ws_test", ttl_hours=24 * 365)
+    claims = pyjwt.decode(token, api.SECRET_KEY, algorithms=[api.ALGORITHM])
+    assert claims["exp"] - claims["iat"] <= 30 * 24 * 3600
+    assert claims["sid"] == "ws_test"
+
+
+# --- Admin scoping: env-configured admin logins resolve to their chat ids -----
+
+def test_custom_limited_admin_login_maps_to_limited_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api, "ADMIN_CHAT_IDS", [111])
+    monkeypatch.setattr(api, "LIMITED_ADMIN_CHAT_IDS", [222, 333])
+    monkeypatch.setenv("LIMITED_ADMIN_WEB_LOGIN_2", "branch-two-admin")
+    ref = api._admin_ref_id({"id": 99, "login_type": 4, "login_id": "BRANCH-TWO-ADMIN"})
+    assert ref == 333
+    assert api._is_general_admin_scope(ref) is False
+
+
+def test_limited_admin_cannot_manage_other_branch_student(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api, "ADMIN_CHAT_IDS", [111])
+    monkeypatch.setattr(api, "LIMITED_ADMIN_CHAT_IDS", [222, 333])
+    other_branch_student = {"id": 5, "login_type": 2, "owner_admin_id": 333}
+    assert api._can_manage_user_globally(222, other_branch_student) is False
+    assert api._can_manage_user_globally(333, other_branch_student) is True
+    assert api._can_manage_user_globally(111, other_branch_student) is True
+
+
+# --- Teacher assignment targets -----------------------------------------------
+
+def test_teacher_cannot_assign_to_foreign_group_or_student(monkeypatch: pytest.MonkeyPatch) -> None:
+    teacher = {"id": 7, "login_type": 3, "login_id": "TC0007"}
+    monkeypatch.setattr(api, "get_group", lambda gid: {"id": gid, "teacher_id": 99})
+    monkeypatch.setattr(api, "teacher_has_temporary_group_access", lambda *_a: False)
+    monkeypatch.setattr(api, "_teacher_student_ids", lambda _tid: {1, 2})
+    with pytest.raises(HTTPException):
+        api._require_teacher_assignment_targets(teacher, group_id=50, student_ids=[])
+    with pytest.raises(HTTPException):
+        api._require_teacher_assignment_targets(teacher, group_id=None, student_ids=[1, 3])
+    api._require_teacher_assignment_targets(teacher, group_id=None, student_ids=[1, 2])
+
+
+# --- Telegram bot sessions expire after 30 idle days ---------------------------
+
+def test_bot_session_expires_after_30_idle_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    import auth as bot_auth
+    from datetime import datetime, timedelta
+
+    class _Cursor:
+        def __init__(self, row):
+            self._row = row
+
+        def execute(self, *_args):
+            return None
+
+        def fetchone(self):
+            return self._row
+
+    class _Conn:
+        def __init__(self, row):
+            self._row = row
+
+        def cursor(self):
+            return _Cursor(self._row)
+
+        def close(self):
+            return None
+
+    fresh = {"logged_in": 1, "last_activity": (datetime.now() - timedelta(days=3)).isoformat(), "last_login_at": None}
+    stale = {"logged_in": 1, "last_activity": (datetime.now() - timedelta(days=45)).isoformat(), "last_login_at": None}
+    monkeypatch.setattr(bot_auth, "get_conn", lambda: _Conn(fresh))
+    assert bot_auth.validate_user_session(1) is True
+    monkeypatch.setattr(bot_auth, "get_conn", lambda: _Conn(stale))
+    assert bot_auth.validate_user_session(1) is False

@@ -109,7 +109,8 @@ def login_with_qr_token_for_bot(
         if token_row.get("used_at"):
             raise ValueError("QR code allaqachon ishlatilgan")
         exp = _parse_iso_utc(token_row.get("expires_at"))
-        if exp and exp < datetime.now(exp.tzinfo):
+        # Fail closed: a token without a readable expiry is treated as expired.
+        if not exp or exp < datetime.now(exp.tzinfo):
             raise ValueError("QR code muddati tugagan")
 
         user_id = int(token_row.get("user_id") or 0)
@@ -181,8 +182,8 @@ def generate_login_id(login_type: int = 1, length=5, max_attempts=10):
     return generate_secure_login_id(login_type, length + 2)
 
 
-def generate_password(length=6):
-    # 6-character alphanumeric password (kriptografik tasodifiy)
+def generate_password(length=8):
+    # 8-character alphanumeric password (kriptografik tasodifiy, ~41 bit)
     from passwords import generate_password as _secure_generate_password
     return _secure_generate_password(length)
 
@@ -399,7 +400,7 @@ def create_user_sync(
     if not login_id:
         raise ValueError(f'Login ID generation failed after {max_attempts} attempts')
 
-    password = generate_password(6)
+    password = generate_password(8)
     result = create_user(
         first_name=first_name,
         last_name=last_name,
@@ -608,16 +609,44 @@ def restore_sessions_on_startup(*, run_cleanup: bool = False):
     return restored_count
 
 
+BOT_SESSION_MAX_IDLE_DAYS = 30
+
+
+def _parse_activity_timestamp(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
 def validate_user_session(user_id: int) -> bool:
-    """Validate session for middleware (no auto-timeout)."""
+    """Telegram bot session check: logged in AND active within 30 days.
+
+    Bot sessions used to stay valid forever. They now follow the same 30-day
+    lifetime as web/mobile tokens, sliding on every bot interaction (the
+    middleware updates last_activity right after this check passes).
+    """
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute('SELECT logged_in FROM users WHERE id=?', (user_id,))
+    cur.execute('SELECT logged_in, last_activity, last_login_at FROM users WHERE id=?', (user_id,))
     result = cur.fetchone()
     conn.close()
     if not result:
         return False
-    return bool(result["logged_in"] if isinstance(result, dict) or hasattr(result, "keys") else result[0])
+    row = dict(result) if hasattr(result, "keys") else {"logged_in": result[0], "last_activity": result[1], "last_login_at": result[2]}
+    if not bool(row.get("logged_in")):
+        return False
+    last_seen = _parse_activity_timestamp(row.get("last_activity")) or _parse_activity_timestamp(row.get("last_login_at"))
+    if last_seen is None:
+        # Unknown age (legacy row): keep the session; activity is stamped now.
+        return True
+    return datetime.now() - last_seen <= timedelta(days=BOT_SESSION_MAX_IDLE_DAYS)
 
 
 def delete_inactive_accounts():

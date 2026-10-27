@@ -46,7 +46,7 @@ export default function ParentProgressPage() {
   return (
     <main className="min-h-screen bg-slate-50 text-navy-950 dark:bg-navy-950 dark:text-white">
       <header className="border-b border-line bg-white/85 px-5 py-6 backdrop-blur dark:border-white/10 dark:bg-navy-900/80">
-        <div className="mx-auto max-w-6xl"><p className="text-xs font-black uppercase tracking-[.18em] text-cyan-600">Diamond Education · Ota-ona progressi</p><h1 className="mt-1 text-2xl font-black sm:text-3xl">{String(student.name || "O‘quvchi")}</h1><p className="mt-1 text-sm text-ink-500 dark:text-navy-300">Login ID: {String(student.login_id || "—")} · {String(student.subject || "—")}</p></div>
+        <div className="mx-auto max-w-6xl"><p className="text-xs font-black uppercase tracking-[.18em] text-cyan-600">Diamond Education · Ota-ona progressi</p><h1 className="mt-1 text-2xl font-black sm:text-3xl">{String(student.name || "O‘quvchi")}</h1><p className="mt-1 text-sm text-ink-500 dark:text-navy-300">Login ID: {String(student.login_id || "—")} · {String(student.subject || "—")}</p>{data.link_expires_at ? <p className="mt-1 text-xs text-ink-500 dark:text-navy-300">Havola {String(data.link_ttl_days || 30)} kun amal qiladi: {new Date(String(data.link_expires_at)).toLocaleDateString("uz-UZ")} gacha</p> : null}</div>
       </header>
       <section className="mx-auto grid max-w-6xl gap-4 p-5 sm:grid-cols-2 lg:grid-cols-4">
         <article className="premium-card"><p className="text-sm text-ink-500 dark:text-navy-300">Davomat</p><strong className="mt-2 block text-3xl">{countPresent(attendance)}/{attendance.length}</strong><p className="mt-1 text-xs">Oxirgi 40 dars</p></article>

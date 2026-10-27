@@ -10437,7 +10437,7 @@ def create_user(first_name, last_name, phone, subject, login_type, owner_admin_i
             cur.execute("SELECT 1 FROM users WHERE login_id=?", (login_id,))
             if not cur.fetchone(): break
 
-        password = _generate_secure_password(6)
+        password = _generate_secure_password(8)
 
         cur.execute('''
             INSERT INTO users (login_id, password, first_name, last_name, phone, parent_phone, subject, login_type, blocked, access_enabled, owner_admin_id)
@@ -10479,13 +10479,15 @@ def verify_login(login_id, password):
     if not user:
         record_login_failure(throttle_key)
         return None, 'not_found'
-    if user['blocked']:
-        return None, 'blocked'
     stored_password = (user['password'] or "").strip()
+    # Verify the password BEFORE revealing account state, otherwise the bot
+    # login tells anyone (without the password) that an account is blocked.
     if not verify_password(password_clean, stored_password):
         record_login_failure(throttle_key)
         increment_failed_logins(int(user['id'] or 0))
         return None, 'invalid'
+    if user['blocked']:
+        return None, 'blocked'
     clear_login_throttle(throttle_key)
     clear_failed_logins(int(user['id'] or 0))
     result = dict(user)
@@ -22671,6 +22673,7 @@ def transfer_dcoins_atomic(
     recipient_id: int,
     amount: float,
     subject: str | None = None,
+    daily_limit: float | None = None,
 ) -> dict[str, Any]:
     """Move visible D'coin between two real users without touching legacy balances."""
     ensure_dpoints_schema()
@@ -22701,6 +22704,21 @@ def transfer_dcoins_atomic(
                 # balance check + spend atomic across all of them (released on
                 # commit/rollback), preventing a concurrent double spend.
                 cur.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"dcoin-wallet:{int(sender_id)}",))
+            if daily_limit is not None and float(daily_limit) > 0:
+                # Authoritative daily cap from the ledger itself (shared by all
+                # workers and restarts), checked under the sender lock.
+                day_start = datetime.utcnow().strftime('%Y-%m-%d 00:00:00')
+                cur.execute(
+                    "SELECT COALESCE(SUM(-dcoin_change), 0) AS sent FROM diamond_history WHERE user_id=? AND change_type='transfer_out' AND created_at >= ?",
+                    (int(sender_id), day_start),
+                )
+                sent_today = float((_row_to_dict(cur.fetchone()) or {}).get("sent") or 0.0)
+                if sent_today + amount_value > float(daily_limit) + 1e-9:
+                    return {
+                        "ok": False,
+                        "reason": "daily_limit",
+                        "remaining": max(0.0, float(daily_limit) - sent_today),
+                    }
             sender_balance_before = float(_visible_dcoin_balance_tx(cur, int(sender_id)))
             if sender_balance_before + 1e-9 < amount_value:
                 return {"ok": False, "reason": "insufficient_balance", "balance_before": float(_visible_dcoin_balance_tx(cur, int(sender_id)))}
