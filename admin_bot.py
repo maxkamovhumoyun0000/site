@@ -173,6 +173,22 @@ async def _admin_only_callback_gate(handler, event: CallbackQuery, data):
     return await handler(event, data)
 
 
+@dp.message.outer_middleware()
+async def _admin_only_message_gate(handler, event: Message, data):
+    """Same gate for messages: several state-driven handlers (search, group
+    name/level, remove date) did not check the sender themselves."""
+    user = getattr(event, "from_user", None)
+    if user is None or int(user.id) not in ALL_ADMIN_IDS:
+        # Reply only in private chats; stay silent in groups/channels.
+        if getattr(getattr(event, "chat", None), "type", "") == "private":
+            try:
+                await event.answer(t_from_update(event, 'admin_only'))
+            except Exception:
+                pass
+        return None
+    return await handler(event, data)
+
+
 def _student_miniapp_start_keyboard() -> InlineKeyboardMarkup | None:
     base = (TELEGRAM_MINI_APP_BASE_URL or "").strip()
     if not base:

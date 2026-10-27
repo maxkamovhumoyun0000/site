@@ -43212,6 +43212,14 @@ async def admin_users(
         else "COALESCE(u.speaking_app_account, 0)=0",
     ]
     params: list[Any] = []
+    if requester_role == "admin":
+        list_admin_ref = _admin_ref_id(user)
+        if not _is_general_admin_scope(list_admin_ref):
+            # Staff rows stay shared; student rows of other branches are hidden
+            # (same rule as _can_manage_user_globally).
+            owner_scope, owner_params = _limited_admin_owner_scope_sql("u.owner_admin_id", int(list_admin_ref))
+            where_clauses.append(f"(u.login_type NOT IN (1,2,6) OR {owner_scope})")
+            params.extend(owner_params)
 
     if query:
         search_terms = name_search_terms(query) or [query.upper()]
@@ -43347,6 +43355,12 @@ async def admin_proctoring_sessions(
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     rows = list_proctoring_sessions_for_admin(limit=limit, offset=offset)
+    proctoring_admin_ref = _admin_ref_id(user)
+    if not _is_general_admin_scope(proctoring_admin_ref):
+        # Face-check records are biometric data: limited admins see only
+        # their own branch's students.
+        visible_ids = _scoped_student_user_ids_for_admin(int(proctoring_admin_ref))
+        rows = [row for row in rows if int((row or {}).get("user_id") or 0) in visible_ids]
     return {
         "items": rows,
         "limit": limit,
@@ -43365,6 +43379,11 @@ async def admin_proctoring_session_detail(
     if not payload.get("session"):
         raise HTTPException(status_code=404, detail="Proctoring session not found")
     session = payload.get("session") or {}
+    detail_admin_ref = _admin_ref_id(user)
+    if not _is_general_admin_scope(detail_admin_ref):
+        visible_ids = _scoped_student_user_ids_for_admin(int(detail_admin_ref))
+        if int(session.get("user_id") or 0) not in visible_ids:
+            raise HTTPException(status_code=404, detail="Proctoring session not found")
     return {
         "session": session,
         "summary": {
@@ -43815,6 +43834,12 @@ async def admin_search_users(q: str = Query(default=""), authorization: str | No
         "COALESCE(u.screenshot_demo, 0)=0",
     ]
     params: list[Any] = []
+    search_admin_ref = _admin_ref_id(user)
+    if not _is_general_admin_scope(search_admin_ref):
+        # Limited admins search only students of their own branch scope.
+        owner_scope, owner_params = _limited_admin_owner_scope_sql("u.owner_admin_id", int(search_admin_ref))
+        where_sql.append(owner_scope)
+        params.extend(owner_params)
     if query:
         search_terms = name_search_terms(query) or [query.upper()]
         search_blob = "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,''))"
@@ -58721,9 +58746,9 @@ async def economy_rules():
 @app.post("/dcoin/calculate", response_model=DCoinCalculationResponse)
 @app.post("/economy/calculate", response_model=DCoinCalculationResponse)
 async def calculate_economy(payload: DCoinCalculationRequest):
+    # Unauthenticated calculator: never look up another user's data by id
+    # (it revealed how many subjects any user_id has). Callers pass the count.
     subject_count = payload.subject_count
-    if payload.user_id and not subject_count:
-        subject_count = max(1, len(_safe_call(lambda: get_user_subjects(int(payload.user_id)), []) or []))
     breakdown = calculate_economy_breakdown(
         correct_count=payload.correct_answers,
         skipped_count=payload.skipped_answers,
@@ -61207,8 +61232,13 @@ def _personalization_rate_limit(user_id: int, bucket: str, limit: int, window_se
         )
 
 
+def _personalization_ip_rate_limit(req: Request, bucket: str, limit: int, window_seconds: int) -> None:
+    _enforce_ip_rate_limit(req, bucket=bucket, limit=int(limit), window_seconds=int(window_seconds))
+
+
 personalization_api.configure_runtime(
     rate_limit=_personalization_rate_limit,
+    ip_rate_limit=_personalization_ip_rate_limit,
     user_from_bearer=_user_row_from_bearer,
     role_for_user=_personalization_role_for_user,
     staff_visible_student_ids=_personalization_visible_student_ids,

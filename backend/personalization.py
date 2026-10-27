@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, unquote
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -1770,7 +1770,11 @@ async def report_study_room(room_id: int, payload: StudyRoomReport, authorizatio
 
 
 @router.get("/parent/progress/{access_token}")
-async def parent_progress(access_token: str):
+async def parent_progress(access_token: str, request: Request):
+    # Unauthenticated bearer-link endpoint: cap guesses per client IP.
+    ip_limiter = _runtime.get("ip_rate_limit")
+    if ip_limiter:
+        ip_limiter(request, "parent-progress", 120, 3600)
     ensure_schema(); conn=get_conn()
     try:
         token_text = str(access_token or "").strip()
