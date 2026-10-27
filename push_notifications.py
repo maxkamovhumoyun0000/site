@@ -395,8 +395,20 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
             INSERT INTO speaking_push_tokens (device_id, token, platform, user_id, updated_at)
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(device_id) DO UPDATE SET
-                token=excluded.token,
-                platform=excluded.platform,
+                -- An unauthenticated call (user_id NULL) must not replace the
+                -- push token of a device already bound to an account: knowing
+                -- or guessing a device_id would otherwise redirect that
+                -- user's private-chat notifications to an attacker's device.
+                token=CASE
+                    WHEN excluded.user_id IS NULL AND speaking_push_tokens.user_id IS NOT NULL
+                        THEN speaking_push_tokens.token
+                    ELSE excluded.token
+                END,
+                platform=CASE
+                    WHEN excluded.user_id IS NULL AND speaking_push_tokens.user_id IS NOT NULL
+                        THEN speaking_push_tokens.platform
+                    ELSE excluded.platform
+                END,
                 user_id=excluded.user_id,
                 updated_at=CURRENT_TIMESTAMP
             """,

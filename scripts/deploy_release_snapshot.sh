@@ -10,7 +10,9 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_HOST="${DIAMOND_DEPLOY_HOST:-root@31.220.87.193}"
 REMOTE_ROOT="${DIAMOND_DEPLOY_ROOT:-/root/diamond-site}"
 SSH_KEY="${DIAMOND_DEPLOY_SSH_KEY:-/home/xumoyun-maxkamov/.ssh/myserver.key}"
-SSH_ARGS=(-i "$SSH_KEY" -o StrictHostKeyChecking=no)
+# accept-new pins the host key on first contact and then refuses a changed
+# key (MITM); "no" silently accepted any key for every code push.
+SSH_ARGS=(-i "$SSH_KEY" -o StrictHostKeyChecking=accept-new)
 
 cd "$PROJECT_ROOT"
 

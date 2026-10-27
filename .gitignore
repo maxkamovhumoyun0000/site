@@ -27,3 +27,14 @@ remote_check.py
 run_remote.py
 test_ai.py
 secrets/
+# Production runtime state and credentials must never be committed.
+data/
+uploads/
+media/
+*.pem
+*.key
+*.p8
+*.p12
+*.jks
+*.keystore
+*adminsdk*.json

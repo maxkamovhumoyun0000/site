@@ -453,10 +453,19 @@ from ai_generator import (
     generate_vocabulary_and_insert_exact,
 )
 
+# The interactive docs publish the complete route map; keep them for local
+# development only (DIAMOND_ENV=production is set by the systemd drop-in).
+_API_DOCS_ENABLED = os.getenv("DIAMOND_ENV", "").strip().lower() != "production" or (
+    os.getenv("EXPOSE_API_DOCS", "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 app = FastAPI(
     title="Diamond Education API",
     description="Unified API for web, mobile and Telegram bot integrations",
     version="3.0.0",
+    docs_url="/docs" if _API_DOCS_ENABLED else None,
+    redoc_url="/redoc" if _API_DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _API_DOCS_ENABLED else None,
 )
 
 GENERATOR_JOBS: dict[str, dict[str, Any]] = {}
@@ -778,9 +787,12 @@ def _cors_allowed_origins() -> list[str]:
         "https://diamond-education.uz",
         "https://www.diamond-education.uz",
         "https://web.telegram.org",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
     ]
+    # Credentialed CORS for localhost is a development convenience only: in
+    # production any page served from a user's own localhost:3000 would
+    # otherwise be treated as first party.
+    if os.getenv("DIAMOND_ENV", "").strip().lower() != "production":
+        origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
     if WEBAPP_URL.startswith("http"):
         origins.append(WEBAPP_URL)
     return list(dict.fromkeys(origins))
@@ -7927,6 +7939,12 @@ def _telegram_bot_tokens() -> list[str]:
 def _parse_and_validate_telegram_init_data(init_data: str | None, expected_telegram_id: int) -> dict:
     bot_tokens = _telegram_bot_tokens()
     if not bot_tokens:
+        # Fail closed in production: with no bot token configured nothing can
+        # be verified, and accepting the claim would let anyone log in as any
+        # telegram_id (including the env-configured admins).
+        if _is_production:
+            logger.error("Telegram initData cannot be verified: no bot token configured")
+            raise HTTPException(status_code=503, detail="Telegram authentication is temporarily unavailable")
         return {}
     if not init_data:
         raise HTTPException(status_code=401, detail="Telegram initData is required")
@@ -7949,6 +7967,8 @@ def _parse_and_validate_telegram_init_data(init_data: str | None, expected_teleg
 
     auth_date = pairs.get("auth_date")
     max_age = int(os.getenv("TELEGRAM_INIT_DATA_MAX_AGE_SECONDS", "86400"))
+    if max_age > 0 and not auth_date:
+        raise HTTPException(status_code=401, detail="Telegram auth_date is missing")
     if auth_date and max_age > 0:
         try:
             if _now_utc().timestamp() - int(auth_date) > max_age:
@@ -8380,12 +8400,29 @@ def _student_has_group_access_cached(user_id: int, ttl_seconds: float = 8.0) -> 
     return has_group
 
 
+def _guard_authorization(request: Request) -> str | None:
+    """Authorization value the access guards must evaluate for this request.
+
+    The access-guard middlewares run before ``cookie_session_auth_and_csrf``
+    copies the HttpOnly ``diamond_session`` cookie into the Authorization
+    header, so reading only the raw header let cookie-authenticated requests
+    skip the pending-approval, review, no-group and workspace-confinement
+    guards. Mirror the cookie rule used there so both paths are guarded.
+    """
+    header = str(request.headers.get("authorization") or "").strip()
+    bearer = header[7:].strip() if header.lower().startswith("bearer ") else ""
+    cookie_token = str(request.cookies.get(WEB_AUTH_COOKIE_NAME) or "").strip()
+    if cookie_token and (not bearer or bearer.lower().startswith(WEB_AUTH_COOKIE_MARKER)):
+        return f"Bearer {cookie_token}"
+    return header or None
+
+
 @app.middleware("http")
 async def student_no_group_access_guard(request: Request, call_next):
     path = str(request.url.path or "").strip()
     if not _is_student_no_group_blocked_path(path):
         return await call_next(request)
-    authorization = request.headers.get("Authorization")
+    authorization = _guard_authorization(request)
     if not authorization:
         return await call_next(request)
     try:
@@ -8406,7 +8443,7 @@ async def student_review_access_guard(request: Request, call_next):
     path = str(request.url.path or "").strip()
     if not _is_student_review_blocked_path(path):
         return await call_next(request)
-    authorization = request.headers.get("Authorization")
+    authorization = _guard_authorization(request)
     if not authorization:
         return await call_next(request)
     try:
@@ -8463,7 +8500,7 @@ async def public_registration_approval_guard(request: Request, call_next):
     """
     if _pending_approval_path_is_allowed(request):
         return await call_next(request)
-    authorization = request.headers.get("Authorization")
+    authorization = _guard_authorization(request)
     if not authorization:
         return await call_next(request)
     try:
@@ -8525,7 +8562,7 @@ def _developer_workspace_path_is_allowed(path: str) -> bool:
 @app.middleware("http")
 async def developer_workspace_access_guard(request: Request, call_next):
     """Keep the dedicated Developer login out of broad admin APIs."""
-    authorization = request.headers.get("Authorization")
+    authorization = _guard_authorization(request)
     if not authorization:
         return await call_next(request)
     try:
@@ -8553,7 +8590,7 @@ _SPEAKING_ADMIN_WORKSPACE_PATHS = {
 @app.middleware("http")
 async def speaking_admin_workspace_access_guard(request: Request, call_next):
     """Keep the dedicated Speaking profile out of general Admin APIs."""
-    authorization = request.headers.get("Authorization")
+    authorization = _guard_authorization(request)
     if not authorization:
         return await call_next(request)
     try:
@@ -12601,6 +12638,14 @@ def _chat_media_signature(filename: str) -> str:
     return hmac.new(_chat_media_secret(), safe.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
+def _chat_media_signature_ok(signature: str, filename: str) -> bool:
+    """Constant-time check of a chat media URL signature."""
+    return hmac.compare_digest(
+        str(signature or "").encode("utf-8"),
+        _chat_media_signature(filename).encode("utf-8"),
+    )
+
+
 def _chat_media_url(filename: str) -> str:
     safe = Path(str(filename or "")).name
     return f"/chats/media/{quote(safe)}?sig={_chat_media_signature(safe)}"
@@ -12667,7 +12712,7 @@ def _validate_chat_image_urls(image_urls: list[str] | None) -> list[str]:
         parsed = urlparse(url)
         filename = Path(parsed.path).name
         sig = (parse_qs(parsed.query or "").get("sig") or [""])[0]
-        if not filename or sig != _chat_media_signature(filename):
+        if not filename or not _chat_media_signature_ok(sig, filename):
             raise HTTPException(status_code=403, detail="Rasm yuklanmadi. Qayta urinib ko‘ring.")
         ext = Path(filename).suffix.lower()
         if ext not in CHAT_IMAGE_MIME_BY_EXT:
@@ -12776,7 +12821,7 @@ def _validate_community_chat_attachments(attachments: list[CommunityChatAttachme
         parsed = urlparse(raw_url)
         filename = Path(parsed.path).name
         signature = (parse_qs(parsed.query or "").get("sig") or [""])[0]
-        if not filename or filename in seen or signature != _chat_media_signature(filename):
+        if not filename or filename in seen or not _chat_media_signature_ok(signature, filename):
             raise HTTPException(status_code=422, detail="Attachment validation failed")
         path = CHAT_UPLOAD_DIR / filename
         ext = path.suffix.lower()
@@ -12808,7 +12853,7 @@ def _validate_diamondvoy_attachments(attachments: list[CommunityChatAttachmentRe
         parsed = urlparse(raw_url)
         filename = Path(parsed.path).name
         signature = (parse_qs(parsed.query or "").get("sig") or [""])[0]
-        if not filename or filename in seen or signature != _chat_media_signature(filename):
+        if not filename or filename in seen or not _chat_media_signature_ok(signature, filename):
             raise HTTPException(status_code=422, detail="Fayl tekshiruvdan o‘tmadi")
         path = CHAT_UPLOAD_DIR / filename
         ext = path.suffix.lower()
@@ -20151,6 +20196,14 @@ def _public_registration_login_id(value: str) -> str:
         )
     if login_id.startswith(("ADMIN", "SUP")):
         raise HTTPException(status_code=422, detail="This Login ID prefix is reserved")
+    # These exact IDs grant the dedicated Developer / Speaking-admin roles in
+    # _role_from_login_type(); a self-registered account must never take them.
+    reserved_role_ids = {
+        str(os.getenv("DEVELOPER_WEB_LOGIN_ID") or "DEVELOPER-X-01").strip().upper(),
+        str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "DIAMOND-SP-1").strip().upper(),
+    }
+    if login_id in reserved_role_ids or login_id.startswith(("DEVELOPER", "DIAMOND-SP")):
+        raise HTTPException(status_code=422, detail="This Login ID is reserved")
     return login_id
 
 
@@ -20692,6 +20745,14 @@ def _generate_speaking_login_id(first_name: str, last_name: str = "") -> str:
 @app.post("/auth/speaking-registration/start")
 async def start_speaking_registration(payload: SpeakingRegistrationRequest, req: Request):
     """Create a one-time email challenge; no account exists until it is used."""
+    # Every request sends an email, successful or not: cap per IP so the
+    # endpoint cannot be used to mail-bomb arbitrary addresses.
+    _enforce_ip_rate_limit(
+        req,
+        bucket="speaking-registration-start",
+        limit=max(1, int(os.getenv("SPEAKING_REGISTRATION_STARTS_PER_HOUR", "20") or 20)),
+        window_seconds=3600,
+    )
     client_ip = _client_ip(req)
     throttle_key = f"speaking-registration:{client_ip}" if client_ip else ""
     if throttle_key and is_login_throttled(throttle_key, max_failures=PUBLIC_REGISTRATION_IP_MAX_FAILURES):
@@ -21691,7 +21752,14 @@ async def login(request: LoginRequest, req: Request, response: Response):
     is_demo = bool(int(user.get("screenshot_demo") or 0))
     pw_ok = verify_password(incoming, stored)
     if not pw_ok and is_demo:
-        for alt in ("JonDoe345@", "JohnDoe345@", "JonDoe345", "JohnDoe345", "jondoe345@", "johndoe345@"):
+        # Store-review demo aliases must never be able to unlock an
+        # administrator row: only student/teacher demo accounts may use them.
+        demo_alts = (
+            ("JonDoe345@", "JohnDoe345@", "JonDoe345", "JohnDoe345", "jondoe345@", "johndoe345@")
+            if int(user.get("login_type") or 0) in (1, 2, 3)
+            else ()
+        )
+        for alt in demo_alts:
             if incoming.lower() == alt.lower():
                 pw_ok = True
                 break
@@ -22855,8 +22923,14 @@ async def get_mobile_telegram_login_status(request_token: str):
 
 
 @app.post("/auth/telegram/mobile/complete", response_model=TokenResponse)
-async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteRequest):
+async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteRequest, req: Request):
     """Atomically exchange an approved bot hand-off for a student session."""
+    _enforce_ip_rate_limit(
+        req,
+        bucket="auth-telegram-mobile-complete",
+        limit=max(1, int(os.getenv("TELEGRAM_MOBILE_COMPLETE_REQUESTS_PER_15_MINUTES", "120") or 120)),
+        window_seconds=900,
+    )
     token = _validate_mobile_telegram_login_token(payload.request_token)
     device_id = str(payload.device_id or "").strip()
     if len(device_id) < 8 or len(device_id) > 200:
@@ -22907,6 +22981,12 @@ async def complete_mobile_telegram_login(payload: TelegramMobileLoginCompleteReq
 
 @app.post("/auth/telegram", response_model=TokenResponse)
 async def telegram_login(request: TelegramLoginRequest, req: Request, response: Response):
+    _enforce_ip_rate_limit(
+        req,
+        bucket="auth-telegram",
+        limit=max(1, int(os.getenv("TELEGRAM_LOGIN_REQUESTS_PER_15_MINUTES", "300") or 300)),
+        window_seconds=900,
+    )
     _parse_and_validate_telegram_init_data(request.init_data, request.telegram_id)
     user = _resolve_env_admin_user_for_telegram(request.telegram_id) or get_user_by_telegram(str(request.telegram_id))
     if not user:
@@ -22987,6 +23067,12 @@ async def auth_qr_generate(authorization: str | None = Header(default=None)):
 
 @app.post("/auth/qr/consume", response_model=TokenResponse)
 async def auth_qr_consume(payload: QrConsumeRequest, req: Request, response: Response):
+    _enforce_ip_rate_limit(
+        req,
+        bucket="auth-qr-consume",
+        limit=max(1, int(os.getenv("QR_CONSUME_REQUESTS_PER_15_MINUTES", "120") or 120)),
+        window_seconds=900,
+    )
     user = _consume_qr_login_token(payload.qr_token, used_device_id=payload.device_id)
     if int(user.get("login_type") or 0) == 6:
         raise HTTPException(status_code=403, detail="Accountless student cannot log in")
@@ -23718,7 +23804,7 @@ async def chats_serve_media(filename: str, sig: str = Query(default="")):
     safe = Path(filename).name
     if safe != filename:
         raise HTTPException(status_code=404, detail="Image not found")
-    if str(sig or "") != _chat_media_signature(safe):
+    if not _chat_media_signature_ok(sig, safe):
         raise HTTPException(status_code=403, detail="Image access denied")
     file_path = CHAT_UPLOAD_DIR / safe
     if not file_path.exists() or not file_path.is_file():
@@ -30069,6 +30155,20 @@ async def student_gamified_tests_start(
     _require_role(user, {"student"})
     _require_student_learning_access(user)
     user_id = int(user.get("id") or 0)
+    # Each start triggers paid AI generation and a D'point-bearing session;
+    # cap how many a single student can open per hour (shared across workers).
+    allowed, retry_after = consume_rate_limit(
+        _REDIS_CLIENT,
+        f"gamified-start:user:{user_id}",
+        limit=max(1, int(os.getenv("GAMIFIED_STARTS_PER_HOUR", "20") or 20)),
+        window_seconds=3600,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many tests started. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
     subject = _gamified_resolve_subject(user, payload.subject)
     level = _gamified_resolve_level(user_id, subject, user)
     session_id = uuid4().hex
@@ -30120,6 +30220,61 @@ async def student_gamified_tests_start(
     }
 
 
+_GAMIFIED_FIRST_CHECKS_PREFIX = "GAMIFIED_FIRST_CHECKS:"
+_GAMIFIED_SUBMIT_CLAIM_PREFIX = "GAMIFIED_SUBMIT_CLAIM:"
+_GAMIFIED_MAX_CHECKS_PER_SESSION = 400
+
+
+def _gamified_record_first_check(session_id: str, field: str, value: str) -> None:
+    """Atomically remember the first judged answer (shared by all workers)."""
+    key = _GAMIFIED_FIRST_CHECKS_PREFIX + str(session_id)
+    count = int(_REDIS_CLIENT.hincrby(key, "_n", 1) or 0)
+    _REDIS_CLIENT.hsetnx(key, field, value)
+    _REDIS_CLIENT.expire(key, 86400)
+    if count > _GAMIFIED_MAX_CHECKS_PER_SESSION:
+        raise HTTPException(status_code=429, detail="Too many answer checks for this test")
+
+
+def _gamified_apply_first_checks(
+    session_id: str,
+    questions: list[dict[str, Any]],
+    answers_by_index: dict[int, Any],
+) -> dict[int, Any]:
+    """Score the first answer the server already judged, not a later one.
+
+    /check-answer and /check-pair reveal right/wrong immediately. Without
+    this, a client could probe every option and then submit only correct
+    answers to farm D'points. Questions never checked keep the submitted
+    answer, so clients that only use /submit are unaffected.
+    """
+    raw = _REDIS_CLIENT.hgetall(_GAMIFIED_FIRST_CHECKS_PREFIX + str(session_id)) or {}
+    if not raw:
+        return answers_by_index
+    out = dict(answers_by_index)
+    pair_overrides: dict[int, dict[str, str]] = {}
+    for field, value in raw.items():
+        field = str(field)
+        try:
+            if field.startswith("a:"):
+                out[int(field[2:])] = int(value)
+            elif field.startswith("p:") and "\x1f" in field:
+                q_part, pair_key = field[2:].split("\x1f", 1)
+                pair_overrides.setdefault(int(q_part), {})[pair_key] = str(value)
+        except (TypeError, ValueError):
+            continue
+    match_indexes = {
+        int(q.get("index") or 0) for q in questions if q.get("type") in ("word_match", "heading_match")
+    }
+    for q_index, overrides in pair_overrides.items():
+        if q_index not in match_indexes:
+            continue
+        submitted = out.get(q_index)
+        merged = dict(submitted) if isinstance(submitted, dict) else {}
+        merged.update(overrides)
+        out[q_index] = merged
+    return out
+
+
 @app.post("/student/gamified-tests/submit")
 async def student_gamified_tests_submit(
     payload: GamifiedSubmitRequest,
@@ -30127,13 +30282,19 @@ async def student_gamified_tests_submit(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
+    # /start enforces learning access; a session opened earlier must not keep
+    # awarding D'points after access was revoked or the account was blocked.
+    _require_student_learning_access(user)
     user_id = int(user.get("id") or 0)
     session = GAMIFIED_SESSIONS.get(payload.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Gamified session not found or expired")
     if int(session.get("user_id") or 0) != user_id:
         raise HTTPException(status_code=403, detail="Session does not belong to current user")
-
+    # Sessions live in Redis and are shared by all workers: claim the submit
+    # atomically so two concurrent requests cannot both award D'points.
+    if not _REDIS_CLIENT.set(_GAMIFIED_SUBMIT_CLAIM_PREFIX + str(payload.session_id), "1", nx=True, ex=86400):
+        raise HTTPException(status_code=409, detail="This test has already been submitted")
     questions = session.get("questions") or []
     subject = str(session.get("subject") or "English")
     answers_by_index: dict[int, Any] = {}
@@ -30142,6 +30303,7 @@ async def student_gamified_tests_submit(
             answers_by_index[int(item.index)] = item.answer
         except Exception:
             continue
+    answers_by_index = _gamified_apply_first_checks(payload.session_id, questions, answers_by_index)
 
     scoring = _gamified_scoring_payload()
     summary = gamified_tests.score_session(
@@ -30242,6 +30404,14 @@ async def student_gamified_tests_check_pair(
     if not question or question.get("type") not in ("word_match", "heading_match"):
         raise HTTPException(status_code=404, detail="Question not found or not a matching question")
     answer_map = question.get("_answer") or {}
+    # Anti-farming: the FIRST checked value of each pair is the one that is
+    # scored at /submit (see _gamified_apply_first_checks), so probing every
+    # option and then submitting a perfect map no longer earns D'points.
+    _gamified_record_first_check(
+        payload.session_id,
+        f"p:{int(payload.question_index)}\x1f{payload.key}",
+        str(payload.value),
+    )
     is_correct = str(answer_map.get(payload.key, "")) == str(payload.value)
     return {"correct": bool(is_correct)}
 
@@ -30268,7 +30438,12 @@ async def student_gamified_tests_check_answer(
     if not question or question.get("type") not in ("mcq", "fill_gap", "reading_true_false", "reading_mcq"):
         raise HTTPException(status_code=404, detail="Question not found or not an MCQ/fill_gap/reading question")
     correct_index = int(question.get("_answer") if question.get("_answer") is not None else question.get("correct_index", -1))
-    is_correct = int(payload.selected_option_index) == correct_index
+    # Anti-farming: the first checked option is the one scored at /submit
+    # (see _gamified_apply_first_checks). Re-checking other options still
+    # returns feedback but cannot turn a wrong first answer into points.
+    selected_idx = int(payload.selected_option_index)
+    _gamified_record_first_check(payload.session_id, f"a:{int(payload.question_index)}", str(selected_idx))
+    is_correct = selected_idx == correct_index
     return {"correct": bool(is_correct)}
 
 
@@ -41569,6 +41744,19 @@ async def admin_upload_media(
     max_size_mb = 2000 if normalized_type == "video" else (80 if normalized_type in {"book", "pdf"} else 12)
     filename, content_type = await _upload_web_file(file, MEDIA_UPLOAD_DIR, f"media_{normalized_type}", max_size_mb=max_size_mb)
     file_path = MEDIA_UPLOAD_DIR / filename
+    if normalized_type == "file":
+        # The stored content type is later served from /media/public on the
+        # site origin. Never trust the client-declared header for it: derive
+        # it from the (already blocklisted) extension and accept raster
+        # images only, so an "x.png" declared as image/svg+xml cannot become
+        # an inline SVG/script document.
+        safe_image_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+        derived_type = (mimetypes.guess_type(filename)[0] or "").lower()
+        if derived_type not in safe_image_types:
+            with suppress(OSError):
+                file_path.unlink()
+            raise HTTPException(status_code=422, detail="Fayl turi noto'g'ri. Faqat PNG, JPG, WEBP yoki GIF rasm yuklash mumkin.")
+        content_type = derived_type
     size_bytes = int(file_path.stat().st_size) if file_path.exists() else 0
 
     asset = create_media_asset(
@@ -41587,6 +41775,14 @@ async def admin_upload_media(
     if asset_id > 0 and target_normalized in {"video", "book"} and int(entity_id or 0) > 0:
         conn = get_conn()
         cur = conn.cursor()
+        if target_normalized == "video" and role != "admin":
+            # Editing a video (PUT /admin/videos/{id}) is admin-only; a
+            # teacher/support upload may only re-bind a video they own.
+            cur.execute("SELECT teacher_id FROM videos WHERE id=? LIMIT 1", (int(entity_id),))
+            owner_row = dict(cur.fetchone() or {})
+            if int(owner_row.get("teacher_id") or 0) != int(user.get("id") or 0):
+                conn.close()
+                raise HTTPException(status_code=403, detail="Bu videoni o'zgartirish huquqi yo'q")
         if target_normalized == "video":
             cur.execute(
                 """
@@ -41641,6 +41837,9 @@ async def media_public_asset(asset_id: int):
     content_type = str(asset.get("content_type") or "").strip().lower()
     if not content_type.startswith("image/"):
         raise HTTPException(status_code=403, detail="Public access allowed only for image assets")
+    # Active image formats (SVG) can carry script; legacy rows may hold one.
+    if "svg" in content_type or Path(stored_name).suffix.lower() in {".svg", ".svgz", ".html", ".htm", ".xml"}:
+        raise HTTPException(status_code=403, detail="Public access allowed only for raster image assets")
     file_path = MEDIA_UPLOAD_DIR / stored_name
     if not file_path.exists() or not file_path.is_file():
         placeholder = _image_placeholder_response()
@@ -41653,6 +41852,7 @@ async def media_public_asset(asset_id: int):
         headers={
             "Cache-Control": "public, max-age=300, stale-while-revalidate=60",
             "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
         },
     )
 
@@ -55586,25 +55786,30 @@ async def admin_domain_email_reply(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    _ensure_web_tables()
 
-    with sqlite3.connect("db.sqlite3") as conn:
-        conn.row_factory = sqlite3.Row
+    # Use the application database (the inbox is read from get_conn()); the
+    # old code opened a stray local "db.sqlite3", so replies were checked
+    # against and recorded in a different store than the real inbox.
+    conn = get_conn()
+    try:
         cur = conn.cursor()
-        cur.execute("SELECT * FROM inbound_emails WHERE id=? LIMIT 1", (email_id,))
-        email = cur.fetchone()
-        if not email:
-            raise HTTPException(status_code=404, detail="Email topilmadi")
-        
-        reply_to_email = str(email["sender"]) if email["sender"] else None
-        if not reply_to_email:
-             raise HTTPException(status_code=400, detail="Jo'natuvchi manzili mavjud emas")
+        cur.execute("SELECT * FROM inbound_emails WHERE id=? LIMIT 1", (int(email_id),))
+        email = _row_to_dict(cur.fetchone()) or {}
+    finally:
+        conn.close()
+    if not email:
+        raise HTTPException(status_code=404, detail="Email topilmadi")
+    reply_to_email = str(email.get("sender") or "").strip() or None
+    if not reply_to_email:
+        raise HTTPException(status_code=400, detail="Jo'natuvchi manzili mavjud emas")
 
     sender_email = f"{payload.alias}@diamond-education.uz"
     sender_name = "Diamond Info" if payload.alias == "info" else "Diamond Admin"
     from_address = f'"{sender_name}" <{sender_email}>'
 
     msg = EmailMessage()
-    msg['Subject'] = f"Re: {email['subject']}" if email["subject"] else "Re: Xabar"
+    msg['Subject'] = f"Re: {email.get('subject')}" if email.get("subject") else "Re: Xabar"
     msg['From'] = from_address
     msg['To'] = reply_to_email
 
@@ -55629,10 +55834,13 @@ async def admin_domain_email_reply(
         else:
             raise HTTPException(status_code=500, detail=f"Javob jo'natib bo'lmadi: {e}")
 
-    with sqlite3.connect("db.sqlite3") as conn:
+    conn = get_conn()
+    try:
         cur = conn.cursor()
-        cur.execute("UPDATE inbound_emails SET reply_content=?, replied_at=CURRENT_TIMESTAMP WHERE id=?", (payload.reply_body, email_id))
+        cur.execute("UPDATE inbound_emails SET reply_content=?, replied_at=CURRENT_TIMESTAMP WHERE id=?", (payload.reply_body, int(email_id)))
         conn.commit()
+    finally:
+        conn.close()
 
     return {"message": "Javob xati muvaffaqiyatli jo'natildi"}
 

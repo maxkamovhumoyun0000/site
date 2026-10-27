@@ -23,19 +23,29 @@ class SensitiveDataFilter(logging.Filter):
     third-party loggers that propagate to the root logger.
     """
 
-    _key_value = re.compile(
-        r"(?i)(password|passcode|authorization|bearer|access[_-]?token|refresh[_-]?token|"
+    _key_names = (
+        r"password|passcode|passwd|authorization|bearer|access[_-]?token|refresh[_-]?token|"
         r"(?:fcm|push|device)[_-]?token|"
-        r"session(?:[_-]?id|[_-]?token)?|api[_-]?key|secret|private[_-]?key|otp|"
-        r"reset[_-]?token|cookie)\s*([:=])\s*([^\s,;}\]]+)",
+        r"session(?:[_-]?id|[_-]?token|[_-]?string)?|api[_-]?key|api[_-]?hash|secret|private[_-]?key|otp|"
+        r"reset[_-]?token|cookie|agent[_-]?token|qr[_-]?token|init[_-]?data"
+    )
+    # key=value / key: value, and JSON/dict style "key": "value" / 'key': 'value'.
+    _key_value = re.compile(
+        r"(?i)([\"']?(?:" + _key_names + r")[\"']?)\s*([:=])\s*(\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
     )
     _bearer = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+    # Telegram bot tokens, e.g. in api.telegram.org/bot<token>/sendMessage URLs.
+    _telegram_bot_token = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
+    # Credentials embedded in connection URLs (postgresql://user:pass@host).
+    _url_credentials = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@/]+@")
     _phone = re.compile(r"(?<!\d)(\+?998)\d{7,12}(?!\d)")
 
     @classmethod
     def redact(cls, value: object) -> str:
         text = str(value)
         text = cls._bearer.sub("Bearer [REDACTED]", text)
+        text = cls._telegram_bot_token.sub("[REDACTED_BOT_TOKEN]", text)
+        text = cls._url_credentials.sub(lambda match: f"{match.group(1)}:[REDACTED]@", text)
         text = cls._key_value.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)
         return cls._phone.sub(lambda match: f"{match.group(1)}***{match.group(0)[-3:]}", text)
 

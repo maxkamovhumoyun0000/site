@@ -155,6 +155,24 @@ support_notify_bot: Bot | None = None
 dp = Dispatcher()
 
 
+@dp.callback_query.outer_middleware()
+async def _admin_only_callback_gate(handler, event: CallbackQuery, data):
+    """Drop every inline-button callback that does not come from an admin.
+
+    callback_data is client-controlled: anyone can forge e.g. ``grp_set:5:delete``.
+    Individual handlers also check ALL_ADMIN_IDS, but some did not, so this
+    gate enforces it for the whole Admin bot before any handler runs.
+    """
+    user = getattr(event, "from_user", None)
+    if user is None or int(user.id) not in ALL_ADMIN_IDS:
+        try:
+            await event.answer()
+        except Exception:
+            pass
+        return None
+    return await handler(event, data)
+
+
 def _student_miniapp_start_keyboard() -> InlineKeyboardMarkup | None:
     base = (TELEGRAM_MINI_APP_BASE_URL or "").strip()
     if not base:
@@ -389,7 +407,9 @@ def _is_limited_admin(admin_id: int) -> bool:
 
 
 def _is_general_admin_scope(admin_id: int) -> bool:
-    return _is_main_admin(admin_id) or not _is_limited_admin(admin_id)
+    # Fail closed: only configured main admins get global scope. Previously
+    # any ID that was not a *limited* admin (including a non-admin) did.
+    return _is_main_admin(admin_id)
 
 
 def _shared_group_ids_for_limited_admin(admin_id: int) -> set[int]:
@@ -1096,7 +1116,9 @@ async def handle_admin_text(message: Message):
         reset_admin_state(message.chat.id)
         state = get_admin_state(message.chat.id)
     
-    logger.info(f"Admin message received: text='{text}', step='{state.get('step')}', chat_id={message.chat.id}")
+    # Never log message text: during user-creation flows admins type
+    # passwords, phone numbers and login IDs.
+    logger.info(f"Admin message received: len={len(text)}, step='{state.get('step')}', chat_id={message.chat.id}")
 
     # Cancel current flow (strict label match; avoid catching "Cancel lessons")
     text_l = text.lower().strip()
@@ -2832,15 +2854,18 @@ async def handle_add_student_to_group(callback: CallbackQuery):
         _, group_id, user_id = callback.data.split(":")
         group_id = int(group_id)
         user_id = int(user_id)
-        
+        group = get_group(group_id)
+        user = get_user_by_id(user_id)
+        if not _can_manage_group(callback.from_user.id, group) or not _can_manage_user(callback.from_user.id, user):
+            await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
+            return
+
         # Check if user already in group
         from db import get_group_users
         current_users = get_group_users(group_id)
         if any(u['id'] == user_id for u in current_users):
             await callback.answer(t(lang, 'admin_auto_msg_14'))
             return
-        group = get_group(group_id)
-        user = get_user_by_id(user_id)
         if not _student_matches_group_subject(user, group):
             await callback.answer(t(lang, "admin_group_student_subject_mismatch"), show_alert=True)
             return
@@ -2872,6 +2897,9 @@ async def handle_remove_student_by_inline(callback: CallbackQuery):
         _, group_id, user_id = callback.data.split(":")
         group_id = int(group_id)
         user_id = int(user_id)
+        if not _can_manage_group(callback.from_user.id, get_group(group_id)):
+            await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
+            return
         remove_user_from_group(user_id, group_id)
         await callback.answer(t(lang, 'admin_auto_msg_16'))
         await _show_group_details(callback, group_id)
@@ -2890,9 +2918,15 @@ async def handle_noop(callback: CallbackQuery):
 @dp.callback_query(lambda c: c.data.startswith("grp_set:"))
 async def handle_grp_set(callback: CallbackQuery):
     lang = detect_lang_from_user(callback.from_user)
+    if callback.from_user.id not in ALL_ADMIN_IDS:
+        await callback.answer()
+        return
     try:
         _, group_id_str, action = callback.data.split(":")
         group_id = int(group_id_str)
+        if not _can_manage_group(callback.from_user.id, get_group(group_id)):
+            await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
+            return
         state = get_admin_state(callback.message.chat.id)
         state['data']['group_id'] = group_id
 
@@ -2990,11 +3024,14 @@ async def handle_group_delete_yes(callback: CallbackQuery):
         await callback.answer()
         return
     
+    lang = detect_lang_from_user(callback.from_user)
     try:
         group_id = int(callback.data.split(':')[-1])
+        if not _can_manage_group(callback.from_user.id, get_group(group_id)):
+            await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
+            return
         from db import delete_group
         delete_group(group_id)
-        lang = detect_lang_from_user(callback.from_user)
         await callback.message.answer(t(lang, "group_deleted"))
     except Exception as e:
         logger.error(f"Error deleting group: {e}")
@@ -3020,12 +3057,15 @@ async def handle_group_remove_student_legacy(callback: CallbackQuery):
         return
     
     parts = callback.data.split(':')
+    lang = detect_lang_from_user(callback.from_user)
     try:
         group_id = int(parts[1])
         user_id = int(parts[2])
+        if not _can_manage_group(callback.from_user.id, get_group(group_id)):
+            await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
+            return
         from db import remove_user_from_group
         remove_user_from_group(user_id, group_id)
-        lang = detect_lang_from_user(callback.from_user)
         await callback.message.answer(t(lang, "student_removed_from_group"))
     except Exception as e:
         logger.error(f"Error removing student from group: {e}")
@@ -3040,6 +3080,7 @@ async def handle_approve_access_yes(callback: CallbackQuery):
         await callback.answer()
         return
     
+    lang = detect_lang_from_user(callback.from_user)
     try:
         user_id = int(callback.data.split(':')[-1])
         admin_id = callback.from_user.id
@@ -3049,7 +3090,6 @@ async def handle_approve_access_yes(callback: CallbackQuery):
                 await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
                 return
         enable_access(user_id)
-        lang = detect_lang_from_user(callback.from_user)
         await callback.message.answer(t(lang, "access_approved"))
     except Exception as e:
         logger.error(f"Error approving access: {e}")
@@ -3064,6 +3104,7 @@ async def handle_approve_access_no(callback: CallbackQuery):
         await callback.answer()
         return
     
+    lang = detect_lang_from_user(callback.from_user)
     try:
         user_id = int(callback.data.split(':')[-1])
         admin_id = callback.from_user.id
@@ -3073,7 +3114,6 @@ async def handle_approve_access_no(callback: CallbackQuery):
                 await callback.answer(t(lang, 'admin_auto_msg_20'), show_alert=True)
                 return
         disable_access(user_id)
-        lang = detect_lang_from_user(callback.from_user)
         await callback.message.answer(t(lang, "access_rejected"))
     except Exception as e:
         logger.error(f"Error rejecting access: {e}")

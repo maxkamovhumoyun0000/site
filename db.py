@@ -22694,6 +22694,13 @@ def transfer_dcoins_atomic(
 
             _ensure_user_dpoints_row(cur, int(sender_id))
             _ensure_user_dpoints_row(cur, int(recipient_id))
+            if _is_postgres_enabled():
+                # DB_WRITE_LOCK only serialises threads inside one process; the
+                # backend runs several workers and the bots write the same
+                # wallet. A transaction-level advisory lock per sender makes the
+                # balance check + spend atomic across all of them (released on
+                # commit/rollback), preventing a concurrent double spend.
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(?))", (f"dcoin-wallet:{int(sender_id)}",))
             sender_balance_before = float(_visible_dcoin_balance_tx(cur, int(sender_id)))
             if sender_balance_before + 1e-9 < amount_value:
                 return {"ok": False, "reason": "insufficient_balance", "balance_before": float(_visible_dcoin_balance_tx(cur, int(sender_id)))}
@@ -25598,9 +25605,68 @@ def get_userbot_settings() -> dict:
                     updated_any = True
             if updated_any:
                 conn.commit()
-        return row
+            _migrate_userbot_secrets_at_rest(cur, conn, row)
+        return _decrypt_userbot_secrets(row)
     finally:
         conn.close()
+
+
+# The Pyrogram session string grants full control of the Telegram account, so
+# it (and the api_hash) is stored encrypted. Reads transparently decrypt; old
+# plaintext rows are encrypted in place the first time they are read.
+_USERBOT_SECRET_FIELDS = ("session_string", "api_hash")
+
+
+def _userbot_cipher():
+    from token_encryption import TokenCipher
+
+    return TokenCipher.from_environment(
+        key_name="USERBOT_SECRET_ENCRYPTION_KEY",
+        derivation_context="userbot-session",
+    )
+
+
+def _decrypt_userbot_secrets(row: dict | None) -> dict:
+    out = dict(row or {})
+    try:
+        cipher = _userbot_cipher()
+    except Exception:
+        logger.error("userbot secret encryption is not configured; secrets left unreadable")
+        for field in _USERBOT_SECRET_FIELDS:
+            if str(out.get(field) or "").startswith("enc:v1:"):
+                out[field] = ""
+        return out
+    for field in _USERBOT_SECRET_FIELDS:
+        value = str(out.get(field) or "")
+        if value:
+            try:
+                out[field] = cipher.decrypt(value)
+            except Exception:
+                logger.error("userbot %s could not be decrypted (key changed?)", field)
+                out[field] = ""
+    return out
+
+
+def _encrypt_userbot_secret(value) -> str:
+    text = str(value or "")
+    if not text or text.startswith("enc:v1:"):
+        return text
+    return _userbot_cipher().encrypt(text)
+
+
+def _migrate_userbot_secrets_at_rest(cur, conn, row: dict) -> None:
+    try:
+        for field in _USERBOT_SECRET_FIELDS:
+            value = str(row.get(field) or "")
+            if value and not value.startswith("enc:v1:"):
+                cur.execute(f"UPDATE userbot_settings SET {field}=? WHERE id=1", (_encrypt_userbot_secret(value),))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception("userbot secret at-rest migration skipped")
 
 
 def update_userbot_settings(fields: dict) -> dict:
@@ -25623,7 +25689,7 @@ def update_userbot_settings(fields: dict) -> dict:
         for k, v in fields.items():
             if k in allowed:
                 sets.append(f"{k}=?")
-                params.append(v)
+                params.append(_encrypt_userbot_secret(v) if k in _USERBOT_SECRET_FIELDS else v)
         if sets:
             sets.append("updated_at=CURRENT_TIMESTAMP")
             cur.execute(f"UPDATE userbot_settings SET {', '.join(sets)} WHERE id=1", tuple(params))

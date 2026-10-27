@@ -21,13 +21,12 @@ def main() -> int:
         print("No admin IDs configured.")
         return 0
 
+    # Never print passwords: stdout ends up in terminal scrollback and SSH/CI
+    # logs. The passwords come from .env, where the operator already has them.
     print("Standard admin website credentials set:")
     for row in rows:
         role = "MainAdmin" if row.get("role_label") == "main_admin" else "LimitedAdmin"
-        print(
-            f"{role} | tg:{row.get('telegram_id')} | "
-            f"login:{row.get('login_id')} | pass:{row.get('password')}"
-        )
+        print(f"{role} | tg:{row.get('telegram_id')} | login:{row.get('login_id')} | pass:(from .env, not shown)")
     return 0
 
 

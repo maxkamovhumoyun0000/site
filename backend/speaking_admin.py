@@ -478,17 +478,32 @@ def _speaking_vocabulary_ai_allowed(request: Request) -> bool:
     word is missing from the vocabulary bank, which prevents public clients
     from turning the endpoint into an unrestricted token-spending API.
     """
+    # The device header is client-controlled, so on its own it can be rotated
+    # per request to dodge the cap. Always enforce a second, larger limit
+    # keyed on the network address (resolved with the trusted-proxy rules).
+    from backend.main import _client_ip
+
     raw_id = str(request.headers.get("x-speaking-device-id") or "").strip()
-    if not raw_id:
-        raw_id = str((request.client.host if request.client else "unknown") or "unknown")
-    key = hashlib.sha256(raw_id[:200].encode("utf-8")).hexdigest()
+    ip = str(_client_ip(request) or "unknown")
+    buckets = [
+        (hashlib.sha256(f"ip:{ip}".encode("utf-8")).hexdigest(), _SPEAKING_VOCAB_AI_REQUEST_LIMIT * 6),
+    ]
+    if raw_id:
+        buckets.append((hashlib.sha256(f"dev:{raw_id[:200]}".encode("utf-8")).hexdigest(), _SPEAKING_VOCAB_AI_REQUEST_LIMIT))
     now = datetime.utcnow().timestamp()
-    recent = [stamp for stamp in _SPEAKING_VOCAB_AI_REQUESTS.get(key, []) if now - stamp < 3600]
-    if len(recent) >= _SPEAKING_VOCAB_AI_REQUEST_LIMIT:
+    if len(_SPEAKING_VOCAB_AI_REQUESTS) > 20000:
+        for stale_key in [k for k, v in _SPEAKING_VOCAB_AI_REQUESTS.items() if not v or now - v[-1] >= 3600]:
+            _SPEAKING_VOCAB_AI_REQUESTS.pop(stale_key, None)
+    recents: dict[str, list[float]] = {}
+    for key, limit in buckets:
+        recent = [stamp for stamp in _SPEAKING_VOCAB_AI_REQUESTS.get(key, []) if now - stamp < 3600]
+        recents[key] = recent
+        if len(recent) >= limit:
+            _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
+            return False
+    for key, recent in recents.items():
+        recent.append(now)
         _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
-        return False
-    recent.append(now)
-    _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
     return True
 
 
