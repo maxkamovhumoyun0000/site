@@ -114,10 +114,8 @@ from db import (
     complete_face_enrollment,
     consume_mobile_telegram_login_request,
     consume_dcoins_allow_negative,
-    copy_daily_tests_bank_rows_to_arena_questions,
     count_available_daily_tests_global,
     count_duel_participants,
-    create_arena_group_session,
     create_duel_session,
     create_media_asset,
     create_mobile_telegram_login_request,
@@ -134,6 +132,7 @@ from db import (
     delete_diamondvoy_chats_older_than_hours,
     delete_group,
     disable_access,
+    duel_plays_today,
     enable_access,
     ensure_diamondvoy_chat_schema,
     ensure_media_assets_schema,
@@ -163,7 +162,6 @@ from db import (
     get_all_students,
     get_all_teachers,
     get_all_users,
-    get_arena_group_session,
     get_arena_group_session_questions,
     get_attendance_effect,
     get_attendance_by_group,
@@ -197,7 +195,6 @@ from db import (
     get_group_users,
     get_screenshot_demo_user_by_alias,
     is_screenshot_demo_user,
-    list_ready_arena_group_sessions,
     get_present_students_for_group_date,
     get_or_create_direct_chat_thread,
     get_or_create_admin_support_thread,
@@ -264,7 +261,6 @@ from db import (
     lesson_is_slot_free_for_subject,
     lesson_is_support_teacher_slot_free,
     list_all_student_telegram_ids,
-    list_arena_group_session_answers_for_export,
     list_branch_dates_closed,
     list_chat_messages,
     list_chat_participants,
@@ -296,7 +292,6 @@ from db import (
     remove_blocked_slot,
     remove_recurring_slot_rule,
     remove_user_from_group,
-    populate_arena_group_questions_tmp,
     reschedule_lesson_booking,
     reset_user_password,
     record_vocab_word_result,
@@ -306,8 +301,6 @@ from db import (
     record_login_failure,
     save_placement_session,
     save_test_result,
-    set_arena_group_session_status,
-    set_arena_group_session_expected_players,
     search_student_users_for_group_pick,
     set_branch_date_closed,
     set_book_upload_permission,
@@ -316,7 +309,6 @@ from db import (
     set_lesson_booking_status,
     set_lesson_branch_weekdays,
     set_attendance_effect,
-    set_arena_group_session_expected_players,
     set_pending_approval,
     set_screenshot_demo_wallet,
     set_standard_admin_account_credentials,
@@ -439,7 +431,6 @@ from ai_generator import (
 import gamified_tests
 
 logger = logging.getLogger(__name__)
-from lesson_window import is_group_lesson_window_active
 from support_booking_time import normalize_time_hhmm, support_make_end_ts, support_make_start_ts
 from tests_seed import seed
 from vocabulary import generate_balanced_mixed_quiz, get_student_preference, get_words_by_subject, get_words_by_subject_level, search_words, vocab_language_for_subject
@@ -702,7 +693,10 @@ async def localized_http_exception_handler(request: Request, exc: HTTPException)
 async def block_retired_arena_routes(request: Request, call_next):
     """Keep retired Daily/Group Arena APIs unreachable, including old deep links."""
     path = request.url.path.rstrip("/") or "/"
-    if path == "/teacher/generator/arena" or path.startswith("/teacher/arena/"):
+    # The Teacher Arena routes (/teacher/arena/...) were deleted, so they now
+    # 404 naturally.  The legacy teacher arena generator route still exists in
+    # code and must stay unreachable.
+    if path == "/teacher/generator/arena":
         return JSONResponse(
             status_code=410,
             content={"detail": "Group Arena has been retired."},
@@ -2484,19 +2478,6 @@ class HomeworkReviewRequest(BaseModel):
     review_note: str | None = None
 
 
-class TeacherArenaStartRequest(BaseModel):
-    session_id: int | None = None
-    question_count: int = Field(default=10, ge=5, le=30)
-    question_source: Literal["ai", "manual", "bank"] = "ai"
-    difficulty: Literal["Easy", "Medium", "Hard", "easy", "medium", "hard"] = "Medium"
-    questions: list[dict[str, Any]] | None = None
-
-
-class TeacherArenaGenerationRequest(BaseModel):
-    question_count: int = Field(default=10, ge=5, le=30)
-    difficulty: Literal["Easy", "Medium", "Hard", "easy", "medium", "hard"] = "Medium"
-
-
 class UserLanguageUpdateRequest(BaseModel):
     language: Literal["uz", "ru", "en"] = "uz"
 
@@ -2830,6 +2811,10 @@ class CompetitionAnswerRequest(BaseModel):
     audio_url: str | None = Field(default=None, max_length=2048)
     matching_answer: dict[str, str] | None = None
     timed_out: bool = False
+    # Explicit skip from the Previous/Next/Finish buttons or the question
+    # pills. Like a timeout, no answer is required; the question is recorded
+    # as unanswered (the same as an MCQ skip) and is never graded.
+    skipped: bool = False
     proctoring_session_id: int | None = None
     question_index: int | None = None  # Client-side index for double-submit guard
 
@@ -8659,6 +8644,9 @@ _SPEAKING_ADMIN_WORKSPACE_PREFIXES = (
     "/staff/speaking-learning/",
     "/api/speaking/live-video/",
     "/admin/speaking-users/",
+    # Speaking Learning Path staff namespace. Student routes live under
+    # /speaking-lp/student/ and are intentionally not part of this allow-list.
+    "/speaking-lp/staff/",
 )
 
 _NOTIFICATION_READ_PATH_RE = re.compile(r"^/notifications/[^/]+/read$")
@@ -19532,30 +19520,6 @@ def _build_teacher_payload(user: dict) -> dict:
     support_requests = _serialize_booking_rows(support_requests)
     support_requests.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
-    active_arenas = []
-    for group in groups:
-        gid = int(group.get("id") or 0)
-        sess = _safe_call(lambda group_id=gid: get_active_arena_group_session_by_group_id(group_id), None)
-        if not sess:
-            continue
-        session_id = int(sess.get("id") or 0)
-        snap = _safe_call(lambda sid=session_id: get_group_arena_teacher_snapshot(sid), None) or {}
-        attempts = snap.get("attempts") or []
-        present = snap.get("present") or []
-        active_arenas.append(
-            {
-                "group_id": gid,
-                "group_name": group.get("name"),
-                "session_id": session_id,
-                "subject": sess.get("subject"),
-                "level": sess.get("level"),
-                "status": sess.get("status"),
-                "attempted": len(attempts),
-                "present_students": len(present),
-                "created_at": sess.get("created_at"),
-            }
-        )
-
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -19607,7 +19571,6 @@ def _build_teacher_payload(user: dict) -> dict:
         "substitutions": substitutions,
         "temporary_teacher_candidates": temp_candidates,
         "support_requests": support_requests[:40],
-        "arena_sessions": active_arenas,
         "performance": {"students": top_students[:25]},
         "notifications": notifications,
         "permissions": {
@@ -31753,10 +31716,93 @@ def _competition_user_progress(session: dict[str, Any], user_id: int) -> dict[st
     return progress.get(uid) or progress.get(str(uid))
 
 
+def _competition_rank_positions(rows: list[tuple[int, Any, Any]]) -> dict[int, int]:
+    """Return 1-based competition ranks ordered by correct desc, then wrong asc.
+
+    Ties (same correct and wrong counts) share the same place and the next
+    place skips accordingly (1, 1, 3).  Pure helper: no session or DB access.
+    """
+    ordered = sorted(
+        ((int(uid), int(correct or 0), int(wrong or 0)) for uid, correct, wrong in rows),
+        key=lambda item: (-item[1], item[2], item[0]),
+    )
+    ranks: dict[int, int] = {}
+    previous: tuple[int, int] | None = None
+    current_rank = 0
+    for position, (uid, correct, wrong) in enumerate(ordered, start=1):
+        if (correct, wrong) != previous:
+            current_rank = position
+            previous = (correct, wrong)
+        ranks[uid] = current_rank
+    return ranks
+
+
+def _competition_result_rank_map(session: dict[str, Any]) -> dict[int, int]:
+    """Rank every joined participant of a session for client responses.
+
+    Stored ranks (Daily Arena podium) are kept as-is; everyone else is ranked by
+    correct desc / wrong asc after the stored places.  Cancelled or refunded
+    sessions have no ranking, so their users are omitted (rank stays null).
+    """
+    result = session.get("result") or {}
+    if result.get("error"):
+        return {}
+    by_user = result.get("by_user") or {}
+    progress_map = session.get("progress") or {}
+    user_ids: list[int] = []
+    for row in _competition_joined_participants(session):
+        uid = int(row.get("user_id") or 0)
+        if uid > 0 and uid not in user_ids:
+            user_ids.append(uid)
+    for key in by_user.keys():
+        try:
+            uid = int(key)
+        except (TypeError, ValueError):
+            continue
+        if uid > 0 and uid not in user_ids:
+            user_ids.append(uid)
+    fixed: dict[int, int] = {}
+    rows: list[tuple[int, Any, Any]] = []
+    for uid in user_ids:
+        own = by_user.get(uid) or by_user.get(str(uid))
+        if isinstance(own, dict):
+            if own.get("error") or str(own.get("result_status") or "").strip().lower() == "cancelled":
+                continue
+            stored = own.get("rank")
+            if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
+                fixed[uid] = stored
+                continue
+            source = own
+        else:
+            source = progress_map.get(uid) or progress_map.get(str(uid)) or {}
+        rows.append((uid, source.get("correct"), source.get("wrong")))
+    offset = max(fixed.values(), default=0)
+    ranks = dict(fixed)
+    for uid, rank in _competition_rank_positions(rows).items():
+        ranks[uid] = offset + rank
+    return ranks
+
+
+def _competition_client_result(own: dict[str, Any], rank: int | None) -> dict[str, Any]:
+    """Copy a stored per-user result and add the client fields skipped/score/rank."""
+    out = dict(own)
+    skipped_raw = out.get("skipped") if out.get("skipped") is not None else out.get("unanswered")
+    out["skipped"] = int(skipped_raw or 0)
+    if out.get("score") is None:
+        out["score"] = int(out.get("correct") or 0)
+    if out.get("rank") is None:
+        out["rank"] = rank
+    return out
+
+
 def _competition_user_result(session: dict[str, Any], user_id: int) -> dict[str, Any] | None:
     uid = int(user_id)
     by_user = ((session.get("result") or {}).get("by_user") or {})
-    return by_user.get(uid) or by_user.get(str(uid))
+    own = by_user.get(uid) or by_user.get(str(uid))
+    if not isinstance(own, dict) or not own:
+        return own
+    # Return an enriched copy; the stored session result is never mutated here.
+    return _competition_client_result(own, _competition_result_rank_map(session).get(uid))
 
 
 def _competition_restore_runtime_participant_if_needed(session: dict[str, Any], user_id: int, *, source: str = "") -> bool:
@@ -31930,6 +31976,7 @@ def _competition_result_participants(session: dict[str, Any]) -> list[dict[str, 
     result = session.get("result") or {}
     by_user = result.get("by_user") or {}
     winners = {int(uid) for uid in (result.get("winners") or []) if str(uid).strip().lstrip("-").isdigit()}
+    rank_map = _competition_result_rank_map(session)
     rows: list[dict[str, Any]] = []
     for participant in _competition_joined_participants(session):
         uid = int(participant.get("user_id") or 0)
@@ -31940,6 +31987,7 @@ def _competition_result_participants(session: dict[str, Any]) -> list[dict[str, 
         result_status = str(own.get("result_status") or "").strip().lower()
         left = raw_status in {"left", "cancelled", "eliminated", "blocked", "failed"}
         winner = bool(own.get("winner")) or uid in winners
+        skipped = int(own.get("unanswered") or own.get("skipped") or 0)
         rows.append(
             {
                 "user_id": uid,
@@ -31948,10 +31996,12 @@ def _competition_result_participants(session: dict[str, Any]) -> list[dict[str, 
                 "winner": winner,
                 "tie": bool(own.get("tie")),
                 "left": left,
-                "rank": own.get("rank"),
+                "rank": own.get("rank") if own.get("rank") is not None else rank_map.get(uid),
                 "correct": int(own.get("correct") or 0),
                 "wrong": int(own.get("wrong") or 0),
-                "unanswered": int(own.get("unanswered") or own.get("skipped") or 0),
+                "unanswered": skipped,
+                "skipped": skipped,
+                "score": int(own.get("correct") or 0),
                 "total_questions": int(own.get("total_questions") or len(_competition_questions_for_user(session, uid)) or 0),
                 "dpoints_delta": float(own.get("dpoints_delta") or 0.0),
             }
@@ -31966,6 +32016,85 @@ def _competition_result_participants(session: dict[str, Any]) -> list[dict[str, 
         )
     )
     return rows
+
+
+def _competition_participant_level(session: dict[str, Any], row: dict[str, Any] | None) -> str | None:
+    """Participant level stored at join time, falling back to the session level."""
+    level = str((row or {}).get("level") or "").strip()
+    if level:
+        return level
+    fallback = str(session.get("level") or "").strip()
+    return fallback or None
+
+
+def _competition_participant_team(session: dict[str, Any], row: dict[str, Any] | None) -> int | None:
+    row = row or {}
+    uid = int(row.get("user_id") or 0)
+    teams = session.get("teams") or {}
+    team = teams.get(uid) if uid in teams else teams.get(str(uid))
+    if team is None:
+        team = row.get("team") if row.get("team") is not None else row.get("team_no")
+    try:
+        team_no = int(team)
+    except (TypeError, ValueError):
+        return None
+    return team_no if team_no > 0 else None
+
+
+def _competition_result_participant_cards(session: dict[str, Any], current_user_id: int | None = None) -> list[dict[str, Any]]:
+    """Final standings for the result screen: current user first, then by rank.
+
+    Exposes only counts and outcome flags, never answers or correct options.
+    """
+    result = session.get("result") or {}
+    by_user = result.get("by_user") or {}
+    winners = {int(uid) for uid in (result.get("winners") or []) if str(uid).strip().lstrip("-").isdigit()}
+    rank_map = _competition_result_rank_map(session)
+    progress_map = session.get("progress") or {}
+    raw_rows = {
+        int(row.get("user_id") or 0): row
+        for row in (session.get("participants") or [])
+        if isinstance(row, dict) and int(row.get("user_id") or 0) > 0
+    }
+    me = int(current_user_id or 0)
+    items: list[dict[str, Any]] = []
+    for participant in _competition_joined_participants(session):
+        uid = int(participant.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        raw = raw_rows.get(uid) or participant
+        own = by_user.get(uid) or by_user.get(str(uid))
+        own = own if isinstance(own, dict) else {}
+        stats = own or progress_map.get(uid) or progress_map.get(str(uid)) or {}
+        correct = int(stats.get("correct") or 0)
+        wrong = int(stats.get("wrong") or 0)
+        skipped = int(stats.get("unanswered") or stats.get("skipped") or 0)
+        rank = own.get("rank") if own.get("rank") is not None else rank_map.get(uid)
+        items.append(
+            {
+                "user_id": uid,
+                "name": str(participant.get("name") or f"Player {uid}"),
+                "level": _competition_participant_level(session, raw),
+                "team": _competition_participant_team(session, raw),
+                "status": str(participant.get("status") or "active"),
+                "correct": correct,
+                "wrong": wrong,
+                "skipped": skipped,
+                "score": correct,
+                "rank": rank,
+                "is_winner": bool(own.get("winner")) or uid in winners,
+                "is_me": bool(me and uid == me),
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            0 if item["is_me"] else 1,
+            item["rank"] if isinstance(item["rank"], int) else 1_000_000,
+            str(item["name"]).lower(),
+            int(item["user_id"]),
+        )
+    )
+    return items
 
 
 def _competition_questions_for_user(session: dict[str, Any], user_id: int | None = None) -> list[dict[str, Any]]:
@@ -32163,6 +32292,9 @@ def _competition_rule_settings() -> dict[str, float]:
         "daily_arena_reward_third": max(0.0, float(settings.get("daily_arena_reward_third") or 15.0)),
         "group_arena_winner_reward": max(0.0, float(settings.get("group_arena_winner_reward") or 10.0)),
         "boss_arena_reward_per_correct": max(0.0, float(settings.get("boss_arena_reward_per_correct") or 3.0)),
+        # Flat reward actually paid to every Boss Arena participant when the
+        # group threshold is reached (same default as _competition_finalize_non_daily).
+        "boss_arena_reward_flat": max(0.0, float(settings.get("boss_arena_reward_flat") or 20.0)),
         "boss_arena_global_threshold_percent": max(0.0, min(100.0, float(settings.get("boss_arena_global_threshold_percent") or 86.0))),
     }
 
@@ -32170,6 +32302,20 @@ def _competition_rule_settings() -> dict[str, float]:
 def _competition_snapshot(session: dict[str, Any], user_id: int | None = None) -> dict[str, Any]:
     phase = _competition_session_phase(session)
     participants = _competition_waiting_participants(session) if phase in {"pending", "generating"} else _competition_joined_participants(session)
+    raw_participant_rows = {
+        int(row.get("user_id") or 0): row
+        for row in (session.get("participants") or [])
+        if isinstance(row, dict) and int(row.get("user_id") or 0) > 0
+    }
+    participants = [
+        {
+            **row,
+            # Level is stored per participant at join time; older sessions
+            # fall back to the session level.
+            "level": _competition_participant_level(session, raw_participant_rows.get(int(row.get("user_id") or 0))),
+        }
+        for row in participants
+    ]
     required_players = int(session.get("required_players") or 1)
     max_players = max(required_players, int(session.get("max_players") or required_players))
     participants_count = len(participants)
@@ -32773,63 +32919,6 @@ def _competition_load_group_runtime_session(group_id: int, legacy_session_id: in
     return None
 
 
-def _auto_close_stale_arena_group_session(sess: dict[str, Any] | None, *, hours: int = 3) -> dict[str, Any] | None:
-    """
-    A `ready`/`sent`/`running` `arena_group_sessions` row that outlives a
-    single lesson (default 3h) AND has no live runtime counterpart is
-    almost certainly abandoned — the teacher closed the app, the backend
-    restarted mid-session and lost the in-memory/DB runtime row, or a
-    student's device dropped the connection before
-    `distribute_arena_group_rewards_if_ready` ever saw everyone finish.
-    Previously this was only swept reactively, once, inside `/start` with
-    a 48h grace window — meaning `/status` (and therefore the
-    Flutter/teacher-app polling loop) kept reporting a dead session as
-    "active" indefinitely, and a teacher who never tried to start ANOTHER
-    session for that same group would see the stuck session forever. This
-    closes it proactively wherever a session is read (`/status`, `/start`)
-    with a much tighter, lesson-length window — but only when there's also
-    no live `web_competition_sessions` row backing it, so a genuinely long
-    (but still active) session is never force-closed under a teacher.
-    """
-    if not sess:
-        return sess
-    created_at_dt = _parse_utc_timestamp(str(sess.get("created_at") or ""))
-    if not created_at_dt:
-        return sess
-    now = _now_utc()
-    gid = int(sess.get("group_id") or 0)
-
-    # Preferred cutoff: exactly 1 hour after the group's scheduled lesson
-    # end on the session's creation date — a group arena the teacher forgot
-    # to end must not outlive the lesson by more than an hour. Falls back to
-    # "hours after creation" when the group's lesson_end isn't known.
-    cutoff = created_at_dt + timedelta(hours=hours)
-    if gid > 0:
-        group = _safe_call(lambda: get_group(gid), None)
-        end_hhmm = _parse_hhmm((group or {}).get("lesson_end"))
-        if end_hhmm:
-            created_local = created_at_dt.astimezone(TASHKENT_TZ)
-            lesson_end_local = created_local.replace(
-                hour=end_hhmm[0], minute=end_hhmm[1], second=0, microsecond=0
-            )
-            # Guard against a session created after that day's lesson_end
-            # (late start) yielding a cutoff already in the past at creation.
-            if lesson_end_local < created_local:
-                lesson_end_local = created_local
-            cutoff = (lesson_end_local + timedelta(hours=1)).astimezone(timezone.utc)
-
-    if now <= cutoff:
-        return sess
-    sid = int(sess.get("id") or 0)
-    # Never force-close a session that still has a live runtime backing it —
-    # a genuinely long (but active) game under a teacher is left alone.
-    live = _safe_call(lambda: _competition_load_group_runtime_session(gid, sid), None) if gid > 0 else None
-    if live:
-        return sess
-    _safe_call(lambda: _mark_legacy_group_arena_completed(sid), None)
-    return None
-
-
 def _mark_legacy_group_arena_completed(session_id: int) -> None:
     if int(session_id or 0) <= 0:
         return
@@ -32853,27 +32942,6 @@ def _mark_legacy_group_arena_completed(session_id: int) -> None:
         except Exception:
             pass
         logger.exception("Failed to mark legacy group arena completed session_id=%s", session_id)
-    finally:
-        conn.close()
-
-
-def _latest_legacy_group_arena_session(group_id: int) -> dict[str, Any] | None:
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            SELECT id, group_id, subject, level, question_count, bank_ids_json, created_by_teacher_id,
-                   expected_players, rewards_distributed, status, created_at, completed_at
-            FROM arena_group_sessions
-            WHERE group_id=?
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            (int(group_id),),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
     finally:
         conn.close()
 
@@ -34614,6 +34682,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                         "name": _display_name(row),
                         "status": "active",
                         "joined_at": _now_utc().isoformat(),
+                        "level": level,
                     }
                     for row in present_students
                     if int(row.get("id") or 0) > 0
@@ -34813,7 +34882,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                 if mode.startswith("duel-") or mode == "boss":
                     increment_duel_daily_usage(user_id, bot_mode, usage_date)
                     session.setdefault("usage_dates", {})[str(user_id)] = usage_date
-                participants.append({"user_id": user_id, "name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date})
+                participants.append({"user_id": user_id, "name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date, "level": level})
                 if charged_fee > 0 and user_id not in [int(uid) for uid in session.setdefault("charged_user_ids", [])]:
                     session.setdefault("charged_user_ids", []).append(user_id)
                 if charged_fee > 0:
@@ -35115,7 +35184,8 @@ async def competition_runtime_status(session_id: str, authorization: str | None 
         expired_now = _duel_expire_session_if_needed(sess) if _duel_is_mode(sess.get("mode")) else _competition_expire_waiting_session_if_needed(sess)
         if expired_now:
             out = _competition_snapshot(sess, user_id=uid)
-            out["live"] = _competition_live_lists(sess)
+            out["live"] = _competition_live_lists(sess, current_user_id=uid)
+            out["opponent_progress"] = _competition_opponent_progress(sess, uid)
             out["result"] = _competition_user_result(sess, uid)
             return out
         if _competition_session_phase(sess) == "active":
@@ -35141,7 +35211,7 @@ async def competition_runtime_status(session_id: str, authorization: str | None 
             if sess.get("generation_recovery_started_at"):
                 sess.pop("generation_recovery_started_at", None)
                 _duel_persist_session(sess)
-        live = _competition_live_lists(sess)
+        live = _competition_live_lists(sess, current_user_id=uid)
         out = _competition_snapshot(sess, user_id=uid)
         out["live"] = live
         out["opponent_progress"] = _competition_opponent_progress(sess, uid)
@@ -35186,7 +35256,7 @@ async def competition_runtime_question(
                     "generation_started": bool(sess.get("generation_started")) and phase in {"generating", "active"},
                     "generation_percent": int(sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
                     "stage_generation_percent": int(sess.get("stage_generation_percent") or sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
-                    "live": _competition_live_lists(sess),
+                    "live": _competition_live_lists(sess, current_user_id=uid),
                 }
             progress = sess.setdefault("progress", {})[uid] = {"index": 1, "correct": 0, "wrong": 0, "unanswered": 0}
             _duel_persist_session(sess)
@@ -35210,7 +35280,7 @@ async def competition_runtime_question(
                 "generation_started": bool(sess.get("generation_started")) and phase in {"generating", "active"},
                 "generation_percent": int(sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
                 "stage_generation_percent": int(sess.get("stage_generation_percent") or sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
-                "live": _competition_live_lists(sess),
+                "live": _competition_live_lists(sess, current_user_id=uid),
             }
         q_index = int(progress.get("index") or 1)
         if phase == "finished":
@@ -35228,7 +35298,8 @@ async def competition_runtime_question(
                 "generation_started": bool(sess.get("generation_started")) and phase in {"generating", "active"},
                 "generation_percent": int(sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
                 "stage_generation_percent": int(sess.get("stage_generation_percent") or sess.get("generation_percent") or 0) if phase in {"generating", "active"} else 0,
-                "live": _competition_live_lists(sess),
+                "live": _competition_live_lists(sess, current_user_id=uid),
+                "opponent_progress": _competition_opponent_progress(sess, uid),
             }
         question = user_questions[min(max(0, q_index - 1), max(0, total - 1))] if total > 0 else {}
         # The runtime enforces a separate deadline for every question via
@@ -35265,7 +35336,7 @@ async def competition_runtime_question(
             "question": _public_question_payload(question) if question else None,
             "questions": questions_payload,
             "opponent_progress": opponents,
-            "live": _competition_live_lists(sess),
+            "live": _competition_live_lists(sess, current_user_id=uid),
         }
 
 
@@ -35390,16 +35461,19 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
                     sess, uid, pre_index, pre_questions[pre_index - 1], create=False
                 )
                 timeout_submission = bool(payload.timed_out or timer_check.get("is_late"))
+                # A skip needs no answer, exactly like a timeout, and is never
+                # sent to the grader.
+                no_answer_required = bool(payload.skipped) or timeout_submission
                 has_text = bool(str(payload.answer_text or "").strip())
                 has_audio = bool(str(payload.audio_url or "").strip())
                 has_matching = bool(payload.matching_answer)
-                if not timeout_submission and pre_type == "matching" and not has_matching:
+                if not no_answer_required and pre_type == "matching" and not has_matching:
                     raise HTTPException(status_code=400, detail="Complete every vocabulary match before submitting")
-                if not timeout_submission and pre_type in {"spelling", "translation", "write_sentence"} and not has_text:
+                if not no_answer_required and pre_type in {"spelling", "translation", "write_sentence"} and not has_text:
                     raise HTTPException(status_code=400, detail="A written answer is required")
-                if not timeout_submission and pre_type in {"speak_sentence", "read_aloud"} and not (has_text or has_audio):
+                if not no_answer_required and pre_type in {"speak_sentence", "read_aloud"} and not (has_text or has_audio):
                     raise HTTPException(status_code=400, detail="Record or enter your answer before submitting")
-                if timeout_submission:
+                if no_answer_required:
                     pregraded_correct = False
                 else:
                     pregraded_correct = await _competition_grade_vocabulary_answer(
@@ -35493,7 +35567,7 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
 
         if q_index > total:
             ready = _competition_session_phase(sess) == "finished" and _competition_user_result(sess, uid) is not None
-            return {
+            out = {
                 "completed": bool(ready),
                 "result": _competition_user_result(sess, uid) if ready else None,
                 "status": sess.get("status"),
@@ -35501,19 +35575,30 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
                 "stage": int(sess.get("stage") or 0),
                 "total_stages": int(sess.get("total_stages") or _competition_total_stages(str(sess.get("mode") or ""))),
             }
+            if not ready:
+                # The user finished their own round and waits for the others.
+                out["waiting_completion"] = True
+                out["opponent_progress"] = _competition_opponent_progress(sess, uid)
+                out["live"] = _competition_live_lists(sess, current_user_id=uid)
+            return out
 
         q = questions[max(0, min(q_index - 1, total - 1))] if total > 0 else {}
-        sel = payload.selected_option_index
+        # A skip takes the unanswered path of an MCQ skip (no selection, no
+        # submission). Answer fields sent along with it are dropped, so a skip
+        # is never graded as correct or wrong.
+        skip_submission = bool(payload.skipped)
+        sel = None if skip_submission else payload.selected_option_index
         mode = str(sess.get("mode") or "")
         timer_state = _competition_timer_state(sess, uid, q_index, q, create=True)
         current_question = _mcq_question_from_row(q or {})
         current_type = str(current_question.get("question_type") or "").strip().lower()
-        has_non_option_answer = bool(
+        has_non_option_answer = not skip_submission and bool(
             str(payload.answer_text or "").strip()
             or str(payload.audio_url or "").strip()
             or payload.matching_answer
         )
         is_special_answer = _competition_uses_vocabulary_response(current_question)
+        keep_special_answer = is_special_answer and not skip_submission
         _competition_apply_question_outcome(
             sess,
             uid,
@@ -35523,12 +35608,12 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
             submitted=(has_non_option_answer if is_special_answer else sel is not None),
             is_correct_override=(
                 pregraded_correct
-                if is_special_answer and pregraded_question_index == q_index
+                if keep_special_answer and pregraded_question_index == q_index
                 else None
             ),
-            answer_text=payload.answer_text if is_special_answer else None,
-            audio_url=payload.audio_url if is_special_answer else None,
-            matching_answer=payload.matching_answer if is_special_answer else None,
+            answer_text=payload.answer_text if keep_special_answer else None,
+            audio_url=payload.audio_url if keep_special_answer else None,
+            matching_answer=payload.matching_answer if keep_special_answer else None,
         )
         _duel_persist_session(sess)
 
@@ -35549,6 +35634,7 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
 
         finalized_or_transitioned = _competition_finalize_if_all_progress_finished(sess)
         if not finalized_or_transitioned:
+            # Waiting for the other participants to finish their rounds.
             return {
                 "completed": False,
                 "status": sess.get("status"),
@@ -35556,6 +35642,9 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
                 "stage": int(sess.get("stage") or 0),
                 "total_stages": int(sess.get("total_stages") or _competition_total_stages(mode)),
                 "result": None,
+                "waiting_completion": True,
+                "opponent_progress": _competition_opponent_progress(sess, uid),
+                "live": _competition_live_lists(sess, current_user_id=uid),
             }
 
         if mode == "daily":
@@ -35607,6 +35696,10 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
                     "correct": 0,
                     "wrong": 0,
                     "unanswered": 0,
+                    "skipped": 0,
+                    "score": 0,
+                    # Cancelled/refunded sessions have no ranking.
+                    "rank": None,
                     "winner": False,
                     "tie": False,
                     "dpoints_delta": 0,
@@ -35614,8 +35707,9 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
                     "refunded": bool(session_result.get("refunded")),
                     "error": session_result.get("error") or "Queue expired",
                 },
-                "live": _competition_live_lists(sess),
+                "live": _competition_live_lists(sess, current_user_id=uid),
                 "participants_result": _competition_result_participants(sess),
+                "participants": _competition_result_participant_cards(sess, uid),
             }
         return {"ready": False, "phase": _competition_session_phase(sess), "status": sess.get("status")}
     return {
@@ -35632,8 +35726,9 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
         "boss_summary": _competition_boss_summary(sess),
         "result": own,
         "review": _competition_review_for_user(sess, uid),
-        "live": _competition_live_lists(sess),
+        "live": _competition_live_lists(sess, current_user_id=uid),
         "participants_result": _competition_result_participants(sess),
+        "participants": _competition_result_participant_cards(sess, uid),
     }
 
 
@@ -35744,7 +35839,7 @@ def _competition_current_question_payload(session: dict[str, Any], user_id: int)
         "deadline_at": timer["deadline_at"],
         "question_started_at": timer["started_at"],
         "question": _public_question_payload(question, question_index=question_index),
-        "live": _competition_live_lists(session),
+        "live": _competition_live_lists(session, current_user_id=uid),
         "opponent_progress": _competition_opponent_progress(session, uid),
     }
 
@@ -36022,9 +36117,17 @@ def _competition_timer_remaining(session: dict, user_id: int, question_index: in
     return int(_competition_timer_state(session, user_id, question_index).get("time_remaining_sec") or 0)
 
 
-def _competition_live_lists(session: dict) -> dict:
+def _competition_live_lists(session: dict, current_user_id: int | None = None) -> dict:
+    """Live participant lists for runtime screens.
+
+    `remained`/`left` stay plain name lists for old clients.  `participants`
+    carries per-player progress counts only (never answers or correct options).
+    """
     remained = []
     left = []
+    participants: list[dict[str, Any]] = []
+    progress_map = session.get("progress") or {}
+    me = int(current_user_id or 0)
     for row in session.get("participants") or []:
         status = str(row.get("status") or "active")
         name = str(row.get("name") or "Player")
@@ -36032,7 +36135,31 @@ def _competition_live_lists(session: dict) -> dict:
             left.append(name)
         else:
             remained.append(name)
-    return {"remained": remained, "left": left}
+        uid = int(row.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        prog = progress_map.get(uid) or progress_map.get(str(uid)) or {}
+        correct = int(prog.get("correct") or 0)
+        answered = correct + int(prog.get("wrong") or 0) + int(prog.get("unanswered") or 0)
+        total = len(_competition_questions_for_user(session, uid))
+        completed = min(total, answered) if total else answered
+        item: dict[str, Any] = {
+            "user_id": uid,
+            "name": name,
+            "status": status,
+            "team": _competition_participant_team(session, row),
+            "level": _competition_participant_level(session, row),
+            "score": correct,
+            "completed_count": completed,
+            "total_questions": total,
+            "progress_percent": int(round(completed * 100 / total)) if total else 0,
+        }
+        if me:
+            item["is_me"] = uid == me
+        participants.append(item)
+    if me:
+        participants.sort(key=lambda item: 0 if item.get("is_me") else 1)
+    return {"remained": remained, "left": left, "participants": participants}
 
 
 def _competition_boss_summary(session: dict[str, Any]) -> dict[str, Any] | None:
@@ -39310,9 +39437,6 @@ def _get_generator_job(job_id: str) -> dict[str, Any]:
     ai_job = _get_saved_ai_generator_job(str(job_id or ""))
     if ai_job:
         return ai_job
-    db_job = _get_group_arena_generation_job(str(job_id or ""))
-    if db_job:
-        return db_job
     raise HTTPException(status_code=404, detail="Generator job not found")
 
 
@@ -39336,7 +39460,7 @@ async def teacher_generator_job_status(job_id: str, authorization: str | None = 
     user = _user_row_from_bearer(authorization)
     _require_role(user, TEACHER_STAFF_ROLES)
     job = _get_generator_job(job_id)
-    if str(job.get("kind") or "") != "arena" and _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or "")) == "teacher":
+    if _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or "")) == "teacher":
         _ensure_teacher_ai_permission(user)
     if int(job.get("created_by") or 0) != int(user.get("id") or 0):
         raise HTTPException(status_code=403, detail="Generator job belongs to another user")
@@ -39998,746 +40122,6 @@ async def teacher_adjust_dpoint(student_id: int, payload: TeacherDcoinAdjustRequ
             "daily_used": daily_used_after,
             "daily_remaining": daily_remaining_after,
         },
-    }
-
-
-@app.get("/teacher/arena/groups/{group_id}/status")
-async def teacher_group_arena_status(group_id: int, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only view own or temporary groups")
-    sess = _safe_call(lambda: get_active_arena_group_session_by_group_id(int(group_id)), None)
-    sess = _auto_close_stale_arena_group_session(sess)
-    if not sess:
-        sess = _safe_call(lambda: _latest_legacy_group_arena_session(int(group_id)), None)
-    if not sess:
-        return {"group_id": int(group_id), "session": None}
-    sid = int(sess.get("id") or 0)
-    snapshot = _safe_call(lambda: get_group_arena_teacher_snapshot(sid), None) or {}
-    answers = _safe_call(lambda: list_arena_group_session_answers_for_export(sid), []) or []
-    return {"group_id": int(group_id), "session": sess, "snapshot": snapshot, "answers": answers}
-
-
-@app.get("/teacher/arena/groups/{group_id}/leaderboard")
-async def teacher_group_arena_leaderboard(group_id: int, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only view own or temporary groups")
-    sess = _safe_call(lambda: get_active_arena_group_session_by_group_id(int(group_id)), None)
-    sess = _auto_close_stale_arena_group_session(sess)
-    if not sess:
-        sess = _safe_call(lambda: _latest_legacy_group_arena_session(int(group_id)), None)
-    if not sess:
-        return {"group_id": int(group_id), "session": None, "leaderboard": []}
-    legacy_id = int(sess.get("id") or 0)
-    snapshot = _safe_call(lambda: get_group_arena_teacher_snapshot(legacy_id), None) or {}
-    present = snapshot.get("present") if isinstance(snapshot.get("present"), list) else []
-    attempts = snapshot.get("attempts") if isinstance(snapshot.get("attempts"), list) else []
-    attempts_by_user = {int(row.get("user_id") or 0): row for row in attempts if int(row.get("user_id") or 0) > 0}
-    leaderboard: list[dict[str, Any]] = []
-    for student in present:
-        uid = int(student.get("id") or student.get("user_id") or 0)
-        if uid <= 0:
-            continue
-        attempt = attempts_by_user.get(uid) or {}
-        correct = int(attempt.get("correct") or 0)
-        wrong = int(attempt.get("wrong") or 0)
-        skipped = int(attempt.get("unanswered") or attempt.get("skipped") or 0)
-        total = max(0, correct + wrong + skipped)
-        avatar = _first_existing_avatar_url(
-            student.get("profile_image_url"),
-            student.get("effective_profile_image_url"),
-            student.get("photo_url"),
-        )
-        leaderboard.append(
-            {
-                "user_id": uid,
-                "full_name": _display_name(student),
-                "profile_image_url": avatar,
-                "correct": correct,
-                "wrong": wrong,
-                "skipped": skipped,
-                "accuracy": round((correct * 100.0) / float(max(1, total)), 2) if total else 0.0,
-                "finished": bool(attempt.get("finished_at")),
-                "finished_at": attempt.get("finished_at"),
-            }
-        )
-    leaderboard.sort(key=lambda row: (-int(row.get("correct") or 0), int(row.get("wrong") or 0), str(row.get("full_name") or "")))
-    for index, row in enumerate(leaderboard, start=1):
-        row["rank"] = index
-    return {
-        "group_id": int(group_id),
-        "session": sess,
-        "snapshot": {
-            "date_str": snapshot.get("date_str"),
-            "present_count": len(present),
-            "attempt_count": len(attempts),
-        },
-        "leaderboard": leaderboard,
-    }
-
-
-def _stage_manual_group_arena_questions(
-    *,
-    teacher_id: int,
-    subject: str,
-    level: str,
-    question_count: int,
-    manual_rows: list[dict[str, Any]],
-) -> list[int]:
-    if len(manual_rows or []) < 5:
-        raise HTTPException(status_code=400, detail="At least 5 manual questions are required")
-    arena_bank_ids: list[int] = []
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        for raw in (manual_rows or [])[: int(question_count)]:
-            question = str(raw.get("question") or raw.get("prompt") or "").strip()
-            options = raw.get("options") if isinstance(raw.get("options"), list) else [
-                raw.get("option_a"),
-                raw.get("option_b"),
-                raw.get("option_c"),
-                raw.get("option_d"),
-            ]
-            options = [str(item or "").strip() for item in options if str(item or "").strip()][:4]
-            if not question or len(options) < 2:
-                raise HTTPException(status_code=400, detail="Manual question text and at least 2 options are required")
-            while len(options) < 4:
-                options.append("")
-            correct = int(raw.get("correct_option_index") or raw.get("correct_index") or 1)
-            correct = max(1, min(4, correct))
-            payload_json = json.dumps(
-                {
-                    "question": question,
-                    "options": options,
-                    "correct_option_index": correct,
-                    "explanation": str(raw.get("explanation") or ""),
-                    "question_type": "multiple_choice",
-                    "instruction": _test_instruction_for_type("multiple_choice", subject),
-                },
-                ensure_ascii=False,
-            )
-            cur.execute(
-                """
-                INSERT INTO arena_questions_bank
-                (created_by, subject, level, question, option_a, option_b, option_c, option_d, correct_option_index, question_type, payload_json, active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                RETURNING id
-                """,
-                (
-                    int(teacher_id),
-                    subject,
-                    level,
-                    question,
-                    options[0],
-                    options[1],
-                    options[2],
-                    options[3],
-                    correct,
-                    "multiple_choice",
-                    payload_json,
-                ),
-            )
-            row = cur.fetchone()
-            if row:
-                arena_bank_ids.append(int(row.get("id") or 0))
-        conn.commit()
-    except HTTPException:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        raise
-    except Exception as exc:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        logger.exception("manual group arena question insert failed")
-        raise HTTPException(status_code=500, detail="Could not save manual arena questions") from exc
-    finally:
-        conn.close()
-    if not arena_bank_ids:
-        raise HTTPException(status_code=500, detail="Could not stage arena questions")
-    return arena_bank_ids
-
-
-def _ensure_group_arena_generation_jobs_schema() -> None:
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS web_group_arena_generation_jobs (
-                job_id TEXT PRIMARY KEY,
-                teacher_id BIGINT NOT NULL,
-                group_id BIGINT NOT NULL,
-                subject TEXT NOT NULL,
-                level TEXT NOT NULL,
-                difficulty TEXT NOT NULL,
-                question_count INTEGER NOT NULL,
-                status TEXT NOT NULL DEFAULT 'queued',
-                phase TEXT NOT NULL DEFAULT 'queued',
-                progress INTEGER NOT NULL DEFAULT 0,
-                current_count INTEGER NOT NULL DEFAULT 0,
-                total_count INTEGER NOT NULL DEFAULT 0,
-                session_id BIGINT,
-                error TEXT,
-                result_json TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                completed_at TIMESTAMP
-            )
-            """
-        )
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_group_arena_jobs_teacher ON web_group_arena_generation_jobs(teacher_id, created_at)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_group_arena_jobs_group ON web_group_arena_generation_jobs(group_id, created_at)")
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _save_group_arena_generation_job(job: dict[str, Any]) -> None:
-    _ensure_group_arena_generation_jobs_schema()
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute(
-            """
-            INSERT INTO web_group_arena_generation_jobs (
-                job_id, teacher_id, group_id, subject, level, difficulty, question_count,
-                status, phase, progress, current_count, total_count, session_id, error, result_json,
-                created_at, updated_at, completed_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                status=excluded.status,
-                phase=excluded.phase,
-                progress=excluded.progress,
-                current_count=excluded.current_count,
-                total_count=excluded.total_count,
-                session_id=excluded.session_id,
-                error=excluded.error,
-                result_json=excluded.result_json,
-                updated_at=CURRENT_TIMESTAMP,
-                completed_at=excluded.completed_at
-            """,
-            (
-                str(job.get("job_id") or ""),
-                int(job.get("created_by") or job.get("teacher_id") or 0),
-                int(job.get("group_id") or 0),
-                str(job.get("subject") or "English"),
-                str(job.get("level") or "PRE-INTERMEDIATE"),
-                str(job.get("difficulty") or "Medium"),
-                int(job.get("count") or job.get("question_count") or 0),
-                str(job.get("status") or "queued"),
-                str(job.get("phase") or "queued"),
-                int(job.get("progress") or 0),
-                int(job.get("current") or 0),
-                int(job.get("total") or job.get("count") or 0),
-                int((job.get("result") or {}).get("session_id") or job.get("session_id") or 0) or None,
-                str(job.get("error") or "") or None,
-                json.dumps(job.get("result") or {}, ensure_ascii=False),
-                str(job.get("created_at") or _ai_generator_now_iso()),
-                str(job.get("updated_at") or _ai_generator_now_iso()),
-                job.get("completed_at"),
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _get_group_arena_generation_job(job_id: str) -> dict[str, Any] | None:
-    raw = str(job_id or "").strip()
-    if not raw:
-        return None
-    _ensure_group_arena_generation_jobs_schema()
-    conn = get_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT * FROM web_group_arena_generation_jobs WHERE job_id=? LIMIT 1", (raw,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        data = dict(row)
-        result = _safe_json_object(data.get("result_json"))
-        return {
-            "job_id": str(data.get("job_id") or raw),
-            "status": str(data.get("status") or "queued"),
-            "phase": str(data.get("phase") or "queued"),
-            "progress": int(data.get("progress") or 0),
-            "kind": "arena",
-            "subject": str(data.get("subject") or "English"),
-            "level": str(data.get("level") or "PRE-INTERMEDIATE"),
-            "difficulty": str(data.get("difficulty") or "Medium"),
-            "count": int(data.get("question_count") or 0),
-            "current": int(data.get("current_count") or 0),
-            "total": int(data.get("total_count") or data.get("question_count") or 0),
-            "created_at": str(data.get("created_at") or ""),
-            "updated_at": str(data.get("updated_at") or ""),
-            "completed_at": str(data.get("completed_at") or ""),
-            "created_by": int(data.get("teacher_id") or 0),
-            "group_id": int(data.get("group_id") or 0),
-            "result": result,
-            "error": str(data.get("error") or "") or None,
-        }
-    finally:
-        conn.close()
-
-
-async def _run_group_arena_generation_job(job_id: str, actor: dict, group: dict, payload: TeacherArenaGenerationRequest) -> None:
-    uid = int(actor.get("id") or 0)
-    gid = int(group.get("id") or 0)
-    subject = _normalize_subject_label(str(group.get("subject") or actor.get("subject") or "").strip()) or "English"
-    base_level = str(group.get("level") or "PRE-INTERMEDIATE").strip().upper()
-    if base_level not in {"BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1"}:
-        base_level = "PRE-INTERMEDIATE"
-    difficulty = str(payload.difficulty or "Medium")
-    level_for_generation = {
-        "easy": base_level,
-        "medium": _competition_stage_level(base_level, "daily", 2),
-        "hard": _competition_stage_level(base_level, "boss", 1),
-    }.get(difficulty.lower(), base_level)
-    count = max(5, min(30, int(payload.question_count or 10)))
-    job = {
-        "job_id": job_id,
-        "status": "running",
-        "phase": "starting",
-        "progress": 5,
-        "kind": "arena",
-        "subject": subject,
-        "level": level_for_generation,
-        "difficulty": difficulty,
-        "count": count,
-        "current": 0,
-        "total": count,
-        "created_by": uid,
-        "group_id": gid,
-    }
-    GENERATOR_JOBS[job_id] = dict(job)
-    _save_group_arena_generation_job(job)
-    try:
-        start_ts = datetime.utcnow()
-        job.update({"phase": "generating", "progress": 20, "current": 0})
-        GENERATOR_JOBS[job_id] = dict(job)
-        _save_group_arena_generation_job(job)
-        from ai_generator import generate_daily_tests_and_insert
-        await generate_daily_tests_and_insert(
-            subject=subject,
-            level=level_for_generation,
-            count=count,
-            created_by=uid,
-            assign_today_set=False,
-        )
-        job.update({"phase": "selecting", "progress": 65, "current": max(1, int(count * 0.65))})
-        GENERATOR_JOBS[job_id] = dict(job)
-        _save_group_arena_generation_job(job)
-        conn = get_conn()
-        cur = conn.cursor()
-        try:
-            cur.execute(
-                """
-                SELECT id
-                FROM daily_tests_bank
-                WHERE created_by=? AND subject=? AND level=? AND active=1 AND created_at>=?
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (uid, subject, level_for_generation, start_ts, count),
-            )
-            rows = cur.fetchall() or []
-            if len(rows) < count:
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM daily_tests_bank
-                    WHERE created_by=? AND subject=? AND level=? AND active=1
-                    ORDER BY id DESC
-                    LIMIT ?
-                    """,
-                    (uid, subject, level_for_generation, count),
-                )
-                rows = cur.fetchall() or []
-            bank_ids = list(reversed([int(row.get("id") or 0) for row in rows if int(row.get("id") or 0) > 0]))
-        finally:
-            conn.close()
-        if not bank_ids:
-            raise RuntimeError("Generated questions were not found")
-        job.update({"phase": "staging", "progress": 82, "current": len(bank_ids)})
-        GENERATOR_JOBS[job_id] = dict(job)
-        _save_group_arena_generation_job(job)
-        arena_bank_ids = copy_daily_tests_bank_rows_to_arena_questions(bank_ids=bank_ids[:count], created_by=uid)
-        if not arena_bank_ids:
-            raise RuntimeError("Could not stage arena questions")
-        session_id = create_arena_group_session(
-            group_id=gid,
-            subject=subject,
-            level=level_for_generation,
-            question_count=len(arena_bank_ids),
-            bank_ids=arena_bank_ids,
-            created_by_teacher_id=uid,
-        )
-        populate_arena_group_questions_tmp(int(session_id))
-        result = {
-            "requested": count,
-            "generated": len(bank_ids),
-            "inserted": len(arena_bank_ids),
-            "session_id": int(session_id),
-            "group_id": gid,
-            "subject": subject,
-            "level": level_for_generation,
-        }
-        job.update({
-            "status": "completed",
-            "phase": "completed",
-            "progress": 100,
-            "current": len(arena_bank_ids),
-            "result": result,
-            "completed_at": datetime.utcnow().isoformat(),
-        })
-        GENERATOR_JOBS[job_id] = dict(job)
-        _save_group_arena_generation_job(job)
-        teacher_tg = str(actor.get("telegram_id") or "").strip()
-        teacher_token = (os.getenv("TEACHER_BOT_TOKEN") or "").strip()
-        if teacher_tg and teacher_token:
-            await _send_telegram_text(
-                teacher_token,
-                teacher_tg,
-                f"Group Arena savollari tayyor: {len(arena_bank_ids)}/{count}. Endi arenani boshlashingiz mumkin.",
-            )
-        try:
-            _ensure_web_tables()
-            conn = get_conn()
-            cur = conn.cursor()
-            _payment_upsert_web_notification(
-                cur,
-                user_id=uid,
-                notification_type="group_arena_questions_ready",
-                title="Group Arena savollari tayyor",
-                message=f"{group.get('name') or 'Guruh'} uchun {len(arena_bank_ids)} ta savol tayyor.",
-                button_text="Ko'rish",
-                button_url=f"/?role=teacher&section=arena",
-                target_screen="arena",
-                source_key=f"group_arena_questions_ready:{job_id}",
-                meta=result,
-            )
-            conn.commit()
-        except Exception:
-            logger.exception("group arena teacher ready notification failed job_id=%s", job_id)
-            try:
-                conn.rollback()  # type: ignore[name-defined]
-            except Exception:
-                pass
-        finally:
-            try:
-                conn.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-    except Exception as exc:
-        logger.exception("group arena generation job failed job_id=%s group_id=%s", job_id, gid)
-        job.update({
-            "status": "failed",
-            "phase": "failed",
-            "progress": 100,
-            "error": str(exc),
-            "completed_at": datetime.utcnow().isoformat(),
-        })
-        GENERATOR_JOBS[job_id] = dict(job)
-        _save_group_arena_generation_job(job)
-
-
-@app.get("/teacher/arena/groups/{group_id}/prepared")
-async def teacher_group_arena_prepared(group_id: int, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only view own or temporary groups")
-    rows = _safe_call(lambda: list_ready_arena_group_sessions(int(group_id), limit=30), []) or []
-    return {"group_id": int(group_id), "items": rows, "total": len(rows)}
-
-
-@app.post("/teacher/arena/groups/{group_id}/prepare")
-async def teacher_group_arena_prepare(group_id: int, payload: TeacherArenaStartRequest, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only manage own or temporary groups")
-    if str(payload.question_source or "manual").lower() != "manual":
-        raise HTTPException(status_code=400, detail="Only manual questions can be prepared in advance")
-    subject = _normalize_subject_label(str(group.get("subject") or "").strip()) or "English"
-    level = str(group.get("level") or "PRE-INTERMEDIATE").strip().upper()
-    if level not in {"BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1"}:
-        level = "PRE-INTERMEDIATE"
-    arena_bank_ids = _stage_manual_group_arena_questions(
-        teacher_id=int(user.get("id") or 0),
-        subject=subject,
-        level=level,
-        question_count=int(payload.question_count),
-        manual_rows=payload.questions or [],
-    )
-    session_id = create_arena_group_session(
-        group_id=int(group_id),
-        subject=subject,
-        level=level,
-        question_count=len(arena_bank_ids),
-        bank_ids=arena_bank_ids,
-        created_by_teacher_id=int(user.get("id") or 0),
-    )
-    populate_arena_group_questions_tmp(int(session_id))
-    session = _safe_call(lambda: get_arena_group_session(int(session_id)), None)
-    return {"message": "Group arena prepared", "session_id": int(session_id), "session": session}
-
-
-@app.post("/teacher/arena/groups/{group_id}/generate")
-async def teacher_group_arena_generate(group_id: int, payload: TeacherArenaGenerationRequest, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only manage own or temporary groups")
-    subject = _normalize_subject_label(str(group.get("subject") or user.get("subject") or "").strip()) or "English"
-    level = str(group.get("level") or "PRE-INTERMEDIATE").strip().upper()
-    if level not in {"BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1"}:
-        level = "PRE-INTERMEDIATE"
-    job_id = uuid4().hex
-    count = max(5, min(30, int(payload.question_count or 10)))
-    job = {
-        "job_id": job_id,
-        "status": "queued",
-        "phase": "queued",
-        "progress": 0,
-        "kind": "arena",
-        "subject": subject,
-        "level": level,
-        "difficulty": str(payload.difficulty or "Medium"),
-        "count": count,
-        "current": 0,
-        "total": count,
-        "created_at": datetime.utcnow().isoformat(),
-        "created_by": int(user.get("id") or 0),
-        "group_id": int(group_id),
-    }
-    GENERATOR_JOBS[job_id] = dict(job)
-    _save_group_arena_generation_job(job)
-    asyncio.create_task(_run_group_arena_generation_job(job_id, dict(user), dict(group), payload))
-    return job
-
-
-@app.post("/teacher/arena/groups/{group_id}/finish")
-async def teacher_group_arena_finish(group_id: int, authorization: str | None = Header(default=None)):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only finish own or temporary groups")
-    legacy = _safe_call(lambda: get_active_arena_group_session_by_group_id(int(group_id)), None)
-    if not legacy:
-        raise HTTPException(status_code=404, detail="Active Group Arena not found")
-    legacy_id = int(legacy.get("id") or 0)
-    async with WEB_COMPETITION_LOCK:
-        session = _competition_load_group_runtime_session(int(group_id), legacy_id)
-        if not session:
-            _mark_legacy_group_arena_completed(legacy_id)
-            return {"message": "Group Arena finished", "session_id": legacy_id, "result": {"winners": [], "by_user": {}}}
-        result = _competition_finalize_non_daily(session)
-        _duel_persist_session(session)
-    snapshot = _safe_call(lambda: get_group_arena_teacher_snapshot(legacy_id), None) or {}
-    return {
-        "message": "Group Arena finished",
-        "session_id": legacy_id,
-        "runtime_session_id": str(session.get("id") or ""),
-        "result": result,
-        "snapshot": snapshot,
-    }
-
-
-@app.post("/teacher/arena/groups/{group_id}/start")
-async def teacher_group_arena_start(
-    group_id: int,
-    payload: TeacherArenaStartRequest,
-    authorization: str | None = Header(default=None),
-):
-    user = _user_row_from_bearer(authorization)
-    _require_role(user, TEACHER_STAFF_ROLES)
-    group = _safe_call(lambda: get_group(int(group_id)), None)
-    if not group:
-        raise HTTPException(status_code=404, detail="Group not found")
-    if not _teacher_can_manage_group(user, group):
-        raise HTTPException(status_code=403, detail="Teacher can only manage own or temporary groups")
-    active = _safe_call(lambda: get_active_arena_group_session_by_group_id(int(group_id)), None)
-    active = _auto_close_stale_arena_group_session(active)
-    if active:
-        if int(payload.session_id or 0) > 0 and int(active.get("id") or 0) == int(payload.session_id):
-            pass  # Proceed to start this specific prepared session
-        else:
-            raise HTTPException(status_code=409, detail="Active arena session already exists")
-    # Allow teacher/admin to start Group Arena session at any time since they explicitly initiate it.
-    # if not is_group_lesson_window_active(int(group_id)):
-    #     raise HTTPException(status_code=409, detail="Group Arena can start only during lesson time")
-    today, present_students, attendance_ready, attendance_reason = _group_arena_today_presence(int(group_id))
-    if not attendance_ready:
-        raise HTTPException(status_code=409, detail=attendance_reason)
-    subject = _normalize_subject_label(str(group.get("subject") or "").strip()) or "English"
-    level = str(group.get("level") or "PRE-INTERMEDIATE").strip().upper()
-    if level not in {"BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED", "A1", "A2", "B1", "B2", "C1"}:
-        level = "PRE-INTERMEDIATE"
-
-    source = str(payload.question_source or "ai").lower()
-    arena_bank_ids: list[int] = []
-    prepared_session_id = int(payload.session_id or 0)
-    if prepared_session_id > 0:
-        prepared = _safe_call(lambda: get_arena_group_session(prepared_session_id), None)
-        if not prepared or int(prepared.get("group_id") or 0) != int(group_id):
-            raise HTTPException(status_code=404, detail="Prepared Group Arena not found")
-        if str(prepared.get("status") or "").lower() != "ready":
-            raise HTTPException(status_code=409, detail="Prepared Group Arena was already started or closed")
-        session_id = prepared_session_id
-        populate_arena_group_questions_tmp(int(session_id))
-        if not (_safe_call(lambda: get_arena_group_session_questions(int(session_id)), []) or []):
-            raise HTTPException(status_code=409, detail="Prepared Group Arena questions are not ready")
-    elif source == "manual":
-        arena_bank_ids = _stage_manual_group_arena_questions(
-            teacher_id=int(user.get("id") or 0),
-            subject=subject,
-            level=level,
-            question_count=int(payload.question_count),
-            manual_rows=payload.questions or [],
-        )
-    else:
-        difficulty = str(payload.difficulty or "Medium").lower()
-        level_for_generation = {"easy": level, "medium": _competition_stage_level(level, "daily", 2), "hard": _competition_stage_level(level, "boss", 1)}.get(difficulty, level)
-        generated = await _runtime_generate_questions(
-            created_by=int(user.get("id") or 0),
-            subject=subject,
-            level=level_for_generation,
-            count=int(payload.question_count),
-            mode="group",
-            competition_session_id=None,  # teacher pre-gen, not tied to live session yet
-            require_fresh=True,
-        )
-        conn = get_conn()
-        cur = conn.cursor()
-        try:
-            for row in generated[: int(payload.question_count)]:
-                q = _mcq_question_from_row(row)
-                options = [str(opt) for opt in (q.get("options") or [])][:4]
-                while len(options) < 4:
-                    options.append("")
-                payload_json = json.dumps({**_safe_json_object(row.get("payload_json")), **q}, ensure_ascii=False)
-                cur.execute(
-                    """
-                    INSERT INTO arena_questions_bank
-                    (created_by, subject, level, question, option_a, option_b, option_c, option_d, correct_option_index, question_type, payload_json, active)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                    RETURNING id
-                    """,
-                    (
-                        int(user.get("id") or 0),
-                        subject,
-                        level_for_generation,
-                        str(q.get("prompt") or q.get("question") or ""),
-                        options[0],
-                        options[1],
-                        options[2],
-                        options[3],
-                        int(q.get("correct_option_index") or 1),
-                        str(q.get("question_type") or "multiple_choice"),
-                        payload_json,
-                    ),
-                )
-                rid = cur.fetchone()
-                if rid:
-                    arena_bank_ids.append(int(rid.get("id") or 0))
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            logger.exception("AI group arena question stage failed")
-            raise HTTPException(status_code=500, detail="Could not stage arena questions")
-        finally:
-            conn.close()
-    if prepared_session_id <= 0 and not arena_bank_ids:
-        raise HTTPException(status_code=500, detail="Could not stage arena questions")
-    if prepared_session_id <= 0:
-        session_id = create_arena_group_session(
-            group_id=int(group_id),
-            subject=subject,
-            level=level,
-            question_count=len(arena_bank_ids),
-            bank_ids=arena_bank_ids,
-            created_by_teacher_id=int(user.get("id") or 0),
-        )
-        populate_arena_group_questions_tmp(int(session_id))
-    set_arena_group_session_expected_players(int(session_id), len(present_students))
-    _safe_call(lambda: set_arena_group_session_status(int(session_id), "running"), None)
-    session = _safe_call(lambda: get_active_arena_group_session_by_group_id(int(group_id)), None) or _safe_call(lambda: get_arena_group_session(int(session_id)), None)
-    web_path = f"/student/arena/group/run?arena_mode=arena-group&auto_join=1&group_id={int(group_id)}&session_id=group-{int(session_id)}&subject={quote(subject)}"
-    telegram_url = f"{WEBAPP_URL}{web_path}" if WEBAPP_URL else web_path
-    token = (os.getenv("STUDENT_BOT_TOKEN") or "").strip()
-    try:
-        _ensure_web_tables()
-        conn = get_conn()
-        cur = conn.cursor()
-        for student in present_students:
-            sid = int(student.get("id") or 0)
-            if sid <= 0:
-                continue
-            _payment_upsert_web_notification(
-                cur,
-                user_id=sid,
-                notification_type="group_arena_started",
-                title="Group Arena boshlandi",
-                message=f"{group.get('name') or 'Guruh'} uchun Group Arena boshlandi.",
-                button_text="Kirish",
-                button_url=web_path,
-                target_screen="arena-group",
-                source_key=f"group_arena_started:{session_id}:{sid}",
-                meta={"session_id": int(session_id), "group_id": int(group_id), "subject": subject, "date": today},
-            )
-        conn.commit()
-    except Exception:
-        logger.exception("group arena web notification failed session_id=%s", session_id)
-        try:
-            conn.rollback()  # type: ignore[name-defined]
-        except Exception:
-            pass
-    finally:
-        try:
-            conn.close()  # type: ignore[name-defined]
-        except Exception:
-            pass
-    if token:
-        for student in present_students:
-            tg = str(student.get("telegram_id") or "").strip()
-            if tg:
-                await _send_telegram_text(token, tg, f"{group.get('name') or 'Guruh'} uchun Group Arena boshlandi.", button_text="Kirish", button_url=telegram_url if telegram_url.startswith("http") else None)
-    return {
-        "message": "Group arena session created",
-        "session_id": int(session_id),
-        "session": session,
-        "eligible_students": len(present_students),
-        "question_source": source,
     }
 
 
@@ -57707,46 +57091,106 @@ async def test_results(authorization: str | None = Header(default=None)):
     return {"items": _safe_call(lambda: get_daily_test_history_global(days=20), []) or []}
 
 
+def _online_student_count() -> int | None:
+    """Distinct student users online right now.
+
+    Uses the existing presence mechanism: `web_user_sessions.last_seen_at`,
+    refreshed by `/auth/presence/heartbeat` and authenticated requests, with
+    the same ONLINE_PRESENCE_WINDOW_SECONDS window as user presence badges.
+    Returns None when presence data cannot be read (no fabricated number).
+    """
+    now = _now_utc()
+    cutoff = now - timedelta(seconds=ONLINE_PRESENCE_WINDOW_SECONDS)
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT user_id, last_seen_at, expires_at
+                FROM web_user_sessions
+                WHERE revoked_at IS NULL
+                  AND role=?
+                  AND last_seen_at >= ?
+                """,
+                ("student", cutoff.isoformat()),
+            )
+            rows = [dict(row) for row in (cur.fetchall() or [])]
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("arena.online_count presence query failed")
+        return None
+    online: set[int] = set()
+    for row in rows:
+        uid = int(row.get("user_id") or 0)
+        if uid <= 0:
+            continue
+        seen = _parse_utc_timestamp(str(row.get("last_seen_at") or ""))
+        if seen is None or (now - seen).total_seconds() > ONLINE_PRESENCE_WINDOW_SECONDS:
+            continue
+        expires = _parse_utc_timestamp(str(row.get("expires_at") or ""))
+        if expires is not None and expires <= now:
+            continue
+        online.add(uid)
+    return len(online)
+
+
+# Static presentation metadata for /arena/battles. Numbers (reward, fee,
+# player counts, limits) are always read from runtime settings/helpers.
+_ARENA_BATTLE_CATALOG: tuple[dict[str, str], ...] = (
+    {"id": "duel-1v1", "mode": "duel-1v1", "title": "Duel 1v1", "description": "Direct challenge mode", "opponent": "Random"},
+    {"id": "duel-3v3", "mode": "duel-3v3", "title": "Duel 3v3", "description": "Squad battle mode", "opponent": "Random Team"},
+    {"id": "duel-5v5", "mode": "duel-5v5", "title": "Duel 5v5", "description": "Full team clash mode", "opponent": "Random Team"},
+    {"id": "boss-arena", "mode": "boss", "title": "Boss Arena", "description": "High-difficulty set", "opponent": "Global"},
+)
+
+
 @app.get("/arena/battles")
 async def available_battles(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_competition_learning_access(user)
+    user_id = int(user.get("id") or 0)
+    rules = _competition_rule_settings()
+    usage_date = _now_tashkent_date()
+    items: list[dict[str, Any]] = []
+    for battle in _ARENA_BATTLE_CATALOG:
+        mode = battle["mode"]
+        if mode == "boss":
+            # Boss Arena pays a flat reward to every participant once the
+            # group accuracy threshold is reached.
+            reward = float(rules.get("boss_arena_reward_flat") or 0.0)
+            reward_kind = "threshold_flat"
+        else:
+            reward = float(rules.get("duel_reward") or 0.0)
+            reward_kind = "win"
+        required_players = _competition_required_players(mode)
+        used_today = _safe_call(
+            lambda m=mode: duel_plays_today(user_id, _competition_bot_mode(m), usage_date),
+            None,
+        )
+        items.append(
+            {
+                "id": battle["id"],
+                "title": battle["title"],
+                "description": battle["description"],
+                "opponent": battle["opponent"],
+                "reward": reward,
+                "reward_kind": reward_kind,
+                "status": "open",
+                "mode": mode,
+                "entry_fee": float(_competition_entry_fee(mode)),
+                "required_players": required_players,
+                "max_players": max(required_players, _competition_max_players(mode)),
+                "daily_limit": int(COMPETITION_DAILY_JOIN_LIMIT),
+                "used_today": None if used_today is None else int(used_today),
+            }
+        )
     return {
-        "items": [
-            {
-                "id": "duel-1v1",
-                "title": "Duel 1v1",
-                "description": "Direct challenge mode",
-                "opponent": "Random",
-                "reward": 18,
-                "status": "open",
-            },
-            {
-                "id": "duel-3v3",
-                "title": "Duel 3v3",
-                "description": "Squad battle mode",
-                "opponent": "Random Team",
-                "reward": 22,
-                "status": "open",
-            },
-            {
-                "id": "duel-5v5",
-                "title": "Duel 5v5",
-                "description": "Full team clash mode",
-                "opponent": "Random Team",
-                "reward": 28,
-                "status": "open",
-            },
-            {
-                "id": "boss-arena",
-                "title": "Boss Arena",
-                "description": "High-difficulty set",
-                "opponent": "Global",
-                "reward": 24,
-                "status": "open",
-            },
-        ]
+        "items": items,
+        "online_count": _online_student_count(),
+        "subjects": _user_subjects_from_row(user),
     }
 
 

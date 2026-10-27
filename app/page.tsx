@@ -44,7 +44,6 @@ import { AdminBooks } from "./ui/admin-books";
 import { AdminGrammar } from "./ui/admin-grammar";
 import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
-import { SpeakingLearningPaths } from "./ui/speaking-learning-paths";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { SpeakingAdminHome } from "./ui/speaking-live-management";
@@ -73,7 +72,7 @@ import { PersonalLearningPanel } from "./ui/personal-learning";
 import { WeeklyStudyPlan } from "./ui/weekly-study-plan";
 import { BadgeAwardModal } from "./ui/badge-award-modal";
 import { StudyRoomChat } from "./ui/study-room-chat";
-import { StaffLearningPaths, StudentLearningPaths } from "./ui/learning-paths";
+import { StaffLearningPaths, StudentLearningPaths, speakingLearningPathFetch } from "./ui/learning-paths";
 import { SupportVideos } from "./ui/support-videos";
 import { SharedTestEditor, validateTestQuestions } from "./ui/shared-test-editor";
 import { AiTestEditor, validateAiQuestions } from "./ui/ai-test-editor";
@@ -1134,9 +1133,10 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
     }
   }
   return withStudentRuntimeSections(role, list).filter((item) => {
-    // Students keep the Arena hub for Boss Arena and duels; teachers no
-    // longer have an Arena destination at all.
-    if (item === "arena" && role !== "teacher") return true;
+    // Students (and standalone Speaking users) keep the Arena hub for Boss
+    // Arena and duels. The teacher-run Group Arena is retired, so teachers
+    // and support no longer have an Arena destination at all.
+    if (item === "arena" && (role === "student" || role === "speaking_user")) return true;
     return !RETIRED_SECTION_IDS.has(item);
   });
 }
@@ -12061,16 +12061,6 @@ function TeacherSection({
   const [perfLevelFilter, setPerfLevelFilter] = useState("all");
   const [perfPage, setPerfPage] = useState(1);
   const [perfDetail, setPerfDetail] = useState<GenericRow | null>(null);
-  const [arenaStatus, setArenaStatus] = useState<GenericRow | null>(null);
-  const [arenaQuestionCount, setArenaQuestionCount] = useState(10);
-  const [arenaQuestionSource, setArenaQuestionSource] = useState<"ai" | "manual">("ai");
-  const [arenaDifficulty, setArenaDifficulty] = useState("Medium");
-  const [arenaManualQuestions, setArenaManualQuestions] = useState<GenericRow[]>([
-    { question: "", options: ["", "", "", ""], correct_option_index: 1, explanation: "" },
-  ]);
-  const [arenaPreparedRows, setArenaPreparedRows] = useState<GenericRow[]>([]);
-  const [arenaPreparing, setArenaPreparing] = useState(false);
-  const [arenaGenerationJob, setArenaGenerationJob] = useState<GeneratorJobSnapshot | null>(null);
   const [teacherDcoinRows, setTeacherDcoinRows] = useState<GenericRow[]>([]);
   const [teacherDcoinDraft, setTeacherDcoinDraft] = useState<Record<number, { amount: string; subject: string; reason: string }>>({});
   const [teacherDpointSearch, setTeacherDpointSearch] = useState("");
@@ -12144,117 +12134,6 @@ function TeacherSection({
       },
     }));
   }
-
-  useEffect(() => {
-    if (section !== "arena" || !selectedGroupId) return;
-    const session = (arenaStatus?.session || {}) as GenericRow;
-    const status = String(session.status || "").toLowerCase();
-    const shouldPoll = !arenaStatus || (Boolean(session.id) && !["completed", "finished", "done"].includes(status));
-    if (!shouldPoll) return;
-    let stopped = false;
-    const controller = new AbortController();
-    const loadLeaderboard = async () => {
-      try {
-        const token = localStorage.getItem("diamond_token");
-        const result = await requestJson<GenericRow>(`/teacher/arena/groups/${selectedGroupId}/leaderboard?t=${Date.now()}`, {
-          token,
-          signal: controller.signal,
-          timeoutMs: 20000,
-          retries: 0,
-        });
-        if (!stopped && result) {
-          setArenaStatus((prev) => ({ ...(prev || {}), ...result }));
-        }
-      } catch (error) {
-        if (!stopped && !(error instanceof DOMException && error.name === "AbortError")) {
-          console.warn("arena leaderboard refresh failed", error);
-        }
-      }
-    };
-    loadLeaderboard();
-    const interval = window.setInterval(loadLeaderboard, 1500);
-    return () => {
-      stopped = true;
-      controller.abort();
-      window.clearInterval(interval);
-    };
-  }, [section, selectedGroupId, arenaStatus?.session?.id, arenaStatus?.session?.status]);
-
-  const loadPreparedArenas = useCallback(async () => {
-    if (!selectedGroupId) return;
-    try {
-      const rows = await onApiCall(`/teacher/arena/groups/${selectedGroupId}/prepared`, undefined, "GET");
-      setArenaPreparedRows(Array.isArray(rows?.items) ? rows.items as GenericRow[] : []);
-    } catch {
-      setArenaPreparedRows([]);
-    }
-  }, [onApiCall, selectedGroupId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const snapshot = readGeneratorJobSnapshot();
-    if (snapshot?.role === "teacher" && snapshot.kind === "arena" && !isGeneratorJobSnapshotExpired(snapshot)) {
-      setArenaGenerationJob(snapshot);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!arenaGenerationJob?.job_id) return;
-    if (!["queued", "pending", "running"].includes(String(arenaGenerationJob.status))) return;
-    let stopped = false;
-    let timer: number | null = null;
-    const poll = async () => {
-      if (stopped) return;
-      const token = localStorage.getItem("diamond_token");
-      if (!token) return;
-      try {
-        const payload = await requestJson<GenericRow>(
-          `/teacher/generator/jobs/${encodeURIComponent(arenaGenerationJob.job_id)}`,
-          { token, timeoutMs: 30000, retries: 0 },
-        );
-        const rawStatus = String(payload.status || "running").toLowerCase();
-        const nextStatus = (rawStatus === "queued" ? "pending" : rawStatus) as GeneratorJobSnapshot["status"];
-        const total = Number(payload.total ?? payload.count ?? arenaGenerationJob.total ?? arenaGenerationJob.count ?? 0);
-        const progress = Math.max(0, Math.min(100, Number(payload.progress ?? 0)));
-        const next: GeneratorJobSnapshot = {
-          ...arenaGenerationJob,
-          status: nextStatus,
-          progress,
-          current: Number(payload.current ?? arenaGenerationJob.current ?? 0),
-          total,
-          count: Number(payload.count ?? arenaGenerationJob.count ?? total ?? 0),
-          updated_at: new Date().toISOString(),
-          result: (payload.result || null) as GenericRow | null,
-          error: String(payload.error || "").trim() || null,
-        };
-        writeGeneratorJobSnapshot(next);
-        window.dispatchEvent(new CustomEvent("diamond:generator-progress", { detail: next }));
-        if (!stopped) setArenaGenerationJob(next);
-        if (next.status === "completed") {
-          emitUiToast(tt("arena.questionsReady", "Group Arena savollari tayyor"), "success");
-          if (selectedGroupId) await loadPreparedArenas();
-          return;
-        }
-        if (next.status === "failed") {
-          emitUiToast(String(next.error || tt("arena.generationFailed", "Savollar yaratilmadi")), "error");
-          return;
-        }
-      } catch (error) {
-        if (!stopped) console.warn("group arena generation status failed", error);
-      }
-      if (!stopped) timer = window.setTimeout(poll, 1500);
-    };
-    timer = window.setTimeout(poll, 500);
-    return () => {
-      stopped = true;
-      if (timer) window.clearTimeout(timer);
-    };
-  }, [arenaGenerationJob?.job_id, arenaGenerationJob?.status, arenaGenerationJob?.updated_at, selectedGroupId, loadPreparedArenas, tt]);
-
-  useEffect(() => {
-    if (section !== "arena" || !selectedGroupId) return;
-    loadPreparedArenas().catch(() => null);
-  }, [section, selectedGroupId, loadPreparedArenas]);
 
   useEffect(() => {
     if (Array.isArray(data.groups) && data.groups.length > 0) {
@@ -13844,286 +13723,6 @@ if (section === "attendance") {
 
   if (section === "generator") {
     return <AiGeneratorWorkspace role="teacher" permissions={data.permissions || {}} onApiCall={onApiCall} user={user} />;
-  }
-
-  if (section === "arena") {
-    const selectedArenaGroup = groups.find((g: GenericRow) => Number(g.id || 0) === Number(selectedGroupId || 0)) || groups[0] || {};
-    const arenaSession = (arenaStatus?.session || {}) as GenericRow;
-    const arenaSnapshot = (arenaStatus?.snapshot || {}) as GenericRow;
-    const arenaPresent = Array.isArray(arenaSnapshot.present) ? arenaSnapshot.present as GenericRow[] : [];
-    const arenaAttempts = Array.isArray(arenaSnapshot.attempts) ? arenaSnapshot.attempts as GenericRow[] : [];
-    const arenaAnswers = Array.isArray(arenaStatus?.answers) ? arenaStatus.answers as GenericRow[] : [];
-    const liveLeaderboardRows = Array.isArray(arenaStatus?.leaderboard) ? arenaStatus.leaderboard as GenericRow[] : [];
-    const attemptsByUser = new Map(arenaAttempts.map((row) => [Number(row.user_id || 0), row]));
-    const arenaLeaderboard = arenaPresent
-      .map((student) => {
-        const attempt = attemptsByUser.get(Number(student.id || 0)) || {};
-        const correct = Number(attempt.correct || 0);
-        const wrong = Number(attempt.wrong || 0);
-        const skipped = Number(attempt.unanswered || 0);
-        const total = correct + wrong + skipped;
-        return {
-          ...student,
-          correct,
-          wrong,
-          skipped,
-          accuracy: total ? Math.round((correct * 1000) / total) / 10 : 0,
-          finished: Boolean(attempt.finished_at),
-        };
-      })
-      .sort((a, b) => Number(b.correct || 0) - Number(a.correct || 0) || Number(a.wrong || 0) - Number(b.wrong || 0));
-    const displayedArenaLeaderboard = liveLeaderboardRows.length ? liveLeaderboardRows : arenaLeaderboard;
-    const updateArenaManualQuestion = (index: number, patch: GenericRow) => {
-      setArenaManualQuestions((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
-    };
-    const updateArenaManualOption = (index: number, optionIndex: number, value: string) => {
-      setArenaManualQuestions((prev) => prev.map((row, i) => {
-        if (i !== index) return row;
-        const options = Array.isArray(row.options) ? [...row.options] : ["", "", "", ""];
-        options[optionIndex] = value;
-        return { ...row, options };
-      }));
-    };
-    return (
-      <div className="flex flex-col gap-8 pb-12 animate-fade-in">
-
-        <section className="p-6 md:p-8 bg-white border border-line dark:bg-white/5 dark:border-white/10 rounded-[2rem] shadow-premium">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-5 mb-6">
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-bold text-ink-500 uppercase tracking-wider">{tt("arena.group", "Guruh")}</label>
-              <select
-                className="px-4 py-3 bg-surface-soft border border-line dark:bg-navy-900/50 dark:border-white/10 rounded-xl outline-none focus:ring-2 focus:ring-cyan-500 text-navy-900 dark:text-white font-semibold w-full"
-                value={selectedGroupId}
-                onChange={(event) => setSelectedGroupId(Number(event.target.value || 0))}
-              >
-                {groups.map((g: GenericRow) => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-bold text-ink-500 uppercase tracking-wider">{tt("arena.questionCount", "Savollar soni")}</label>
-              <input
-                type="number" min={5} max={30} value={arenaQuestionCount}
-                className="px-4 py-3 bg-surface-soft border border-line dark:bg-navy-900/50 dark:border-white/10 rounded-xl outline-none focus:ring-2 focus:ring-cyan-500 text-navy-900 dark:text-white font-semibold w-full"
-                onChange={(event) => setArenaQuestionCount(Math.max(5, Math.min(30, Number(event.target.value || 10))))}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <label className="text-xs font-bold text-ink-500 uppercase tracking-wider">{tt("arena.difficulty", "Qiyinlik")}</label>
-              <select
-                className="px-4 py-3 bg-surface-soft border border-line dark:bg-navy-900/50 dark:border-white/10 rounded-xl outline-none focus:ring-2 focus:ring-cyan-500 text-navy-900 dark:text-white font-semibold w-full"
-                value={arenaDifficulty}
-                onChange={(event) => setArenaDifficulty(event.target.value)}
-                disabled={arenaPreparing}
-              >
-                <option value="Easy">{tt("arena.easy", "Oson")}</option>
-                <option value="Medium">{tt("arena.medium", "O'rtacha")}</option>
-                <option value="Hard">{tt("arena.hard", "Qiyin")}</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="teacher-arena-prepared-panel mb-6 rounded-2xl border border-line bg-white p-4 dark:border-white/10 dark:bg-navy-900/60">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-black text-navy-900 dark:text-white">{tt("arena.autoTitle", "Auto Group Arena")}</h3>
-                <p className="text-sm font-semibold text-ink-500 dark:text-navy-300">
-                  {tt("arena.autoHint", "Savollar guruh fani va darajasidan avtomatik olinadi yoki yaratiladi. Alohida generator tugmasi kerak emas.")}
-                </p>
-              </div>
-              <button
-                className="rounded-xl bg-indigo-500 px-5 py-3 text-sm font-black text-white hover:bg-indigo-600 disabled:opacity-50"
-                disabled={!selectedGroupId || arenaPreparing || Boolean(arenaSession.id)}
-                onClick={async () => {
-                  if (!selectedGroupId) return;
-                  const token = localStorage.getItem("diamond_token");
-                  if (!token) return;
-                  setArenaPreparing(true);
-                  try {
-                    const result = await requestJson<GenericRow>(`/teacher/arena/groups/${selectedGroupId}/start`, {
-                      method: "POST",
-                      token,
-                      body: {
-                        question_count: arenaQuestionCount,
-                        question_source: "ai",
-                        difficulty: arenaDifficulty,
-                      },
-                      timeoutMs: 180000,
-                      retries: 0,
-                    });
-                    setArenaStatus(result);
-                    emitUiToast(tt("arena.started", "Group Arena boshlandi"), "success");
-                  } catch (error) {
-                    emitUiToast(error instanceof Error ? error.message : tt("arena.startFailed", "Arena boshlanmadi"), "error");
-                  } finally {
-                    setArenaPreparing(false);
-                  }
-                }}
-              >
-                {arenaPreparing ? tt("arena.generating", "Yaratilmoqda...") : arenaSession.id ? tt("arena.inProgress", "Ishlamoqda") : tt("arena.startAuto", "Arenani boshlash")}
-              </button>
-            </div>
-          </div>
-
-          {selectedGroupId ? (
-            <div className="teacher-arena-prepared-panel mb-6 grid gap-4 rounded-2xl border border-line bg-white p-4 dark:border-white/10 dark:bg-navy-900/60">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-black text-navy-900 dark:text-white">{tt("arena.preparedList", "Saqlangan arenalar")}</h3>
-                  <p className="text-sm font-semibold text-ink-500 dark:text-navy-300">{tt("arena.preparedHint", "Oldindan tayyorlangan va hali boshlanmagan arenalar shu yerda turadi.")}</p>
-                </div>
-                {arenaQuestionSource === "manual" ? (
-                  <button
-                    className="rounded-xl border border-line bg-surface-soft px-4 py-2 text-sm font-black text-navy-900 hover:border-cyan-400 disabled:opacity-50 dark:border-white/10 dark:bg-white/10 dark:text-white"
-                    disabled={arenaPreparing || !selectedGroupId}
-                    onClick={async () => {
-                      if (!selectedGroupId) return;
-                      setArenaPreparing(true);
-                      try {
-                        await onApiCall(
-                          `/teacher/arena/groups/${selectedGroupId}/prepare`,
-                          {
-                            question_count: arenaQuestionCount,
-                            question_source: "manual",
-                            questions: arenaManualQuestions,
-                          },
-                          "POST",
-                          tt("arena.preparedSaved", "Arena saqlandi"),
-                        );
-                        await loadPreparedArenas();
-                      } finally {
-                        setArenaPreparing(false);
-                      }
-                    }}
-                  >
-                    {arenaPreparing ? tt("common.saving", "Saqlanmoqda...") : tt("arena.savePrepared", "Arenani saqlash")}
-                  </button>
-                ) : null}
-              </div>
-              {arenaPreparedRows.length ? (
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {arenaPreparedRows.map((row) => (
-                    <article key={`prepared-arena-${row.id}`} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-navy-950/70">
-                      <div className="mb-3 flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <strong className="block truncate text-navy-900 dark:text-white">{selectedArenaGroup.name || `Group #${selectedGroupId}`}</strong>
-                          <small className="font-bold text-ink-500 dark:text-navy-300">{row.question_count || 0} savol · {row.created_at || "-"}</small>
-                        </div>
-                        <span className="rounded-full bg-cyan-50 px-2.5 py-1 text-xs font-black text-cyan-700 dark:bg-cyan-500/10 dark:text-cyan-200">ready</span>
-                      </div>
-                      <button
-                        className="w-full rounded-xl bg-indigo-500 px-4 py-2.5 text-sm font-black text-white hover:bg-indigo-600"
-                        onClick={async () => {
-                          if (!selectedGroupId) return;
-                          await onApiCall(
-                            `/teacher/arena/groups/${selectedGroupId}/start`,
-                            { session_id: Number(row.id || 0), question_count: Number(row.question_count || arenaQuestionCount), question_source: "bank" },
-                            "POST",
-                            tt("arena.started", "Group Arena boshlandi"),
-                          );
-                          await loadPreparedArenas();
-                          const result = await onApiCall(`/teacher/arena/groups/${selectedGroupId}/status`, undefined, "GET");
-                          setArenaStatus(result);
-                        }}
-                      >
-                        {tt("arena.startPrepared", "Shuni boshlash")}
-                      </button>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <p className="rounded-xl border border-dashed border-line px-4 py-5 text-center text-sm font-bold text-ink-500 dark:border-white/10 dark:text-navy-300">
-                  {tt("arena.noPrepared", "Hali saqlangan arena yo'q.")}
-                </p>
-              )}
-            </div>
-          ) : null}
-
-          <div className="grid grid-cols-1 gap-4 mb-6">
-            <button
-              className="px-6 py-3 font-bold bg-surface-soft dark:bg-white/5 border border-line dark:border-white/10 text-navy-900 dark:text-white hover:border-cyan-500 hover:text-cyan-500 rounded-xl transition-all self-end"
-              onClick={async () => {
-                const result = await onApiCall(`/teacher/arena/groups/${selectedGroupId}/status`, undefined, "GET");
-                setArenaStatus(result);
-              }}
-            >
-              {tt("arena.loadStatus", "Holatni yuklash")}
-            </button>
-          </div>
-          {arenaStatus ? (
-            <div className="space-y-5">
-              <div className="grid gap-3 md:grid-cols-4">
-                {[
-                  [tt("arena.status", "Holat"), arenaSession.status || "-"],
-                  [tt("arena.group", "Guruh"), selectedArenaGroup.name || `#${selectedGroupId}`],
-                  [tt("duel.subject", "Fan"), arenaSession.subject || selectedArenaGroup.subject || "-"],
-                  [tt("arena.participants", "Ishtirokchilar"), `${displayedArenaLeaderboard.length || arenaPresent.length}`],
-                ].map(([label, value]) => (
-                  <div key={String(label)} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-navy-950/60">
-                    <p className="text-xs font-black uppercase tracking-wider text-ink-500 dark:text-navy-300">{label}</p>
-                    <p className="mt-1 text-lg font-black text-navy-900 dark:text-white">{String(value)}</p>
-                  </div>
-                ))}
-              </div>
-              <div className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-navy-950/60">
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-lg font-black text-navy-900 dark:text-white">{tt("arena.liveLeaderboard", "Jonli reyting")}</h3>
-                    <p className="text-sm font-semibold text-ink-500 dark:text-navy-300">{tt("arena.answersCount", "Javoblar")}: {arenaAnswers.length}</p>
-                  </div>
-                  {arenaSession.id ? (
-                    <button
-                      className="rounded-xl bg-red-600 px-4 py-2 text-sm font-black text-white hover:bg-red-700"
-                      onClick={async () => {
-                        const result = await onApiCall(`/teacher/arena/groups/${selectedGroupId}/finish`, undefined, "POST", tt("arena.finished", "Arena tugatildi"));
-                        setArenaStatus(result);
-                      }}
-                    >
-                      {tt("arena.finishArena", "Arenani tugatish")}
-                    </button>
-                  ) : null}
-                </div>
-                {displayedArenaLeaderboard.length ? (
-                  <div className="grid gap-2">
-                    {displayedArenaLeaderboard.map((row, index) => {
-                      const fullName = String((row as GenericRow).full_name || [(row as GenericRow).first_name, (row as GenericRow).last_name].filter(Boolean).join(" ") || (row as GenericRow).name || "-");
-                      const avatar = String((row as GenericRow).profile_image_url || (row as GenericRow).profile_photo || (row as GenericRow).photo_url || "");
-                      return (
-                      <div key={String((row as GenericRow).user_id || (row as GenericRow).id || index)} className="grid grid-cols-[auto_auto_1fr_auto] items-center gap-3 rounded-xl border border-line bg-white p-3 dark:border-white/10 dark:bg-navy-900/70">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-cyan-50 text-sm font-black text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-200">#{Number((row as GenericRow).rank || index + 1)}</div>
-                        <div className="h-10 w-10 overflow-hidden rounded-full border border-line bg-surface-soft dark:border-white/10 dark:bg-navy-950">
-                          {avatar ? (
-                            <img src={avatar} alt={fullName} className="h-full w-full object-cover" />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-xs font-black text-ink-500 dark:text-navy-200">
-                              {fullName.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "ST"}
-                            </div>
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-black text-navy-900 dark:text-white">{fullName}</p>
-                          <p className="text-xs font-semibold text-ink-500 dark:text-navy-300">{row.finished ? tt("arena.finished", "Tugatdi") : tt("arena.inProgress", "Ishlamoqda")}</p>
-                        </div>
-                        <div className="text-right text-xs font-black text-ink-600 dark:text-navy-200">
-                          <p>{tt("duel.correct", "To'g'ri")}: {row.correct}</p>
-                          <p>{tt("duel.wrong", "Xato")}: {row.wrong} · {tt("duel.skipped", "O'tkazildi")}: {row.skipped || 0}</p>
-                          <p>{tt("arena.accuracy", "Aniqlik")}: {row.accuracy}%</p>
-                        </div>
-                      </div>
-                    );})}
-                  </div>
-                ) : (
-                  <p className="py-6 text-center text-sm font-semibold text-ink-500 dark:text-navy-300">{tt("arena.noParticipants", "Hali ishtirokchilar yo'q")}</p>
-                )}
-              </div>
-            </div>
-          ) : (
-            <p className="text-center py-6 text-ink-500 font-medium">{tt("arena.notLoaded", "Arena yuklanmagan.")}</p>
-          )}
-        </section>
-      </div>
-    );
   }
 
   if (section === "students") {
@@ -22477,7 +22076,7 @@ function SupportSection({
     [authedApiFetch],
   );
 
-  if (section === "materials" || section === "analytics" || section === "groups" || section === "group-attendance" || section === "arena" || section === "performance" || section === "dcoin") {
+  if (section === "materials" || section === "analytics" || section === "groups" || section === "group-attendance" || section === "performance" || section === "dcoin") {
     return <TeacherSection section={section === "group-attendance" ? "attendance" : section} data={data} user={user} onApiCall={supportHomeworkCall} />;
   }
 
@@ -24806,7 +24405,7 @@ function DashboardShell({
         : (appState?.[activeRole] || {});
   const roleData = activeRole === "student" || activeRole === "speaking_user" ? { ...rawRoleData, user } : rawRoleData;
   const effectiveSections = activeRole === "support" && Array.isArray(roleData.groups) && roleData.groups.length
-    ? Array.from(new Set([...sections, "groups", "group-attendance", "arena", "performance", "dcoin"]))
+    ? Array.from(new Set([...sections, "groups", "group-attendance", "performance", "dcoin"]))
     : sections;
   const canGenerateAi = activeRole === "admin" || activeRole === "media" || Boolean(roleData.permissions?.can_generate_ai);
   const blockedNav = new Set(["settings", "notifications", "support-requests"]);
@@ -25496,7 +25095,10 @@ function DashboardShell({
     } else if (currentSection === "speaking-users" && activeRole === "speaking_admin") {
       content = <AdminSpeakingUsers apiFetch={authedApiFetch} />;
     } else if (currentSection === "speaking-learning-paths" && activeRole === "speaking_admin") {
-      content = <SpeakingLearningPaths apiFetch={authedApiFetch} />;
+      // The Speaking app's own Learning Path: same management UI, separate
+      // data under /speaking-lp/staff/...
+      const speakingLpFetch = speakingLearningPathFetch(authedApiFetch);
+      content = <StaffLearningPaths apiFetch={speakingLpFetch} scope="speaking" />;
     } else if (currentSection === "speaking-schedule" && activeRole === "speaking_admin") {
       content = <SpeakingLiveLessons apiFetch={authedApiFetch} />;
     } else {
@@ -25790,7 +25392,15 @@ function DashboardShell({
             >
               <section
                 className="panel-card"
-                data-csp-style={JSON.stringify({ width: "min(520px, 100%)", position: "relative", padding: "28px 30px" })}
+                data-csp-style={JSON.stringify({
+                  width: "min(520px, 100%)",
+                  // A long announcement scrolls inside the card, so the close
+                  // buttons stay reachable on phones and in Telegram.
+                  maxHeight: "calc(var(--tg-viewport-height, 100dvh) - 40px)",
+                  overflowY: "auto",
+                  position: "relative",
+                  padding: "28px 30px",
+                })}
               >
                 <button
                   type="button"

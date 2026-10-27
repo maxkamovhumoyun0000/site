@@ -11,6 +11,10 @@ What is checked:
   UI calls and still blocks general admin APIs;
 * Speaking content/broadcast routes are not open to teacher/support;
 * admin competition history reads the runtime web_competition_* tables;
+* the media workspace (MEDIA-X-01) lists and can load the competition
+  history in its sidebar and on its home page;
+* Arena/Duel skip buttons send ``skipped`` for vocabulary questions;
+* the broadcast popup scrolls long announcements instead of overflowing;
 * frontend result handling uses server data instead of local fallbacks.
 """
 from __future__ import annotations
@@ -37,8 +41,10 @@ WRAPPED_CALL_RE = re.compile(
 RAW_FETCH_RE = re.compile(r'\bfetch\(\s*(["`])(/api/[^"`]*)\1')
 TEMPLATE_EXPR_RE = re.compile(r"\$\{[^{}]*\}")
 
+# The Speaking admin's Learning Path page is StaffLearningPaths (in
+# app/ui/learning-paths.tsx) rendered with scope="speaking"; its /staff/...
+# calls are mapped to /speaking-lp/staff/... (see the Speaking LP tests below).
 SPEAKING_ADMIN_UI_FILES = (
-    "app/ui/speaking-learning-paths.tsx",
     "app/ui/admin-speaking-topics.tsx",
     "app/ui/admin-speaking-notifications.tsx",
     "app/ui/admin-speaking-users.tsx",
@@ -58,11 +64,40 @@ def _read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def _speaking_lp_mount() -> tuple[str, tuple[str, ...]]:
+    """SPEAKING_LP_PREFIX and SPEAKING_LP_ROUTE_PREFIXES of personalization.py."""
+    tree = ast.parse(_read("backend/personalization.py"))
+    values: dict[str, Any] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in {"SPEAKING_LP_PREFIX", "SPEAKING_LP_ROUTE_PREFIXES"}:
+                    values[target.id] = ast.literal_eval(node.value)
+    assert set(values) == {"SPEAKING_LP_PREFIX", "SPEAKING_LP_ROUTE_PREFIXES"}, "Speaking LP mount constants missing"
+    return values["SPEAKING_LP_PREFIX"], tuple(values["SPEAKING_LP_ROUTE_PREFIXES"])
+
+
+def _speaking_lp_mounted_routes() -> list[tuple[str, str]]:
+    """Routes personalization.py mounts a second time under /speaking-lp.
+
+    They are added at import time (router.add_api_route), so the decorator
+    regex cannot see them; derive them from the same constants instead.
+    """
+    prefix, route_prefixes = _speaking_lp_mount()
+    text = _read("backend/personalization.py")
+    return [
+        (method.upper(), prefix + route)
+        for method, route in ROUTE_DECORATOR_RE.findall(text)
+        if route.startswith(route_prefixes)
+    ]
+
+
 def _backend_routes() -> list[tuple[str, str]]:
     routes: list[tuple[str, str]] = []
     for path in sorted(BACKEND.glob("*.py")):
         text = path.read_text(encoding="utf-8")
         routes.extend((method.upper(), route) for method, route in ROUTE_DECORATOR_RE.findall(text))
+    routes.extend(_speaking_lp_mounted_routes())
     return routes
 
 
@@ -243,12 +278,131 @@ def test_speaking_admin_guard_still_blocks_general_admin_apis():
         "/admin/system-metrics",
         "/staff/learning-tracks",
         "/student/learning-tracks",
+        "/speaking-lp/student/learning-tracks",
+        "/teacher/library/upload",
         "/developer/deploy",
         "/notifications/42/read/extra",
         "/notifications/push-token/unregister/x",
         "/staff/speakingX/topics",
     ):
         assert not allowed(path), f"Speaking admin guard must block {path}"
+
+
+# --------------------------------------------------------------------------
+# Speaking Learning Path (StaffLearningPaths scope="speaking" + /speaking-lp)
+# --------------------------------------------------------------------------
+
+# Teacher Materials Library features; hidden in the Speaking scope and not
+# mounted under /speaking-lp.
+SPEAKING_LP_HIDDEN_STAFF_PATHS = {"/staff/teacher-library-tree", "/staff/materials-search"}
+
+
+def _speaking_lp_path_mapper() -> Callable[[str], str]:
+    """Python twin of speakingLearningPathApiPath() in learning-paths.tsx."""
+    ui = _read("app/ui/learning-paths.tsx")
+    match = re.search(
+        r'export function speakingLearningPathApiPath\(path: string\): string \{\s*'
+        r'return path\.startsWith\("([^"]+)"\) \? `([^`$]+)\$\{path\}` : path;\s*\}',
+        ui,
+    )
+    assert match, "speakingLearningPathApiPath() not found or changed shape"
+    source_prefix, target_prefix = match.groups()
+    return lambda path: f"{target_prefix}{path}" if path.startswith(source_prefix) else path
+
+
+def _speaking_lp_staff_ui_paths() -> set[str]:
+    mapper = _speaking_lp_path_mapper()
+    return {
+        mapper(path)
+        for path in _frontend_backend_paths("app/ui/learning-paths.tsx")
+        if path.startswith("/staff/") and path not in SPEAKING_LP_HIDDEN_STAFF_PATHS
+    }
+
+
+def test_speaking_lp_wrapper_prefixes_staff_paths():
+    mapper = _speaking_lp_path_mapper()
+    assert mapper("/staff/learning-tracks") == "/speaking-lp/staff/learning-tracks"
+    assert mapper("/staff/learning-modules/5/ai-question") == "/speaking-lp/staff/learning-modules/5/ai-question"
+    assert mapper("/auth/me") == "/auth/me"
+    page = _read("app/page.tsx")
+    branch = page.split('currentSection === "speaking-learning-paths" && activeRole === "speaking_admin"', 1)[1][:600]
+    assert "speakingLearningPathFetch(authedApiFetch)" in branch
+    assert 'scope="speaking"' in branch and "<StaffLearningPaths" in branch
+    assert not (APP / "ui" / "speaking-learning-paths.tsx").exists()
+    assert 'from "./ui/speaking-learning-paths"' not in page
+
+
+def test_speaking_admin_guard_allows_speaking_learning_path_staff_calls():
+    allowed = _speaking_guard()
+    paths = _speaking_lp_staff_ui_paths()
+    assert "/speaking-lp/staff/learning-tracks" in paths, "staff path extraction is stale"
+    blocked = sorted(path for path in paths if not allowed(path))
+    assert not blocked, f"Speaking admin guard rejects Speaking LP calls: {blocked}"
+    missing = sorted(path for path in paths if not _route_exists(path))
+    assert not missing, f"Speaking LP UI calls without backend route: {missing}"
+    # Media upload: raw fetch in the Speaking scope, not the teacher Library.
+    assert "/speaking-lp/staff/upload" in _frontend_backend_paths("app/ui/learning-paths.tsx")
+    assert allowed("/speaking-lp/staff/upload") and _route_exists("/speaking-lp/staff/upload")
+    assert not allowed("/teacher/library/upload")
+
+
+def test_speaking_lp_routes_are_mounted_for_staff_and_student():
+    for path in (
+        "/speaking-lp/staff/learning-tracks",
+        "/speaking-lp/staff/learning-tracks/1/modules",
+        "/speaking-lp/staff/learning-modules/1/lessons/batch",
+        "/speaking-lp/staff/learning-module-topics/1",
+        "/speaking-lp/staff/learning-lessons/1",
+        "/speaking-lp/student/learning-tracks",
+        "/speaking-lp/student/learning-lessons/1",
+        "/speaking-lp/student/learning-lessons/1/submit",
+        "/speaking-lp/student/learning-lessons/check-ai",
+        "/speaking-lp/student/learning-lessons/1/check-ai",
+        "/speaking-lp/student/learning-tracks/1/final-exam",
+        "/speaking-lp/student/learning-tracks/1/final-exam/submit",
+        "/speaking-lp/student/learning-tracks/1/certificate",
+    ):
+        assert _route_exists(path), f"missing mounted Speaking LP route {path}"
+    assert not _route_exists("/speaking-lp/staff/teacher-library-tree")
+    assert not _route_exists("/speaking-lp/student/study-rooms")
+
+
+def test_speaking_lp_mount_covers_every_learning_path_route():
+    source = _read("backend/personalization.py")
+    _, route_prefixes = _speaking_lp_mount()
+    lp_routes = [
+        route for _, route in ROUTE_DECORATOR_RE.findall(source)
+        if route.startswith(("/staff/learning", "/student/learning"))
+    ]
+    assert len(lp_routes) >= 25
+    uncovered = sorted(route for route in lp_routes if not route.startswith(route_prefixes))
+    assert not uncovered, f"Learning Path routes not mounted under /speaking-lp: {uncovered}"
+    # Mounting runs once every route above is registered and wraps the
+    # handler (functools.wraps keeps FastAPI's signature) in the namespace.
+    mount_at = source.index("SPEAKING_LP_MOUNTED_ROUTES = _mount_speaking_learning_path_routes()")
+    last_route = max(source.index(f'"{route}"') for route in lp_routes)
+    assert mount_at > last_route
+    body = source.split("def _speaking_lp_endpoint(", 1)[1].split("\ndef ", 1)[0]
+    assert "@functools.wraps(endpoint)" in body and "_LP_NAMESPACE.set(SPEAKING_LP_NAMESPACE)" in body
+    assert "_LP_NAMESPACE.reset(token)" in body
+    mount = source.split("def _mount_speaking_learning_path_routes(", 1)[1].split("\nSPEAKING_LP_MOUNTED_ROUTES", 1)[0]
+    assert "router.add_api_route(" in mount and "SPEAKING_LP_ROUTE_PREFIXES" in mount
+
+
+def test_speaking_lp_roles_and_isolation():
+    source = _read("backend/personalization.py")
+    match = re.search(r"^SPEAKING_LP_MANAGER_ROLES\s*=\s*(\{[^}]*\})", source, re.M)
+    assert match and ast.literal_eval(match.group(1)) == {"speaking_admin"}
+    assert '"speaking-learning-track"' in source  # distinct certificate course_key
+    assert "_require(user, LEARNING_MANAGER_ROLES)" not in source
+    for name in ("student_learning_tracks", "student_learning_lesson", "submit_learning_lesson",
+                 "claim_track_certificate", "get_track_final_exam", "submit_track_final_exam"):
+        body = source.split(f"async def {name}(", 1)[1].split("\n@router.", 1)[0]
+        assert "_require_lp_student(user)" in body, name
+    for name in ("_archive_learning_path_test", "_delete_learning_path_library_branch",
+                 "_delete_learning_path_library_bundle", "rebuild_learning_path_library_mirrors"):
+        body = source.split(f"def {name}(", 1)[1].split("\ndef ", 1)[0]
+        assert "_lp_is_speaking()" in body, f"{name} must not mirror the Speaking LP into Libraries"
 
 
 def test_notification_read_routes_match_backend():
@@ -314,6 +468,75 @@ def test_admin_competition_modes_match_runtime_modes():
     runtime_modes = set(ast.literal_eval("[" + start_modes.group(1) + "]"))
     assert set(mapping["arena-boss"]) == {"boss"}
     assert set(mapping["duel"]) == {mode for mode in runtime_modes if mode.startswith("duel-")}
+
+
+def _ts_string_list(text: str, marker: str) -> list[str]:
+    """String items of the first `[...]` literal that follows ``marker``."""
+    assert marker in text, f"{marker!r} not found"
+    return re.findall(r'"([^"]+)"', text.split(marker, 1)[1].split("]", 1)[0])
+
+
+def test_media_workspace_shows_and_loads_competitions_history():
+    section = "competitions-history"
+    # 1) Navigation: the media allow-list has it; no retired/hidden filter drops it.
+    nav = _read("app/ui/navigation-config.ts")
+    assert section in _ts_string_list(nav, "  media: [")
+    for name in ("RETIRED_SECTION_IDS", "HIDDEN_SECTION_IDS"):
+        ids = _ts_string_list(nav, f"export const {name} = new Set([")
+        assert ids and section not in ids, f"{name} hides {section}"
+    assert '"competitions-history": "Musobaqalar Tarixi"' in nav
+    # 2) Sidebar order of the media workspace (the branch keyed on vocabulary-bank).
+    sidebar = _read("app/ui/dashboard-sidebar.tsx")
+    assert section in _ts_string_list(sidebar, 'sectionSet.has("vocabulary-bank")\n      ? [')
+    page = _read("app/page.tsx")
+    # 3) MEDIA-X-01 (backend role "admin") becomes the media workspace, whose
+    #    sections are the allow-list above.
+    role = page.split("function roleFromUser(", 1)[1].split("\n}\n", 1)[0]
+    assert 'loginId === "media-x-01") return "media";' in role
+    resolve = page.split("function resolveRoleSections(", 1)[1].split("\n}\n", 1)[0]
+    assert 'role === "media" || role === "limited_admin"' in resolve
+    assert "!RETIRED_SECTION_IDS.has(item)" in resolve
+    # 4) Media home lists every MEDIA_WORKSPACE_SECTIONS entry.
+    assert section in _ts_string_list(page, "const MEDIA_WORKSPACE_SECTIONS = [")
+    home = page.split("function MediaWorkspaceHome(", 1)[1].split("\n}\n", 1)[0]
+    slices = sorted(
+        (int(start), int(end) if end else None)
+        for start, end in re.findall(r"MEDIA_WORKSPACE_SECTIONS\.slice\((\d+)(?:,\s*(\d+))?\)", home)
+    )
+    assert slices and slices[0][0] == 0 and slices[-1][1] is None, slices
+    assert all(prev[1] == nxt[0] for prev, nxt in zip(slices, slices[1:])), f"media home skips sections: {slices}"
+    # 5) The media shell renders AdminSection in media mode, and AdminSection
+    #    reaches the history page (no media-only early return before it).
+    assert "mediaMode={activeRole === \"media\"}" in page
+    admin_section = page.split("function AdminSection({", 1)[1].split("\nfunction ", 1)[0]
+    branch = 'if (section === "competitions-history") {\n    return <AdminCompetitions />;'
+    assert branch in admin_section
+    before = admin_section.split(branch, 1)[0]
+    for match in re.findall(r"^  if \(mediaMode[^\n]*", before, re.M):
+        assert '&& section === "' in match, f"media early return hides other sections: {match}"
+    # 6) Backend: MEDIA-X-01 is login_type 4 -> "admin", both routes accept
+    #    "admin", and the only workspace guards are for the developer and
+    #    Speaking admin logins.
+    ns = _load_main_symbols({"_role_from_login_type", "_is_developer_account", "_is_speaking_admin_account"}, {"os": __import__("os")})
+    assert ns["_role_from_login_type"](4, "MEDIA-X-01") == "admin"
+    assert not ns["_is_developer_account"]({"login_id": "MEDIA-X-01"})
+    assert not ns["_is_speaking_admin_account"]({"login_id": "MEDIA-X-01"})
+    for name in ("get_admin_competitions_history", "get_admin_competition_results"):
+        assert '_require_role(user, {"admin"})' in _main_function_source(name)
+    paths = _frontend_backend_paths("app/ui/admin-competitions.tsx")
+    assert {"/admin/competitions/history", f"/admin/competitions/{DYNAMIC}/results"} <= paths
+
+
+def test_broadcast_popup_scrolls_long_messages():
+    # Long announcements (the trilingual platform notice is ~1,100 characters)
+    # must keep the close buttons reachable on phones and in Telegram.
+    page = _read("app/page.tsx")
+    popup = page.split("{!isChatsFullscreen && broadcastPopup ? (() => {", 1)[1].split("})() : null}", 1)[0]
+    assert 'maxHeight: "calc(var(--tg-viewport-height, 100dvh) - 40px)"' in popup
+    assert 'overflowY: "auto"' in popup
+    assert "whitespace-pre-wrap" in popup and "onClick={closeBroadcast}" in popup
+    bridge = _read("public/csp-style-bridge.js")
+    assert '"maxHeight"' in bridge and '"overflowY"' in bridge
 
 
 def test_admin_competition_timestamps_are_naive_utc_iso():
@@ -399,6 +622,77 @@ def test_arena_errors_keep_backend_code_and_timer_zero():
     assert "question.time_remaining_sec || question.time_limit_sec" not in ui
     # A finished session without a ready result keeps polling.
     assert "waitingForResult ? 2500" in ui
+
+
+def _ts_function_source(text: str, name: str) -> str:
+    """Body of a top-level TS function (up to the first closing brace at column 0)."""
+    marker = f"function {name}("
+    assert marker in text, f"{name} not found"
+    return text.split(marker, 1)[1].split("\n}\n", 1)[0]
+
+
+def test_arena_duel_answer_body_carries_vocabulary_fields():
+    ui = _read("app/student/test-views.tsx")
+    body = _ts_function_source(ui, "answerBody")
+    for field in ("selected_option_index", "answer_text", "matching_answer", "audio_url", "timed_out", "skipped"):
+        assert field in body, f"competition answer body cannot carry {field}"
+    # The Arena/Duel submit forwards the widened body; the timer sends timed_out.
+    assert "...answerBody(answer, options)" in ui
+    assert "submitAnswer(null, { timedOut: true })" in ui
+    # AI test runner payloads map onto the competition answer fields.
+    mapper = _ts_function_source(ui, "competitionAnswerFromRunnerPayload")
+    for runner_field, body_field in (
+        ("answer_text", "answer_text"),
+        ("audio_url", "audio_url"),
+        ("pairs", "matching_answer"),
+        ("choice_index", "selected_option_index"),
+    ):
+        assert f"payload.{runner_field}" in mapper and f"answer.{body_field}" in mapper
+    # Vocabulary questions reuse the AI test runner answer UI; MCQ keeps its renderer.
+    assert 'from "../ui/ai-test-runner"' in ui
+    assert "<CompetitionVocabularyQuestion" in ui
+    assert "key={question.question_index}" in ui
+    # The backend request model accepts every field the website sends.
+    backend = _read("backend/main.py")
+    model = backend.split("class CompetitionAnswerRequest(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    for field in ("selected_option_index", "answer_text", "audio_url", "matching_answer", "timed_out", "skipped", "question_index"):
+        assert f"{field}:" in model, f"CompetitionAnswerRequest no longer accepts {field}"
+    # Recorded answers come from the shared AI test upload route.
+    assert _route_exists("/student/ai-tests/upload-audio")
+    assert '"/student/ai-tests/upload-audio"' in _read("app/ui/ai-test-runner.tsx")
+
+
+def test_arena_duel_skip_buttons_send_skipped_for_vocabulary():
+    ui = _read("app/student/test-views.tsx")
+    body = _ts_function_source(ui, "answerBody")
+    assert "if (options?.timedOut) body.timed_out = true;" in body
+    assert "if (options?.skipped) body.skipped = true;" in body
+    page = ui.split("export function StudentCompetitionPage(", 1)[1].split(
+        "export function StudentCompetitionRuntimePage(", 1
+    )[0]
+    skip = page.split("function skipCurrentQuestion() {", 1)[1].split("\n  }\n", 1)[0]
+    # Vocabulary questions send the explicit skip flag; MCQ keeps the null answer.
+    assert "submitAnswer(null, competitionVocabularyType(question?.question) ? { skipped: true } : undefined)" in skip
+    # Previous / Next / Finish and the question pills all use the skip helper
+    # and none of them posts a bare null answer any more.
+    assert page.count("onClick={skipCurrentQuestion}") == 3
+    assert "skipCurrentQuestion();" in page
+    assert "submitAnswer(null)" not in page
+    # The countdown keeps sending the timeout flag, not the skip flag.
+    assert "submitAnswer(null, { timedOut: true })" in page
+    model = _read("backend/main.py").split("class CompetitionAnswerRequest(BaseModel):", 1)[1].split("\nclass ", 1)[0]
+    assert "skipped: bool = False" in model
+
+
+def test_retired_teacher_arena_is_gone_from_website():
+    page = _read("app/page.tsx")
+    assert "/teacher/arena" not in page, "app/page.tsx still calls the retired /teacher/arena API"
+    sidebar = _read("app/ui/dashboard-sidebar.tsx")
+    teacher_order = sidebar.split('sectionSet.has("performance") && sectionSet.has("homework")', 1)[1].split("]", 1)[0]
+    assert '"arena"' not in teacher_order, "teacher sidebar order still lists arena"
+    # Students keep the Arena hub (Boss Arena and duels).
+    assert 'if (item === "arena" && (role === "student" || role === "speaking_user")) return true;' in page
+    assert "<StudentArena" in page
 
 
 if __name__ == "__main__":

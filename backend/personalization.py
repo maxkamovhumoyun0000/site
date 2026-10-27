@@ -12,23 +12,125 @@ import json
 import secrets
 import random
 import asyncio
+import hashlib
+import inspect
 import logging
+import functools
+import threading
+import contextvars
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse, unquote
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
-from db import get_conn, add_dcoins, get_dcoins, try_consume_dcoins
+from db import get_conn as _db_get_conn, add_dcoins, get_dcoins, try_consume_dcoins
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 _runtime: dict[str, Callable[..., Any]] = {}
 _schema_ready = False
 WEEKLY_AI_PLAN_COST = 1000
+
+
+# ── Learning Path namespaces ────────────────────────────────────────────────
+# The Speaking app owns a separate Learning Path with exactly the same
+# management and student API.  Its routes are mounted a second time under
+# ``/speaking-lp`` (see the end of this module) and run with this namespace
+# set.  Every connection handed out by ``get_conn`` then rewrites the Learning
+# Path table names to an isolated ``speaking_lp_`` copy.  Shared tables
+# (users, certificates, diamond_history, library_nodes, ...) are never renamed.
+SPEAKING_LP_NAMESPACE = "speaking"
+SPEAKING_LP_TABLE_PREFIX = "speaking_lp_"
+_LP_NAMESPACE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "learning_path_namespace", default=None
+)
+LEARNING_PATH_TABLES = (
+    "learning_tracks",
+    "learning_modules",
+    "learning_module_topics",
+    "learning_module_lessons",
+    "learning_track_assignments",
+    "learning_lesson_attempts",
+    "learning_module_progress",
+    "learning_certificate_shares",
+    "learning_track_final_progress",
+    "learning_track_final_attempts",
+    "learning_answer_checks",
+)
+_LP_TABLE_RE = re.compile(
+    r"\b(" + "|".join(sorted(LEARNING_PATH_TABLES, key=len, reverse=True)) + r")\b"
+)
+# Index names are global in PostgreSQL, so the copies need their own names.
+_LP_INDEX_RE = re.compile(r"\b(idx_(?:learning|track_final)_[A-Za-z0-9_]*)\b")
+
+
+def _lp_is_speaking() -> bool:
+    return _LP_NAMESPACE.get() == SPEAKING_LP_NAMESPACE
+
+
+def lp_rewrite_sql(sql: str) -> str:
+    """Rename Learning Path tables/indexes to the Speaking copy (pure)."""
+    text = _LP_INDEX_RE.sub(lambda m: "idx_" + SPEAKING_LP_TABLE_PREFIX + m.group(1)[len("idx_"):], str(sql))
+    return _LP_TABLE_RE.sub(lambda m: SPEAKING_LP_TABLE_PREFIX + m.group(1), text)
+
+
+class _LPNamespaceCursor:
+    """Cursor proxy that rewrites Learning Path table names before execution."""
+
+    def __init__(self, cur: Any):
+        self._cur = cur
+
+    def execute(self, sql: Any, params: Any = None):
+        rewritten = lp_rewrite_sql(sql)
+        if params is None:
+            return self._cur.execute(rewritten)
+        return self._cur.execute(rewritten, params)
+
+    def executemany(self, sql: Any, seq_of_params: Any):
+        return self._cur.executemany(lp_rewrite_sql(sql), seq_of_params)
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    def __enter__(self):
+        self._cur.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._cur.__exit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cur, name)
+
+
+class _LPNamespaceConnection:
+    def __init__(self, conn: Any):
+        self._conn = conn
+
+    def cursor(self, *args: Any, **kwargs: Any) -> _LPNamespaceCursor:
+        return _LPNamespaceCursor(self._conn.cursor(*args, **kwargs))
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
+
+
+def get_conn():
+    """Database connection for this module, namespaced for the Speaking LP."""
+    conn = _db_get_conn()
+    if _lp_is_speaking():
+        return _LPNamespaceConnection(conn)
+    return conn
 
 STUDY_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "data" / "chat_uploads"
 STUDY_ALT_UPLOAD_DIR = Path(__file__).resolve().parent.parent / "uploads"
@@ -159,8 +261,149 @@ def record_test_mistake(
         conn.close()
 
 
+# Learning Path tables.  The Speaking namespace runs exactly these statements
+# through the table-renaming connection, so both copies have one schema.
+_LEARNING_PATH_TABLE_DDL = (
+    """CREATE TABLE IF NOT EXISTS learning_tracks (
+      id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL, subject TEXT NOT NULL,
+      title TEXT NOT NULL, description TEXT, cover_key TEXT DEFAULT 'star',
+      status TEXT NOT NULL DEFAULT 'draft', position INTEGER NOT NULL DEFAULT 0,
+      passing_score INTEGER NOT NULL DEFAULT 70, certificate_required INTEGER NOT NULL DEFAULT 1,
+      certificate_template_key TEXT DEFAULT 'english', certificate_layers_json TEXT DEFAULT '[]',
+      version INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, published_at TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_modules (
+      id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, title TEXT NOT NULL,
+      description TEXT, cover_key TEXT DEFAULT 'star', position INTEGER NOT NULL DEFAULT 0,
+      topic_keys_json TEXT NOT NULL DEFAULT '[]', passing_score INTEGER, reward_coins INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_module_topics (
+      id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
+      description TEXT, position INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_module_lessons (
+      id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
+      topic_id BIGINT,
+      source_kind TEXT NOT NULL DEFAULT 'manual', source_id TEXT, source_version TEXT,
+      question_payload_json TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0,
+      position INTEGER NOT NULL DEFAULT 0, required INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_track_assignments (
+      id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+      assigned_by BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, due_at TIMESTAMP,
+      UNIQUE(track_id, student_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_lesson_attempts (
+      id BIGSERIAL PRIMARY KEY, lesson_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+      score REAL NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0,
+      answers_json TEXT, started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      completed_at TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_module_progress (
+      id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'locked', best_score REAL NOT NULL DEFAULT 0,
+      passed_at TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(module_id, student_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_certificate_shares (
+      id BIGSERIAL PRIMARY KEY, certificate_id TEXT NOT NULL UNIQUE, share_token TEXT NOT NULL UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      revoked_at TIMESTAMP
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_track_final_progress (
+      id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'locked', best_score REAL NOT NULL DEFAULT 0,
+      attempts_count INTEGER NOT NULL DEFAULT 0, passed_at TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(track_id, student_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS learning_track_final_attempts (
+      id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+      score REAL NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0,
+      answers_json TEXT, completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""",
+    # Server-side verdicts of AI-checked answers.  A lesson/final-exam submit
+    # only counts an AI-checked answer when an unconsumed, recent, correct
+    # verdict for the same student, lesson, item and answer exists here.
+    """CREATE TABLE IF NOT EXISTS learning_answer_checks (
+      id BIGSERIAL PRIMARY KEY, student_id BIGINT NOT NULL, lesson_id BIGINT NOT NULL,
+      item_key TEXT NOT NULL DEFAULT 'lesson', answer_fingerprint TEXT NOT NULL,
+      verdict TEXT NOT NULL, result_json TEXT NOT NULL DEFAULT '{}',
+      checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, consumed_at TIMESTAMP
+    )""",
+)
+
+_LEARNING_PATH_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_learning_tracks_owner ON learning_tracks(owner_id, subject, status, position)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_modules_track ON learning_modules(track_id, position)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_lessons_module ON learning_module_lessons(module_id, position)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_assignment_student ON learning_track_assignments(student_id, status)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_progress_student ON learning_module_progress(student_id, module_id)",
+    "CREATE INDEX IF NOT EXISTS idx_track_final_progress ON learning_track_final_progress(track_id, student_id)",
+    "CREATE INDEX IF NOT EXISTS idx_track_final_attempts ON learning_track_final_attempts(track_id, student_id)",
+    "CREATE INDEX IF NOT EXISTS idx_learning_answer_checks_lookup ON learning_answer_checks(student_id, lesson_id, item_key, checked_at)",
+)
+
+
+def _apply_learning_path_column_upgrades(cur: Any, conn: Any) -> None:
+    """Additive column upgrades shared by both Learning Path namespaces."""
+    try:
+        cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS reward_coins INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        try:
+            cur.execute("ALTER TABLE learning_modules ADD COLUMN reward_coins INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass
+    try:
+        cur.execute("UPDATE learning_module_progress SET status='passed' WHERE passed_at IS NOT NULL AND status != 'passed'")
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    try:
+        cur.execute("ALTER TABLE learning_module_progress ADD COLUMN IF NOT EXISTS rewarded_at TIMESTAMP")
+    except Exception:
+        try:
+            cur.execute("ALTER TABLE learning_module_progress ADD COLUMN rewarded_at TIMESTAMP")
+        except Exception:
+            pass
+    try:
+        cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS image_url TEXT")
+    except Exception:
+        try:
+            cur.execute("ALTER TABLE learning_modules ADD COLUMN image_url TEXT")
+        except Exception:
+            pass
+    try:
+        cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN IF NOT EXISTS topic_id BIGINT")
+    except Exception:
+        try:
+            cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN topic_id INTEGER")
+        except Exception:
+            pass
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_topics_module ON learning_module_topics(module_id, position)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_lessons_topic ON learning_module_lessons(topic_id, position)")
+    except Exception:
+        pass
+
+
+_speaking_lp_schema_ready = False
+_SPEAKING_LP_SCHEMA_LOCK = threading.Lock()
+
+
 def ensure_schema() -> None:
     global _schema_ready
+    if _lp_is_speaking():
+        _ensure_speaking_lp_schema()
+        return
     if _schema_ready:
         return
     conn = get_conn()
@@ -308,69 +551,7 @@ def ensure_schema() -> None:
               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
               UNIQUE(user_id, attempt_id, question_index)
             )""",
-            """CREATE TABLE IF NOT EXISTS learning_tracks (
-              id BIGSERIAL PRIMARY KEY, owner_id BIGINT NOT NULL, subject TEXT NOT NULL,
-              title TEXT NOT NULL, description TEXT, cover_key TEXT DEFAULT 'star',
-              status TEXT NOT NULL DEFAULT 'draft', position INTEGER NOT NULL DEFAULT 0,
-              passing_score INTEGER NOT NULL DEFAULT 70, certificate_required INTEGER NOT NULL DEFAULT 1,
-              certificate_template_key TEXT DEFAULT 'english', certificate_layers_json TEXT DEFAULT '[]',
-              version INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, published_at TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_modules (
-              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, title TEXT NOT NULL,
-              description TEXT, cover_key TEXT DEFAULT 'star', position INTEGER NOT NULL DEFAULT 0,
-              topic_keys_json TEXT NOT NULL DEFAULT '[]', passing_score INTEGER, reward_coins INTEGER NOT NULL DEFAULT 0,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_module_topics (
-              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
-              description TEXT, position INTEGER NOT NULL DEFAULT 0,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_module_lessons (
-              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, title TEXT NOT NULL,
-              topic_id BIGINT,
-              source_kind TEXT NOT NULL DEFAULT 'manual', source_id TEXT, source_version TEXT,
-              question_payload_json TEXT, duration_seconds INTEGER NOT NULL DEFAULT 0,
-              position INTEGER NOT NULL DEFAULT 0, required INTEGER NOT NULL DEFAULT 1,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_track_assignments (
-              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
-              assigned_by BIGINT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-              assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, due_at TIMESTAMP,
-              UNIQUE(track_id, student_id)
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_lesson_attempts (
-              id BIGSERIAL PRIMARY KEY, lesson_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
-              score REAL NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0,
-              answers_json TEXT, started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              completed_at TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_module_progress (
-              id BIGSERIAL PRIMARY KEY, module_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'locked', best_score REAL NOT NULL DEFAULT 0,
-              passed_at TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(module_id, student_id)
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_certificate_shares (
-              id BIGSERIAL PRIMARY KEY, certificate_id TEXT NOT NULL UNIQUE, share_token TEXT NOT NULL UNIQUE,
-              active INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              revoked_at TIMESTAMP
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_track_final_progress (
-              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
-              status TEXT NOT NULL DEFAULT 'locked', best_score REAL NOT NULL DEFAULT 0,
-              attempts_count INTEGER NOT NULL DEFAULT 0, passed_at TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(track_id, student_id)
-            )""",
-            """CREATE TABLE IF NOT EXISTS learning_track_final_attempts (
-              id BIGSERIAL PRIMARY KEY, track_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
-              score REAL NOT NULL DEFAULT 0, passed INTEGER NOT NULL DEFAULT 0,
-              answers_json TEXT, completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )""",
+            *_LEARNING_PATH_TABLE_DDL,
         ]
         for sql in statements:
             try:
@@ -431,13 +612,7 @@ def ensure_schema() -> None:
             "CREATE INDEX IF NOT EXISTS idx_ai_qbank_count ON ai_generated_questions_bank(use_count)",
             "CREATE INDEX IF NOT EXISTS idx_personal_practice_attempts_user ON personal_practice_attempts(user_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS idx_personal_practice_items_attempt ON personal_practice_attempt_items(user_id, attempt_id, question_index)",
-            "CREATE INDEX IF NOT EXISTS idx_learning_tracks_owner ON learning_tracks(owner_id, subject, status, position)",
-            "CREATE INDEX IF NOT EXISTS idx_learning_modules_track ON learning_modules(track_id, position)",
-            "CREATE INDEX IF NOT EXISTS idx_learning_lessons_module ON learning_module_lessons(module_id, position)",
-            "CREATE INDEX IF NOT EXISTS idx_learning_assignment_student ON learning_track_assignments(student_id, status)",
-            "CREATE INDEX IF NOT EXISTS idx_learning_progress_student ON learning_module_progress(student_id, module_id)",
-            "CREATE INDEX IF NOT EXISTS idx_track_final_progress ON learning_track_final_progress(track_id, student_id)",
-            "CREATE INDEX IF NOT EXISTS idx_track_final_attempts ON learning_track_final_attempts(track_id, student_id)",
+            *_LEARNING_PATH_INDEX_DDL,
         ):
             try:
                 cur.execute(sql)
@@ -463,47 +638,7 @@ def ensure_schema() -> None:
                 cur.execute("ALTER TABLE study_room_members ADD COLUMN last_seen_at TIMESTAMP")
             except Exception:
                 pass
-        try:
-            cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS reward_coins INTEGER NOT NULL DEFAULT 0")
-        except Exception:
-            try:
-                cur.execute("ALTER TABLE learning_modules ADD COLUMN reward_coins INTEGER NOT NULL DEFAULT 0")
-            except Exception:
-                pass
-        try:
-            cur.execute("UPDATE learning_module_progress SET status='passed' WHERE passed_at IS NOT NULL AND status != 'passed'")
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        try:
-            cur.execute("ALTER TABLE learning_module_progress ADD COLUMN IF NOT EXISTS rewarded_at TIMESTAMP")
-        except Exception:
-            try:
-                cur.execute("ALTER TABLE learning_module_progress ADD COLUMN rewarded_at TIMESTAMP")
-            except Exception:
-                pass
-        try:
-            cur.execute("ALTER TABLE learning_modules ADD COLUMN IF NOT EXISTS image_url TEXT")
-        except Exception:
-            try:
-                cur.execute("ALTER TABLE learning_modules ADD COLUMN image_url TEXT")
-            except Exception:
-                pass
-        try:
-            cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN IF NOT EXISTS topic_id BIGINT")
-        except Exception:
-            try:
-                cur.execute("ALTER TABLE learning_module_lessons ADD COLUMN topic_id INTEGER")
-            except Exception:
-                pass
-        try:
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_topics_module ON learning_module_topics(module_id, position)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_learning_lessons_topic ON learning_module_lessons(topic_id, position)")
-        except Exception:
-            pass
+        _apply_learning_path_column_upgrades(cur, conn)
         try:
             cur.execute("ALTER TABLE parent_access_links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP")
         except Exception:
@@ -589,6 +724,284 @@ def ensure_schema() -> None:
         conn.close()
 
 
+def _ensure_speaking_lp_schema() -> None:
+    """Create only the Speaking Learning Path copies of the LP tables."""
+    global _speaking_lp_schema_ready
+    if _speaking_lp_schema_ready:
+        return
+    with _SPEAKING_LP_SCHEMA_LOCK:
+        if _speaking_lp_schema_ready:
+            return
+        # Shared tables (certificates, badges, ...) come from the default schema.
+        token = _LP_NAMESPACE.set(None)
+        try:
+            ensure_schema()
+        finally:
+            _LP_NAMESPACE.reset(token)
+        conn = _LPNamespaceConnection(_db_get_conn())
+        cur = conn.cursor()
+        try:
+            for sql in _LEARNING_PATH_TABLE_DDL:
+                cur.execute(sql)
+            conn.commit()
+            for sql in _LEARNING_PATH_INDEX_DDL:
+                try:
+                    cur.execute(sql)
+                    conn.commit()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+            _apply_learning_path_column_upgrades(cur, conn)
+            conn.commit()
+        finally:
+            conn.close()
+        try:
+            _migrate_legacy_speaking_learning_paths()
+        except Exception:
+            # The new Learning Path stays usable; the next process start
+            # retries because the migration marker was not written.
+            logger.exception("Legacy Speaking Learning Path migration failed")
+        _speaking_lp_schema_ready = True
+
+
+_SPEAKING_LP_MIGRATION_KEY = "legacy_speaking_learning_v1"
+# Arbitrary constant used for a transaction-scoped PostgreSQL advisory lock so
+# that only one worker process can run the one-time migration.
+_SPEAKING_LP_MIGRATION_LOCK_ID = 7_340_219_001
+
+
+_LEGACY_SPEAKING_KIND_MAP = {
+    "short_answer": "gap_fill",
+    "multiple_choice_set": "reading_set",
+    "speaking_repeat": "read_aloud",
+    "speaking_response": "speak_sentence",
+}
+
+
+def _legacy_speaking_question_payload(row: dict[str, Any]) -> dict[str, Any]:
+    """Convert one speaking_learning_questions row to the LP payload format."""
+    def load(raw: Any, fallback: Any) -> Any:
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            return fallback
+        return fallback if value is None and fallback is not None else value
+
+    old_kind = str(row.get("question_type") or "multiple_choice").strip().lower()
+    kind = _LEGACY_SPEAKING_KIND_MAP.get(old_kind, old_kind)
+    options = load(row.get("options_json"), [])
+    answer = load(row.get("answer_json"), None)
+    data = load(row.get("data_json"), {})
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(options, list):
+        options = []
+    prompt = str(row.get("prompt") or "").strip()
+    raw: dict[str, Any] = {
+        key: value for key, value in data.items()
+        if key not in {"answer", "correct", "correct_answer", "kind", "test_type"}
+    }
+    raw.update({
+        "kind": kind, "test_type": kind, "prompt": prompt, "question": prompt,
+        "options": options, "explanation": str(row.get("explanation") or ""),
+    })
+    accepted = data.get("accepted_answers")
+    if isinstance(accepted, list):
+        raw["accepted_answers"] = accepted
+
+    def first_and_rest(value: Any) -> tuple[Any, list[Any]]:
+        if isinstance(value, list):
+            return (value[0] if value else ""), list(value[1:])
+        return value, []
+
+    if kind == "matching":
+        pairs = data.get("pairs") if isinstance(data.get("pairs"), list) else []
+        if not pairs and isinstance(answer, dict):
+            pairs = [{"left": str(k), "right": str(v)} for k, v in answer.items()]
+        raw["pairs"] = pairs
+    elif kind in {"reading_set", "listening_set"}:
+        subs = data.get("sub_questions") or data.get("questions") or []
+        built = []
+        key_map = answer if isinstance(answer, dict) else {}
+        for index, sub in enumerate(subs if isinstance(subs, list) else []):
+            if not isinstance(sub, dict):
+                continue
+            item = dict(sub)
+            expected = None
+            for key in (sub.get("id"), index, index + 1):
+                if key is not None and str(key) in key_map:
+                    expected = key_map[str(key)]
+                    break
+            if expected is not None and item.get("answer") in (None, ""):
+                main, rest = first_and_rest(expected)
+                item["answer"] = main
+                if rest:
+                    item["accepted_answers"] = [str(v) for v in rest]
+            built.append(item)
+        raw["sub_questions"] = built
+        raw["questions"] = built
+    elif kind == "passage_cloze" or (kind in {"gap_fill", "fill_blank"} and isinstance(answer, list) and len(answer) > 1):
+        blanks = []
+        for value in (answer if isinstance(answer, list) else [answer]):
+            main, rest = first_and_rest(value)
+            blank: dict[str, Any] = {"answer": str(main or "")}
+            if rest:
+                blank["accepted_answers"] = [str(v) for v in rest]
+            blanks.append(blank)
+        raw["kind"] = raw["test_type"] = "passage_cloze"
+        raw["answers"] = blanks
+        raw["passage"] = str(data.get("passage") or data.get("passage_template") or prompt)
+    elif isinstance(answer, bool):
+        raw["answer"] = answer
+    elif answer is not None:
+        main, rest = first_and_rest(answer)
+        if isinstance(main, (dict, list)):
+            main = json.dumps(main, ensure_ascii=False)
+        raw["answer"] = str(main)
+        if kind in {"write_sentence", "guided_writing", "paraphrase", "dialogue_completion",
+                    "reading_open", "listening_open", "picture_description", "speak_sentence",
+                    "read_aloud"}:
+            raw["reference_answer"] = str(main)
+        if rest:
+            raw["accepted_answers"] = list(dict.fromkeys(
+                [*(raw.get("accepted_answers") or []), *[str(v) for v in rest]]
+            ))
+    try:
+        question = _learning_library_question(raw)
+    except HTTPException:
+        # Old Speaking data could reference external media.  Keep the text
+        # exercise instead of losing the whole question.
+        for media_key in _LEARNING_MEDIA_FIELDS:
+            raw.pop(media_key, None)
+        question = _learning_library_question(raw)
+    return question or raw
+
+
+def _migrate_legacy_speaking_learning_paths() -> dict[str, int]:
+    """Copy the old Speaking Learning Path once into the new namespace tables.
+
+    Runs in one transaction under an advisory lock; a marker row guarantees it
+    never runs twice, even after the new tables are emptied later.
+    """
+    conn = _db_get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT pg_advisory_xact_lock(?)", (_SPEAKING_LP_MIGRATION_LOCK_ID,))
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS speaking_lp_schema_migrations ("
+            "key TEXT PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, details_json TEXT)"
+        )
+        cur.execute("SELECT key FROM speaking_lp_schema_migrations WHERE key=?", (_SPEAKING_LP_MIGRATION_KEY,))
+        if cur.fetchone():
+            conn.commit()
+            return {"tracks": 0, "modules": 0, "lessons": 0}
+
+        def finish(details: dict[str, int]) -> dict[str, int]:
+            cur.execute(
+                "INSERT INTO speaking_lp_schema_migrations(key,details_json) VALUES(?,?) ON CONFLICT(key) DO NOTHING",
+                (_SPEAKING_LP_MIGRATION_KEY, json.dumps(details)),
+            )
+            conn.commit()
+            return details
+
+        cur.execute("SELECT COUNT(*) AS n FROM speaking_lp_learning_tracks")
+        if int(dict(cur.fetchone() or {}).get("n") or 0) > 0:
+            return finish({"tracks": 0, "modules": 0, "lessons": 0, "skipped_existing": 1})
+        cur.execute("SELECT to_regclass('speaking_learning_tracks') AS reg")
+        legacy = dict(cur.fetchone() or {}).get("reg")
+        if not legacy:
+            return finish({"tracks": 0, "modules": 0, "lessons": 0})
+        cur.execute("SELECT * FROM speaking_learning_tracks ORDER BY sort_order, id")
+        old_tracks = [dict(row) for row in cur.fetchall() or []]
+        if not old_tracks:
+            return finish({"tracks": 0, "modules": 0, "lessons": 0})
+
+        import os
+        admin_login = str(os.getenv("SPEAKING_ADMIN_WEB_LOGIN_ID") or "DIAMOND-SP-1").strip().upper()
+        cur.execute("SELECT id FROM users WHERE UPPER(TRIM(login_id))=? ORDER BY id LIMIT 1", (admin_login,))
+        admin_row = cur.fetchone()
+        admin_id = int(dict(admin_row).get("id") or 0) if admin_row else 0
+        speaking_admin_ids = {admin_id} if admin_id else set()
+        now_iso = _db_utc_naive(_now())
+        counts = {"tracks": 0, "modules": 0, "lessons": 0}
+        for track_position, old in enumerate(old_tracks):
+            created_by = int(old.get("created_by") or 0)
+            owner_id = created_by if created_by in speaking_admin_ids else (admin_id or created_by)
+            subject_key = str(old.get("subject") or "english").strip().lower()
+            subject = "Russian" if subject_key.startswith("rus") else "English"
+            published = bool(old.get("is_published"))
+            cur.execute(
+                "INSERT INTO speaking_lp_learning_tracks(owner_id,subject,title,description,cover_key,status,position,"
+                "passing_score,certificate_required,certificate_template_key,certificate_layers_json,version,"
+                "created_at,updated_at,published_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                (
+                    owner_id, subject, str(old.get("title") or "Speaking Track")[:160],
+                    str(old.get("description") or ""), "star", "published" if published else "draft",
+                    int(old.get("sort_order") or track_position), DEFAULT_TRACK_PASSING_SCORE, 1,
+                    "russian" if subject == "Russian" else "english", "[]", 1,
+                    old.get("created_at") or now_iso, old.get("updated_at") or now_iso,
+                    now_iso if published else None,
+                ),
+            )
+            new_track_id = int(dict(cur.fetchone())["id"])
+            counts["tracks"] += 1
+            cur.execute(
+                "SELECT * FROM speaking_learning_modules WHERE track_id=? ORDER BY sort_order, id",
+                (int(old["id"]),),
+            )
+            for module_position, old_module in enumerate(dict(row) for row in cur.fetchall() or []):
+                title = str(old_module.get("title") or "Modul")[:160]
+                cover = str(old_module.get("cover_key") or "star")
+                cover = cover if cover in LEARNING_COVERS else "star"
+                cur.execute(
+                    "INSERT INTO speaking_lp_learning_modules(track_id,title,description,cover_key,position,"
+                    "topic_keys_json,passing_score,reward_coins) VALUES(?,?,?,?,?,?,?,0) RETURNING id",
+                    (
+                        new_track_id, title, str(old_module.get("description") or ""), cover,
+                        int(old_module.get("sort_order") or module_position),
+                        json.dumps([title], ensure_ascii=False), DEFAULT_TRACK_PASSING_SCORE,
+                    ),
+                )
+                new_module_id = int(dict(cur.fetchone())["id"])
+                counts["modules"] += 1
+                cur.execute(
+                    "INSERT INTO speaking_lp_learning_module_topics(module_id,title,position) VALUES(?,?,0) RETURNING id",
+                    (new_module_id, title),
+                )
+                topic_id = int(dict(cur.fetchone())["id"])
+                cur.execute(
+                    "SELECT * FROM speaking_learning_questions WHERE module_id=? ORDER BY sort_order, id",
+                    (int(old_module["id"]),),
+                )
+                for lesson_position, question_row in enumerate(dict(row) for row in cur.fetchall() or []):
+                    payload = _legacy_speaking_question_payload(question_row)
+                    cur.execute(
+                        "INSERT INTO speaking_lp_learning_module_lessons(module_id,topic_id,title,source_kind,source_id,"
+                        "source_version,question_payload_json,duration_seconds,position,required) "
+                        "VALUES(?,?,?,?,?,?,?,0,?,1)",
+                        (
+                            new_module_id, topic_id,
+                            (str(question_row.get("prompt") or "").strip() or f"{title} · {lesson_position + 1}")[:180],
+                            "manual", f"speaking_learning_question:{int(question_row['id'])}",
+                            str(payload.get("test_type") or "multiple_choice"),
+                            json.dumps(payload, ensure_ascii=False), lesson_position,
+                        ),
+                    )
+                    counts["lessons"] += 1
+        logger.info("Legacy Speaking Learning Path migrated: %s", counts)
+        return finish(counts)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
 def _user(authorization: str | None) -> dict[str, Any]:
     return _runtime["user_from_bearer"](authorization)
 
@@ -607,6 +1020,44 @@ def _role(user: dict[str, Any]) -> str:
 def _require(user: dict[str, Any], roles: set[str]) -> None:
     if _role(user) not in roles:
         raise HTTPException(status_code=403, detail="Permission denied")
+
+
+SPEAKING_LP_MANAGER_ROLES = {"speaking_admin"}
+
+
+def _is_speaking_app_user(user: dict[str, Any]) -> bool:
+    from speaking_contract import is_speaking_app_account
+    return is_speaking_app_account((user or {}).get("speaking_app_account"))
+
+
+def _require_lp_manager(user: dict[str, Any]) -> None:
+    """Staff Learning Path access for the active namespace."""
+    _require(user, SPEAKING_LP_MANAGER_ROLES if _lp_is_speaking() else LEARNING_MANAGER_ROLES)
+
+
+def _lp_manager_sees_all(user: dict[str, Any]) -> bool:
+    """Admins manage every student track; the Speaking admin every Speaking track."""
+    return _role(user) == ("speaking_admin" if _lp_is_speaking() else "admin")
+
+
+def _require_lp_student(user: dict[str, Any]) -> None:
+    """Student Learning Path access: each app sees only its own Learning Path."""
+    _require(user, {"student"})
+    speaking_account = _is_speaking_app_user(user)
+    if _lp_is_speaking() and not speaking_account:
+        raise HTTPException(status_code=403, detail="Speaking Learning Path is available only in the Speaking app")
+    if not _lp_is_speaking() and speaking_account:
+        raise HTTPException(status_code=403, detail="Speaking app accounts use the Speaking Learning Path")
+
+
+def _lp_course_key(track: dict[str, Any]) -> str:
+    prefix = "speaking-learning-track" if _lp_is_speaking() else "learning-track"
+    return f"{prefix}:{int(track['id'])}:v{int(track.get('version') or 1)}"
+
+
+def _lp_history_key(base: str) -> str:
+    """D'coin history keys must not collide between the two namespaces."""
+    return f"speaking_{base}" if _lp_is_speaking() else base
 
 
 def _staff_can_access_student(user: dict[str, Any], student_id: int) -> bool:
@@ -2125,12 +2576,22 @@ class LearningAssignRequest(BaseModel):
 
 
 class LearningLessonSubmit(BaseModel):
-    score: float = Field(ge=0, le=100)
-    answers: list[Any] = Field(default_factory=list, max_length=200)
+    """Raw answers only; the server grades them.
+
+    Lesson: ``answers=[{"answer": <raw>}]`` (legacy ``{question, selected,
+    correct}`` items and plain strings are still read).  Final exam:
+    ``answers={exam_key: raw}`` or ``[{"exam_key": ..., "answer": raw}]``.
+    ``score`` is accepted for old clients and ignored.
+    """
+    score: float | None = Field(default=None, ge=0, le=100)
+    answers: list[Any] | dict[str, Any] = Field(default_factory=list)
 
 
 class LearningLessonAiCheckRequest(BaseModel):
     lesson_id: int | None = None
+    # "<lesson_id>:<sub_index>" of a final-exam item.
+    exam_key: str | None = Field(default=None, max_length=40)
+    # Only used for a free-standing preview without lesson_id/exam_key.
     question_payload: dict[str, Any] | None = None
     answer_text: str | None = None
     audio_url: str | None = None
@@ -2143,7 +2604,7 @@ def _learning_track_for_manager(track_id: int, user: dict[str, Any]) -> dict[str
         cur=conn.cursor(); cur.execute("SELECT * FROM learning_tracks WHERE id=?", (track_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Learning track not found")
         track=dict(row)
-        if _role(user) != "admin" and int(track.get("owner_id") or 0) != int(user["id"]):
+        if not _lp_manager_sees_all(user) and int(track.get("owner_id") or 0) != int(user["id"]):
             raise HTTPException(status_code=403, detail="Only the track owner can manage this track")
         return track
     finally: conn.close()
@@ -2325,10 +2786,10 @@ def _learning_track_payload(cur: Any, track: dict[str, Any], student_id: int | N
 
 @router.get("/staff/learning-tracks")
 async def staff_learning_tracks(authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor()
-        if _role(user) == "admin": cur.execute("SELECT * FROM learning_tracks ORDER BY subject,position,id")
+        if _lp_manager_sees_all(user): cur.execute("SELECT * FROM learning_tracks ORDER BY subject,position,id")
         else: cur.execute("SELECT * FROM learning_tracks WHERE owner_id=? ORDER BY subject,position,id", (int(user["id"]),))
         return {"items":[_learning_track_payload(cur, row) for row in _dicts(cur.fetchall())], "default_passing_score":DEFAULT_TRACK_PASSING_SCORE, "covers":sorted(LEARNING_COVERS)}
     finally: conn.close()
@@ -2336,7 +2797,7 @@ async def staff_learning_tracks(authorization: str | None = Header(default=None)
 
 @router.post("/staff/learning-tracks")
 async def create_learning_track(payload: LearningTrackRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); subject=_learning_track_subject(user, payload.subject)
         passing=normalize_track_passing_score(payload.passing_score)
@@ -2349,7 +2810,7 @@ async def create_learning_track(payload: LearningTrackRequest, authorization: st
 
 @router.patch("/staff/learning-tracks/{track_id}")
 async def update_learning_track(track_id: int, payload: LearningTrackUpdate, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id, user); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); _learning_track_for_manager(track_id, user); conn=get_conn()
     try:
         cur=conn.cursor(); values=payload.model_dump(exclude_unset=True)
         if not values: return {"id":track_id}
@@ -2373,7 +2834,7 @@ async def delete_learning_track(track_id: int, authorization: str | None = Heade
     Student test-history and mistake-notebook records are intentionally
     preserved so that academic history is never lost.
     """
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); track=_learning_track_for_manager(track_id, user); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); track=_learning_track_for_manager(track_id, user); conn=get_conn()
     try:
         cur=conn.cursor()
         cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position, id", (track_id,))
@@ -2401,7 +2862,7 @@ async def delete_learning_track(track_id: int, authorization: str | None = Heade
 
 @router.post("/staff/learning-tracks/{track_id}/modules")
 async def add_learning_module(track_id: int, payload: LearningModuleRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
     try:
         cur=conn.cursor(); cover=payload.cover_key if payload.cover_key in LEARNING_COVERS else "star"
         # Enforce consecutive uniqueness: cannot have the exact same cover as immediate previous module
@@ -2424,7 +2885,7 @@ async def add_learning_module(track_id: int, payload: LearningModuleRequest, aut
 
 @router.patch("/staff/learning-modules/{module_id}")
 async def update_learning_module(module_id: int, payload: LearningModuleUpdate, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute(
             "SELECT m.track_id,m.title,m.position,t.owner_id,t.subject,t.title AS track_title,t.position AS track_position "
@@ -2473,7 +2934,7 @@ async def delete_learning_module(module_id: int, authorization: str | None = Hea
     notebook records are not removed, so a teacher changing a path cannot
     erase a student's broader academic history.
     """
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute(
             "SELECT m.track_id,m.title,m.position,t.owner_id,t.subject,t.title AS track_title,t.position AS track_position "
@@ -2521,6 +2982,9 @@ def _archive_learning_path_test(
     cur: Any, *, module_id: int, topic_id: int, title: str, question: dict[str, Any]
 ) -> None:
     """Sync one topic as one immutable Library test, never one node per question."""
+    if _lp_is_speaking():
+        # Speaking Learning Path content is not mirrored into teacher Libraries.
+        return
     try:
         import db as dbm
         cur.execute(
@@ -2602,7 +3066,7 @@ def _delete_learning_path_library_branch(
     module_title: str | None = None, module_position: int | None = None,
 ) -> None:
     """Remove the protected mirror after its source track/module is removed."""
-    if owner_id <= 0:
+    if owner_id <= 0 or _lp_is_speaking():
         return
     try:
         import db as dbm
@@ -2635,7 +3099,7 @@ def _delete_learning_path_library_branch(
 
 def _delete_learning_path_library_bundle(*, owner_id: int, module_id: int, topic_id: int) -> None:
     """Remove the immutable Library mirror for one Learning Path topic."""
-    if owner_id <= 0:
+    if owner_id <= 0 or _lp_is_speaking():
         return
     marker = f"learning:{module_id}:{topic_id}:bundle"
     try:
@@ -2705,6 +3169,8 @@ def rebuild_learning_path_library_mirrors() -> dict[str, int]:
     every question as a separate Library file or left topics under duplicate
     module folders. The database Learning Path remains the source of truth.
     """
+    if _lp_is_speaking():
+        return {"deleted_roots": 0, "rebuilt_topic_tests": 0}
     ensure_schema()
     try:
         import db as dbm
@@ -2750,7 +3216,7 @@ def rebuild_learning_path_library_mirrors() -> dict[str, int]:
 
 @router.post("/staff/learning-modules/{module_id}/topics")
 async def add_learning_module_topic(module_id: int, payload: LearningModuleTopicRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Learning module not found")
@@ -2769,7 +3235,7 @@ async def add_learning_module_topic(module_id: int, payload: LearningModuleTopic
 
 @router.patch("/staff/learning-module-topics/{topic_id}")
 async def update_learning_module_topic(topic_id: int, payload: LearningModuleTopicUpdate, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Mavzu topilmadi")
@@ -2793,7 +3259,7 @@ async def reorder_learning_module_topics(
 ):
     """Atomically persist the drag-and-drop topic order for one module."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     try:
@@ -2827,7 +3293,7 @@ async def reorder_learning_module_topics(
 
 @router.delete("/staff/learning-module-topics/{topic_id}")
 async def delete_learning_module_topic(topic_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT t.module_id,m.track_id,tr.owner_id FROM learning_module_topics t JOIN learning_modules m ON m.id=t.module_id JOIN learning_tracks tr ON tr.id=m.track_id WHERE t.id=?", (topic_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404, detail="Mavzu topilmadi")
@@ -2850,7 +3316,7 @@ async def delete_learning_module_topic(topic_id: int, authorization: str | None 
 
 @router.post("/staff/learning-modules/{module_id}/lessons")
 async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT track_id FROM learning_modules WHERE id=?",(module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
@@ -2904,7 +3370,7 @@ def _separate_consecutive_learning_types(items: list[tuple[Any, dict]]) -> list[
 async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatchRequest, authorization: str | None = Header(default=None)):
     """Append a complete editor/AI draft atomically, preserving library fields."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     try:
@@ -2954,7 +3420,7 @@ async def add_learning_lessons_batch(module_id: int, payload: LearningLessonBatc
 async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, authorization: str | None = Header(default=None)):
     """Edit an existing lesson/test in a learning module."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     try:
@@ -3005,7 +3471,7 @@ async def update_learning_lesson(lesson_id: int, payload: LearningLessonUpdate, 
 async def delete_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
     """Delete a single lesson/test from a learning module."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     try:
@@ -3037,7 +3503,7 @@ async def delete_learning_topic_lessons(
 ):
     """Delete selected questions, or all questions when lesson_ids is empty."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     try:
@@ -3318,7 +3784,7 @@ def _learning_visible_library_ids(user: dict[str, Any]) -> set[int] | None:
 async def staff_teacher_library_tree(authorization: str | None = Header(default=None)):
     """Fetch teacher library folders and test nodes for attaching to learning modules, isolated strictly to the teacher's subject."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     role = _role(user)
@@ -3574,7 +4040,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     """Generate AI test questions using Diamondvoy (xAI / Gemini) with question bank reuse and auto-save."""
     import re
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     _ai_rate_limit(user, "learning-ai-question", limit=60, window_seconds=3600)
     ensure_schema()
     conn = get_conn()
@@ -3849,7 +4315,9 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             pass
 
         # Auto-save to materials library under content_type='ai_generated'
-        save_cb = _runtime.get("save_library_test")
+        # (Speaking Learning Path module ids are a separate sequence and the
+        # Speaking workspace has no Materials Library, so skip it there.)
+        save_cb = None if _lp_is_speaking() else _runtime.get("save_library_test")
         if save_cb and library_questions:
             try:
                 save_cb(
@@ -4277,7 +4745,11 @@ def _learning_exam_questions(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 @router.post("/staff/learning-modules/{module_id}/library-test")
 async def attach_learning_library_test(module_id: int, payload: LearningLibraryTestAttachRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user)
+    if _lp_is_speaking():
+        # The Speaking workspace has no teacher Materials Library.
+        raise HTTPException(status_code=404, detail="Materials Library is not available in the Speaking Learning Path")
+    ensure_schema(); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT track_id,position FROM learning_modules WHERE id=?", (module_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
@@ -4342,11 +4814,21 @@ async def attach_learning_library_test(module_id: int, payload: LearningLibraryT
 
 @router.post("/staff/learning-tracks/{track_id}/assign")
 async def assign_learning_track(track_id: int, payload: LearningAssignRequest, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user, LEARNING_MANAGER_ROLES); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
+    user=_user(authorization); _require_lp_manager(user); ensure_schema(); _learning_track_for_manager(track_id,user); conn=get_conn()
     try:
         cur=conn.cursor(); assigned=[]
+        speaking_ids: set[int] = set()
+        if _lp_is_speaking():
+            requested = sorted({int(value) for value in payload.student_ids if int(value) > 0})
+            if requested:
+                ph = ",".join("?" for _ in requested)
+                cur.execute(f"SELECT id, speaking_app_account FROM users WHERE id IN ({ph})", requested)
+                speaking_ids = {int(row["id"]) for row in _dicts(cur.fetchall()) if _is_speaking_app_user(row)}
         for student_id in sorted(set(payload.student_ids)):
-            if int(student_id)<=0 or (_role(user)!="admin" and not _staff_can_access_student(user,int(student_id))): continue
+            if int(student_id)<=0: continue
+            if _lp_is_speaking():
+                if int(student_id) not in speaking_ids: continue
+            elif _role(user)!="admin" and not _staff_can_access_student(user,int(student_id)): continue
             try: cur.execute("INSERT INTO learning_track_assignments(track_id,student_id,assigned_by,due_at) VALUES(?,?,?,?) ON CONFLICT(track_id,student_id) DO UPDATE SET status='active',due_at=excluded.due_at",(track_id,int(student_id),int(user["id"]),payload.due_at))
             except Exception: cur.execute("INSERT OR REPLACE INTO learning_track_assignments(track_id,student_id,assigned_by,due_at,status) VALUES(?,?,?,?, 'active')",(track_id,int(student_id),int(user["id"]),payload.due_at))
             assigned.append(int(student_id))
@@ -4358,7 +4840,7 @@ async def assign_learning_track(track_id: int, payload: LearningAssignRequest, a
 async def staff_materials_search(q: str = "", content_type: str = "", authorization: str | None = Header(default=None)):
     """Search material library tests that can be attached to learning modules with strict teacher subject isolation."""
     user = _user(authorization)
-    _require(user, LEARNING_MANAGER_ROLES)
+    _require_lp_manager(user)
     ensure_schema()
     conn = get_conn()
     role = _role(user)
@@ -4569,7 +5051,7 @@ def _refresh_learning_module_progress(cur: Any, module_id: int, student_id: int,
 
 
 def _ensure_track_certificate(cur: Any, track: dict[str, Any], student_id: int) -> dict[str, Any] | None:
-    course_key=f"learning-track:{int(track['id'])}:v{int(track.get('version') or 1)}"
+    course_key=_lp_course_key(track)
     cur.execute("SELECT * FROM certificates WHERE user_id=? AND course_key=?",(student_id,course_key)); existing=cur.fetchone()
     if existing:
         certificate=dict(existing)
@@ -4577,8 +5059,8 @@ def _ensure_track_certificate(cur: Any, track: dict[str, Any], student_id: int) 
         share_row=cur.fetchone()
         if share_row: certificate["share_token"]=str(dict(share_row).get("share_token") or "")
         return certificate
-    certificate_id=f"LP-{int(track['id'])}-{student_id}-{secrets.token_hex(5).upper()}"
-    metadata={"source":"learning_path","track_id":int(track["id"]),"template":track.get("certificate_template_key"),"layers":json.loads(str(track.get("certificate_layers_json") or "[]"))}
+    certificate_id=f"{'SLP' if _lp_is_speaking() else 'LP'}-{int(track['id'])}-{student_id}-{secrets.token_hex(5).upper()}"
+    metadata={"source":"speaking_learning_path" if _lp_is_speaking() else "learning_path","track_id":int(track["id"]),"template":track.get("certificate_template_key"),"layers":json.loads(str(track.get("certificate_layers_json") or "[]"))}
     cur.execute("INSERT INTO certificates(certificate_id,user_id,course_key,course_title,metadata_json) VALUES(?,?,?,?,?)",(certificate_id,student_id,course_key,str(track.get("title") or "Learning Path"),json.dumps(metadata,ensure_ascii=False)))
     share=secrets.token_urlsafe(24).replace("-","").replace("_","")
     try: cur.execute("INSERT INTO learning_certificate_shares(certificate_id,share_token) VALUES(?,?)",(certificate_id,share))
@@ -4588,7 +5070,7 @@ def _ensure_track_certificate(cur: Any, track: dict[str, Any], student_id: int) 
 
 @router.get("/student/learning-tracks")
 async def student_learning_tracks(subject: str | None = Query(default=None), authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    user=_user(authorization); _require_lp_student(user); ensure_schema(); uid=int(user["id"]); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT * FROM learning_tracks WHERE status != 'archived' ORDER BY subject,position,id")
         raw_tracks=_dicts(cur.fetchall()); tracks=[]
@@ -4621,7 +5103,7 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
                 final_passed = (final_status == "passed")
                 completed = all_modules_passed and final_passed
 
-                course_key = f"learning-track:{int(track['id'])}:v{int(track.get('version') or 1)}"
+                course_key = _lp_course_key(track)
                 cur.execute("SELECT certificate_id, issued_at FROM certificates WHERE user_id=? AND course_key=?", (uid, course_key))
                 cert_row = cur.fetchone()
                 cert_claimed = bool(cert_row)
@@ -4661,7 +5143,7 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
 
 @router.get("/student/learning-lessons/{lesson_id}")
 async def student_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    user=_user(authorization); _require_lp_student(user); ensure_schema(); uid=int(user["id"]); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,t.passing_score AS track_passing_score,t.status AS track_status,t.subject AS track_subject FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Lesson not found")
@@ -4700,38 +5182,55 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
                 wb_set = {str(w).strip().lower() for w in wb if w}
                 if (is_tense_or_form and has_brackets) or (is_tense_or_form and ans_set and ans_set.issubset(wb_set)):
                     qp["word_bank"] = []
-            q_kind = str(qp.get("kind") or qp.get("test_type") or "")
-            if q_kind in {"word_practice", "vocabulary", "vocab"} or qp.get("practice_mode") in {"word_practice", "random"}:
-                import random as _rnd
-                from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name, _vocabulary_translation_language
-                # Deterministic single task per student & lesson (homework-like behavior)
-                lesson_seed = int(item.get("id") or 0) * 10007 + uid
-                r = _rnd.Random(lesson_seed)
-                cand_variants = ["spelling", "translation", "write_sentence", "speak_sentence", "read_aloud"]
-                tr_has = bool(qp.get("translation") or qp.get("translation_uz") or qp.get("translation_ru"))
-                if not tr_has and "translation" in cand_variants:
-                    cand_variants.remove("translation")
-                chosen_v = str(qp.get("practice_mode") or "").strip()
-                if chosen_v not in cand_variants:
-                    chosen_v = r.choice(cand_variants)
-                # A lesson can be reopened. Persist its random translation
-                # direction in the materialized question so its prompt and
-                # answer never flip between requests.
-                materialize_qp = dict(qp)
-                if chosen_v == "translation" and materialize_qp.get("translation_reverse") is None:
-                    materialize_qp["translation_reverse"] = bool(r.getrandbits(1))
-                s_lang = _student_lang(user)
-                st_lang = _study_language_name(str(item.get("track_subject") or "English"))
-                mat = _materialize_word_practice(
-                    materialize_qp,
-                    lang=s_lang,
-                    study_lang=st_lang,
-                    chosen_kind=chosen_v,
-                    translation_language=_vocabulary_translation_language(user, str(item.get("track_subject") or "English")),
-                )
-                qp.update(mat)
+            _materialize_lesson_word_practice(
+                qp, lesson_id=int(item.get("id") or 0), user=user,
+                track_subject=str(item.get("track_subject") or "English"),
+            )
         return item
     finally: conn.close()
+
+
+def _materialize_lesson_word_practice(
+    qp: dict[str, Any], *, lesson_id: int, user: dict[str, Any], track_subject: str
+) -> dict[str, Any]:
+    """Turn a word_practice lesson into this student's deterministic variant.
+
+    The lesson GET and the server grader must produce the same exercise, so
+    both call this with the same seed (lesson id and student id).
+    """
+    q_kind = str(qp.get("kind") or qp.get("test_type") or "")
+    if not (q_kind in {"word_practice", "vocabulary", "vocab"} or qp.get("practice_mode") in {"word_practice", "random"}):
+        return qp
+    import random as _rnd
+    from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name, _vocabulary_translation_language
+    uid = int(user.get("id") or 0)
+    # Deterministic single task per student & lesson (homework-like behavior)
+    lesson_seed = int(lesson_id or 0) * 10007 + uid
+    r = _rnd.Random(lesson_seed)
+    cand_variants = ["spelling", "translation", "write_sentence", "speak_sentence", "read_aloud"]
+    tr_has = bool(qp.get("translation") or qp.get("translation_uz") or qp.get("translation_ru"))
+    if not tr_has and "translation" in cand_variants:
+        cand_variants.remove("translation")
+    chosen_v = str(qp.get("practice_mode") or "").strip()
+    if chosen_v not in cand_variants:
+        chosen_v = r.choice(cand_variants)
+    # A lesson can be reopened. Persist its random translation
+    # direction in the materialized question so its prompt and
+    # answer never flip between requests.
+    materialize_qp = dict(qp)
+    if chosen_v == "translation" and materialize_qp.get("translation_reverse") is None:
+        materialize_qp["translation_reverse"] = bool(r.getrandbits(1))
+    s_lang = _student_lang(user)
+    st_lang = _study_language_name(str(track_subject or "English"))
+    mat = _materialize_word_practice(
+        materialize_qp,
+        lang=s_lang,
+        study_lang=st_lang,
+        chosen_kind=chosen_v,
+        translation_language=_vocabulary_translation_language(user, str(track_subject or "English")),
+    )
+    qp.update(mat)
+    return qp
 
 
 def _normalize_learning_answer(value: Any) -> str:
@@ -4767,6 +5266,427 @@ def _learning_answer_matches(
     return len(parts) > 1 and all(part in expected for part in parts)
 
 
+# ── Server-side Learning Path grading ───────────────────────────────────────
+# Pure functions: they only read the stored question payload and the raw
+# answer the client submitted.  A client-sent score is never trusted.
+_LEARNING_GRADE_CHOICE_KINDS = {
+    "multiple_choice", "mcq", "choice", "multiple-choice",
+    "true_false", "boolean", "listening_tf", "listening",
+}
+_LEARNING_GRADE_TF_KINDS = {"true_false", "boolean", "listening_tf"}
+_LEARNING_GRADE_ORDER_KINDS = {"word_order", "scrambled_sentence", "listening_order", "rearrange", "sentence_builder", "order"}
+_LEARNING_GRADE_SET_KINDS = {"reading_set", "listening_set", "multiple_choice_set"}
+_LEARNING_GRADE_AI_KINDS = {
+    "speak_sentence", "write_sentence", "guided_writing", "reading_open",
+    "read_aloud", "paraphrase", "dialogue_completion", "picture_description",
+    "listening_open", "open", "word_practice", "speaking_repeat", "speaking_response",
+}
+_LEARNING_GRADE_TF_ALIASES = (
+    {"true", "t", "to'g'ri", "togri", "to'gri", "verno", "верно", "правда", "да", "yes", "ha"},
+    {"false", "f", "noto'g'ri", "notogri", "noto'gri", "неверно", "ложь", "нет", "no", "yo'q"},
+    {"not given", "ng", "berilmagan", "не указано", "нет информации"},
+)
+_LEARNING_GRADE_POS_RE = re.compile(r"\s*\([a-zA-Z\s\.,-]+\)\s*")
+_LEARNING_GRADE_NUMBERED_RE = re.compile(r"(?:^|[,|]\s*)(\d+)\.\s?(.*?)(?=\s*[,|]\s*\d+\.\s|$)", re.S)
+
+
+def _learning_grade_kind(qp: dict[str, Any]) -> str:
+    kind = str(qp.get("practice_mode") or qp.get("kind") or qp.get("test_type") or "").strip().lower()
+    return "word_practice" if kind in {"random", "vocabulary", "vocab"} else kind
+
+
+def _learning_grade_text(value: Any) -> str:
+    """Visible text of a raw answer (string, number, {text|answer}, list)."""
+    if value is None or isinstance(value, bool):
+        return ""
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("text", "answer_text", "answer", "selected", "value", "transcript"):
+            candidate = value.get(key)
+            if isinstance(candidate, (str, int, float)) and not isinstance(candidate, bool) and str(candidate).strip():
+                return str(candidate)
+        return ""
+    if isinstance(value, (list, tuple)):
+        return " ".join(part for part in (_learning_grade_text(item).strip() for item in value) if part)
+    return str(value)
+
+
+def _learning_grade_matches(answer: Any, candidates: list[str], *, joined_translation: bool = False) -> bool:
+    text = _LEARNING_GRADE_POS_RE.sub(" ", str(answer or "")).strip()
+    clean = [_LEARNING_GRADE_POS_RE.sub(" ", str(item or "")).strip() for item in candidates]
+    return _learning_answer_matches(text, [item for item in clean if item], allow_joined_translation=joined_translation)
+
+
+def _learning_grade_candidates(qp: dict[str, Any], kind: str) -> list[str]:
+    """Accepted answers for a free-text question (same sources as the clients)."""
+    values: list[str] = []
+
+    def add(value: Any) -> None:
+        if value is None or isinstance(value, bool):
+            return
+        if isinstance(value, dict):
+            value = list(value.values())
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                add(item)
+            return
+        text = str(value).strip()
+        if not text:
+            return
+        values.append(text)
+        for part in re.split(r"[;\n|]+", text):
+            part = part.strip()
+            if part and part != text:
+                values.append(part)
+
+    for key in ("correct_answer", "answer", "accepted_answers", "acceptable_answers"):
+        add(qp.get(key))
+    if kind == "spelling":
+        add(qp.get("clean_word"))
+        add(qp.get("word"))
+    if kind == "translation" and not qp.get("is_random_word_practice"):
+        # A materialized vocabulary task already carries its exact answers;
+        # its leftover source translation may be the prompt (reverse task).
+        for key in ("translation", "translation_uz", "translation_ru", "translations"):
+            add(qp.get(key))
+    # A one-gap sentence may store the full sentence as its answer.
+    template = str(qp.get("passage_template") or qp.get("passage") or qp.get("question") or "")
+    correct = str(qp.get("correct_answer") or "").strip()
+    if correct and template.count("___") == 1:
+        prefix, suffix = (part.strip() for part in template.split("___"))
+        inside = correct
+        if prefix and inside.casefold().startswith(prefix.casefold()):
+            inside = inside[len(prefix):].strip()
+        if suffix and inside.casefold().endswith(suffix.casefold()):
+            inside = inside[: len(inside) - len(suffix)].strip()
+        if inside and inside != correct:
+            values.append(inside)
+    return list(dict.fromkeys(values))
+
+
+def _learning_grade_list_answer(given: Any, size: int) -> list[str]:
+    """Positional answers from a list, an index-keyed dict or a legacy string."""
+    if isinstance(given, dict) and not any(key in given for key in ("text", "answer", "answer_text", "selected")):
+        keys = {str(key) for key in given}
+        offset = 0 if "0" in keys else 1
+        return [_learning_grade_text(given.get(str(index + offset), given.get(index + offset))) for index in range(size)]
+    if isinstance(given, dict):
+        return _learning_grade_list_answer(given.get("answer", given.get("selected", given.get("text"))), size)
+    if isinstance(given, (list, tuple)):
+        return [_learning_grade_text(item) for item in given]
+    text = _learning_grade_text(given).strip()
+    if not text:
+        return []
+    numbered = _LEARNING_GRADE_NUMBERED_RE.findall(text)
+    if numbered and text.startswith("1."):
+        result = [""] * size
+        for number, value in numbered:
+            index = int(number) - 1
+            if 0 <= index < size:
+                value = value.strip()
+                result[index] = "" if value in {"___", "—"} else value
+        return result
+    return [text]
+
+
+def _learning_grade_choice(qp: dict[str, Any], given: Any, kind: str) -> int:
+    options = [str(option) for option in (qp.get("options") or [])]
+    correct = str(qp.get("correct_answer") or "").strip()
+    if isinstance(given, dict) and "answer" in given and isinstance(given.get("answer"), (bool, int)):
+        given = given["answer"]
+    if isinstance(given, bool):
+        if not options:
+            return int(str(given).casefold() == correct.casefold())
+        picked = options[0 if given else min(1, len(options) - 1)]
+    elif isinstance(given, int) and 0 <= given < len(options):
+        picked = options[given]
+    else:
+        picked = _learning_grade_text(given).strip()
+    if not picked or not correct:
+        return 0
+    exact = next((option for option in options if option.strip() == picked), None)
+    if exact is not None:
+        return int(exact.strip().casefold() == correct.casefold())
+    if kind in _LEARNING_GRADE_TF_KINDS and options:
+        normalized = _normalize_learning_answer(picked)
+        for index, aliases in enumerate(_LEARNING_GRADE_TF_ALIASES):
+            if normalized in aliases and index < len(options):
+                return int(options[index].strip().casefold() == correct.casefold())
+    return int(_learning_grade_matches(picked, [correct]))
+
+
+def _learning_grade_order(qp: dict[str, Any], given: Any) -> int:
+    text = _learning_grade_text(given)
+
+    def tokens(value: Any) -> list[str]:
+        return [token for token in (_learning_token_key(word) for word in str(value or "").split()) if token]
+
+    submitted = tokens(text)
+    if not submitted:
+        return 0
+    expected = [qp.get("correct_answer"), *(qp.get("accepted_answers") or []), *(qp.get("acceptable_answers") or [])]
+    return int(any(tokens(candidate) == submitted for candidate in expected if tokens(candidate)))
+
+
+def _learning_grade_matching_answer(given: Any) -> dict[str, str]:
+    """{left: right} from a dict, a list of {left, right} or "a = b; c = d"."""
+    result: dict[str, str] = {}
+    if isinstance(given, dict):
+        for key, value in given.items():
+            left = re.sub(r"^\d+::", "", str(key)).strip()
+            result[left] = _learning_grade_text(value).strip()
+    elif isinstance(given, (list, tuple)):
+        for item in given:
+            if isinstance(item, dict):
+                result[str(item.get("left") or "").strip()] = _learning_grade_text(item.get("right")).strip()
+    elif isinstance(given, str):
+        for part in re.split(r"[;|\n]+", given):
+            if "=" in part:
+                left, right = part.split("=", 1)
+                result[left.strip()] = right.strip()
+    return result
+
+
+def _learning_grade_matching(qp: dict[str, Any], given: Any) -> tuple[int, int]:
+    pairs = [
+        pair for pair in (qp.get("pairs") or qp.get("matches") or [])
+        if isinstance(pair, dict) and str(pair.get("left") or "").strip() and str(pair.get("right") or "").strip()
+    ]
+    if not pairs:
+        return 0, 1
+    submitted = _learning_grade_matching_answer(given)
+    folded = {key.casefold(): value for key, value in submitted.items()}
+    correct = 0
+    for pair in pairs:
+        left = str(pair.get("left")).strip()
+        picked = submitted.get(left, folded.get(left.casefold(), ""))
+        accepted = [str(pair.get("right"))]
+        for key in ("translation_uz", "translation_ru"):
+            if pair.get(key):
+                accepted.append(str(pair[key]))
+        if isinstance(pair.get("translations"), dict):
+            accepted.extend(str(value) for value in pair["translations"].values() if value)
+        if picked and any(picked.casefold() == value.strip().casefold() for value in accepted):
+            correct += 1
+    return correct, len(pairs)
+
+
+def _learning_grade_cloze_expected(qp: dict[str, Any]) -> list[list[str]]:
+    expected: list[list[str]] = []
+    for blank in qp.get("blanks") or qp.get("answers") or []:
+        if isinstance(blank, dict):
+            values = [blank.get("answer"), blank.get("correct_answer"),
+                      *(blank.get("accepted_answers") or []), *(blank.get("acceptable_answers") or [])]
+        else:
+            values = [blank]
+        expected.append([str(value).strip() for value in values if value is not None and str(value).strip()])
+    if not expected:
+        correct = str(qp.get("correct_answer") or "").strip()
+        if correct:
+            expected = [[part.strip()] for part in re.split(r"[,;\n]+", correct) if part.strip()]
+    return expected
+
+
+def _learning_grade_cloze(qp: dict[str, Any], given: Any) -> tuple[int, int]:
+    expected = _learning_grade_cloze_expected(qp)
+    if not expected:
+        return 0, 1
+    answers = _learning_grade_list_answer(given, len(expected))
+    correct = sum(
+        1 for index, candidates in enumerate(expected)
+        if index < len(answers) and candidates and _learning_grade_matches(answers[index], candidates)
+    )
+    return correct, len(expected)
+
+
+def _learning_grade_set_item(sub: dict[str, Any], given: Any) -> int:
+    text = _learning_grade_text(given).strip()
+    if not text and not isinstance(given, bool):
+        return 0
+    options = [str(option) for option in (sub.get("options") or [])]
+    candidates: list[str] = []
+    for key in ("answer", "correct_answer", "correct"):
+        value = sub.get(key)
+        if isinstance(value, bool):
+            if options:
+                candidates.append(options[0 if value else min(1, len(options) - 1)])
+            candidates.append("true" if value else "false")
+        elif value is not None and str(value).strip():
+            candidates.append(str(value).strip())
+    candidates.extend(str(value) for value in (sub.get("accepted_answers") or []) if str(value).strip())
+    sub_kind = str(sub.get("type") or sub.get("kind") or "").strip().lower()
+    if isinstance(given, bool):
+        text = options[0 if given else min(1, len(options) - 1)] if options else ("true" if given else "false")
+    if not candidates:
+        # No answer key was authored: any non-empty answer counts, as before.
+        return 1
+    if sub_kind in _LEARNING_GRADE_ORDER_KINDS:
+        return _learning_grade_order({"correct_answer": candidates[0], "accepted_answers": candidates[1:]}, text)
+    if sub_kind in {"tf", "true_false", "true_false_ng"} and options:
+        return _learning_grade_choice({"options": options, "correct_answer": candidates[0]}, text, "true_false")
+    return int(_learning_grade_matches(text, candidates))
+
+
+def _learning_grade_set(qp: dict[str, Any], given: Any) -> tuple[int, int]:
+    subs = [sub for sub in (qp.get("sub_questions") or []) if isinstance(sub, dict)]
+    if not subs:
+        return 0, 1
+    if isinstance(given, (list, tuple)):
+        answers: list[Any] = list(given)
+    elif isinstance(given, dict) and given and all(re.fullmatch(r"\d+", str(key)) for key in given):
+        # Index-keyed dict ({"0": raw} or {"1": raw}); keep raw values (bools).
+        offset = 0 if "0" in {str(key) for key in given} else 1
+        answers = [given.get(str(index + offset)) for index in range(len(subs))]
+    else:
+        answers = list(_learning_grade_list_answer(given, len(subs)))
+    correct = sum(
+        _learning_grade_set_item(sub, answers[index] if index < len(answers) else "")
+        for index, sub in enumerate(subs)
+    )
+    return correct, len(subs)
+
+
+def _learning_question_needs_ai_check(qp: dict[str, Any]) -> bool:
+    """True when only a stored AI verdict can grade this question."""
+    if not isinstance(qp, dict):
+        return False
+    kind = _learning_grade_kind(qp)
+    if kind == "matching" or kind in _LEARNING_GRADE_SET_KINDS or kind == "passage_cloze":
+        return False
+    if kind in _LEARNING_GRADE_ORDER_KINDS:
+        return False
+    if kind in _LEARNING_GRADE_CHOICE_KINDS and (qp.get("options") or kind in _LEARNING_GRADE_TF_KINDS):
+        return False
+    if kind in {"spelling", "translation"}:
+        return False
+    if kind in _LEARNING_GRADE_AI_KINDS or str(qp.get("check") or "") == "ai":
+        return True
+    return not _learning_grade_candidates(qp, kind)
+
+
+def _grade_learning_question(question_payload: dict[str, Any], given: Any, *, saved_ai_ok: bool = False) -> tuple[int, int]:
+    """Grade one Learning Path question on the server: (correct, total)."""
+    qp = question_payload if isinstance(question_payload, dict) else {}
+    if not qp:
+        return 0, 1
+    kind = _learning_grade_kind(qp)
+    if _learning_question_needs_ai_check(qp):
+        return (1, 1) if saved_ai_ok else (0, 1)
+    if kind == "matching":
+        return _learning_grade_matching(qp, given)
+    if kind in _LEARNING_GRADE_SET_KINDS:
+        return _learning_grade_set(qp, given)
+    if kind == "passage_cloze":
+        return _learning_grade_cloze(qp, given)
+    if kind in _LEARNING_GRADE_ORDER_KINDS:
+        return _learning_grade_order(qp, given), 1
+    if kind in _LEARNING_GRADE_CHOICE_KINDS and (qp.get("options") or kind in _LEARNING_GRADE_TF_KINDS):
+        return _learning_grade_choice(qp, given, kind), 1
+    candidates = _learning_grade_candidates(qp, kind)
+    if isinstance(given, dict) and isinstance(given.get("answer"), (list, tuple)):
+        given = given["answer"]
+    if isinstance(given, (list, tuple)) and len(given) > 1:
+        expected = _learning_grade_cloze_expected(qp) if (qp.get("blanks") or qp.get("answers")) else []
+        if len(expected) == len(given):
+            return _learning_grade_cloze(qp, list(given))
+        # One answer for several gaps, e.g. "Do ... like".
+        return int(_learning_grade_matches(_learning_grade_text(given), candidates)), 1
+    return int(_learning_grade_matches(
+        _learning_grade_text(given), candidates, joined_translation=kind == "translation"
+    )), 1
+
+
+def _learning_answer_fingerprint(text: Any = None, audio_url: Any = None) -> str:
+    """Stable id of one submitted answer: the audio file, else the text."""
+    audio = Path(urlparse(str(audio_url or "").strip()).path).name if audio_url else ""
+    basis = f"audio:{audio}" if audio else "text:" + " ".join(str(text or "").casefold().split())
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
+def _learning_given_fingerprint(given: Any) -> str | None:
+    """Fingerprint of a submitted raw answer, or None when it has no content."""
+    if isinstance(given, dict):
+        audio = given.get("audio_url")
+        text = _learning_grade_text(given)
+        if not str(audio or "").strip() and not text.strip():
+            return None
+        return _learning_answer_fingerprint(text, audio)
+    text = _learning_grade_text(given)
+    return _learning_answer_fingerprint(text) if text.strip() else None
+
+
+def _learning_owned_audio_path(audio_url: str, user_id: int) -> Path:
+    """Accept only a recording this user uploaded for an answer."""
+    from backend.main import HOMEWORK_UPLOAD_DIR
+
+    parsed = urlparse(str(audio_url or "").strip())
+    if parsed.scheme or parsed.netloc:
+        if parsed.scheme != "https" or parsed.hostname not in _LEARNING_MEDIA_HOSTS:
+            raise HTTPException(status_code=422, detail="Invalid answer audio")
+    match = re.fullmatch(r"(?:/api)?/homework/voices/([A-Za-z0-9._-]+)", unquote(parsed.path or ""))
+    uid = int(user_id or 0)
+    filename = match.group(1) if match else ""
+    if uid <= 0 or not (filename.startswith(f"aitest_voice_{uid}_") or filename.startswith(f"speaking_lp_voice_{uid}_")):
+        raise HTTPException(status_code=422, detail="Invalid answer audio")
+    root = Path(HOMEWORK_UPLOAD_DIR).resolve()
+    target = (root / filename).resolve()
+    if target.parent != root or not target.is_file():
+        raise HTTPException(status_code=422, detail="Answer audio was not found")
+    return target
+
+
+LEARNING_AI_CHECK_MAX_AGE = timedelta(hours=6)
+
+
+def _learning_record_answer_check(
+    cur: Any, *, student_id: int, lesson_id: int, item_key: str, fingerprint: str,
+    verdict: str, result: dict[str, Any],
+) -> None:
+    cur.execute(
+        "INSERT INTO learning_answer_checks(student_id,lesson_id,item_key,answer_fingerprint,verdict,result_json,checked_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (int(student_id), int(lesson_id), str(item_key), fingerprint, str(verdict),
+         json.dumps(result, ensure_ascii=False, default=str), _db_utc_naive(_now())),
+    )
+
+
+def _learning_consume_answer_check(
+    cur: Any, *, student_id: int, lesson_id: int, item_key: str,
+    fingerprint: str | None, allow_latest: bool,
+) -> bool:
+    """Use one unconsumed, recent, correct AI verdict for this answer once."""
+    cutoff = _db_utc_naive(_now() - LEARNING_AI_CHECK_MAX_AGE)
+    base = (
+        "SELECT id, answer_fingerprint FROM learning_answer_checks WHERE student_id=? AND lesson_id=? "
+        "AND item_key=? AND verdict='correct' AND consumed_at IS NULL AND checked_at >= ? "
+    )
+    params: list[Any] = [int(student_id), int(lesson_id), str(item_key), cutoff]
+    row = None
+    if fingerprint:
+        cur.execute(base + "AND answer_fingerprint=? ORDER BY checked_at DESC, id DESC LIMIT 1", [*params, fingerprint])
+        row = cur.fetchone()
+    if row is None and allow_latest:
+        cur.execute(base + "ORDER BY checked_at DESC, id DESC LIMIT 1", params)
+        row = cur.fetchone()
+    if row is None:
+        return False
+    cur.execute(
+        "UPDATE learning_answer_checks SET consumed_at=? WHERE id=? AND consumed_at IS NULL",
+        (_db_utc_naive(_now()), int(dict(row)["id"])),
+    )
+    return bool(cur.rowcount)
+
+
+def _learning_exam_key(lesson_id: Any, sub_index: int) -> str:
+    return f"{int(lesson_id)}:{int(sub_index)}"
+
+
+def _parse_learning_exam_key(value: Any) -> tuple[int, int] | None:
+    match = re.fullmatch(r"\s*(\d+):(\d+)\s*", str(value or ""))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
 @router.post("/student/learning-lessons/{lesson_id}/check-ai")
 @router.post("/student/learning-lessons/check-ai")
 async def check_learning_lesson_ai(
@@ -4776,31 +5696,62 @@ async def check_learning_lesson_ai(
     x_language: str | None = Header(default=None, alias="X-Language"),
 ):
     user = _user(authorization)
-    _require(user, {"student", "teacher", "admin", "superadmin", "director", "mentor", "support", "staff"})
+    if _lp_is_speaking():
+        _require(user, {"student", "speaking_admin"})
+    else:
+        _require(user, {"student", "teacher", "admin", "superadmin", "director", "mentor", "support", "staff"})
+    if _role(user) == "student":
+        _require_lp_student(user)
     _ai_rate_limit(user, "learning-check-ai", limit=150, window_seconds=3600)
+    ensure_schema()
+    uid = int(user.get("id") or 0)
     conn = get_conn()
     try:
         cur = conn.cursor()
         eff_lesson_id = lesson_id or (payload.lesson_id if payload else None)
+        exam_key = str((payload.exam_key if payload else None) or "").strip()
+        item_key = "lesson"
+        sub_index: int | None = None
+        if exam_key:
+            parsed_key = _parse_learning_exam_key(exam_key)
+            if not parsed_key or (eff_lesson_id and int(eff_lesson_id) != parsed_key[0]):
+                raise HTTPException(status_code=422, detail="exam_key is invalid")
+            eff_lesson_id, sub_index = parsed_key
+            item_key = _learning_exam_key(*parsed_key)
         qp: dict[str, Any] = {}
         track_subject = "English"
         if eff_lesson_id:
+            # The stored question is the only grading source for a known
+            # lesson; a client-sent question_payload is ignored.
             cur.execute(
                 "SELECT l.question_payload_json, t.subject FROM learning_module_lessons l "
                 "JOIN learning_modules m ON m.id=l.module_id "
-                "JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=?",
+                "JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",
                 (int(eff_lesson_id),),
             )
             row = cur.fetchone()
-            if row:
-                r_dict = dict(row)
-                track_subject = str(r_dict.get("subject") or "English")
-                try:
-                    qp = json.loads(str(r_dict.get("question_payload_json") or "{}"))
-                except Exception:
-                    qp = {}
-        if payload and payload.question_payload and isinstance(payload.question_payload, dict):
-            qp = {**qp, **payload.question_payload}
+            if not row:
+                raise HTTPException(status_code=404, detail="Savol topilmadi")
+            r_dict = dict(row)
+            track_subject = str(r_dict.get("subject") or "English")
+            try:
+                stored = json.loads(str(r_dict.get("question_payload_json") or "{}"))
+            except Exception:
+                stored = {}
+            if sub_index is not None:
+                exam_items = _learning_exam_questions(stored) if isinstance(stored, dict) else []
+                if sub_index >= len(exam_items):
+                    raise HTTPException(status_code=404, detail="Savol topilmadi")
+                qp = exam_items[sub_index]
+            else:
+                qp = (_learning_library_question(stored) if isinstance(stored, dict) else None) or {}
+                if qp:
+                    _materialize_lesson_word_practice(
+                        qp, lesson_id=int(eff_lesson_id), user=user, track_subject=track_subject,
+                    )
+        elif payload and payload.question_payload and isinstance(payload.question_payload, dict):
+            # Free-standing preview without a lesson: nothing is stored.
+            qp = dict(payload.question_payload)
 
         if not qp:
             raise HTTPException(status_code=400, detail="Savol topilmadi")
@@ -4808,8 +5759,24 @@ async def check_learning_lesson_ai(
         subject = (payload.subject if payload and payload.subject else None) or track_subject or "English"
         answer = str((payload.answer_text if payload else "") or "").strip()
         audio_url = (payload.audio_url if payload else None) or None
+        if audio_url:
+            _learning_owned_audio_path(str(audio_url), uid)
         if answer == "[Audio answer]":
             answer = ""
+        persist_check = bool(eff_lesson_id) and _role(user) == "student"
+        fingerprint = _learning_answer_fingerprint(answer, audio_url)
+
+        def finish(result: dict[str, Any]) -> dict[str, Any]:
+            # Each verdict is stored so the submit can verify it was really
+            # produced by the server for this student, lesson and answer.
+            if persist_check:
+                _learning_record_answer_check(
+                    cur, student_id=uid, lesson_id=int(eff_lesson_id), item_key=item_key,
+                    fingerprint=fingerprint, verdict=str(result.get("verdict") or "wrong"), result=result,
+                )
+                conn.commit()
+            return result
+
 
         if not answer and not audio_url:
             return {
@@ -4877,20 +5844,19 @@ async def check_learning_lesson_ai(
         # stay local and deterministic; sending a materialized translation to
         # the sentence-writing AI checker is what caused valid answers to be
         # rejected as though the learner had not used the English word.
-        if effective_kind in {"spelling", "translation"}:
-            is_correct = _learning_answer_matches(
-                answer,
-                acc_list,
-                allow_joined_translation=effective_kind == "translation",
-            )
-            return {
+        if not _learning_question_needs_ai_check(qp) and not audio_url:
+            # Deterministic kinds use exactly the submit grader, so the
+            # verdict shown here is the verdict the submit will compute.
+            item_correct, item_total = _grade_learning_question(qp, {"text": answer})
+            is_correct = item_total > 0 and item_correct == item_total
+            return finish({
                 "is_correct": is_correct,
                 "verdict": "correct" if is_correct else "wrong",
                 "feedback": "Ajoyib! Juda to'g'ri!" if is_correct else "Javobingizda xatolik mavjud.",
                 "corrected": q_for_ai.get("reference_answer"),
                 "grammar_errors": [],
                 "score": 100.0 if is_correct else 0.0,
-            }
+            })
 
         ai_req = AiTestAnswerRequest(
             question_index=0,
@@ -4901,50 +5867,38 @@ async def check_learning_lesson_ai(
         lang = x_language or _student_lang(user) or "uz"
         try:
             verdict, feedback = await _check_with_ai(q_for_ai, ai_req, subject, lang)
-            is_correct = verdict == "correct"
-            return {
-                "is_correct": is_correct,
-                "verdict": verdict,
-                "feedback": feedback.get("feedback") or ("Ajoyib! Juda to'g'ri!" if is_correct else "Javobingizda xatolik mavjud."),
-                "transcript": feedback.get("transcript") or (answer if feedback.get("was_spoken") else ""),
-                "corrected": feedback.get("corrected"),
-                "grammar_errors": feedback.get("grammar_errors") or [],
-                "pronunciation_errors": feedback.get("pronunciation_errors") or [],
-                "was_spoken": feedback.get("was_spoken") or bool(audio_url),
-                "score": feedback.get("score") or (100.0 if is_correct else 0.0),
-            }
+        except HTTPException as exc:
+            if exc.status_code < 500:
+                raise
+            logger.warning("learning lesson ai check unavailable: %s", exc.detail)
+            raise HTTPException(status_code=503, detail="AI tekshirish xizmati vaqtincha ishlamayapti. Iltimos, qayta urinib ko'ring.")
         except Exception as exc:
-            logger.warning("learning lesson ai check fallback on error: %s", exc)
-            ref = str(q_for_ai.get("reference_answer") or "").strip().lower()
-            ans_norm = answer.lower()
-            if ref and (ans_norm == ref or ans_norm in ref or ref in ans_norm):
-                return {
-                    "is_correct": True,
-                    "verdict": "correct",
-                    "feedback": "Javob qabul qilindi.",
-                    "corrected": q_for_ai.get("reference_answer"),
-                    "grammar_errors": [],
-                    "score": 100.0,
-                }
-            return {
-                "is_correct": False,
-                "verdict": "wrong",
-                "feedback": "AI tekshirish xizmati javob bermadi. Iltimos qayta urinib ko'ring yoki javobingizni to'liqroq yozing.",
-                "corrected": q_for_ai.get("reference_answer"),
-                "grammar_errors": [],
-                "score": 0.0,
-            }
+            # Never accept an answer because the checker is down.
+            logger.warning("learning lesson ai check unavailable: %s", exc)
+            raise HTTPException(status_code=503, detail="AI tekshirish xizmati vaqtincha ishlamayapti. Iltimos, qayta urinib ko'ring.")
+        is_correct = verdict == "correct"
+        return finish({
+            "is_correct": is_correct,
+            "verdict": "correct" if is_correct else "wrong",
+            "feedback": feedback.get("feedback") or ("Ajoyib! Juda to'g'ri!" if is_correct else "Javobingizda xatolik mavjud."),
+            "transcript": feedback.get("transcript") or (answer if feedback.get("was_spoken") else ""),
+            "corrected": feedback.get("corrected"),
+            "grammar_errors": feedback.get("grammar_errors") or [],
+            "pronunciation_errors": feedback.get("pronunciation_errors") or [],
+            "was_spoken": feedback.get("was_spoken") or bool(audio_url),
+            "score": feedback.get("score") or (100.0 if is_correct else 0.0),
+        })
     finally:
         conn.close()
 
 
 @router.post("/student/learning-lessons/{lesson_id}/submit")
 async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, authorization: str | None = Header(default=None)):
-    user=_user(authorization); _require(user,{"student"}); ensure_schema(); uid=int(user["id"]); conn=get_conn()
+    user=_user(authorization); _require_lp_student(user); ensure_schema(); uid=int(user["id"]); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,m.reward_coins AS module_reward_coins,t.passing_score AS track_passing_score,t.certificate_required,t.certificate_template_key,t.certificate_layers_json,t.title AS track_title,t.version FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
+        cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,m.reward_coins AS module_reward_coins,t.passing_score AS track_passing_score,t.certificate_required,t.certificate_template_key,t.certificate_layers_json,t.title AS track_title,t.version,t.subject AS track_subject FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
         if not row: raise HTTPException(status_code=404,detail="Lesson not found")
-        lesson=dict(row); threshold=normalize_track_passing_score(lesson.get("module_passing") or lesson.get("track_passing_score")); passed=learning_score_passes(payload.score,threshold)
+        lesson=dict(row); threshold=normalize_track_passing_score(lesson.get("module_passing") or lesson.get("track_passing_score"))
         cur.execute("SELECT id FROM learning_modules WHERE track_id=? ORDER BY position,id", (int(lesson["track_id"]),))
         module_ids=[int(dict(module)["id"]) for module in cur.fetchall()]
         module_index=module_ids.index(int(lesson["module_id"]))
@@ -4953,7 +5907,36 @@ async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, 
             previous=cur.fetchone()
             if not previous or str(dict(previous).get("status") or "") != "passed":
                 raise HTTPException(status_code=423, detail="Oldingi modulni muvaffaqiyatli yakunlang")
-        cur.execute("INSERT INTO learning_lesson_attempts(lesson_id,student_id,score,passed,answers_json,completed_at) VALUES(?,?,?,?,?,?)",(lesson_id,uid,payload.score,1 if passed else 0,json.dumps(payload.answers,ensure_ascii=False),_now().isoformat()))
+        # Grade on the server from the raw answer; the client score is ignored.
+        try:
+            stored = json.loads(str(lesson.get("question_payload_json") or "{}"))
+        except Exception:
+            stored = {}
+        question = (_learning_library_question(stored) if isinstance(stored, dict) else None) or {}
+        if question:
+            _materialize_lesson_word_practice(
+                question, lesson_id=int(lesson_id), user=user,
+                track_subject=str(lesson.get("track_subject") or "English"),
+            )
+        given, legacy_item = _learning_lesson_submitted_answer(payload.answers)
+        if isinstance(given, dict) and given.get("audio_url"):
+            _learning_owned_audio_path(str(given["audio_url"]), uid)
+        ai_ok = False
+        if _learning_question_needs_ai_check(question):
+            ai_ok = _learning_consume_answer_check(
+                cur, student_id=uid, lesson_id=int(lesson_id), item_key="lesson",
+                fingerprint=_learning_given_fingerprint(given),
+                # Old clients cannot echo the checked answer; accept their
+                # latest verified correct check instead.
+                allow_latest=legacy_item,
+            )
+        correct_count, total_count = _grade_learning_question(question, given, saved_ai_ok=ai_ok)
+        total_count = max(1, int(total_count))
+        correct_count = max(0, min(int(correct_count), total_count))
+        score = round(correct_count * 100 / total_count)
+        passed = learning_score_passes(score, threshold)
+        stored_answers = payload.answers if isinstance(payload.answers, list) else [payload.answers]
+        cur.execute("INSERT INTO learning_lesson_attempts(lesson_id,student_id,score,passed,answers_json,completed_at) VALUES(?,?,?,?,?,?)",(lesson_id,uid,score,1 if passed else 0,json.dumps(stored_answers[:50],ensure_ascii=False,default=str),_now().isoformat()))
         progress=_refresh_learning_module_progress(cur,int(lesson["module_id"]),uid,threshold)
         reward_coins=0
         if progress.get("passed") and int(lesson.get("module_reward_coins") or 0) > 0:
@@ -4962,7 +5945,7 @@ async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, 
             p_row = cur.fetchone()
             was_rewarded = bool(p_row and dict(p_row).get("rewarded_at"))
             if not was_rewarded:
-                cur.execute("SELECT id FROM diamond_history WHERE user_id=? AND change_type=? LIMIT 1", (uid, f"learning_module_reward:{mid}"))
+                cur.execute("SELECT id FROM diamond_history WHERE user_id=? AND change_type=? LIMIT 1", (uid, _lp_history_key(f"learning_module_reward:{mid}")))
                 if cur.fetchone():
                     was_rewarded = True
             if not was_rewarded:
@@ -4976,20 +5959,57 @@ async def submit_learning_lesson(lesson_id: int, payload: LearningLessonSubmit, 
         if reward_coins:
             award=_runtime.get("award_coins")
             if award:
-                try: award(uid,reward_coins,"GLOBAL",change_type=f"learning_module_reward:{int(lesson['module_id'])}")
+                try: award(uid,reward_coins,"GLOBAL",change_type=_lp_history_key(f"learning_module_reward:{int(lesson['module_id'])}"))
                 except Exception: pass
-        return {"passed":passed,"required_score":threshold,"module_progress":progress,"track_completed":track_complete,"certificate":certificate,"reward_coins":reward_coins,"reward_points":reward_coins}
+        return {"passed":passed,"required_score":threshold,"module_progress":progress,"track_completed":track_complete,"certificate":certificate,"reward_coins":reward_coins,"reward_points":reward_coins,
+                "score":score,"correct":correct_count,"total":total_count,"is_correct":correct_count == total_count}
     finally: conn.close()
+
+
+def _learning_lesson_submitted_answer(answers: Any) -> tuple[Any, bool]:
+    """The raw answer of a one-question lesson submit and whether it is legacy.
+
+    New contract: ``[{"answer": raw}]``.  Legacy: ``[{"question", "selected",
+    "correct"}]`` (web) or ``["text"]`` (old mobile).
+    """
+    item: Any = answers
+    if isinstance(answers, list):
+        item = answers[0] if answers else None
+    if isinstance(item, dict):
+        if "answer" in item:
+            return item.get("answer"), False
+        if "selected" in item:
+            return item.get("selected"), True
+        return item, False
+    return item, True
 
 
 @router.get("/certificates/share/{share_token}")
 async def shared_learning_certificate(share_token: str):
     ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT c.certificate_id,c.course_title,c.issued_at,u.first_name,u.last_name FROM learning_certificate_shares s JOIN certificates c ON c.certificate_id=s.certificate_id JOIN users u ON u.id=c.user_id WHERE s.share_token=? AND s.active=1",(share_token,)); row=cur.fetchone()
+        cur=conn.cursor(); row=_certificate_share_lookup(cur, share_token, "c.certificate_id,c.course_title,c.issued_at,u.first_name,u.last_name")
         if not row: raise HTTPException(status_code=404,detail="Certificate link is invalid")
         certificate=dict(row); certificate["student_name"]=_student_name(certificate); certificate["download_url"]=f"/certificates/share/{share_token}/download"; return certificate
     finally: conn.close()
+
+
+def _certificate_share_lookup(cur: Any, share_token: str, columns: str) -> Any:
+    """Find an active share link in the student or the Speaking LP table."""
+    for table in ("learning_certificate_shares", SPEAKING_LP_TABLE_PREFIX + "learning_certificate_shares"):
+        if table != "learning_certificate_shares":
+            cur.execute("SELECT to_regclass(?) AS reg", (table,))
+            if not dict(cur.fetchone() or {}).get("reg"):
+                continue
+        cur.execute(
+            f"SELECT {columns} FROM {table} s JOIN certificates c ON c.certificate_id=s.certificate_id "
+            "JOIN users u ON u.id=c.user_id WHERE s.share_token=? AND s.active=1",
+            (share_token,),
+        )
+        row = cur.fetchone()
+        if row:
+            return row
+    return None
 
 
 def _certificate_pdf(certificate: dict[str, Any]) -> bytes:
@@ -5022,7 +6042,7 @@ def _certificate_pdf(certificate: dict[str, Any]) -> bytes:
 
 @router.post("/student/learning-tracks/{track_id}/certificate")
 async def claim_track_certificate(track_id: int, authorization: str | None = Header(default=None)):
-    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    user = _user(authorization); _require_lp_student(user); ensure_schema()
     uid = int(user["id"])
     conn = get_conn()
     try:
@@ -5068,7 +6088,7 @@ async def claim_track_certificate(track_id: int, authorization: str | None = Hea
         conn.commit()
         
         reward = 50.0
-        history_key = f"track_complete_{track_id}"
+        history_key = _lp_history_key(f"track_complete_{track_id}")
         cur.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=?", (uid, history_key))
         if not cur.fetchone():
             try:
@@ -5091,7 +6111,7 @@ async def claim_track_certificate(track_id: int, authorization: str | None = Hea
 
 @router.get("/student/learning-tracks/{track_id}/final-exam")
 async def get_track_final_exam(track_id: int, authorization: str | None = Header(default=None)):
-    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    user = _user(authorization); _require_lp_student(user); ensure_schema()
     uid = int(user["id"])
     conn = get_conn()
     try:
@@ -5130,27 +6150,22 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
         lesson_rows = [dict(r) for r in cur.fetchall()]
 
         questions = []
-        for idx, l in enumerate(lesson_rows):
-            try:
-                payload = json.loads(str(l.get("question_payload_json") or "{}"))
-            except Exception:
-                payload = {}
-            if not payload:
-                continue
-            for question in _learning_exam_questions(payload):
-                question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
-                localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
-                if localized_instruction:
-                    question["instruction"] = localized_instruction
-                    question["task_instruction"] = localized_instruction
-                questions.append({
-                    **question,
-                    "id": len(questions) + 1,
-                    "lesson_id": l["lesson_id"],
-                    "module_id": l["module_id"],
-                    "module_title": l.get("module_title") or "",
-                    "title": l.get("title") or f"Savol {idx + 1}",
-                })
+        for idx, l, sub_index, question in _learning_track_exam_items(lesson_rows):
+            question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
+            localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
+            if localized_instruction:
+                question["instruction"] = localized_instruction
+                question["task_instruction"] = localized_instruction
+            questions.append({
+                **question,
+                "id": len(questions) + 1,
+                # Stable, shuffle-independent answer key for submit/check-ai.
+                "exam_key": _learning_exam_key(l["lesson_id"], sub_index),
+                "lesson_id": l["lesson_id"],
+                "module_id": l["module_id"],
+                "module_title": l.get("module_title") or "",
+                "title": l.get("title") or f"Savol {idx + 1}",
+            })
 
         random.shuffle(questions)
         questions = [
@@ -5180,7 +6195,7 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
 
 @router.post("/student/learning-tracks/{track_id}/final-exam/submit")
 async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, authorization: str | None = Header(default=None)):
-    user = _user(authorization); _require(user, {"student"}); ensure_schema()
+    user = _user(authorization); _require_lp_student(user); ensure_schema()
     uid = int(user["id"])
     conn = get_conn()
     try:
@@ -5203,13 +6218,58 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
         if not all_passed:
             raise HTTPException(status_code=423, detail="Oldingi barcha modullarni muvaffaqiyatli yakunlang")
 
-        score = float(payload.score or 0)
+        cur.execute(f"""
+            SELECT l.id as lesson_id, l.title, l.question_payload_json, l.module_id
+            FROM learning_module_lessons l
+            WHERE l.module_id IN ({','.join('?' for _ in module_ids)})
+            ORDER BY l.module_id, l.position, l.id
+        """, module_ids)
+        exam_items = {
+            _learning_exam_key(row["lesson_id"], sub_index): (int(row["lesson_id"]), question)
+            for _, row, sub_index, question in _learning_track_exam_items([dict(r) for r in cur.fetchall()])
+        }
+        submitted = _learning_exam_submitted_answers(payload.answers)
+        if submitted is None or (payload.score is not None and not submitted):
+            # An old app sent only a self-computed score.  Nothing is stored,
+            # so the student's progress is not affected by the refusal.
+            message = (
+                "Ilovangiz eskirgan: yakuniy imtihon natijasi endi serverda tekshiriladi. "
+                "Iltimos, ilovani yangilang va imtihonni qayta topshiring."
+            )
+            return {
+                "ok": False, "passed": False, "score": 0, "correct": 0, "total": len(exam_items),
+                "required_score": threshold, "track_completed": False, "certificate": None,
+                "reward_awarded": False, "reward_points": 0, "reward_coins": 0,
+                "error": "app_update_required", "message": message,
+            }
+        if len(submitted) > max(500, len(exam_items)):
+            raise HTTPException(status_code=413, detail="Too many answers")
+        correct_items = 0
+        results = []
+        for exam_key, (item_lesson_id, question) in exam_items.items():
+            given = submitted.get(exam_key)
+            if isinstance(given, dict) and given.get("audio_url"):
+                _learning_owned_audio_path(str(given["audio_url"]), uid)
+            ai_ok = False
+            if given is not None and _learning_question_needs_ai_check(question):
+                ai_ok = _learning_consume_answer_check(
+                    cur, student_id=uid, lesson_id=item_lesson_id, item_key=exam_key,
+                    fingerprint=_learning_given_fingerprint(given), allow_latest=False,
+                )
+            # Unanswered questions count as wrong.
+            item_correct, item_total = (0, 1) if given is None else _grade_learning_question(question, given, saved_ai_ok=ai_ok)
+            fully_correct = item_total > 0 and item_correct >= item_total
+            correct_items += 1 if fully_correct else 0
+            results.append({"exam_key": exam_key, "correct": fully_correct,
+                            "correct_count": int(item_correct), "total": int(item_total)})
+        total_items = len(exam_items)
+        score = round(correct_items * 100 / total_items) if total_items else 0
         passed = score >= threshold
         now_iso = _now().isoformat()
 
         cur.execute(
             "INSERT INTO learning_track_final_attempts(track_id, student_id, score, passed, answers_json, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (track_id, uid, score, 1 if passed else 0, json.dumps(payload.answers, ensure_ascii=False), now_iso)
+            (track_id, uid, score, 1 if passed else 0, json.dumps({"answers": submitted, "results": results}, ensure_ascii=False, default=str), now_iso)
         )
 
         cur.execute("SELECT * FROM learning_track_final_progress WHERE track_id=? AND student_id=?", (track_id, uid))
@@ -5237,7 +6297,7 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
         if passed:
             certificate = _ensure_track_certificate(cur, track_dict, uid)
             reward = 50.0
-            history_key = f"track_complete_{track_id}"
+            history_key = _lp_history_key(f"track_complete_{track_id}")
             cur.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=?", (uid, history_key))
             if not cur.fetchone():
                 try:
@@ -5253,6 +6313,9 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
             "ok": True,
             "passed": passed,
             "score": score,
+            "correct": correct_items,
+            "total": total_items,
+            "results": results,
             "required_score": threshold,
             "track_completed": passed,
             "certificate": certificate,
@@ -5263,6 +6326,41 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
         }
     finally:
         conn.close()
+
+
+def _learning_track_exam_items(lesson_rows: list[dict[str, Any]]):
+    """Yield (lesson index, row, sub_index, question) for every exam item.
+
+    ``sub_index`` is the position inside ``_learning_exam_questions`` of the
+    lesson, so ``"<lesson_id>:<sub_index>"`` is stable across shuffles.
+    """
+    for idx, row in enumerate(lesson_rows):
+        try:
+            payload = json.loads(str(row.get("question_payload_json") or "{}"))
+        except Exception:
+            payload = {}
+        if not payload or not isinstance(payload, dict):
+            continue
+        for sub_index, question in enumerate(_learning_exam_questions(payload)):
+            if question:
+                yield idx, row, sub_index, question
+
+
+def _learning_exam_submitted_answers(answers: Any) -> dict[str, Any] | None:
+    """{exam_key: raw} from a dict or a list of {exam_key, answer}; None = legacy."""
+    if isinstance(answers, dict):
+        return {str(key): value for key, value in answers.items() if _parse_learning_exam_key(key)}
+    if isinstance(answers, list):
+        keyed = [item for item in answers if isinstance(item, dict) and item.get("exam_key")]
+        if answers and not keyed:
+            return None
+        result: dict[str, Any] = {}
+        for item in keyed:
+            key = str(item.get("exam_key"))
+            if _parse_learning_exam_key(key):
+                result[key] = item.get("answer", item.get("selected"))
+        return result
+    return None
 
 
 @router.get("/student/certificates/{certificate_id}/pdf")
@@ -5283,8 +6381,7 @@ async def download_student_certificate(certificate_id: str, authorization: str |
 async def download_shared_learning_certificate(share_token: str):
     ensure_schema(); conn=get_conn()
     try:
-        cur=conn.cursor(); cur.execute("SELECT c.*,u.first_name,u.last_name FROM learning_certificate_shares s JOIN certificates c ON c.certificate_id=s.certificate_id JOIN users u ON u.id=c.user_id WHERE s.share_token=? AND s.active=1", (share_token,))
-        row=cur.fetchone()
+        cur=conn.cursor(); row=_certificate_share_lookup(cur, share_token, "c.*,u.first_name,u.last_name")
         if not row: raise HTTPException(status_code=404,detail="Certificate link is invalid")
         certificate=dict(row)
         return Response(_certificate_pdf(certificate), media_type="application/pdf", headers={"Content-Disposition":f'attachment; filename="{certificate["certificate_id"]}.pdf"'})
@@ -6579,3 +7676,78 @@ async def alias_plan_generate(authorization: str | None = Header(default=None)):
 @router.put("/student/personalization/plan/tasks/{task_id}/complete")
 async def alias_plan_complete(task_id: int, authorization: str | None = Header(default=None)):
     return await complete_personal_plan_task(task_id, authorization)
+
+
+# ── Speaking Learning Path (separate content, identical API) ────────────────
+SPEAKING_LP_PREFIX = "/speaking-lp"
+# Every route whose path starts with one of these prefixes is mounted a second
+# time under SPEAKING_LP_PREFIX.  tests/test_website_api_contracts.py checks
+# statically that this covers every /staff/learning* and /student/learning*
+# route of this module.
+SPEAKING_LP_ROUTE_PREFIXES = ("/staff/learning-", "/student/learning-")
+
+
+@router.post("/speaking-lp/staff/upload")
+async def speaking_lp_staff_upload(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    """Media upload for the Speaking Learning Path editor (Speaking admin only).
+
+    Same storage and validation as ``/teacher/library/upload``; the Speaking
+    workspace guard does not allow the teacher Library routes.
+    """
+    user = _user(authorization)
+    _require(user, SPEAKING_LP_MANAGER_ROLES)
+    from backend.main import HOMEWORK_UPLOAD_DIR, _upload_web_file
+
+    filename, _ = await _upload_web_file(
+        file, HOMEWORK_UPLOAD_DIR, f"speaking_lp_media_{int(user.get('id') or 0)}", max_size_mb=25
+    )
+    return {"url": f"/homework/files/{filename}", "filename": filename}
+
+
+def _speaking_lp_endpoint(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+    """Run one Learning Path handler inside the Speaking namespace.
+
+    ``functools.wraps`` sets ``__wrapped__``; ``inspect.signature`` (which
+    FastAPI uses) follows it, so path/query/body/header parameters resolve
+    exactly as for the original route.
+    """
+    if not inspect.iscoroutinefunction(endpoint):
+        raise TypeError(f"Learning Path route {endpoint.__name__} must be async")
+
+    @functools.wraps(endpoint)
+    async def speaking_namespace_endpoint(*args: Any, **kwargs: Any) -> Any:
+        token = _LP_NAMESPACE.set(SPEAKING_LP_NAMESPACE)
+        try:
+            return await endpoint(*args, **kwargs)
+        finally:
+            _LP_NAMESPACE.reset(token)
+
+    return speaking_namespace_endpoint
+
+
+def _mount_speaking_learning_path_routes() -> list[str]:
+    from fastapi.routing import APIRoute
+
+    wrapped: dict[Any, Callable[..., Any]] = {}
+    mounted: list[str] = []
+    for route in list(router.routes):
+        if not isinstance(route, APIRoute) or not route.path.startswith(SPEAKING_LP_ROUTE_PREFIXES):
+            continue
+        if route.endpoint not in wrapped:
+            wrapped[route.endpoint] = _speaking_lp_endpoint(route.endpoint)
+        path = SPEAKING_LP_PREFIX + route.path
+        router.add_api_route(
+            path,
+            wrapped[route.endpoint],
+            methods=sorted(route.methods or []),
+            name=f"speaking_lp_{route.name}",
+            include_in_schema=route.include_in_schema,
+        )
+        mounted.append(path)
+    return mounted
+
+
+SPEAKING_LP_MOUNTED_ROUTES = _mount_speaking_learning_path_routes()

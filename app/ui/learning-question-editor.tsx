@@ -24,7 +24,8 @@ export function LearningQuestionEditor({ initialTitle, initialQuestions, editing
   editing: boolean;
   upload: UploadFn;
   onSave: (title: string, questions: AiTestQuestion[]) => Promise<void>;
-  onSaveToLibrary: (title: string, questions: AiTestQuestion[]) => Promise<void>;
+  /** Omitted where no teacher Library exists (Speaking Learning Path). */
+  onSaveToLibrary?: (title: string, questions: AiTestQuestion[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState(initialTitle);
@@ -38,7 +39,11 @@ export function LearningQuestionEditor({ initialTitle, initialQuestions, editing
     setBusy(true);
     setError("");
     try {
-      if (toLibrary) { await onSaveToLibrary(title.trim(), questions); setCopied(true); }
+      if (toLibrary) {
+        if (!onSaveToLibrary) return;
+        await onSaveToLibrary(title.trim(), questions);
+        setCopied(true);
+      }
       else { await onSave(title.trim(), questions); onClose(); }
     }
     catch (err) { setError(err instanceof Error ? err.message : String(err)); }
@@ -54,7 +59,7 @@ export function LearningQuestionEditor({ initialTitle, initialQuestions, editing
         {error && <p role="alert" className="text-red-500">{error}</p>}
         {copied && <p role="status" className="text-emerald-600">Kutubxonaga shaxsiy nusxa saqlandi. Uni uy vazifasiga yoki boshqa modulga biriktirishingiz mumkin.</p>}
         <div className="flex justify-end gap-3">
-          <button type="button" disabled={copied} onClick={() => void save(true)}>Kutubxonaga nusxa saqlash</button>
+          {onSaveToLibrary ? <button type="button" disabled={copied} onClick={() => void save(true)}>Kutubxonaga nusxa saqlash</button> : null}
           <button type="button" onClick={onClose}>Bekor qilish</button>
           <button type="button" onClick={() => void save()} className="rounded-xl bg-cyan-600 px-4 py-2 font-bold text-white">{busy ? "Saqlanmoqda…" : "Saqlash"}</button>
         </div>

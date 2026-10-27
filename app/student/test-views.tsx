@@ -6,6 +6,7 @@ import { storeBrowserSessionToken } from "@/lib/auth-session";
 import { AssetIcon } from "../ui/primitives";
 import { resolveLocale, useWebT } from "../ui/web-i18n";
 import { TestCompletionActions, type TestReviewItem } from "../ui/test-completion-actions";
+import { QuestionCard as AiTestQuestionCard, type Question as AiTestQuestion } from "../ui/ai-test-runner";
 import { StudentTestProctoring, useStudentProctoringStatus } from "./proctoring";
 import {
   StitchWebArenaHeader,
@@ -213,6 +214,15 @@ type TestQuestionPayload = {
   language?: string;
   tts_language?: SpeechLang | string;
   options?: string[];
+  // Arena/Duel vocabulary questions (see _public_question_payload in backend/main.py).
+  input_type?: string;
+  matching_left?: string[];
+  matching_options?: string[];
+  direction?: string;
+  pronunciation_text?: string;
+  word?: string;
+  condition?: string;
+  hint?: string;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
@@ -818,8 +828,149 @@ export function studentSectionToPath(section: string, options?: { subject?: stri
   return `/?role=student&section=${encodeURIComponent(normalized || "home")}`;
 }
 
-function answerBody(answer: number | null) {
-  return { selected_option_index: answer };
+/** Non-MCQ answer fields accepted by POST /competition/runtime/{sid}/answer. */
+type CompetitionAnswerPayload = {
+  selected_option_index?: number | null;
+  answer_text?: string;
+  audio_url?: string;
+  matching_answer?: Record<string, string>;
+};
+
+/** Arena/Duel submit flags: the timer sends `timedOut`, skip buttons send `skipped`. */
+type CompetitionSubmitOptions = { timedOut?: boolean; skipped?: boolean };
+
+// Daily tests and gamified tests only pass a number/null and keep the old
+// `{ selected_option_index }` body. Arena/Duel may also pass vocabulary
+// answers, the timeout flag and the skip flag.
+function answerBody(answer: number | null | CompetitionAnswerPayload, options?: CompetitionSubmitOptions) {
+  const body: GenericRow =
+    answer === null || typeof answer === "number"
+      ? { selected_option_index: answer }
+      : {
+          selected_option_index: answer.selected_option_index ?? null,
+          ...(answer.answer_text !== undefined ? { answer_text: answer.answer_text } : {}),
+          ...(answer.audio_url !== undefined ? { audio_url: answer.audio_url } : {}),
+          ...(answer.matching_answer !== undefined ? { matching_answer: answer.matching_answer } : {}),
+        };
+  if (options?.timedOut) body.timed_out = true;
+  if (options?.skipped) body.skipped = true;
+  return body;
+}
+
+const COMPETITION_VOCABULARY_TYPES: Record<string, Pick<AiTestQuestion, "kind" | "check" | "input">> = {
+  matching: { kind: "matching", check: "auto", input: "pairs" },
+  spelling: { kind: "spelling", check: "auto", input: "text" },
+  translation: { kind: "translation", check: "ai", input: "text" },
+  write_sentence: { kind: "write_sentence", check: "ai", input: "text" },
+  speak_sentence: { kind: "speak_sentence", check: "ai", input: "audio_or_text" },
+  read_aloud: { kind: "read_aloud", check: "ai", input: "audio_or_text" },
+};
+
+function competitionVocabularyType(question: TestQuestionPayload | undefined | null) {
+  if (!question) return "";
+  const type = String(question.question_type || "").trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(COMPETITION_VOCABULARY_TYPES, type)) return "";
+  const hasOptions = Array.isArray(question.options) && question.options.length > 0;
+  if (question.input_type === "choice" || hasOptions) return "";
+  return type;
+}
+
+/** Adapter: Arena/Duel vocabulary question -> AI test runner `Question`. */
+function competitionQuestionToRunnerQuestion(question: TestQuestionPayload, type: string): AiTestQuestion {
+  const spec = COMPETITION_VOCABULARY_TYPES[type];
+  return {
+    ...spec,
+    retry_until_correct: false,
+    prompt: question.prompt || undefined,
+    instruction: question.instruction || undefined,
+    condition: question.condition || undefined,
+    word: question.word || undefined,
+    hint: question.hint || undefined,
+    direction: question.direction || undefined,
+    passage: question.passage || undefined,
+    left_items: spec.input === "pairs" ? (question.matching_left || []).map(String) : undefined,
+    right_items: spec.input === "pairs" ? (question.matching_options || []).map(String) : undefined,
+  };
+}
+
+/** Maps AI test runner payloads to the competition answer body fields. */
+function competitionAnswerFromRunnerPayload(payload: Record<string, unknown>): CompetitionAnswerPayload {
+  const answer: CompetitionAnswerPayload = {};
+  if (typeof payload.answer_text === "string") answer.answer_text = payload.answer_text.slice(0, 4000);
+  if (typeof payload.audio_url === "string" && payload.audio_url) answer.audio_url = payload.audio_url;
+  if (payload.pairs && typeof payload.pairs === "object") {
+    const pairs: Record<string, string> = {};
+    for (const [left, right] of Object.entries(payload.pairs as Record<string, unknown>)) {
+      if (typeof right === "string" && right) pairs[left] = right;
+    }
+    answer.matching_answer = pairs;
+  }
+  if (typeof payload.choice_index === "number") answer.selected_option_index = payload.choice_index;
+  return answer;
+}
+
+function CompetitionVocabularyQuestion({
+  question,
+  type,
+  checking,
+  disabled,
+  onSubmit,
+}: {
+  question: TestQuestionPayload;
+  type: string;
+  checking: boolean;
+  disabled?: boolean;
+  onSubmit: (answer: CompetitionAnswerPayload) => void;
+}) {
+  const tt = useWebT();
+  // Runtime polls rebuild the payload and the backend reshuffles
+  // matching_options each time; only rebuild when the content changes so the
+  // dropdown order stays stable while the student answers.
+  const contentSignature = JSON.stringify([
+    type,
+    question.prompt,
+    question.instruction,
+    question.condition,
+    question.word,
+    question.hint,
+    question.direction,
+    question.passage,
+    question.matching_left || [],
+    [...(question.matching_options || [])].map(String).sort(),
+  ]);
+  const runnerQuestion = useMemo(
+    () => competitionQuestionToRunnerQuestion(question, type),
+    [contentSignature], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const pronunciation = type === "spelling" ? String(question.pronunciation_text || "").trim() : "";
+  const rawTtsLanguage = String(question.tts_language || "");
+  const ttsLanguage: SpeechLang =
+    rawTtsLanguage === "ru-RU" ? "ru-RU"
+    : rawTtsLanguage === "en-GB" ? "en-GB"
+    : speechLangForVocabularySubject(String(question.subject || ""));
+
+  return (
+    <div className="space-y-3">
+      {pronunciation ? (
+        <button
+          type="button"
+          onClick={() => void speakTextByLanguage(pronunciation, ttsLanguage)}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm font-black text-cyan-700 transition hover:bg-cyan-500/15 dark:text-cyan-200"
+        >
+          🔊 {tt("student.tests.interactiveListening", "Audioni tinglang")}
+        </button>
+      ) : null}
+      <AiTestQuestionCard
+        question={runnerQuestion}
+        attemptId={0}
+        checking={checking}
+        disabled={disabled}
+        feedback={null}
+        onSubmit={(payload) => onSubmit(competitionAnswerFromRunnerPayload(payload))}
+        onNext={() => {}}
+      />
+    </div>
+  );
 }
 
 function StudentQuestionRenderer({
@@ -4464,7 +4615,7 @@ export function StudentCompetitionPage({
     }
   }
 
-  async function submitAnswer(answer: number | null) {
+  async function submitAnswer(answer: number | null | CompetitionAnswerPayload, options?: CompetitionSubmitOptions) {
     if (!sessionId || !question || busy || question.completed) return;
     const requestedSessionId = sessionId;
     const qIndex = question.question_index;
@@ -4480,7 +4631,7 @@ export function StudentCompetitionPage({
         token,
         method: "POST",
         body: {
-          ...answerBody(answer),
+          ...answerBody(answer, options),
           question_index: qIndex,
           proctoring_session_id: null,
         },
@@ -4558,6 +4709,14 @@ export function StudentCompetitionPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Previous / Next / Finish and the question pills move on without an
+  // answer. MCQ skips are `selected_option_index: null`; vocabulary questions
+  // need the explicit skip flag, otherwise the backend asks for an answer.
+  // The server records both as unanswered.
+  function skipCurrentQuestion() {
+    submitAnswer(null, competitionVocabularyType(question?.question) ? { skipped: true } : undefined);
   }
 
   useEffect(() => {
@@ -4682,7 +4841,7 @@ export function StudentCompetitionPage({
     if (!question || question.completed || busy || !sessionId || status?.phase !== "active") return;
     if (lastTimerInitIndexRef.current !== question.question_index) return;
     if (timeLeft > 0) return;
-    submitAnswer(null);
+    submitAnswer(null, { timedOut: true });
   }, [timeLeft, question?.question_index, question?.completed, busy, sessionId, status?.phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep server clock skew in a ref so it updates on every status poll
@@ -4783,7 +4942,13 @@ export function StudentCompetitionPage({
   const eliminatedNow = Boolean(question?.eliminated);
   const isTie = Boolean(result?.tie || result?.result?.tie || result?.result?.result_status === "tie");
   const isRefunded = Boolean(result?.result?.refunded);
-  const isWinner = Boolean(result?.result?.winner && !isTie);
+  // /result `participants`: current user first, with is_me / is_winner / rank / skipped.
+  const resultParticipantCards = Array.isArray(result?.participants) ? result.participants as GenericRow[] : [];
+  const myResultCard = resultParticipantCards.find((row) => Boolean(row?.is_me)) || null;
+  const isWinner = Boolean(
+    (myResultCard && typeof myResultCard.is_winner === "boolean" ? myResultCard.is_winner : result?.result?.winner) && !isTie,
+  );
+  const resultSkippedCount = Number(result?.result?.skipped ?? result?.result?.unanswered ?? myResultCard?.skipped ?? result?.unanswered ?? 0);
   const bossSummary = (result?.boss_summary || {}) as GenericRow;
   const bossParticipants = Array.isArray(bossSummary.participants) ? bossSummary.participants as GenericRow[] : [];
   const resultParticipants = Array.isArray(result?.participants_result) ? result.participants_result as GenericRow[] : [];
@@ -5393,7 +5558,7 @@ export function StudentCompetitionPage({
                               disabled={busy || timeLeft <= 0}
                               onClick={() => {
                                 if (qNum !== question.question_index) {
-                                  submitAnswer(null);
+                                  skipCurrentQuestion();
                                 }
                               }}
                             >
@@ -5404,11 +5569,22 @@ export function StudentCompetitionPage({
                       </div>
                     )}
 
-                    <StudentQuestionRenderer
-                      question={question.question}
-                      disabled={busy || timeLeft <= 0 || !proctoringReady || eliminatedNow || waitingStageCompletion || waitingForOtherParticipants}
-                      onSubmit={submitAnswer}
-                    />
+                    {competitionVocabularyType(question.question) ? (
+                      <CompetitionVocabularyQuestion
+                        key={question.question_index}
+                        question={question.question}
+                        type={competitionVocabularyType(question.question)}
+                        checking={busy}
+                        disabled={timeLeft <= 0 || !proctoringReady || eliminatedNow || waitingStageCompletion || waitingForOtherParticipants}
+                        onSubmit={(answer) => submitAnswer(answer)}
+                      />
+                    ) : (
+                      <StudentQuestionRenderer
+                        question={question.question}
+                        disabled={busy || timeLeft <= 0 || !proctoringReady || eliminatedNow || waitingStageCompletion || waitingForOtherParticipants}
+                        onSubmit={submitAnswer}
+                      />
+                    )}
 
                     {/* Navigation Controls: Previous / Next / Submit */}
                     <div className="flex items-center justify-between gap-3 pt-4 border-t border-line dark:border-white/10">
@@ -5416,7 +5592,7 @@ export function StudentCompetitionPage({
                         type="button"
                         className="btn btn-secondary flex items-center gap-2 text-sm font-bold disabled:opacity-40"
                         disabled={busy || (question.question_index || 1) <= 1}
-                        onClick={() => submitAnswer(null)}
+                        onClick={skipCurrentQuestion}
                       >
                         ⬅️ {tt("common.previous", "Oldingi")}
                       </button>
@@ -5426,7 +5602,7 @@ export function StudentCompetitionPage({
                           type="button"
                           className="btn btn-primary flex items-center gap-2 text-sm font-bold"
                           disabled={busy || timeLeft <= 0}
-                          onClick={() => submitAnswer(null)}
+                          onClick={skipCurrentQuestion}
                         >
                           {tt("common.next", "Keyingi")} ➡️
                         </button>
@@ -5435,7 +5611,7 @@ export function StudentCompetitionPage({
                           type="button"
                           className="btn btn-primary bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white shadow-lg flex items-center gap-2 text-sm font-bold"
                           disabled={busy || timeLeft <= 0}
-                          onClick={() => submitAnswer(null)}
+                          onClick={skipCurrentQuestion}
                         >
                           🚀 {tt("competition.finishTest", "Testni Tugatish")}
                         </button>
@@ -5522,7 +5698,7 @@ export function StudentCompetitionPage({
                     isTie={isTie}
                     correctCount={Number(result.result?.correct ?? result.correct ?? 0)}
                     wrongCount={Number(result.result?.wrong ?? result.wrong ?? 0)}
-                    skippedCount={Number(result.result?.unanswered ?? result.unanswered ?? 0)}
+                    skippedCount={resultSkippedCount}
                     dcoinEarned={Number(result.result?.dcoin ?? result.dcoin_delta ?? result.reward_dcoin ?? 0)}
                     dpointEarned={Number(result.result?.dpoints_delta ?? result.dpoints_delta ?? 0)}
                     onReview={() => {
@@ -5634,7 +5810,7 @@ export function StudentCompetitionPage({
 	                    <div className="grid gap-2">
 	                      {resultParticipants.map((row, index) => {
 	                        const rank = Number(row.rank || index + 1);
-	                        const rowWinner = Boolean(row.winner);
+	                        const rowWinner = Boolean(row.is_winner ?? row.winner);
 	                        const rowLeft = Boolean(row.left) || ["left", "cancelled", "blocked", "failed", "eliminated"].includes(String(row.status || "").toLowerCase());
 	                        const rankSticker =
 	                          rank === 1 ? "🥇" :
@@ -5701,7 +5877,7 @@ export function StudentCompetitionPage({
                   </div>
                   <div className="bg-transparent p-4 rounded-2xl border border-line dark:border-white/10">
                     <p className="text-sm font-medium text-ink-500 mb-1">{tt("duel.skipped", "O'tkazildi")}</p>
-                    <p className="text-2xl font-bold text-ink-600 dark:text-navy-300">{result.result?.unanswered || 0}</p>
+                    <p className="text-2xl font-bold text-ink-600 dark:text-navy-300">{resultSkippedCount}</p>
                   </div>
                   <div className="bg-transparent p-4 rounded-2xl border border-blue-100 dark:border-blue-500/20">
                     <p className="currency-inline text-sm font-medium text-ink-500 mb-1">

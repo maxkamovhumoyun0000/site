@@ -2183,8 +2183,8 @@ function LessonPlayerModal({
         const aiRes = await apiFetch(`/student/learning-lessons/check-ai`, {
           method: "POST",
           body: {
+            // The server grades the stored lesson question; no payload is sent.
             lesson_id: lesson?.id,
-            question_payload: question,
             answer_text: currentAnsText,
             audio_url: audioUrl,
           },
@@ -2202,8 +2202,10 @@ function LessonPlayerModal({
           selectedAnswer = `[Ovozli]: ${aiTranscriptText}`;
         }
       } catch (err) {
-        correct = false;
-        aiFeedbackText = errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring.");
+        // No verdict was stored, so the answer cannot be graded yet. Let the
+        // student retry instead of recording it as wrong.
+        setError(errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring."));
+        return;
       } finally {
         setLoading(false);
       }
@@ -2300,10 +2302,48 @@ function LessonPlayerModal({
       correct = isAnswerCorrect(currentAnsText, question);
     }
 
-    const newScore = score + (correct ? 1 : 0);
-    const newTotal = total + 1;
-    setScore(newScore);
-    setTotal(newTotal);
+    // The server grades the raw answer; `correct` above only labels the
+    // review. Contract: answers: [{ answer: <raw> }].
+    let rawAnswer: unknown;
+    if (isAiCheck) {
+      rawAnswer = audioUrl ? { text: currentAnsText, audio_url: audioUrl } : { text: currentAnsText };
+    } else if (isSet) {
+      rawAnswer = subs.map((_: unknown, i: number) => subAnswers[i] || "");
+    } else if (isCloze) {
+      rawAnswer = [...clozeBlanks];
+    } else if (question.test_type === "matching" || matchingPairs.length > 0) {
+      rawAnswer = { ...matchedPairs };
+    } else {
+      rawAnswer = currentAnsText;
+    }
+
+    setLoading(true);
+    let submitResult: Row | null = null;
+    try {
+      submitResult = await apiFetch(`/student/learning-lessons/${lesson.id}/submit`, {
+        method: "POST",
+        body: { answers: [{ answer: rawAnswer }] },
+      });
+    } catch (e) {
+      // Nothing was stored: show the error and let the student retry instead
+      // of showing an unsaved result.
+      setSaveFailed(true);
+      setError(errorText(e, "Javob saqlanmadi. Internet aloqasini tekshirib, qayta urinib ko'ring."));
+      return;
+    } finally {
+      setLoading(false);
+    }
+    setError("");
+    const serverTotal = Number(submitResult?.total ?? 0);
+    const serverCorrect = Number(submitResult?.correct ?? 0);
+    correct =
+      typeof submitResult?.is_correct === "boolean"
+        ? submitResult.is_correct
+        : serverTotal > 0 && serverCorrect >= serverTotal;
+    if (correct) setWrongBlankPositions([]);
+
+    setScore(score + (correct ? 1 : 0));
+    setTotal(total + 1);
 
     setReviewItems((prev) => [
       ...prev,
@@ -2324,49 +2364,23 @@ function LessonPlayerModal({
       playDuolingoSound("wrong");
     }
 
-    setLoading(true);
-    try {
-      const lessonPassScore = correct ? 100 : 0;
-      const submitResult = await apiFetch(`/student/learning-lessons/${lesson.id}/submit`, {
-        method: "POST",
-        body: { score: lessonPassScore, answers: [{ question: question?.question || question?.instruction, selected: selectedAnswer, correct }] },
-      });
-      setResult({
-        correct,
-        selected: selectedAnswer,
-        correct_answer: correctAnswerStr,
-        explanation: question?.explanation || "",
-        ai_feedback: aiFeedbackText,
-        ai_corrected: aiCorrectedText,
-        ai_transcript: aiTranscriptText,
-        pronunciation_errors: aiPronErrors,
-        grammar_errors: aiGrammarErrors,
-        ...submitResult,
-      });
-      if (submitResult?.module_progress) {
-        setLastSubmitResult(submitResult);
-      }
-      if (submitResult?.module_progress?.passed) {
-        setModuleResult(submitResult);
-      }
-    } catch (e) {
-      // The answer was not stored on the server: say so instead of silently
-      // showing it as saved.
-      setSaveFailed(true);
-      setError(errorText(e, "Javob saqlanmadi. Internet aloqasini tekshirib, qayta urinib ko'ring."));
-      setResult({
-        correct,
-        selected: selectedAnswer,
-        correct_answer: correctAnswerStr,
-        explanation: question?.explanation || "",
-        ai_feedback: aiFeedbackText,
-        ai_corrected: aiCorrectedText,
-        ai_transcript: aiTranscriptText,
-        pronunciation_errors: aiPronErrors,
-        grammar_errors: aiGrammarErrors,
-      });
-    } finally {
-      setLoading(false);
+    setResult({
+      ...submitResult,
+      correct,
+      selected: selectedAnswer,
+      correct_answer: correctAnswerStr,
+      explanation: question?.explanation || "",
+      ai_feedback: aiFeedbackText,
+      ai_corrected: aiCorrectedText,
+      ai_transcript: aiTranscriptText,
+      pronunciation_errors: aiPronErrors,
+      grammar_errors: aiGrammarErrors,
+    });
+    if (submitResult?.module_progress) {
+      setLastSubmitResult(submitResult);
+    }
+    if (submitResult?.module_progress?.passed) {
+      setModuleResult(submitResult);
     }
   };
 
@@ -3476,6 +3490,8 @@ function FinalExamPlayerModal({
   const [voiceMode, setVoiceMode] = useState(false);
   const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
   const [passingScore, setPassingScore] = useState(70);
+  // Raw answers keyed by the server's stable exam_key; the server grades them.
+  const [examAnswers, setExamAnswers] = useState<Record<string, unknown>>({});
 
   const [sentenceWords, setSentenceWords] = useState<string[]>([]);
   const [bankWords, setBankWords] = useState<{ id: number; text: string; used: boolean }[]>([]);
@@ -3758,9 +3774,10 @@ function FinalExamPlayerModal({
         const aiRes = await apiFetch(`/student/learning-lessons/check-ai`, {
           method: "POST",
           body: {
-            // lesson_id lets the backend use the lesson's subject (e.g. Russian grading).
+            // lesson_id + exam_key make the server grade the stored exam item
+            // and keep the verdict for the final-exam submit.
             lesson_id: currentQuestion?.lesson_id ?? undefined,
-            question_payload: currentQuestion,
+            exam_key: currentQuestion?.exam_key ?? undefined,
             answer_text: currentAnsText,
             audio_url: audioUrl,
           },
@@ -3778,8 +3795,10 @@ function FinalExamPlayerModal({
           selectedAnswer = `[Ovozli]: ${aiTranscriptText}`;
         }
       } catch (err) {
-        correct = false;
-        aiFeedbackText = errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring.");
+        // No verdict was stored, so the answer cannot be graded yet. Let the
+        // student retry instead of recording it as wrong.
+        setError(errorText(err, "AI tekshirish xizmati javob bermadi. Qayta urinib ko'ring."));
+        return;
       } finally {
         setLoading(false);
       }
@@ -3851,6 +3870,22 @@ function FinalExamPlayerModal({
       correct = isAnswerCorrect(currentAnsText, currentQuestion);
     }
 
+    // Keep the raw answer for the server-graded submit (exam_key contract).
+    const examKey = currentQuestion.exam_key ? String(currentQuestion.exam_key) : "";
+    if (examKey) {
+      let rawAnswer: unknown;
+      if (isAiCheck) {
+        rawAnswer = audioUrl ? { text: currentAnsText, audio_url: audioUrl } : { text: currentAnsText };
+      } else if (isCloze) {
+        rawAnswer = [...clozeBlanks];
+      } else if (currentQuestion.test_type === "matching" || matchingPairs.length > 0) {
+        rawAnswer = { ...matchedPairs };
+      } else {
+        rawAnswer = currentAnsText;
+      }
+      setExamAnswers((prev) => ({ ...prev, [examKey]: rawAnswer }));
+    }
+
     const newScore = score + (correct ? 1 : 0);
     setScore(newScore);
 
@@ -3891,20 +3926,22 @@ function FinalExamPlayerModal({
     } else {
       setSubmitting(true);
       setError("");
-      const finalPercent = questions.length ? Math.round((score / questions.length) * 100) : 0;
       let saved = false;
       try {
+        // Raw answers keyed by exam_key; the server grades, scores and issues
+        // the certificate/reward. Unanswered items count as wrong.
         const res = await apiFetch(`/student/learning-tracks/${track.id}/final-exam/submit`, {
           method: "POST",
           body: {
-            score: finalPercent,
-            answers: reviewItems.map((r) => ({
-              question: r.prompt,
-              selected: r.selected_answer,
-              correct: r.is_correct,
+            answers: Object.entries(examAnswers).map(([examKey, answer]) => ({
+              exam_key: examKey,
+              answer,
             })),
           },
         });
+        if (res?.ok === false) {
+          throw new Error(String(res?.message || "Natija saqlanmadi. Qayta urinib ko'ring."));
+        }
         setExamResult(res);
         saved = true;
         if (res?.passed) {
@@ -3983,8 +4020,12 @@ function FinalExamPlayerModal({
             </div>
           ) : finished ? (
             (() => {
-              const finalPercent = questions.length ? Math.round((score / questions.length) * 100) : 0;
-              const isPassed = examResult ? Boolean(examResult.passed) : finalPercent >= passingScore;
+              // Server-graded result (the finished screen only opens after the
+              // server stored the attempt).
+              const examTotal = Number(examResult?.total ?? questions.length) || 0;
+              const examCorrect = Number(examResult?.correct ?? 0) || 0;
+              const finalPercent = Math.round(Number(examResult?.score ?? 0) || 0);
+              const isPassed = Boolean(examResult?.passed);
 
               return (
                 <div className="flex flex-col items-center py-4 text-center animate-scale-up">
@@ -4008,7 +4049,7 @@ function FinalExamPlayerModal({
                     <div className="rounded-2xl border-2 border-b-4 border-slate-200 bg-slate-50 p-3 dark:border-white/10 dark:bg-navy-800">
                       <p className="text-[10px] font-bold text-slate-400 uppercase">To'g'ri javoblar</p>
                       <p className="mt-0.5 text-xl font-black text-navy-900 dark:text-white">
-                        {score} / {questions.length}
+                        {examCorrect} / {examTotal}
                       </p>
                     </div>
                     <div
@@ -4099,6 +4140,8 @@ function FinalExamPlayerModal({
                           setScore(0);
                           setFinished(false);
                           setReviewItems([]);
+                          setExamAnswers({});
+                          setExamResult(null);
                           setCurrentIndex(0);
                           void loadExam();
                         }}
@@ -4880,7 +4923,32 @@ function FinalExamPlayerModal({
    STAFF VIEW — Track/Module/Lesson management
    ═══════════════════════════════════════════════════════════════════════════════ */
 
-export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
+/**
+ * "student": the Student app Learning Path (teachers/admins).
+ * "speaking": the separate Speaking app Learning Path (Speaking admin). The
+ * caller's apiFetch maps /staff/... to /speaking-lp/staff/...; features that
+ * need the teacher Materials Library are hidden there.
+ */
+export type LearningPathScope = "student" | "speaking";
+
+/** Speaking Learning Path staff routes live under /speaking-lp/staff/... */
+export function speakingLearningPathApiPath(path: string): string {
+  return path.startsWith("/staff/") ? `/speaking-lp${path}` : path;
+}
+
+const speakingLearningPathFetchCache = new WeakMap<ApiFetch, ApiFetch>();
+
+/** Stable apiFetch wrapper (same identity per base fetch) for scope="speaking". */
+export function speakingLearningPathFetch(apiFetch: ApiFetch): ApiFetch {
+  let wrapped = speakingLearningPathFetchCache.get(apiFetch);
+  if (!wrapped) {
+    wrapped = (path: string, options?: any) => apiFetch(speakingLearningPathApiPath(path), options);
+    speakingLearningPathFetchCache.set(apiFetch, wrapped);
+  }
+  return wrapped;
+}
+
+export function StaffLearningPaths({ apiFetch, scope = "student" }: { apiFetch: ApiFetch; scope?: LearningPathScope }) {
   const t = useWebT();
   const [tracks, setTracks] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Row | null>(null);
@@ -4900,11 +4968,6 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
   const [manageTopicsModuleId, setManageTopicsModuleId] = useState<number | null>(null);
   const [openAddTestOnModuleOpen, setOpenAddTestOnModuleOpen] = useState(false);
-  const [editModuleId, setEditModuleId] = useState<number | null>(null);
-  const [editTitle, setEditTitle] = useState("");
-  const [editTopics, setEditTopics] = useState("");
-  const [editRewardCoins, setEditRewardCoins] = useState(0);
-  const [editCover, setEditCover] = useState("star");
 
   const selectedModule = useMemo(() => {
     if (!selected || !selectedModuleId) return null;
@@ -5060,36 +5123,6 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
     }
   };
 
-  const updateModule = async (moduleId: number, prevCover?: string | null, nextCover?: string | null) => {
-    if (prevCover && editCover === prevCover) {
-      setError("Oldingi modul bilan bir xil rasm tanlab bo'lmaydi.");
-      return;
-    }
-    if (nextCover && editCover === nextCover) {
-      setError("Keyingi modul bilan bir xil rasm tanlab bo'lmaydi.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await apiFetch(`/staff/learning-modules/${moduleId}`, {
-        method: "PATCH",
-        body: {
-          title: editTitle.trim(),
-          topic_keys: editTopics.split(",").map((v) => v.trim()).filter(Boolean),
-          reward_coins: editRewardCoins,
-          cover_key: editCover,
-        },
-      });
-      setEditModuleId(null);
-      await load();
-    } catch (e) {
-      setError(errorText(e, "Modul saqlanmadi."));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <section className="mx-auto w-full max-w-6xl p-4 sm:p-6 space-y-6">
       {/* Header Bar */}
@@ -5097,7 +5130,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <p className="text-xs font-black uppercase tracking-[.18em] text-cyan-600 dark:text-cyan-300">
-              Diamond Learning Path
+              {scope === "speaking" ? "Diamond Speaking Learning Path" : "Diamond Learning Path"}
             </p>
             <h1 className="mt-1.5 text-2xl sm:text-3xl font-black text-navy-900 dark:text-white">
               {t("learning.staff.title", "Learning Path boshqaruvi")}
@@ -5611,6 +5644,7 @@ export function StaffLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
           module={selectedModule}
           allModules={selected.modules || []}
           apiFetch={apiFetch}
+          scope={scope}
           onSaved={load}
           onClose={() => {
             setSelectedModuleId(null);
@@ -6112,14 +6146,19 @@ function CertificateSettingsModal({
   );
 }
 
-async function uploadAudioFile(file: File): Promise<string | null> {
+async function uploadAudioFile(file: File, scope: LearningPathScope = "student"): Promise<string | null> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch("/api/teacher/library/upload", {
+  const init: RequestInit = {
     method: "POST",
     headers: { Authorization: `Bearer ${localStorage.getItem("diamond_token") || ""}` },
     body: form,
-  });
+  };
+  // The Speaking admin cannot use the teacher Library; it has its own upload.
+  const res =
+    scope === "speaking"
+      ? await fetch("/api/speaking-lp/staff/upload", init)
+      : await fetch("/api/teacher/library/upload", init);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = data && typeof data.detail === "string" ? data.detail : "";
@@ -6184,13 +6223,18 @@ function LessonEditor({
   apiFetch,
   onSaved,
   initialOpenAddTest = false,
+  scope = "student",
 }: {
   module: Row;
   apiFetch: ApiFetch;
   onSaved: () => Promise<void>;
   initialOpenAddTest?: boolean;
+  scope?: LearningPathScope;
 }) {
   const t = useWebT();
+  // The Speaking Learning Path has no teacher Materials Library.
+  const libraryAvailable = scope !== "speaking";
+  const uploadMedia = (file: File) => uploadAudioFile(file, scope);
   const lessons = Array.isArray(module.lessons) ? module.lessons : [];
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -6228,7 +6272,7 @@ function LessonEditor({
   const [editMcqOptions, setEditMcqOptions] = useState<string[]>(["", "", "", ""]);
 
   // AI & Library states
-  const [addMode, setAddMode] = useState<"library" | "ai" | "manual">("library");
+  const [addMode, setAddMode] = useState<"library" | "ai" | "manual">(libraryAvailable ? "library" : "ai");
   const [topic, setTopic] = useState("");
   const [count, setCount] = useState(10);
   const [types, setTypes] = useState(DIAMONDVOY_LEARNING_PATH_TYPES);
@@ -6721,13 +6765,13 @@ function LessonEditor({
         initialTitle={libraryEditor.title}
         initialQuestions={libraryEditor.questions}
         editing={!!libraryEditor.id}
-        upload={uploadAudioFile}
+        upload={uploadMedia}
         onClose={() => setLibraryEditor(null)}
-        onSaveToLibrary={async (draftTitle, questions) => {
+        onSaveToLibrary={libraryAvailable ? async (draftTitle, questions) => {
           await apiFetch("/teacher/library", { method: "POST", body: {
             title: draftTitle, kind: "test", is_public: false, payload: { questions },
           } });
-        }}
+        } : undefined}
         onSave={async (draftTitle, questions) => {
           if (libraryEditor.id) {
             await apiFetch(`/staff/learning-lessons/${libraryEditor.id}`, {
@@ -6872,7 +6916,7 @@ function LessonEditor({
                                   if (!file) return;
                                   setEditAudioUploading(true);
                                   try {
-                                    const url = await uploadAudioFile(file);
+                                    const url = await uploadMedia(file);
                                     if (url) setEditAudioUrl(url);
                                   } catch (err) {
                                     alert(err instanceof Error ? err.message : "Audio yuklanmadi.");
@@ -7248,6 +7292,7 @@ function LessonEditor({
 
             {/* 3-Tab Segmented Controls */}
             <div className="flex border-b border-line bg-surface-soft/40 p-2 dark:border-slate-800 dark:bg-[#090d16]/50 gap-1.5">
+              {libraryAvailable ? (
               <button
                 type="button"
                 onClick={() => setAddMode("library")}
@@ -7259,6 +7304,7 @@ function LessonEditor({
               >
                 <span>📂 {t("learning_paths.teacher.from_library")}</span>
               </button>
+              ) : null}
 
               <button
                 type="button"
@@ -7288,7 +7334,7 @@ function LessonEditor({
             {/* Modal Body with Scroll */}
             <div className="flex-1 overflow-y-auto p-4 sm:p-5">
               {/* TAB 1: Real Materials Library Picker */}
-              {addMode === "library" ? (
+              {libraryAvailable && addMode === "library" ? (
                 <div className="space-y-4 animate-fade-in">
                   <div className="rounded-2xl border-2 border-dashed border-[#1cb0f6]/40 bg-[#1cb0f6]/5 p-6 text-center dark:border-[#1cb0f6]/20 dark:bg-cyan-950/20">
                     <div className="mx-auto mb-3 grid h-14 w-14 place-items-center rounded-2xl bg-[#1cb0f6]/15 text-2xl text-[#1cb0f6]">
@@ -7490,7 +7536,7 @@ function LessonEditor({
                                 if (!file) return;
                                 setAudioUploading(true);
                                 try {
-                                  const url = await uploadAudioFile(file);
+                                  const url = await uploadMedia(file);
                                   if (url) setAudioUrl(url);
                                 } catch (err) {
                                   alert(err instanceof Error ? err.message : "Audio yuklanmadi.");
@@ -7776,7 +7822,7 @@ function LessonEditor({
       )}
 
       {/* Real Folder-tree Materials Library Popup Modal */}
-      {showLibraryModal ? (
+      {libraryAvailable && showLibraryModal ? (
         <MaterialsLibraryModal
           apiFetch={apiFetch}
           onSelect={(contentId, cType, qCount) => void attachLibrary(contentId, cType, qCount)}
@@ -8799,6 +8845,7 @@ function ModuleDetailModal({
   onSaved,
   onClose,
   initialOpenAddTest = false,
+  scope = "student",
 }: {
   track: Row;
   module: Row;
@@ -8807,6 +8854,7 @@ function ModuleDetailModal({
   onSaved: () => Promise<void>;
   onClose: () => void;
   initialOpenAddTest?: boolean;
+  scope?: LearningPathScope;
 }) {
   const t = useWebT();
   const [modTitle, setModTitle] = useState(module.title || "");
@@ -8983,6 +9031,7 @@ function ModuleDetailModal({
               apiFetch={apiFetch}
               onSaved={onSaved}
               initialOpenAddTest={initialOpenAddTest}
+              scope={scope}
             />
           </div>
         </div>

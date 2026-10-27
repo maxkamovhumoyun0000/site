@@ -28,7 +28,8 @@ type SubQuestion = {
   right_items?: string[];
 };
 
-type Question = {
+// Exported so Arena/Duel vocabulary questions can reuse the same answer UI.
+export type Question = {
   kind: Kind;
   check: "ai" | "auto";
   input: "text" | "audio" | "audio_or_text" | "choice" | "order" | "pairs" | "cloze" | "reading_set" | "listening_set";
@@ -301,8 +302,8 @@ const KIND_TITLE: Record<Kind, string> = {
   reading_set: "Matnni o'qing va savollarga javob bering",
 };
 
-function QuestionCard({
-  question, attemptId, checking, feedback, onSubmit, onNext,
+export function QuestionCard({
+  question, attemptId, checking, feedback, onSubmit, onNext, disabled = false,
 }: {
   question: Question;
   attemptId: number;
@@ -310,6 +311,8 @@ function QuestionCard({
   feedback: AnswerResult | null;
   onSubmit: (payload: Record<string, unknown>) => void;
   onNext: () => void;
+  /** Locks the answer controls without showing the "checking" state. */
+  disabled?: boolean;
 }) {
   const tt = useWebT();
   const wasCorrect = feedback?.verdict === "correct";
@@ -393,7 +396,7 @@ function QuestionCard({
       )}
 
       {!showFeedback || canRetry ? (
-        <AnswerInput question={question} attemptId={attemptId} checking={checking} onSubmit={onSubmit} retrying={!!canRetry} />
+        <AnswerInput question={question} attemptId={attemptId} checking={checking} onSubmit={onSubmit} retrying={!!canRetry} locked={disabled} />
       ) : null}
 
       {checking && (
@@ -459,13 +462,14 @@ function MarkableWords({
 }
 
 function AnswerInput({
-  question, attemptId, checking, onSubmit, retrying,
+  question, attemptId, checking, onSubmit, retrying, locked = false,
 }: {
   question: Question;
   attemptId: number;
   checking: boolean;
   onSubmit: (payload: Record<string, unknown>) => void;
   retrying: boolean;
+  locked?: boolean;
 }) {
   const tt = useWebT();
   const [text, setText] = useState("");
@@ -484,7 +488,7 @@ function AnswerInput({
   const [usedWordBank, setUsedWordBank] = useState<Set<number>>(() => new Set());
   const [wordBankAssignments, setWordBankAssignments] = useState<Record<number, number>>({});
 
-  const disabled = checking;
+  const disabled = checking || locked;
   // Guided writing: live word count
   const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
   const minWords = question.word_count || 0;
