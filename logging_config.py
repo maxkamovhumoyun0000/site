@@ -35,7 +35,7 @@ class SensitiveDataFilter(logging.Filter):
     )
     _bearer = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
     # Telegram bot tokens, e.g. in api.telegram.org/bot<token>/sendMessage URLs.
-    _telegram_bot_token = re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}\b")
+    _telegram_bot_token = re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}")
     # Credentials embedded in connection URLs (postgresql://user:pass@host).
     _url_credentials = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@/]+@")
     _phone = re.compile(r"(?<!\d)(\+?998)\d{7,12}(?!\d)")
