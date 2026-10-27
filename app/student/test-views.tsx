@@ -429,9 +429,15 @@ async function requestJson<T>(path: string, options?: {
       const text = await response.text().catch(() => "");
       if (text) {
         let detail = "";
+        let detailCode = "";
+        let detailExisting: unknown = undefined;
         try {
           const parsed = JSON.parse(text) as { detail?: unknown; message?: string; error?: string };
           const detailRaw = parsed.detail;
+          if (detailRaw && typeof detailRaw === "object") {
+            detailCode = String((detailRaw as { code?: unknown }).code || "");
+            detailExisting = (detailRaw as { existing?: unknown }).existing;
+          }
           detail =
             typeof detailRaw === "string"
               ? detailRaw
@@ -447,7 +453,13 @@ async function requestJson<T>(path: string, options?: {
         } catch {
           detail = text;
         }
-        throw new Error(String(detail || text || "Request failed"));
+        // Keep the backend's machine-readable code (e.g. active_session_mismatch)
+        // so callers can branch on it instead of the translated message.
+        const requestError = new Error(String(detail || text || "Request failed")) as Error & { code?: string; existing?: unknown; status?: number };
+        requestError.status = response.status;
+        if (detailCode) requestError.code = detailCode;
+        if (detailExisting !== undefined) requestError.existing = detailExisting;
+        throw requestError;
       }
       throw new Error("Request failed");
     }
@@ -4253,7 +4265,8 @@ export function StudentCompetitionPage({
       setProctoringReady(true); // proctoring disabled for competition
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not start competition";
-      const clean = /active_session_mismatch/i.test(message)
+      const errorCode = String((err as { code?: unknown } | null)?.code || "");
+      const clean = errorCode === "active_session_mismatch" || /active_session_mismatch/i.test(message)
         ? tt("arena.activeSessionMismatch", "Oldingi aktiv sessiya tanlangan rejim yoki fanga mos emas. Iltimos, to'g'ri sessiyani davom ettiring yoki qayta urinib ko'ring.")
         : /insufficient/i.test(message) ? tt("duel.insufficientDcoin", "D'coin yetarli emas") : message;
       if (isDuel) setDuelBlocked(clean);
@@ -4392,7 +4405,7 @@ export function StudentCompetitionPage({
             : `/competition/runtime/${encodeURIComponent(resolvedSessionId)}/question`;
           const questionPayload = await requestJson<CompetitionQuestionPayload>(qUrl, { token });
           setQuestion(questionPayload);
-          setTimeLeft(Math.max(0, Number(questionPayload.time_remaining_sec || questionPayload.time_limit_sec || 0)));
+          setTimeLeft(Math.max(0, Number(questionPayload.time_remaining_sec ?? questionPayload.time_limit_sec ?? 0)));
           if (questionPayload.completed) {
             const resultPayload = await requestJson<GenericRow>(`/competition/runtime/${encodeURIComponent(resolvedSessionId)}/result`, { token });
             if (resultPayload.ready) {
@@ -4489,7 +4502,7 @@ export function StudentCompetitionPage({
         const qUrl = `/competition/runtime/${encodeURIComponent(requestedSessionId)}/question`;
         const questionPayload = await requestJson<CompetitionQuestionPayload>(qUrl, { token });
         setQuestion(questionPayload);
-        setTimeLeft(Math.max(0, Number(questionPayload.time_remaining_sec || questionPayload.time_limit_sec || 0)));
+        setTimeLeft(Math.max(0, Number(questionPayload.time_remaining_sec ?? questionPayload.time_limit_sec ?? 0)));
         if (questionPayload.completed) {
           const resultPayload = await requestJson<GenericRow>(`/competition/runtime/${encodeURIComponent(requestedSessionId)}/result`, { token });
           if (resultPayload.ready) {
@@ -4640,9 +4653,12 @@ export function StudentCompetitionPage({
     refreshRuntime();
     const pollPhase = String(status?.phase || question?.phase || (result?.ready ? "finished" : "pending"));
   const isLobbyExpired = ["expired", "cancelled", "timeout"].includes(pollPhase.toLowerCase()) || (status?.status || "").toLowerCase().includes("expir");
+    // A finished session whose result is not ready yet (finalization still
+    // running) must keep polling, otherwise the screen stays stuck.
+    const waitingForResult = pollPhase.toLowerCase() === "finished" && !result?.ready;
     const intervalMs = isDuel
-      ? (pollPhase === "pending" ? 1800 : pollPhase === "generating" ? 1200 : pollPhase === "active" ? 6500 : 0)
-      : (pollPhase === "pending" ? 2000 : pollPhase === "generating" ? 1200 : pollPhase === "active" ? 6500 : 0);
+      ? (pollPhase === "pending" ? 1800 : pollPhase === "generating" ? 1200 : pollPhase === "active" ? 6500 : waitingForResult ? 2500 : 0)
+      : (pollPhase === "pending" ? 2000 : pollPhase === "generating" ? 1200 : pollPhase === "active" ? 6500 : waitingForResult ? 2500 : 0);
     if (!intervalMs) return;
     const timer = window.setInterval(refreshRuntime, intervalMs);
     return () => window.clearInterval(timer);
@@ -4650,7 +4666,7 @@ export function StudentCompetitionPage({
 
   useEffect(() => {
     if (!question || question.completed || busy || status?.phase !== "active") return;
-    setTimeLeft(Math.max(0, Number(question.time_remaining_sec || question.time_limit_sec || 0)));
+    setTimeLeft(Math.max(0, Number(question.time_remaining_sec ?? question.time_limit_sec ?? 0)));
     lastTimerInitIndexRef.current = question.question_index;
   }, [question?.question_index, question?.time_remaining_sec, question?.time_limit_sec, question?.completed, busy, status?.phase]);
 
@@ -5507,8 +5523,8 @@ export function StudentCompetitionPage({
                     correctCount={Number(result.result?.correct ?? result.correct ?? 0)}
                     wrongCount={Number(result.result?.wrong ?? result.wrong ?? 0)}
                     skippedCount={Number(result.result?.unanswered ?? result.unanswered ?? 0)}
-                    dcoinEarned={Number(result.dcoin_delta ?? result.reward_dcoin ?? (isWinner ? 25 : 5))}
-                    dpointEarned={Number(result.result?.dpoints_delta ?? result.dpoints_delta ?? (isWinner ? 50 : 10))}
+                    dcoinEarned={Number(result.result?.dcoin ?? result.dcoin_delta ?? result.reward_dcoin ?? 0)}
+                    dpointEarned={Number(result.result?.dpoints_delta ?? result.dpoints_delta ?? 0)}
                     onReview={() => {
                       if (sessionId || lastFinishedSessionIdRef.current) {
                         openHistoryReview({ session_id: sessionId || lastFinishedSessionIdRef.current });

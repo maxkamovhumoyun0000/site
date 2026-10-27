@@ -13,22 +13,27 @@ export function AdminCompetitions() {
   const [selectedSession, setSelectedSession] = useState<any>(null);
   const [sessionResults, setSessionResults] = useState<any[]>([]);
   const [resultsLoading, setResultsLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [resultsError, setResultsError] = useState("");
 
   const fetchHistory = async (currentMode: string, currentPage: number) => {
     setLoading(true);
+    setLoadError("");
     try {
       const token = localStorage.getItem("diamond_token");
-      const res = await fetch(`/api/admin/competitions/history?mode=${currentMode}&page=${currentPage}&limit=20`, {
+      const res = await fetch(`/api/admin/competitions/history?mode=${encodeURIComponent(currentMode)}&page=${currentPage}&limit=20`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         const json = await res.json();
         setData(json);
       } else {
-        console.error("Failed to fetch history");
+        setData(null);
+        setLoadError(`Tarix yuklanmadi (HTTP ${res.status}).`);
       }
     } catch (e) {
-      console.error(e);
+      setData(null);
+      setLoadError(e instanceof Error ? e.message : "Tarix yuklanmadi.");
     } finally {
       setLoading(false);
     }
@@ -41,17 +46,22 @@ export function AdminCompetitions() {
   const fetchResults = async (session: any) => {
     setSelectedSession(session);
     setResultsLoading(true);
+    setResultsError("");
     try {
       const token = localStorage.getItem("diamond_token");
-      const res = await fetch(`/api/admin/competitions/${session.id}/results?mode=${mode}`, {
+      const res = await fetch(`/api/admin/competitions/${encodeURIComponent(String(session.id))}/results?mode=${encodeURIComponent(mode)}`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         const json = await res.json();
         setSessionResults(json.participants || []);
+      } else {
+        setSessionResults([]);
+        setResultsError(`Natijalar yuklanmadi (HTTP ${res.status}).`);
       }
     } catch (e) {
-      console.error(e);
+      setSessionResults([]);
+      setResultsError(e instanceof Error ? e.message : "Natijalar yuklanmadi.");
     } finally {
       setResultsLoading(false);
     }
@@ -60,6 +70,7 @@ export function AdminCompetitions() {
   const closeResults = () => {
     setSelectedSession(null);
     setSessionResults([]);
+    setResultsError("");
   };
 
   return (
@@ -107,6 +118,10 @@ export function AdminCompetitions() {
               {loading ? (
                 <tr>
                   <td colSpan={5} className="p-8 text-center text-ink-500 dark:text-slate-400">Yuklanmoqda...</td>
+                </tr>
+              ) : loadError ? (
+                <tr>
+                  <td colSpan={5} className="p-8 text-center font-semibold text-red-600 dark:text-red-400">{loadError}</td>
                 </tr>
               ) : data?.items?.length === 0 ? (
                 <tr>
@@ -186,6 +201,8 @@ export function AdminCompetitions() {
             <div className="overflow-y-auto p-6 flex-1">
               {resultsLoading ? (
                 <div className="text-center py-8 text-ink-500">Yuklanmoqda...</div>
+              ) : resultsError ? (
+                <div className="text-center py-8 font-semibold text-red-600 dark:text-red-400">{resultsError}</div>
               ) : sessionResults.length === 0 ? (
                 <div className="text-center py-8 text-ink-500">Ishtirokchilar topilmadi.</div>
               ) : (

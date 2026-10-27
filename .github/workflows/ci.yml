@@ -48,5 +48,11 @@ jobs:
       - name: Check backend syntax
         run: |
           python3 -m py_compile \
-            backend/main.py db.py config.py userbot_manager.py \
+            backend/main.py backend/speaking_admin.py backend/personalization.py \
+            db.py config.py userbot_manager.py \
             admin_bot.py student_bot.py teacher_bot.py support_lesson.py
+
+      - name: Website API contract tests
+        # Stdlib only: checks website API paths against backend routes and
+        # the Speaking admin workspace guard without a database.
+        run: python3 tests/test_website_api_contracts.py

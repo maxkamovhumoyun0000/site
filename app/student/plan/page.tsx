@@ -70,6 +70,8 @@ const T: Record<string, Record<string, string>> = {
     restartPractice: "Пройти заново",
     congrats: "Потрясающе! Все вопросы решены правильно!",
     keepGoing: "Хороший результат! Закрепите пройденные темы.",
+    checkFailed: "Ответ не проверен и не сохранён. Проверьте соединение и попробуйте снова.",
+    loadFailed: "Не удалось загрузить данные плана. Попробуйте позже.",
     learnWithAi: "Учить с Diamondvoy",
     generate10Tests: "10 тестов по теме",
   },
@@ -116,6 +118,8 @@ const T: Record<string, Record<string, string>> = {
     restartPractice: "Practice Again",
     congrats: "Awesome! You mastered all questions!",
     keepGoing: "Great effort! Keep practicing to strengthen your skills.",
+    checkFailed: "Your answer was not checked or saved. Check your connection and try again.",
+    loadFailed: "Could not load your plan data. Please try again later.",
     learnWithAi: "Learn with Diamondvoy",
     generate10Tests: "Take 10 Tests",
   },
@@ -162,6 +166,8 @@ const T: Record<string, Record<string, string>> = {
     restartPractice: "Qaytadan",
     congrats: "Ajoyib! Barcha savollarni muvaffaqiyatli bajardingiz!",
     keepGoing: "Yaxshi natija! Xatolar ustida ishlab, bilimingizni mustahkamlang.",
+    checkFailed: "Javob tekshirilmadi va saqlanmadi. Internetni tekshirib, qayta urinib ko'ring.",
+    loadFailed: "Reja ma'lumotlari yuklanmadi. Keyinroq qayta urinib ko'ring.",
     learnWithAi: "Diamondvoy bilan o'rganish",
     generate10Tests: "10 ta test ishlash",
   },
@@ -207,13 +213,21 @@ function AccuracyRing({ pct }: { pct: number }) {
 }
 
 /* ─── PracticeTest (Learning Path 3D Style) ───────────────────────── */
-function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<string, string> }) {
+function newPracticeAttemptId() {
+  return `web_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function PracticeTest({ questions, t, subject }: { questions: PracticeQ[]; t: Record<string, string>; subject?: string }) {
   const [idx, setIdx] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [result, setResult] = useState<{ correct: boolean; explanation: string } | null>(null);
   const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState("");
   const [score, setScore] = useState(0);
   const [done, setDone] = useState(false);
+  // One attempt id per practice run so the backend stores all answers of
+  // this run together (it otherwise creates a new attempt per answer).
+  const attemptIdRef = useRef(newPracticeAttemptId());
 
   const q = questions[idx];
   if (!q || done) return (
@@ -222,7 +236,7 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
       <p className="text-2xl font-black text-navy-900 dark:text-white">{score} / {questions.length} {t.correct}</p>
       <p className="text-sm text-ink-600 dark:text-navy-300 mt-2 max-w-sm mx-auto">{score === questions.length ? t.congrats : t.keepGoing}</p>
       <button
-        onClick={() => { setIdx(0); setSelected(null); setResult(null); setScore(0); setDone(false); }}
+        onClick={() => { attemptIdRef.current = newPracticeAttemptId(); setIdx(0); setSelected(null); setResult(null); setCheckError(""); setScore(0); setDone(false); }}
         className="mt-6 inline-flex items-center gap-2 rounded-2xl border-2 border-b-4 border-[#001A88] bg-[#002DFF] px-6 py-3 text-xs font-black uppercase tracking-wider text-white shadow-md shadow-blue-500/25 active:translate-y-0.5 active:border-b-2 hover:bg-[#1429f2] transition-all cursor-pointer"
       >
         <span>↺</span>
@@ -234,6 +248,7 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
   async function check() {
     if (!selected || checking) return;
     setChecking(true);
+    setCheckError("");
     try {
       const headers = getAuthHeaders();
       const res = await fetch("/api/student/personal-plan/practice-test/check", {
@@ -246,15 +261,20 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
           correct: q.correct,
           topic: q.topic,
           explanation: q.explanation,
+          attempt_id: attemptIdRef.current,
+          question_index: idx + 1,
+          total_questions: questions.length,
+          subject: subject || "",
         }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setResult(data);
-      if (data?.correct) setScore(s => s + 1);
+      if (typeof data?.correct !== "boolean") throw new Error("Invalid response");
+      setResult({ correct: data.correct, explanation: String(data.explanation || "") });
+      if (data.correct) setScore(s => s + 1);
     } catch {
-      const isCorrect = selected.trim() === q.correct.trim();
-      setResult({ correct: isCorrect, explanation: q.explanation || "" });
-      if (isCorrect) setScore(s => s + 1);
+      // No local grading: the answer was not stored, so let the student retry.
+      setCheckError(t.checkFailed || "Javob tekshirilmadi.");
     } finally { setChecking(false); }
   }
 
@@ -358,6 +378,12 @@ function PracticeTest({ questions, t }: { questions: PracticeQ[]; t: Record<stri
         </div>
       )}
 
+      {checkError && !result ? (
+        <p className="mb-3 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300">
+          {checkError}
+        </p>
+      ) : null}
+
       {/* Bottom Actions */}
       <div className="flex gap-3">
         {!result ? (
@@ -393,6 +419,7 @@ export default function PersonalPlanPage() {
   const [generating, setGenerating] = useState(false);
   const [practiceStarted, setPracticeStarted] = useState(false);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null);
+  const [loadError, setLoadError] = useState("");
   const autoTriggered = useRef(false);
 
   // Determine active locale based on the subject
@@ -407,10 +434,13 @@ export default function PersonalPlanPage() {
     try {
       const targetSub = sub || selectedSubject;
       const headers = getAuthHeaders();
+      // Error bodies ({detail: ...}) must not be rendered as an analysis.
+      const readJson = (r: Response) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)));
       const [aRes, hRes] = await Promise.all([
-        fetch(`/api/student/personal-plan/weekly-analysis?subject=${encodeURIComponent(targetSub)}`, { headers }).then(r => r.json()).catch(() => null),
-        fetch(`/api/student/personal-plan/analysis-history?subject=${encodeURIComponent(targetSub)}`, { headers }).then(r => r.json()).catch(() => ({ items: [] })),
+        fetch(`/api/student/personal-plan/weekly-analysis?subject=${encodeURIComponent(targetSub)}`, { headers }).then(readJson).catch(() => null),
+        fetch(`/api/student/personal-plan/analysis-history?subject=${encodeURIComponent(targetSub)}`, { headers }).then(readJson).catch(() => null),
       ]);
+      setLoadError(aRes === null || hRes === null ? (t.loadFailed || "") : "");
       setAnalysis(aRes);
       setHistory(hRes?.items || []);
       if (Array.isArray(aRes?.available_subjects) && aRes.available_subjects.length) {
@@ -422,7 +452,7 @@ export default function PersonalPlanPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedSubject]);
+  }, [selectedSubject, t]);
 
   useEffect(() => {
     load();
@@ -437,14 +467,18 @@ export default function PersonalPlanPage() {
         method: "POST",
         headers,
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data) {
+        setLoadError("");
         setAnalysis(prev => ({ ...(prev || {}), ...data, exists: true }));
       }
+    } catch {
+      setLoadError(t.loadFailed || "");
     } finally {
       setGenerating(false);
     }
-  }, [generating, selectedSubject]);
+  }, [generating, selectedSubject, t]);
 
   // Polling logic when status is processing or auto trigger if not generated
   useEffect(() => {
@@ -533,6 +567,12 @@ export default function PersonalPlanPage() {
             </div>
           )}
         </div>
+
+        {loadError && !loading && !generating ? (
+          <p className="mb-4 rounded-2xl border-2 border-b-4 border-rose-300 bg-rose-50 p-3.5 text-sm font-bold text-rose-700 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-300">
+            {loadError}
+          </p>
+        ) : null}
 
         {(generating || analysis?.status === "processing" || (loading && !hasAnalysis)) && (
           <ThinkingAnimation text={t.thinking} detail={t.thinkingDetail} />
@@ -742,7 +782,7 @@ export default function PersonalPlanPage() {
                     </button>
                   </div>
                 ) : (
-                  <PracticeTest questions={analysis.practice_questions} t={t} />
+                  <PracticeTest questions={analysis.practice_questions} t={t} subject={selectedSubject} />
                 )
               ) : (
                 <div className="text-center py-12 rounded-3xl border-2 border-b-4 border-slate-200 bg-white p-6 dark:border-navy-700 dark:bg-navy-900 shadow-sm">

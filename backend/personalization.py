@@ -2435,6 +2435,12 @@ async def update_learning_module(module_id: int, payload: LearningModuleUpdate, 
         track_id = int(dict(row)["track_id"])
         _learning_track_for_manager(track_id, user)
         values=payload.model_dump(exclude_unset=True)
+        # An explicit null for a required column means "unchanged"; storing
+        # NULL would break the module (e.g. blank reward input on the website).
+        # passing_score/description/image_url keep null as "clear/use default".
+        for required_key in ("title", "reward_coins", "cover_key", "topic_keys"):
+            if required_key in values and values[required_key] is None:
+                values.pop(required_key)
         if not values: return {"id":module_id}
         if "cover_key" in values and values["cover_key"]:
             requested_cover = values["cover_key"] if values["cover_key"] in LEARNING_COVERS else "star"

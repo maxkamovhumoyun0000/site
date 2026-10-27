@@ -8640,6 +8640,8 @@ async def developer_workspace_access_guard(request: Request, call_next):
 
 _SPEAKING_ADMIN_WORKSPACE_PATHS = {
     "/app/state",
+    "/auth/login",
+    "/auth/session/cookie",
     "/auth/me",
     "/auth/logout",
     "/auth/presence/heartbeat",
@@ -8647,8 +8649,28 @@ _SPEAKING_ADMIN_WORKSPACE_PATHS = {
     "/user/language",
     "/notifications",
     "/notifications/unread-count",
+    "/notifications/read-all",
     "/admin/users",
 }
+
+# Prefixes the dedicated Speaking admin workspace (website) is allowed to call.
+_SPEAKING_ADMIN_WORKSPACE_PREFIXES = (
+    "/staff/speaking/",
+    "/staff/speaking-learning/",
+    "/api/speaking/live-video/",
+    "/admin/speaking-users/",
+)
+
+_NOTIFICATION_READ_PATH_RE = re.compile(r"^/notifications/[^/]+/read$")
+
+
+def _speaking_admin_workspace_path_is_allowed(path: str) -> bool:
+    clean = str(path or "").rstrip("/") or "/"
+    if clean in _SPEAKING_ADMIN_WORKSPACE_PATHS:
+        return True
+    if _NOTIFICATION_READ_PATH_RE.match(clean):
+        return True
+    return any(clean.startswith(prefix) for prefix in _SPEAKING_ADMIN_WORKSPACE_PREFIXES)
 
 
 @app.middleware("http")
@@ -8661,13 +8683,7 @@ async def speaking_admin_workspace_access_guard(request: Request, call_next):
         user = _user_row_from_bearer(authorization)
     except HTTPException:
         return await call_next(request)
-    path = request.url.path.rstrip("/") or "/"
-    allowed = (
-        path in _SPEAKING_ADMIN_WORKSPACE_PATHS
-        or path.startswith("/staff/speaking/")
-        or path.startswith("/api/speaking/live-video/")
-        or path.startswith("/admin/speaking-users/")
-    )
+    allowed = _speaking_admin_workspace_path_is_allowed(request.url.path)
     if _is_speaking_admin_account(user) and not allowed:
         return JSONResponse(status_code=403, content={"detail": "Speaking admin account is limited to the Speaking workspace"})
     return await call_next(request)
@@ -42705,6 +42721,30 @@ async def admin_delete_course(course_id: int, authorization: str | None = Header
 
 
 
+# Admin history tab -> runtime modes stored in web_competition_sessions.mode.
+_ADMIN_COMPETITION_RUNTIME_MODES: dict[str, tuple[str, ...]] = {
+    "arena-boss": ("boss",),
+    "duel": ("duel-1v1", "duel-3v3", "duel-5v5"),
+}
+
+
+def _admin_competition_naive_utc_iso(value: Any) -> str | None:
+    """Return a naive UTC ISO timestamp (the admin UI appends "Z")."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed.isoformat()
+
+
 @app.get("/admin/competitions/history")
 async def get_admin_competitions_history(
     mode: str = Query("arena-boss"),
@@ -42743,32 +42783,43 @@ async def get_admin_competitions_history(
             ''', [limit, offset])
             items = cur.fetchall()
             
-        elif mode == "arena-boss":
-            cur.execute("SELECT COUNT(*) as c FROM arena_boss_sessions")
-            total = int(cur.fetchone().get("c", 0) or 0)
-            cur.execute('''
-                SELECT s.id, s.subject, s.level, s.status, s.created_at,
-                       (SELECT COUNT(*) FROM arena_boss_session_attempts WHERE session_id = s.id) as participants_count
-                FROM arena_boss_sessions s
-                ORDER BY s.id DESC
-                LIMIT %s OFFSET %s
-            ''', [limit, offset])
-            items = cur.fetchall()
-            
-        elif mode == "duel":
-            cur.execute("SELECT COUNT(DISTINCT session_id) as c FROM arena_duel_match_participants")
-            total = int(cur.fetchone().get("c", 0) or 0)
-            cur.execute('''
-                SELECT session_id as id,
-                       MAX(mode) as subject,
-                       MAX(created_at) as created_at,
-                       COUNT(user_id) as participants_count
-                FROM arena_duel_match_participants
-                GROUP BY session_id
-                ORDER BY MAX(id) DESC
-                LIMIT %s OFFSET %s
-            ''', [limit, offset])
-            items = cur.fetchall()
+        elif mode in _ADMIN_COMPETITION_RUNTIME_MODES:
+            # Boss Arena and Duels are persisted by the runtime in the
+            # web_competition_* tables. Only sessions that actually started
+            # belong in history; abandoned queues are not competitions.
+            runtime_modes = _ADMIN_COMPETITION_RUNTIME_MODES[mode]
+            placeholders = ", ".join("?" for _ in runtime_modes)
+            _ensure_web_competition_runtime_schema()
+            cur.execute(
+                f"SELECT COUNT(*) AS c FROM web_competition_sessions "
+                f"WHERE mode IN ({placeholders}) AND started_at IS NOT NULL",
+                tuple(runtime_modes),
+            )
+            total = int((cur.fetchone() or {}).get("c", 0) or 0)
+            cur.execute(
+                f"""
+                SELECT s.session_id AS id, s.mode, s.subject, s.status, s.started_at, s.finished_at, s.created_at,
+                       (SELECT COUNT(*) FROM web_competition_participants p WHERE p.session_id = s.session_id) AS participants_count
+                FROM web_competition_sessions s
+                WHERE s.mode IN ({placeholders}) AND s.started_at IS NOT NULL
+                ORDER BY s.started_at DESC, s.session_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*runtime_modes, limit, offset),
+            )
+            items = []
+            for row in cur.fetchall() or []:
+                item = dict(row)
+                subject = str(item.get("subject") or "").strip()
+                item["subject"] = f"{subject} · {item.get('mode')}" if mode == "duel" and subject else (subject or item.get("mode"))
+                # The admin UI appends "Z" itself, so send a naive UTC ISO string.
+                item["created_at"] = _admin_competition_naive_utc_iso(
+                    item.get("started_at") or item.get("created_at")
+                )
+                item["started_at"] = _admin_competition_naive_utc_iso(item.get("started_at"))
+                item["finished_at"] = _admin_competition_naive_utc_iso(item.get("finished_at"))
+                item["participants_count"] = int(item.get("participants_count") or 0)
+                items.append(item)
         else:
             total = 0
             items = []
@@ -42809,26 +42860,47 @@ async def get_admin_competition_results(
             ''', [int(session_id)])
             return {"participants": cur.fetchall()}
             
-        elif mode == "arena-boss":
-            cur.execute('''
-                SELECT a.*, u.first_name, u.last_name, u.login_id 
-                FROM arena_boss_session_attempts a
-                LEFT JOIN users u ON a.user_id = u.id
-                WHERE a.session_id = %s
-                ORDER BY a.correct_count DESC, a.wrong_count ASC
-            ''', [int(session_id)])
-            return {"participants": cur.fetchall()}
-            
-        elif mode == "duel":
-            cur.execute('''
-                SELECT a.*, u.first_name, u.last_name, u.login_id 
-                FROM arena_duel_match_participants a
-                LEFT JOIN users u ON a.user_id = u.id
-                WHERE a.session_id = %s
-                ORDER BY a.id ASC
-            ''', [str(session_id)])
-            return {"participants": cur.fetchall()}
-            
+        elif mode in _ADMIN_COMPETITION_RUNTIME_MODES:
+            sid = str(session_id or "").strip()
+            if not sid or len(sid) > 128:
+                raise HTTPException(status_code=400, detail="Invalid competition session id")
+            runtime_modes = _ADMIN_COMPETITION_RUNTIME_MODES[mode]
+            placeholders = ", ".join("?" for _ in runtime_modes)
+            _ensure_web_competition_runtime_schema()
+            cur.execute(
+                f"SELECT session_id FROM web_competition_sessions WHERE session_id = ? AND mode IN ({placeholders}) LIMIT 1",
+                (sid, *runtime_modes),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Competition session not found")
+            # Participants come from the roster; per-player counts come from
+            # web_competition_history, which is written when the session is
+            # finalized. A running session therefore shows zero counts.
+            cur.execute(
+                """
+                SELECT p.user_id, p.name, p.team_no, p.status,
+                       h.result_status, h.rank, h.correct_count, h.wrong_count, h.skipped_count,
+                       h.total_questions, h.accuracy, h.dpoints_delta, h.dcoin_delta,
+                       u.first_name, u.last_name, u.login_id
+                FROM web_competition_participants p
+                LEFT JOIN web_competition_history h ON h.session_id = p.session_id AND h.user_id = p.user_id
+                LEFT JOIN users u ON u.id = p.user_id
+                WHERE p.session_id = ?
+                ORDER BY CASE WHEN h.rank IS NULL THEN 1 ELSE 0 END, h.rank ASC,
+                         COALESCE(h.correct_count, 0) DESC, COALESCE(h.wrong_count, 0) ASC, p.id ASC
+                """,
+                (sid,),
+            )
+            participants = []
+            for row in cur.fetchall() or []:
+                item = dict(row)
+                if not str(item.get("first_name") or "").strip() and not str(item.get("last_name") or "").strip():
+                    item["first_name"] = str(item.get("name") or f"Player {item.get('user_id')}")
+                for key in ("correct_count", "wrong_count", "skipped_count", "total_questions"):
+                    item[key] = int(item.get(key) or 0)
+                participants.append(item)
+            return {"participants": participants}
+
         else:
             return {"participants": []}
     finally:

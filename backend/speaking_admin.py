@@ -53,7 +53,10 @@ AI_FALLBACK_GENERATION_TIMEOUT_SECONDS = 60
 AI_PRIMARY_RETRY_GENERATION_TIMEOUT_SECONDS = 150
 AI_FALLBACK_RETRY_GENERATION_TIMEOUT_SECONDS = 120
 
-MEDIA_STAFF_ROLES = {"media", "media_admin", "speaking_admin", "admin", "superadmin", "developer", "teacher", "support"}
+# Speaking content, AI generation and Speaking-wide push broadcasts are staff
+# powers. Teachers and support have no Speaking admin UI and must not spend the
+# AI budget or broadcast to every Speaking user.
+MEDIA_STAFF_ROLES = {"media", "media_admin", "speaking_admin", "admin", "superadmin", "developer"}
 
 # A deliberately curated first catalogue for the Russian conversation area.
 # The normal media-admin form remains capped at 5 topics / 10 questions so a

@@ -161,6 +161,7 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
       const data = await apiFetch("/student/learning-tracks");
       const items = Array.isArray(data?.items) ? data.items : [];
       setTracks(items);
+      setError("");
       try {
         localStorage.setItem(
           TRACKS_CACHE_KEY,
@@ -168,13 +169,13 @@ export function StudentLearningPaths({ apiFetch }: { apiFetch: ApiFetch }) {
         );
       } catch {}
     } catch (e) {
-      if (!tracks.length) {
-        setError(errorText(e, t("learning.loadError", "O'quv yo'li yuklanmadi.")));
-      }
+      // Cached tracks may still be on screen; the banner tells the student
+      // they are not up to date instead of hiding the failure.
+      setError(errorText(e, t("learning.loadError", "O'quv yo'li yuklanmadi.")));
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, t, tracks.length]);
+  }, [apiFetch, t]);
 
   // Load from local storage cache immediately for instant render, and preload images
   useEffect(() => {
@@ -403,8 +404,13 @@ function DuolingoTrack({
       setClaimingCert(true);
       try {
         const res = await apiFetch(`/student/learning-tracks/${track.id}/certificate`, { method: "POST" });
-        setCertRewardData(res);
-        playDuolingoSound("complete");
+        // The backend answers 200 with ok:false when the chest is still locked.
+        if (res?.ok === false) {
+          setCertError(String(res?.message || "Sertifikat yuklanmadi."));
+        } else {
+          setCertRewardData(res);
+          playDuolingoSound("complete");
+        }
       } catch (err: any) {
         setCertError(err?.message || "Sertifikat yuklanmadi.");
       } finally {
@@ -1838,6 +1844,9 @@ function LessonPlayerModal({
   const [total, setTotal] = useState(0);
   const [finished, setFinished] = useState(false);
   const [moduleResult, setModuleResult] = useState<Row | null>(null);
+  // Latest server answer for this module run, and whether any save failed.
+  const [lastSubmitResult, setLastSubmitResult] = useState<Row | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
   const [error, setError] = useState("");
   const [audioPlaying, setAudioPlaying] = useState(false);
   const [voiceMode, setVoiceMode] = useState(false);
@@ -2334,10 +2343,17 @@ function LessonPlayerModal({
         grammar_errors: aiGrammarErrors,
         ...submitResult,
       });
+      if (submitResult?.module_progress) {
+        setLastSubmitResult(submitResult);
+      }
       if (submitResult?.module_progress?.passed) {
         setModuleResult(submitResult);
       }
-    } catch {
+    } catch (e) {
+      // The answer was not stored on the server: say so instead of silently
+      // showing it as saved.
+      setSaveFailed(true);
+      setError(errorText(e, "Javob saqlanmadi. Internet aloqasini tekshirib, qayta urinib ko'ring."));
       setResult({
         correct,
         selected: selectedAnswer,
@@ -2426,8 +2442,14 @@ function LessonPlayerModal({
           {finished ? (
             (() => {
               const finalPercent = total > 0 ? Math.round((score / total) * 100) : 0;
-              const passingScore = Number(module.passing_score || 70);
-              const passed = Boolean(moduleResult?.module_progress?.passed || finalPercent >= passingScore);
+              const passingScore = Number(lastSubmitResult?.required_score ?? module.passing_score ?? 70) || 70;
+              // The server's module progress decides pass/fail. The local
+              // percentage is only a fallback when the server gave no progress
+              // and no save failed.
+              const serverProgress = (moduleResult?.module_progress || lastSubmitResult?.module_progress) as Row | undefined;
+              const passed = serverProgress
+                ? Boolean(serverProgress.passed)
+                : !saveFailed && finalPercent >= passingScore;
 
               return (
                 <div className="py-6 text-center animate-fade-in">
@@ -3736,6 +3758,8 @@ function FinalExamPlayerModal({
         const aiRes = await apiFetch(`/student/learning-lessons/check-ai`, {
           method: "POST",
           body: {
+            // lesson_id lets the backend use the lesson's subject (e.g. Russian grading).
+            lesson_id: currentQuestion?.lesson_id ?? undefined,
             question_payload: currentQuestion,
             answer_text: currentAnsText,
             audio_url: audioUrl,
@@ -3866,7 +3890,9 @@ function FinalExamPlayerModal({
       setCurrentIndex((prev) => prev + 1);
     } else {
       setSubmitting(true);
+      setError("");
       const finalPercent = questions.length ? Math.round((score / questions.length) * 100) : 0;
+      let saved = false;
       try {
         const res = await apiFetch(`/student/learning-tracks/${track.id}/final-exam/submit`, {
           method: "POST",
@@ -3880,14 +3906,17 @@ function FinalExamPlayerModal({
           },
         });
         setExamResult(res);
+        saved = true;
         if (res?.passed) {
           playDuolingoSound("complete");
         }
       } catch (err: any) {
-        setError(err?.message || "Natija saqlanmadi.");
+        // Stay on the last question so the student can retry the submit;
+        // never show a result the server did not store.
+        setError(err?.message || "Natija saqlanmadi. Qayta urinib ko'ring.");
       } finally {
         setSubmitting(false);
-        setFinished(true);
+        if (saved) setFinished(true);
       }
     }
   };
@@ -4815,6 +4844,12 @@ function FinalExamPlayerModal({
                 );
               })()
             ) : (
+              <>
+              {error ? (
+                <p className="mb-2 rounded-xl border border-rose-300 bg-rose-50 px-3 py-2 text-center text-xs font-bold text-rose-700 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-300">
+                  {error}
+                </p>
+              ) : null}
               <button
                 type="button"
                 onClick={handleNext}
@@ -4831,6 +4866,7 @@ function FinalExamPlayerModal({
                   ? "Keyingi savol →"
                   : "Natijani ko'rish"}
               </button>
+              </>
             )}
           </div>
         ) : null}
@@ -5789,6 +5825,8 @@ function CertificateSettingsModal({
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
       await onSaved();
+    } catch (err) {
+      alert("Saqlashda xatolik: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
@@ -6083,6 +6121,10 @@ async function uploadAudioFile(file: File): Promise<string | null> {
     body: form,
   });
   const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = data && typeof data.detail === "string" ? data.detail : "";
+    throw new Error(detail || `Audio yuklanmadi (${res.status})`);
+  }
   return (data && (data.url || data.file_url)) || null;
 }
 
@@ -6666,6 +6708,8 @@ function LessonEditor({
     try {
       await apiFetch(`/staff/learning-modules/${module.id}`, { method: "DELETE" });
       await onSaved();
+    } catch (err) {
+      alert("O'chirishda xatolik: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
@@ -6830,6 +6874,8 @@ function LessonEditor({
                                   try {
                                     const url = await uploadAudioFile(file);
                                     if (url) setEditAudioUrl(url);
+                                  } catch (err) {
+                                    alert(err instanceof Error ? err.message : "Audio yuklanmadi.");
                                   } finally {
                                     setEditAudioUploading(false);
                                   }
@@ -7446,6 +7492,8 @@ function LessonEditor({
                                 try {
                                   const url = await uploadAudioFile(file);
                                   if (url) setAudioUrl(url);
+                                } catch (err) {
+                                  alert(err instanceof Error ? err.message : "Audio yuklanmadi.");
                                 } finally {
                                   setAudioUploading(false);
                                 }
@@ -8795,6 +8843,8 @@ function ModuleDetailModal({
       setSavedNotice(true);
       setTimeout(() => setSavedNotice(false), 2500);
       await onSaved();
+    } catch (err) {
+      alert("Modul saqlanmadi: " + (err instanceof Error ? err.message : String(err)));
     } finally {
       setBusy(false);
     }
