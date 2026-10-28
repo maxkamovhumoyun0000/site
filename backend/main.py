@@ -415,10 +415,12 @@ from diamondvoy_helpers import (
     _diamondvoy_rich_markup_instructions,
     default_subjects_for_diamondvoy,
     detect_query_language,
+    diamondvoy_app_system_prompt,
     diamondvoy_gemini_answer,
     diamondvoy_gemini_answer_stream,
     diamondvoy_generate_chat_title,
     diamondvoy_is_subject_related,
+    normalize_diamondvoy_rich_reply,
     resolve_query_subject,
     sanitize_diamondvoy_reply,
     try_diamondvoy_bot_info,
@@ -25732,7 +25734,11 @@ async def _diamondvoy_run_generation_job(
     try:
         style_hint = _diamondvoy_user_style_prompt(user_id, query_lang)
         speaking_account = _diamondvoy_is_speaking_account(user)
-        speaking_system_prompt = _diamondvoy_speaking_system_prompt(user, query_lang)
+        # Every in-app answer (website, Students, Teachers, Speaking) gets the
+        # rich-tools system prompt; the Telegram prompts ban Markdown.
+        app_system_prompt = _diamondvoy_speaking_system_prompt(user, query_lang) or diamondvoy_app_system_prompt(
+            query_lang, is_admin_context=role in {"admin", "teacher", "support"}
+        )
         role_context_hint = _diamondvoy_role_context_hint(user, role)
         if role == "teacher":
             teacher_groups = _safe_call(lambda: get_groups_by_teacher(int(user_id)), []) or []
@@ -25786,11 +25792,9 @@ async def _diamondvoy_run_generation_job(
         ai_user_text = (
             f"{role_context_hint}\n"
             f"{style_hint}\n"
-            f"Reply in the user's language when possible. Use Markdown only when it improves readability. "
-            "Do not invent facts, citations, scores, or example data and present them as real. "
-            "If a comparison is useful, build a Markdown table from the actual answer. "
-            "If a formula is useful, put the exact formula in a $$...$$ block. "
-            "If code is requested, return a fenced code block with the correct language.\n"
+            f"Reply in the user's language when possible. Use the formatting tools from the system instructions "
+            "(Markdown, tables, $$formulas$$, fenced code, quiz_json) wherever they make the answer clearer. "
+            "Do not invent facts, citations, scores, or example data and present them as real.\n"
             f"{image_note}{document_note}\n\n"
             f"{memory_note}\n\n"
             f"Recent conversation:\n{chr(10).join(history_lines)}\n\n"
@@ -25799,14 +25803,9 @@ async def _diamondvoy_run_generation_job(
 
         if mode == "study":
             ai_user_text += (
-                "\nStudy mode is enabled. Teach in short steps, invite the learner to reason, "
-                "and when the user requests a quiz (or a quiz is clearly the best teaching step), "
-                "include a working interactive quiz using exactly this format: "
-                "```quiz_json {\"type\":\"wizard_trigger\",\"wizard\":\"quiz_runner\","
-                "\"title\":\"...\",\"topic\":\"...\",\"questions\":["
-                "{\"prompt\":\"...\",\"options\":[\"A...\",\"B...\",\"C...\",\"D...\"],"
-                "\"correct_answer\":\"one exact option string\",\"explanation\":\"...\"}]} ``` . "
-                "Every question must have at least two distinct options and the correct answer must exactly match one option."
+                "\nStudy mode is enabled. Teach in short steps with headings and examples, invite the learner to reason, "
+                "use a table when comparing forms or rules, and end with a short interactive quiz_json block "
+                "(the format in the system instructions) so the learner can check understanding."
             )
 
         # Check if user asked for test questions on a topic
@@ -25858,8 +25857,8 @@ async def _diamondvoy_run_generation_job(
                             ai_user_text,
                             session=session,
                             system_content=(
-                                (speaking_system_prompt or "You are Diamondvoy, an educational assistant. Reply in the user's language.\n")
-                                + "Use only facts supported by retrieved sources, include inline citations, "
+                                app_system_prompt
+                                + "\n\nUse only facts supported by retrieved sources, cite them inline as [[n]](url), "
                                 "and never invent sources or citation counts.\n" + role_context_hint
                             ),
                             deep_research=mode == "deep_research",
@@ -25887,7 +25886,12 @@ async def _diamondvoy_run_generation_job(
                         ai_user_text,
                         vision_images,
                         session=session,
-                        system_content=speaking_system_prompt,
+                        system_content=(
+                            app_system_prompt
+                            + "\n\nAnalyze attached images only when they are educational material "
+                            "(tests, grammar, reading, maths problems, homework, books, notebooks or study notes); "
+                            "otherwise refuse briefly."
+                        ),
                     )
                     while True:
                         try:
@@ -25908,7 +25912,7 @@ async def _diamondvoy_run_generation_job(
                     lang=query_lang,
                     is_admin_context=role in {"admin", "teacher", "support"},
                     conversation=prior_context,
-                    system_prompt_override=speaking_system_prompt,
+                    system_prompt_override=app_system_prompt,
                 )
                 while True:
                     try:
@@ -25923,7 +25927,8 @@ async def _diamondvoy_run_generation_job(
                     streamed += chunk
                     _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
 
-        assistant_text = sanitize_diamondvoy_reply(streamed.strip() or t(query_lang, "diamondvoy_answer_empty"))
+        # Keep Markdown, tables, formulas and code intact: the apps render them.
+        assistant_text = normalize_diamondvoy_rich_reply(streamed.strip() or t(query_lang, "diamondvoy_answer_empty"))
         _diamondvoy_insert_message(int(chat_id), "assistant", assistant_text)
         # Automatically save any newly generated questions to question bank
         try:
@@ -28816,6 +28821,9 @@ async def student_diamondvoy_send_stream(
                 lang=query_lang,
                 is_admin_context=role in {"admin", "teacher", "support"},
                 conversation=prior_context,
+                system_prompt_override=diamondvoy_app_system_prompt(
+                    query_lang, is_admin_context=role in {"admin", "teacher", "support"}
+                ),
             )
             while True:
                 try:
@@ -28830,7 +28838,7 @@ async def student_diamondvoy_send_stream(
                     break
 
             assistant_text = streamed.strip() or t(query_lang, "diamondvoy_answer_empty")
-            assistant_text = sanitize_diamondvoy_reply(assistant_text)
+            assistant_text = normalize_diamondvoy_rich_reply(assistant_text)
 
             _safe_call(lambda: add_diamondvoy_chat_message(chat_id, "assistant", assistant_text), None)
             # Keep title generation fast and deterministic: derive from recent user messages,

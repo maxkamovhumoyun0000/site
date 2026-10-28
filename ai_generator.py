@@ -632,6 +632,7 @@ async def _xai_generate_text_with_web_search(
             raise RuntimeError("Diamondvoy web search is temporarily unavailable")
         data = await response.json(content_type=None)
     chunks: list[str] = []
+    cited_urls: list[str] = []
     for item in data.get("output") or []:
         if not isinstance(item, dict) or item.get("type") != "message":
             continue
@@ -640,10 +641,26 @@ async def _xai_generate_text_with_web_search(
                 text = str(content.get("text") or "").strip()
                 if text:
                     chunks.append(text)
+                for annotation in content.get("annotations") or []:
+                    url = str((annotation or {}).get("url") or "").strip() if isinstance(annotation, dict) else ""
+                    if url.startswith(("https://", "http://")) and url not in cited_urls:
+                        cited_urls.append(url)
     answer = "\n".join(chunks).strip()
     if not answer:
         raise RuntimeError("Diamondvoy web search returned an empty answer")
-    return answer
+    return _with_web_search_sources(answer, cited_urls)
+
+
+_INLINE_CITATION_RE = re.compile(r"\[\[\d+\]\]\(https?://[^)\s]+\)")
+
+
+def _with_web_search_sources(answer: str, cited_urls: list[str]) -> str:
+    """Keep the provider's inline [[n]](url) citations; when the model wrote
+    none, list the structured annotation URLs so the apps can show sources."""
+    if _INLINE_CITATION_RE.search(answer) or not cited_urls:
+        return answer
+    sources = " ".join(f"[[{index}]]({url})" for index, url in enumerate(cited_urls[:8], start=1))
+    return f"{answer}\n\n{sources}"
 
 
 async def _xai_generate_text_stream_with_images(

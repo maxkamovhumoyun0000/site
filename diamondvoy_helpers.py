@@ -260,29 +260,78 @@ async def diamondvoy_is_subject_related(question: str, subjects: list[str]) -> b
         )
 
 
+DIAMONDVOY_RICH_TOOLS_SPEC = """
+
+FORMATTING TOOLS. The Diamond website and apps render all of these, so use them whenever they make the answer clearer (a short plain answer is still fine for a simple question):
+1. Markdown text: "## " headings for multi-part answers, **bold** for key terms, *italic*, `inline code`, "- " bullet lists, "1. " numbered lists, and "> " for a rule or tip. Never wrap the whole answer in a code block.
+2. Tables: for comparisons, conjugations, word lists, schedules, pros/cons or any data with two or more attributes, use a GitHub-style Markdown table: a header row, then a separator row such as | --- | --- |, then one row per line. Every row starts and ends with "|" and has the same number of cells. No blank lines inside a table.
+3. Formulas: write display formulas on their own line as $$...$$ in LaTeX, for example $$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$. Write short inline math as $...$.
+4. Code: fenced blocks with the language name (```python, ```javascript, ```sql, ...). Keep the real indentation.
+5. Interactive quiz: when the user asks for a test, quiz or practice questions, or a check-yourself quiz is clearly the best next step, add a fenced block labelled quiz_json that contains ONLY valid JSON in this shape:
+```quiz_json
+{"type": "wizard_trigger", "wizard": "quiz_runner", "title": "...", "topic": "...", "questions": [{"prompt": "...", "options": ["...", "...", "...", "..."], "correct_answer": "one option copied exactly", "explanation": "..."}]}
+```
+Each question has 2-4 distinct options and correct_answer equals one of its options exactly. Do not repeat the quiz questions as plain text.
+6. Sources: only when real web search results are available, cite them inline as [[1]](https://exact-source-url) right after the claim they support. Never invent sources, URLs or counts."""
+
+
 def _diamondvoy_rich_markup_instructions(lang: str) -> str:
-    """Formatting guidance for learner-facing Diamondvoy chat responses."""
-    if lang == "ru":
-        return (
-            "\n\nФорматирование: используй таблицу Markdown для сравнений, если она делает ответ яснее. "
-            "Формулы можно записывать в KaTeX через $$...$$, например $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
-            "Примеры кода Python оформляй блоком ```python ... ```. Для учебной викторины используй формат «Викторина: вопрос; A) ... B) ... C) ...; Правильный ответ: [буква]». "
-            "Поиск и ссылки на источники указывай только если в контексте действительно переданы результаты поиска; не выдумывай источники и число просмотренных страниц."
+    """Rich output tools for in-app Diamondvoy chat (web, Students, Teachers, Speaking).
+
+    The spec is written once in English for the model; the reply language is
+    set by the system prompt and the user's message.
+    """
+    return DIAMONDVOY_RICH_TOOLS_SPEC
+
+
+def diamondvoy_app_system_prompt(lang: str, *, is_admin_context: bool = False) -> str:
+    """System prompt for Diamondvoy inside the website and the mobile apps.
+
+    The Telegram bot keeps its plain-text prompts above because Telegram does
+    not render Markdown; the apps do, so this prompt enables the rich tools.
+    """
+    lc = ((lang or "uz").lower())[:2]
+    if lc == "ru":
+        base = (
+            "Ты Diamondvoy, помощник образовательной платформы Diamond Education. "
+            "Отвечай точно, понятно и по существу, строго на русском языке. "
+            "Если вопрос похож на заданный ранее, не начинай с фраз «мы это уже обсуждали» — отвечай заново по существу."
         )
-    if lang == "en":
-        return (
-            "\n\nRich formatting: use a standard Markdown table for comparisons when it improves clarity. "
-            "Write formulas in KaTeX using $$...$$, for example $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
-            "Format Python examples as ```python ... ```. For a study quiz use: 'Quiz: question... A) ... B) ... C) ... Correct answer: [letter]'. "
-            "Mention web-search completion, source counts, and citations only when actual retrieved source results are present in context; never invent sources or counts."
+        admin = (
+            " Ты помогаешь сотрудникам центра: вопросы об учениках, группах, оплате, расписании и правилах центра входят в твою задачу."
         )
-    return (
-        "\n\nBoyitilgan format: taqqoslashni kerak bo‘lsa standart Markdown jadvalida ber. "
-        "Formulalarni KaTeX $$...$$ ko‘rinishida yoz, masalan $$Score_{Speaking} = \\frac{FC + LR + GRA + PR}{4}$$. "
-        "Python misollarini ```python ... ``` blokida yoz. Study mode viktorinasi uchun: "
-        "'Viktorina: Savol matni... A) ... B) ... C) ... To‘g‘ri javob: [harf]' formatidan foydalan. "
-        "Web qidiruv yakuni, manbalar soni va iqtiboslarni faqat haqiqiy qidiruv natijalari kontekstda berilganida ko‘rsat; manba yoki sonni to‘qima."
-    )
+    elif lc == "en":
+        base = (
+            "You are Diamondvoy, the assistant of the Diamond Education platform. "
+            "Answer accurately, clearly and to the point, in English. "
+            "If a question resembles an earlier one, never open with 'as discussed before'; answer it again on its merits."
+        )
+        admin = (
+            " You help the centre's staff: questions about students, groups, payments, schedules and centre policy are in scope."
+        )
+    else:
+        base = (
+            "Sen Diamond Education platformasidagi Diamondvoy yordamchisisan. "
+            "Aniq, tushunarli va mazmunli javob ber, faqat o'zbek tilida. "
+            "Savol avval so'ralganga o'xshasa, «buni oldin ko'rib chiqqanmiz» kabi iboralar bilan boshlama — har safar mazmunli javob ber."
+        )
+        admin = (
+            " Sen markaz xodimlariga yordam berasan: o'quvchilar, guruhlar, to'lovlar, dars jadvali va markaz qoidalari haqidagi savollar sening vazifang."
+        )
+    return base + (admin if is_admin_context else "") + DIAMONDVOY_RICH_TOOLS_SPEC
+
+
+def normalize_diamondvoy_rich_reply(text: str) -> str:
+    """Tidy an in-app answer without touching Markdown, code or formulas.
+
+    `sanitize_diamondvoy_reply` is for Telegram plain text: it removes `#`,
+    `**` and `__` and collapses spaces, which breaks headings, bold text,
+    code indentation and dunder names, so it must not run on app answers.
+    """
+    if not text:
+        return text
+    lines = [line.rstrip() for line in str(text).replace("\r\n", "\n").split("\n")]
+    return "\n".join(lines).strip()
 
 
 async def diamondvoy_gemini_answer(
@@ -358,7 +407,8 @@ async def diamondvoy_gemini_answer(
                 "Markdown yulduzcha (*, **, ***) va # sarlavhalarsiz yoz. Qisqa bo‘limlar, kerak bo‘lsa • yoki raqamli ro‘yxat; har bir bo‘limda 1–2 emoji (masalan 📌, 💡). Har javobda paragraf tuzilishi va emojilarni almashtirib tur, bitta shablonni takrorlama."
             )
 
-    sys_prompt += _diamondvoy_rich_markup_instructions(lc)
+    # Telegram renders plain text only, so this prompt keeps its no-Markdown
+    # rules. In-app chats use `diamondvoy_app_system_prompt` instead.
 
     history_lines: list[str] = []
     for row in (conversation or [])[-12:]:
@@ -483,9 +533,6 @@ async def diamondvoy_gemini_answer_stream(
                 "Agar savol shu suhbatda avval so'ralgan savolga o'xshab qolsa, hech qachon «buni oldin ko'rib chiqqanmiz», «yuqorida aytdim» kabi iboralar bilan boshlama — har safar savolni yangidan, mazmunli javob ber.\n"
                 "Markdown yulduzcha (*, **, ***) va # sarlavhalarsiz yoz. Qisqa bo‘limlar, kerak bo‘lsa • yoki raqamli ro‘yxat; har bir bo‘limda 1–2 emoji (masalan 📌, 💡). Har javobda paragraf tuzilishi va emojilarni almashtirib tur, bitta shablonni takrorlama."
             )
-
-    if not system_prompt_override:
-        sys_prompt += _diamondvoy_rich_markup_instructions(lc)
 
     # Reuse the exact Diamondvoy/Grok generation path for tightly-scoped
     # server jobs (for example homework grading) while allowing those jobs to

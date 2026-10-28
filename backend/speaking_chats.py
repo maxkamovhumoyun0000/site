@@ -40,6 +40,21 @@ def _main_helpers():
     return _display_name, _user_row_from_bearer
 
 
+_CHAT_ROLES = {"student", "teacher", "admin", "superadmin", "developer", "speaking_admin"}
+
+
+def _account_role(row: dict[str, Any]) -> str:
+    """Role of a users row. The users table has no `role` column; the role
+    is derived from login_type/login_id exactly like the rest of the API."""
+    from backend.main import _role_from_login_type
+
+    return _role_from_login_type(row.get("login_type"), str(row.get("login_id") or ""))
+
+
+def _can_use_chat(row: dict[str, Any]) -> bool:
+    return is_speaking_app_account(row.get("speaking_app_account")) or _account_role(row) in _CHAT_ROLES
+
+
 def _mutually_blocked_ids(user_id: int) -> set[int]:
     from backend.main import community_safety
 
@@ -152,10 +167,7 @@ def _ensure_schema() -> None:
 def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
     _, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
-    role = str(user.get("role") or "").strip().lower()
-    if not is_speaking_app_account(user.get("speaking_app_account")) and role not in {
-        "student", "teacher", "admin", "superadmin", "developer", "speaking_admin"
-    }:
+    if not _can_use_chat(user):
         raise HTTPException(status_code=403, detail="Chat account required")
     if user.get("speaking_deleted_at"):
         raise HTTPException(status_code=403, detail="Speaking account is inactive")
@@ -174,7 +186,7 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT id, login_id, first_name, last_name, profile_image_url, role, subject,
+            """SELECT id, login_id, first_name, last_name, profile_image_url, login_type, subject,
                       last_activity, last_login_at,
                       speaking_app_account, speaking_deleted_at, blocked, access_enabled
                FROM users WHERE id=? LIMIT 1""",
@@ -183,10 +195,7 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
         row = dict(cur.fetchone() or {})
         if (
             not row
-            or not (
-                is_speaking_app_account(row.get("speaking_app_account"))
-                or str(row.get("role") or "").strip().lower() in {"student", "teacher", "admin", "superadmin", "developer", "speaking_admin"}
-            )
+            or not _can_use_chat(row)
             or row.get("speaking_deleted_at")
             or int(row.get("blocked") or 0) == 1
             or int(row.get("access_enabled", 1) or 0) != 1
@@ -199,7 +208,7 @@ def _active_speaking_user(user_id: int) -> dict[str, Any] | None:
 
 def _public_user(row: dict[str, Any]) -> dict[str, Any]:
     display_name, _ = _main_helpers()
-    role = str(row.get("role") or "speaking_user").strip().lower()
+    role = _account_role(row) if row.get("login_type") is not None or row.get("login_id") else "speaking_user"
     if role in {"superadmin", "developer", "speaking_admin"}:
         public_role = "admin"
     elif role in {"student", "teacher", "admin"}:
@@ -307,24 +316,26 @@ async def search_speaking_chat_users(
     cur = conn.cursor()
     try:
         cur.execute(
-            f"""SELECT id, login_id, first_name, last_name, profile_image_url, role, subject,
+            f"""SELECT id, login_id, first_name, last_name, profile_image_url, login_type, subject,
                       speaking_app_account, last_activity, last_login_at
                FROM users
-               WHERE (COALESCE(speaking_app_account, 0)=1 OR LOWER(COALESCE(role,'')) IN ('student','teacher','admin','superadmin','developer','speaking_admin'))
-                 AND COALESCE(CAST(speaking_deleted_at AS TEXT),'')=''
+               WHERE COALESCE(CAST(speaking_deleted_at AS TEXT),'')=''
                  AND COALESCE(blocked, 0)=0
                  AND COALESCE(access_enabled, 1)=1
                  AND id<>?
                  AND ({' OR '.join(predicates)})
                ORDER BY CASE WHEN LOWER(COALESCE(login_id,''))=? THEN 0 ELSE 1 END,
-                        LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 30""",
+                        LOWER(COALESCE(first_name,'')), LOWER(COALESCE(last_name,'')), LOWER(COALESCE(login_id,'')) LIMIT 60""",
             (int(user.get("id") or 0), *params, normalized),
         )
+        # Chat eligibility depends on the derived role (login_type + login_id),
+        # so it is checked here rather than in SQL.
+        rows = [dict(row) for row in cur.fetchall() or []]
         items = [
-            _public_user(dict(row))
-            for row in cur.fetchall() or []
-            if int(dict(row).get("id") or 0) not in blocked_ids
-        ]
+            _public_user(row)
+            for row in rows
+            if _can_use_chat(row) and int(row.get("id") or 0) not in blocked_ids
+        ][:30]
         return {"items": items}
     finally:
         conn.close()
