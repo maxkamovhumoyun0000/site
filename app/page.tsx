@@ -647,6 +647,29 @@ function aiLevelOptionsBySubject(subject: string, includeMixed = false) {
   return includeMixed ? [...base, "MIXED"] : base;
 }
 
+type GroupPriceTier = { size: number; amount: number; label: string };
+
+function groupPriceTier(raw: unknown, size = 0): GroupPriceTier {
+  const text = String(raw ?? "").trim();
+  const digits = text.replace(/[^\d]/g, "");
+  const amount = digits ? Number(digits) : 0;
+  const label = !text
+    ? ""
+    : /^[\d\s.,]+$/.test(text) && amount > 0
+      ? `${new Intl.NumberFormat("uz-UZ").format(amount)} so'm`
+      : text;
+  return { size, amount, label };
+}
+
+/** Price tiers of a course as shown when a group is linked to it. */
+function groupPriceTiers(course: GenericRow | null | undefined) {
+  return {
+    group: groupPriceTier(course?.price_text).label,
+    individual: groupPriceTier(course?.individual_price_text).label,
+    mini: [2, 3, 4].map((size) => groupPriceTier(course?.[`mini_group_${size}_price_text`], size)),
+  };
+}
+
 function formatLevelDisplay(level: string | null | undefined): string {
   if (!level) return "-";
   const s = String(level).trim();
@@ -12299,14 +12322,21 @@ function TeacherSection({
   }
 
   async function loadTeacherCourses() {
+    const token = localStorage.getItem("diamond_token");
     try {
-      const token = localStorage.getItem("diamond_token");
-      const res = await requestJson<GenericRow>("/public/courses", { token });
-      if (res?.items) {
+      const res = await requestJson<GenericRow>("/teacher/courses", { token });
+      if (Array.isArray(res?.items)) {
         setTeacherCoursesList(res.items as GenericRow[]);
+        return;
       }
     } catch {
-      // fallback
+      // Older backends only expose the public list; fall back to it below.
+    }
+    try {
+      const res = await requestJson<GenericRow>("/public/courses", { token });
+      if (Array.isArray(res?.items)) setTeacherCoursesList(res.items as GenericRow[]);
+    } catch {
+      setTeacherCreateGroupError((prev) => prev || "Kurslar ro'yxatini yuklab bo'lmadi. Qayta urinib ko'ring.");
     }
   }
 
@@ -12320,9 +12350,14 @@ function TeacherSection({
       setTeacherCreateGroupError("Filial (Limited Admin 1 yoki Limited Admin 2) tanlanishi majburiy!");
       return;
     }
-    const courseId = Number(teacherCreateGroupDraft.course_id || (teacherCoursesList[0]?.id || 0));
+    const courseId = Number(teacherCreateGroupDraft.course_id || 0);
     if (!courseId) {
       setTeacherCreateGroupError("Kursni tanlang");
+      return;
+    }
+    const selectedCourse = teacherCoursesList.find((c: GenericRow) => Number(c.id) === courseId) || null;
+    if (teacherCreateGroupDraft.pricing_type === "mini_group" && groupPriceTiers(selectedCourse).mini.some((tier) => tier.amount <= 0)) {
+      setTeacherCreateGroupError("Bu kursda mini guruh narxlari belgilanmagan. Boshqa to'lov turini tanlang.");
       return;
     }
     setTeacherCreateGroupLoading(true);
@@ -12721,18 +12756,6 @@ function TeacherSection({
 
                 <form onSubmit={handleTeacherCreateGroup} className="space-y-4">
                   <div className="admin-form-grid-2">
-                    <label className="admin-form-label">
-                      {tt("admin.groups.pricingType", "To'lov turi")}
-                      <select
-                        value={teacherCreateGroupDraft.pricing_type}
-                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, pricing_type: e.target.value }))}
-                      >
-                        <option value="group">{tt("admin.groups.standardGroup", "Standart guruh")}</option>
-                        <option value="individual">{tt("admin.groups.individual", "Individual")}</option>
-                        <option value="mini_group">{tt("admin.groups.miniGroup", "Mini guruh (2–4 o'quvchi)")}</option>
-                      </select>
-                    </label>
-
                     <label className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
                       Guruh Nomi *
                       <input
@@ -12773,14 +12796,71 @@ function TeacherSection({
                       Kurs (Course) *
                       <select
                         value={teacherCreateGroupDraft.course_id}
-                        onChange={(e) => setTeacherCreateGroupDraft((prev) => ({ ...prev, course_id: e.target.value }))}
+                        onChange={(e) => {
+                          const nextId = e.target.value;
+                          const nextCourse = teacherCoursesList.find((c: GenericRow) => String(c.id) === nextId) || null;
+                          const miniReady = groupPriceTiers(nextCourse).mini.every((tier) => tier.amount > 0);
+                          setTeacherCreateGroupDraft((prev) => ({
+                            ...prev,
+                            course_id: nextId,
+                            pricing_type: prev.pricing_type === "mini_group" && !miniReady ? "group" : prev.pricing_type,
+                          }));
+                        }}
                       >
                         <option value="">-- Kursni Tanlang --</option>
                         {teacherCoursesList.map((c: GenericRow) => (
-                          <option key={`create-grp-course-${c.id}`} value={c.id}>{c.title || `Kurs #${c.id}`} ({c.subject || ""})</option>
+                          <option key={`create-grp-course-${c.id}`} value={c.id}>{c.title || `Kurs #${c.id}`}{c.subject ? ` (${c.subject})` : ""}</option>
                         ))}
                       </select>
+                      {!teacherCoursesList.length ? (
+                        <span className="text-xs text-amber-600 dark:text-amber-400">Kurslar topilmadi. Kurs qo&apos;shish uchun adminga murojaat qiling.</span>
+                      ) : null}
                     </label>
+
+                    {(() => {
+                      const course = teacherCoursesList.find((c: GenericRow) => String(c.id) === String(teacherCreateGroupDraft.course_id)) || null;
+                      const tiers = groupPriceTiers(course);
+                      const miniReady = tiers.mini.every((tier) => tier.amount > 0);
+                      const selectedTier = teacherCreateGroupDraft.pricing_type;
+                      return (
+                        <div className="admin-form-label" data-csp-style={JSON.stringify({gridColumn: "1/-1"})}>
+                          {tt("admin.groups.pricingType", "To'lov turi va narxi")} *
+                          {!course ? (
+                            <span className="text-xs text-ink-500 dark:text-navy-300">Narxlarni ko&apos;rish uchun avval kursni tanlang.</span>
+                          ) : (
+                            <div className="grid gap-2 sm:grid-cols-3">
+                              {([
+                                { value: "group", title: tt("admin.groups.standardGroup", "Standart guruh"), price: tiers.group, disabled: false },
+                                { value: "individual", title: tt("admin.groups.individual", "Individual"), price: tiers.individual, disabled: false },
+                                {
+                                  value: "mini_group",
+                                  title: tt("admin.groups.miniGroup", "Mini guruh (2–4 o'quvchi)"),
+                                  price: tiers.mini.map((tier) => `${tier.size} kishi: ${tier.label}`).join(" · "),
+                                  disabled: !miniReady,
+                                },
+                              ] as const).map((option) => (
+                                <button
+                                  key={`create-grp-price-${option.value}`}
+                                  type="button"
+                                  disabled={option.disabled}
+                                  aria-pressed={selectedTier === option.value}
+                                  onClick={() => setTeacherCreateGroupDraft((prev) => ({ ...prev, pricing_type: option.value }))}
+                                  className={`rounded-xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${selectedTier === option.value ? "border-cyan-500 bg-cyan-500/10" : "border-line dark:border-white/10"}`}
+                                >
+                                  <span className="block text-sm font-bold">{option.title}</span>
+                                  <span className="mt-1 block text-xs text-ink-500 dark:text-navy-300">
+                                    {option.disabled ? "Kursda mini guruh narxlari belgilanmagan" : (option.price || tt("admin.groups.notSet", "Belgilanmagan"))}
+                                  </span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {course && selectedTier === "mini_group" ? (
+                            <span className="text-xs text-ink-500 dark:text-navy-300">Mini guruhda 4 tagacha o&apos;quvchi bo&apos;ladi. Narx o&apos;quvchilar soniga qarab hisoblanadi; 2-o&apos;quvchi qo&apos;shilganda to&apos;lov boshlanadi.</span>
+                          ) : null}
+                        </div>
+                      );
+                    })()}
 
                     <label className="admin-form-label">
                       Dars Kunlari *

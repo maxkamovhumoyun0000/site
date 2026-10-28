@@ -695,6 +695,41 @@ def test_retired_teacher_arena_is_gone_from_website():
     assert "<StudentArena" in page
 
 
+# --------------------------------------------------------------------------
+# Teacher group creation: course list and price tiers
+# --------------------------------------------------------------------------
+
+def _component_function_source(text: str, name: str) -> str:
+    """Body of a function nested one level inside a component (2-space indent)."""
+    marker = f"  async function {name}("
+    assert marker in text, f"{name} not found"
+    return text.split(marker, 1)[1].split("\n  }\n", 1)[0]
+
+
+def test_teacher_group_create_loads_courses_from_teacher_route():
+    # The website modal and the Teachers app both load the course list from
+    # /teacher/courses; it returned 404 before, so the app showed no courses.
+    assert _route_exists("/teacher/courses")
+    source = _main_function_source("teacher_list_courses")
+    assert '_require_role(user, {"teacher"})' in source
+    assert "include_drafts=False" in source
+    loader = _component_function_source(_read("app/page.tsx"), "loadTeacherCourses")
+    assert '"/teacher/courses"' in loader
+
+
+def test_teacher_group_create_offers_every_pricing_type_with_prices():
+    page = _read("app/page.tsx")
+    for value in ('value: "group"', 'value: "individual"', 'value: "mini_group"'):
+        assert value in page
+    tiers = _ts_function_source(page, "groupPriceTiers")
+    for field in ("price_text", "individual_price_text", "mini_group_${size}_price_text"):
+        assert field in tiers
+    submit = _component_function_source(page, "handleTeacherCreateGroup")
+    # The course decides the price, so it must be chosen explicitly.
+    assert "teacherCoursesList[0]" not in submit
+    assert "pricing_type" in submit
+
+
 if __name__ == "__main__":
     import sys
     import traceback

@@ -39894,6 +39894,17 @@ async def teacher_create_student(
         }
 
 
+@app.get("/teacher/courses")
+async def teacher_list_courses(
+    lang: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
+):
+    """Published courses a teacher can link a new group to, with every price tier."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    return {"items": _list_courses(include_drafts=False, limit=300, lang=_content_locale(lang))}
+
+
 @app.post("/teacher/groups")
 async def teacher_create_group(
     payload: TeacherGroupCreateRequest,
