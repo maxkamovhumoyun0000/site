@@ -25740,19 +25740,16 @@ async def _diamondvoy_run_generation_job(
             query_lang, is_admin_context=role in {"admin", "teacher", "support"}
         )
         role_context_hint = _diamondvoy_role_context_hint(user, role)
-        if role == "teacher":
-            teacher_groups = _safe_call(lambda: get_groups_by_teacher(int(user_id)), []) or []
-            if teacher_groups:
-                group_names = ", ".join([f"{g.get('name')} (ID: {g.get('id')})" for g in teacher_groups])
-                role_context_hint += f"\nSizning guruhlaringiz: {group_names}."
-            else:
-                role_context_hint += "\nSizda hozircha faol guruhlar yo'q."
+        # Verified, role-scoped account data (groups, students, lessons,
+        # results, payments, bookings...) plus the no-test-answers rule for
+        # learners. Built from the same scope helpers as the app pages.
+        from backend.diamondvoy_context import diamondvoy_user_context
+
+        role_context_hint += _safe_call(
+            lambda: diamondvoy_user_context(user, role, speaking_account=speaking_account), ""
+        ) or ""
         if role == "student" and not speaking_account:
-            learning_context = _diamondvoy_student_learning_context(user_id)
             role_context_hint += (
-                "\nThe following is the student's private, verified learning data. "
-                "Use it only to answer this student's education questions. Do not invent missing scores or events.\n"
-                f"{learning_context}\n"
                 "\nTEST TUZISH / QUIZ INSTRUKSIYASI:\n"
                 "Agar o'quvchi biror mavzuni tushuntirishni va test tuzishni so'rasa, yoki test tuzib berishni so'rasa, "
                 "avval mavzuni aniq va sodda tushuntirib bering, so'ngra xabaringiz oxirida albatta quyidagi formatda JSON blok bering:\n"
@@ -25776,7 +25773,7 @@ async def _diamondvoy_run_generation_job(
                 "1. DOIM ROPPA-ROSA 10 TA SAVOL BO'LISHI SHART.\n"
                 "2. HAR BIR SAVOLDA 4 TA NOYOB VARIANT BO'LISHI SHART. Variantlar orasida hech qanday takrorlanish (dublikat javoblar) bo'lmasin!\n"
                 "3. correct_answer variantlardan biriga to'liq mos kelsin.\n"
-                "4. Agar o'quvchi avvalgi test tahlili bo'yicha ma'lum bir savolning qoidasini so'rasa, nega aynan shu javob to'g'riligini va qoidani chuqur, tushunarli qilib yoritib bering.\n"
+                "4. Agar o'quvchi YAKUNLANGAN test tahlili bo'yicha ma'lum bir savolning qoidasini so'rasa, nega aynan shu javob to'g'riligini va qoidani chuqur, tushunarli qilib yoritib bering. Tugallanmagan yoki boshqa joydan olingan test savollari uchun TEST JAVOBLARI QOIDASIga amal qiling.\n"
             )
         history_lines = []
         for item in prior_context[-8:]:
@@ -26037,7 +26034,12 @@ async def _diamondvoy_stream_events(
     ][:3]
     document_context = _diamondvoy_attachment_text(attachment_rows)
     speaking_account = _diamondvoy_is_speaking_account(user)
-    personal_learning_query = role == "student" and not speaking_account and _diamondvoy_is_personal_learning_query(user_text)
+    # Questions about the user's own account, groups, students, lessons or
+    # payments must reach the model with live context, never a cached or
+    # generic bot-info answer.
+    from backend.diamondvoy_context import is_personal_context_query
+
+    personal_learning_query = _diamondvoy_is_personal_learning_query(user_text) or is_personal_context_query(user_text)
     if not user_text and not attachment_urls:
         raise HTTPException(status_code=400, detail="Xabar yoki fayl yuboring")
     if request is not None:
