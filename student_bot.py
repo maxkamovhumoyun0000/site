@@ -44,7 +44,7 @@ from db import (
     get_leaderboard_global, get_leaderboard_count,
     get_user_groups, get_user_subjects, update_user_subjects,
     check_user_group_access,
-    get_dpoints, try_consume_dcoins,
+    get_dpoints,
     get_student_subjects, get_student_teachers, get_latest_test_result_for_subject,
     get_grammar_attempts, increment_grammar_attempt, add_test_history,
     set_user_login_type,
@@ -3596,11 +3596,7 @@ async def handle_arena_join_existing_duel(callback: CallbackQuery):
         return
     room_subj = str(open_session.get("subject") or subj).strip().title()
     room_lvl = _normalize_arena_level(open_session.get("level") or sess_level)
-    fee = 3.0
-    ok = try_consume_dcoins(user["id"], fee, room_subj, arena_type=mode)
-    if not ok:
-        await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-        return
+    # Arena and Duel entry is free.
     increment_duel_daily_usage(user["id"], mode, _today_tashkent())
     await callback.answer(t(lang, "arena_join_confirmed"))
     await _enqueue_duel_player_and_maybe_start(
@@ -3696,24 +3692,8 @@ async def handle_arena_join(callback: CallbackQuery):
         if is_arena_run_participant(rid, user["id"]):
             await callback.answer(t(lang, "arena_already_participated"), show_alert=True)
             return
-        fee = 3.0
-        ok = try_consume_dcoins(
-            user["id"],
-            fee,
-            subj,
-            arena_type=mode,
-            change_type="boss_entry_fee" if mode == "boss" else None,
-        )
-        if not ok:
-            await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-            return
+        # Arena entry is free, so there is nothing to charge or refund.
         if not register_arena_run_participant(rid, int(user["id"]), int(callback.message.chat.id)):
-            add_dcoins(
-                user["id"],
-                fee,
-                subj,
-                change_type="boss_entry_refund" if mode == "boss" else None,
-            )
             await callback.answer(t(lang, "arena_already_participated"), show_alert=True)
             return
         await callback.answer()
@@ -3724,13 +3704,8 @@ async def handle_arena_join(callback: CallbackQuery):
         if not can_start_duel_today(user["id"], mode, _today_tashkent()):
             await callback.answer(t(lang, "duel_daily_limit_reached", mode=mode.upper()), show_alert=True)
             return
-    fee = 0.0 if mode == "group" else 3.0
-    if fee > 0:
-        ok = try_consume_dcoins(user["id"], fee, subj, arena_type=mode)
-        if not ok:
-            await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-            return
-    if mode in {"1v1", "5v5"} and fee > 0:
+    # Arena and Duel entry is free.
+    if mode in {"1v1", "5v5"}:
         increment_duel_daily_usage(user["id"], mode, _today_tashkent())
     if mode == "group":
         await callback.answer(t(lang, "arena_group_only_via_teacher"), show_alert=True)
@@ -3826,24 +3801,8 @@ async def handle_arena_join_direct(callback: CallbackQuery):
         if is_arena_run_participant(rid, user["id"]):
             await callback.answer(t(lang, "arena_already_participated"), show_alert=True)
             return
-        fee = 3.0
-        ok = try_consume_dcoins(
-            user["id"],
-            fee,
-            subj,
-            arena_type=mode,
-            change_type="boss_entry_fee" if mode == "boss" else None,
-        )
-        if not ok:
-            await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-            return
+        # Arena entry is free, so there is nothing to charge or refund.
         if not register_arena_run_participant(rid, int(user["id"]), int(callback.message.chat.id)):
-            add_dcoins(
-                user["id"],
-                fee,
-                subj,
-                change_type="boss_entry_refund" if mode == "boss" else None,
-            )
             await callback.answer(t(lang, "arena_already_participated"), show_alert=True)
             return
         await callback.answer()
@@ -3854,13 +3813,8 @@ async def handle_arena_join_direct(callback: CallbackQuery):
         if not can_start_duel_today(user["id"], mode, _today_tashkent()):
             await callback.answer(t(lang, "duel_daily_limit_reached", mode=mode.upper()), show_alert=True)
             return
-    fee = 0.0 if mode == "group" else 3.0
-    if fee > 0:
-        ok = try_consume_dcoins(user["id"], fee, subject, arena_type=mode)
-        if not ok:
-            await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-            return
-    if mode in {"1v1", "5v5"} and fee > 0:
+    # Arena and Duel entry is free.
+    if mode in {"1v1", "5v5"}:
         increment_duel_daily_usage(user["id"], mode, _today_tashkent())
     await callback.answer(t(lang, "arena_join_confirmed"))
 
@@ -3897,9 +3851,7 @@ async def handle_arena_join_duel_session(callback: CallbackQuery):
     if not can_start_duel_today(user["id"], mode, _today_tashkent()):
         await callback.answer(t(lang, "duel_daily_limit_reached", mode=mode.upper()), show_alert=True)
         return
-    if not try_consume_dcoins(user["id"], 3.0, subject, arena_type=mode):
-        await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-        return
+    # Duel entry is free.
     increment_duel_daily_usage(user["id"], mode, _today_tashkent())
     await callback.answer()
     await _enqueue_duel_player_and_maybe_start(
@@ -3932,9 +3884,7 @@ async def handle_arena_revenge(callback: CallbackQuery):
     if not can_start_duel_today(user["id"], mode, _today_tashkent()):
         await callback.answer(t(lang, "duel_daily_limit_reached", mode=mode.upper()), show_alert=True)
         return
-    if not try_consume_dcoins(user["id"], 3.0, subject, arena_type=mode):
-        await callback.answer(t(lang, "arena_insufficient_dcoin"), show_alert=True)
-        return
+    # Duel entry is free.
     increment_duel_daily_usage(user["id"], mode, _today_tashkent())
     await callback.answer()
     await _enqueue_duel_player_and_maybe_start(

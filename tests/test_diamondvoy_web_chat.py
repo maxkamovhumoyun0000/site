@@ -16,8 +16,10 @@ def test_speaking_diamondvoy_uses_open_speaking_context_not_student_plan() -> No
     role_hint = api._diamondvoy_role_context_hint(speaking_user, "student")
 
     assert prompt is not None
-    assert "tasdiqlangan reja shart emas" in prompt
-    assert "A confirmed/approved plan is not required to answer" in role_hint
+    # Speaking learners get a direct answer, never "you have no study plan".
+    assert "darhol va to‘liq javob ber" in prompt
+    assert "O‘quv reja" in prompt and "tilga olma" in prompt
+    assert "never mention study plans" in role_hint
     assert "school lessons" not in role_hint
 
 

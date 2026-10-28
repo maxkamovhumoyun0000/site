@@ -683,10 +683,15 @@ async def send_speaking_direct_message(
     user = _require_speaking_user(authorization)
     uid = int(user.get("id") or 0)
     chat = _chat_for_user(chat_id, uid)
-    try:
-        message = validate_public_text(payload.message.strip())
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="Message could not be sent") from exc
+    # A voice message has no text; only non-empty text is checked, exactly
+    # like the community chat.
+    raw_message = payload.message.strip()
+    message = ""
+    if raw_message:
+        try:
+            message = validate_public_text(raw_message)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Message could not be sent") from exc
     if len(payload.attachments) > 5:
         raise HTTPException(status_code=422, detail="At most 5 attachments can be sent")
     if not message and not payload.attachments:
@@ -730,12 +735,6 @@ async def send_speaking_direct_message(
 
                 threading.Thread(
                     target=push_notifications.send_push_to_speaking_user,
-                    args=(other_user_id, title, preview[:140]),
-                    kwargs={"data": data},
-                    daemon=True,
-                ).start()
-                threading.Thread(
-                    target=push_notifications.send_push_to_user,
                     args=(other_user_id, title, preview[:140]),
                     kwargs={"data": data},
                     daemon=True,

@@ -514,9 +514,9 @@ const DPOINT_SETTINGS_DEFAULTS: Record<string, number> = {
   daily_test_penalty: 3.0,
   vocabulary_reward: 1.0,
   vocabulary_penalty: 0.5,
-  arena_entry_fee_dcoin: 3.0,
-  duel_entry_fee_dcoin: 3.0,
-  entry_fee_dcoin: 3.0,
+  arena_entry_fee_dcoin: 0,
+  duel_entry_fee_dcoin: 0,
+  entry_fee_dcoin: 0,
   payment_overdue_penalty_dpoints: 2.0,
   payment_family_discount_percent: 10.0,
   payment_multi_group_discount_percent: 15.0,
@@ -20651,7 +20651,10 @@ function AdminSection({
     const hiddenAliasKeys = new Set([
       "family_discount_percent",
       "multi_group_discount_percent",
+      // Arena and Duel entry is free; the fee settings no longer apply.
       "entry_fee_dcoin",
+      "arena_entry_fee_dcoin",
+      "duel_entry_fee_dcoin",
       "daily_arena_reward_first",
       "daily_arena_reward_second",
       "daily_arena_reward_third",

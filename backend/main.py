@@ -8512,7 +8512,13 @@ async def student_no_group_access_guard(request: Request, call_next):
     except HTTPException:
         return await call_next(request)
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
+    # Speaking-app accounts are independent learners: they have no class
+    # group and no Student-app review requirement.
+    if (
+        role != "student"
+        or bool(int(user.get("screenshot_demo") or 0))
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
         return await call_next(request)
     if _student_has_group_access_cached(int(user.get("id") or 0)):
         return await call_next(request)
@@ -8533,7 +8539,13 @@ async def student_review_access_guard(request: Request, call_next):
     except HTTPException:
         return await call_next(request)
     role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
-    if role != "student" or bool(int(user.get("screenshot_demo") or 0)):
+    # Speaking-app accounts are independent learners: they have no class
+    # group and no Student-app review requirement.
+    if (
+        role != "student"
+        or bool(int(user.get("screenshot_demo") or 0))
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
         return await call_next(request)
     policy = _review_policy_for_user(user)
     if not bool(policy.get("required")):
@@ -14652,9 +14664,10 @@ DPOINT_SETTINGS_DEFAULTS: dict[str, float] = {
     "daily_test_penalty": 3.0,
     "vocabulary_reward": 1.0,
     "vocabulary_penalty": 0.5,
-    "arena_entry_fee_dcoin": 3.0,
-    "duel_entry_fee_dcoin": 3.0,
-    "entry_fee_dcoin": 3.0,
+    # Arena and Duel entry is free; the keys stay for old clients.
+    "arena_entry_fee_dcoin": 0.0,
+    "duel_entry_fee_dcoin": 0.0,
+    "entry_fee_dcoin": 0.0,
     "payment_overdue_penalty_dpoints": 2.0,
     "payment_family_discount_percent": 10.0,
     "payment_multi_group_discount_percent": 15.0,
@@ -21561,7 +21574,7 @@ async def approve_speaking_student_link(
             cur = conn.cursor()
             cur.execute("SELECT * FROM speaking_student_link_requests WHERE code=?", (code,))
         link = dict(cur.fetchone() or {})
-        if not link or link.get("consumed_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
+        if not link or link.get("consumed_at") or is_speaking_verification_expired(link.get("expires_at")):
             raise HTTPException(status_code=400, detail="Speaking link code is invalid or expired")
         linked_user_id = int(link.get("user_id") or 0)
         current_user_id = int(user.get("id") or 0)
@@ -21618,7 +21631,7 @@ async def complete_speaking_student_link(
         row = cur.fetchone()
     try:
         link = dict(row or {})
-        if not link or link.get("consumed_at") or str(link.get("expires_at") or "") <= _now_utc().isoformat():
+        if not link or link.get("consumed_at") or is_speaking_verification_expired(link.get("expires_at")):
             raise HTTPException(status_code=410, detail="Speaking link code is invalid or expired")
         if not link.get("approved_at"):
             # The Speaking client polls this endpoint while the user confirms
@@ -25862,12 +25875,11 @@ def _diamondvoy_role_context_hint(user: dict, role: str) -> str:
         subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=[])
         subject_hint = f"\nThe user's selected Speaking subjects are: {', '.join(subjects)}." if subjects else ""
         return (
-            "You are Diamondvoy in the Diamond Speaking app. Answer naturally and helpfully in the user's language. "
-            "You may answer general questions as well as questions about speaking practice, IELTS, CEFR, pronunciation, "
-            "vocabulary, lessons, and Diamond Speaking features. Do not restrict replies to school lessons or a pre-approved plan. "
-            "A confirmed/approved plan is not required to answer. Never claim the user has or lacks a confirmed plan, score, "
-            "course, progress, or live lesson unless that fact is present in verified context. For personal account/progress questions, "
-            "be clear about what profile data is actually available and do not invent results."
+            "You are Diamondvoy in the Diamond Speaking app. Answer the user's question directly, fully and helpfully "
+            "in their language, whatever the topic: speaking practice, IELTS, CEFR, pronunciation, vocabulary, grammar, "
+            "or any general question. This is an independent learner, not a school student: never mention study plans, "
+            "groups, teachers, homework, payments or enrolment, and never say they lack something before answering. "
+            "Only when they ask about their own account or results, use the verified account data if it is provided."
             f"{subject_hint}"
         )
     return {
@@ -25886,25 +25898,23 @@ def _diamondvoy_speaking_system_prompt(user: dict, lang: str) -> str | None:
         base_prompt = (
             "Ты Diamondvoy в приложении Diamond Speaking. Отвечай полезно и естественно на языке пользователя. "
             "Помогай с разговорной практикой, IELTS, CEFR, произношением, словарным запасом, уроками и функциями приложения, "
-            "но также отвечай на обычные вопросы. Не ограничивай ответы только уроками и не требуй заранее утверждённый план: "
-            "подтверждённый план не нужен, чтобы ответить. Не утверждай, что у пользователя есть или нет план, балл, курс, прогресс "
-            "или live-урок, если этого нет в проверенном контексте. Не выдумывай личные результаты. Используй Markdown, когда это улучшает ясность."
+            "и на любые другие вопросы. Сразу и полностью отвечай на сам вопрос. Не упоминай учебные планы, группы, учителей, "
+            "домашние задания или оплату и не говори, что у пользователя чего-то нет. Не выдумывай личные результаты. "
+            "Используй Markdown, когда это улучшает ясность."
         )
     elif lc == "en":
         base_prompt = (
             "You are Diamondvoy in the Diamond Speaking app. Reply helpfully and naturally in the user's language. "
-            "Help with speaking practice, IELTS, CEFR, pronunciation, vocabulary, lessons, and app features, and also answer general questions. "
-            "Do not restrict replies to lessons or require a pre-approved plan; no confirmed plan is needed to answer. "
-            "Never claim the user has or lacks a plan, score, course, progress, or live lesson unless verified context contains that fact. "
-            "Do not invent personal results. Use Markdown when it improves clarity."
+            "Help with speaking practice, IELTS, CEFR, pronunciation, vocabulary, lessons, and app features, and answer any other question too. "
+            "Answer the question itself directly and fully. Do not mention study plans, groups, teachers, homework or payments, "
+            "and never tell the user they lack something. Do not invent personal results. Use Markdown when it improves clarity."
         )
     else:
         base_prompt = (
             "Sen Diamond Speaking ilovasidagi Diamondvoy yordamchisisan. Foydalanuvchining tilida tabiiy va foydali javob ber. "
-            "Speaking mashqi, IELTS, CEFR, talaffuz, lug‘at, darslar va ilova funksiyalariga yordam ber, lekin umumiy savollarga ham javob ber. "
-            "Faqat darslar bilan cheklanma va oldindan tasdiqlangan reja talab qilma: javob berish uchun tasdiqlangan reja shart emas. "
-            "Tekshirilgan kontekstda bo‘lmasa, foydalanuvchida reja, ball, kurs, progress yoki live dars bor/yo‘qligini da’vo qilma. "
-            "Shaxsiy natijalarni to‘qima. Aniqlikni yaxshilasa Markdown ishlat."
+            "Speaking mashqi, IELTS, CEFR, talaffuz, lug‘at, darslar va ilova funksiyalariga yordam ber, boshqa istalgan savolga ham javob ber. "
+            "Savolning o‘ziga darhol va to‘liq javob ber. O‘quv reja, guruh, o‘qituvchi, uy vazifasi yoki to‘lovlarni tilga olma "
+            "va foydalanuvchiga biror narsasi yo‘qligini aytma. Shaxsiy natijalarni to‘qima. Aniqlikni yaxshilasa Markdown ishlat."
         )
     return base_prompt + _diamondvoy_rich_markup_instructions(lc)
 
@@ -25998,9 +26008,16 @@ async def _diamondvoy_run_generation_job(
         # learners. Built from the same scope helpers as the app pages.
         from backend.diamondvoy_context import diamondvoy_user_context
 
-        role_context_hint += _safe_call(
-            lambda: diamondvoy_user_context(user, role, speaking_account=speaking_account), ""
-        ) or ""
+        if not speaking_account or _diamondvoy_is_personal_learning_query(user_text):
+            role_context_hint += _safe_call(
+                lambda: diamondvoy_user_context(user, role, speaking_account=speaking_account), ""
+            ) or ""
+        elif speaking_account:
+            # No account data for ordinary questions, but test-answer
+            # integrity still applies to Speaking learners.
+            from backend.diamondvoy_context import _NO_TEST_ANSWERS_RULE
+
+            role_context_hint += "\n" + _NO_TEST_ANSWERS_RULE
         if role == "student" and not speaking_account:
             role_context_hint += (
                 "\nTEST TUZISH / QUIZ INSTRUKSIYASI:\n"
@@ -32568,11 +32585,11 @@ def _competition_stage_level(base_level: str, mode: str, stage: int) -> str:
 
 def _competition_rule_settings() -> dict[str, float]:
     settings = _get_runtime_settings()
-    fallback_entry = float(settings.get("entry_fee_dcoin") or 3.0)
     return {
-        "entry_fee_dcoin": max(0.0, fallback_entry),
-        "arena_entry_fee_dcoin": max(0.0, float(settings.get("arena_entry_fee_dcoin") or fallback_entry)),
-        "duel_entry_fee_dcoin": max(0.0, float(settings.get("duel_entry_fee_dcoin") or fallback_entry)),
+        # Entry is free for every Arena and Duel mode.
+        "entry_fee_dcoin": 0.0,
+        "arena_entry_fee_dcoin": 0.0,
+        "duel_entry_fee_dcoin": 0.0,
         "duel_reward": float(settings.get("duel_reward") or settings.get("arena_reward") or 5.0),
         "duel_penalty": -abs(float(settings.get("duel_penalty") or 0.0)),
         "daily_arena_reward_first": max(0.0, float(settings.get("daily_arena_reward_first") or 25.0)),
@@ -33872,6 +33889,29 @@ def _duel_usage_date_for_user(session: dict[str, Any], user_id: int) -> str:
     return _now_tashkent_date()
 
 
+def _competition_release_free_daily_usage(session: dict[str, Any], user_id: int) -> None:
+    """Give back the daily join slot of a free entry that never started.
+
+    With a paid entry the slot came back together with the refund. Free
+    entries have no refund, so leaving a lobby or a lobby timing out would
+    otherwise use up one of the user's daily plays. Released at most once
+    per user and session.
+    """
+    mode = str(session.get("mode") or "")
+    if not (_duel_is_mode(mode) or mode in {"boss", "daily"}):
+        return
+    uid = int(user_id or 0)
+    released = {int(x) for x in (session.get("usage_released_user_ids") or []) if int(x) > 0}
+    if uid <= 0 or uid in released:
+        return
+    usage_date = _duel_usage_date_for_user(session, uid)
+    if not usage_date:
+        return
+    _safe_call(lambda: _duel_decrement_daily_usage(uid, _competition_bot_mode(mode), usage_date), None)
+    released.add(uid)
+    session["usage_released_user_ids"] = sorted(released)
+
+
 def _duel_refund_user_fee(session: dict[str, Any], user_id: int, reason: str, *, force: bool = False) -> bool:
     if not _duel_is_mode(session.get("mode")):
         return False
@@ -33883,6 +33923,8 @@ def _duel_refund_user_fee(session: dict[str, Any], user_id: int, reason: str, *,
     refunded = {int(x) for x in (session.get("refunded_user_ids") or []) if int(x) > 0}
     charged = {int(x) for x in (session.get("charged_user_ids") or []) if int(x) > 0}
     if uid in refunded or uid not in charged or fee <= 0:
+        if uid not in charged:
+            _competition_release_free_daily_usage(session, uid)
         return uid in refunded
     subject = str(session.get("subject") or "English")
     bot_mode = _competition_bot_mode(str(session.get("mode") or "duel-1v1"))
@@ -33967,6 +34009,8 @@ def _competition_refund_user_entry_fee(session: dict[str, Any], user_id: int, re
     charged = {int(x) for x in (session.get("charged_user_ids") or []) if int(x) > 0}
     refunded = {int(x) for x in (session.get("refunded_user_ids") or []) if int(x) > 0}
     if uid in refunded or uid not in charged or fee <= 0:
+        if uid not in charged:
+            _competition_release_free_daily_usage(session, uid)
         return uid in refunded
     subject = str(session.get("subject") or "English")
     bot_mode = _competition_bot_mode(str(session.get("mode") or "daily"))
@@ -36528,16 +36572,12 @@ def _competition_section_for_mode(mode: str) -> str:
 
 
 def _competition_entry_fee(mode: str) -> float:
-    normalized = str(mode or "").strip().lower()
-    if normalized == "group":
-        return 0.0
-    settings = _get_runtime_settings()
-    fallback = float(settings.get("entry_fee_dcoin") or 3.0)
-    if normalized.startswith("duel-"):
-        return max(0.0, float(settings.get("duel_entry_fee_dcoin") or fallback))
-    if normalized in {"daily", "boss"}:
-        return max(0.0, float(settings.get("arena_entry_fee_dcoin") or fallback))
-    return max(0.0, fallback)
+    """Arena and Duel entry is free for every account and mode.
+
+    Sessions created before this change may still carry a fee and the users
+    charged for it; the refund helpers keep handling those.
+    """
+    return 0.0
 
 
 def _competition_schedule_start(mode: str, subject: str) -> str | None:
@@ -60942,6 +60982,8 @@ app.include_router(speaking_chats_router)
 from backend.speaking_answers import router as speaking_answers_router
 app.include_router(speaking_answers_router)
 from backend.speaking_videos import router as speaking_videos_router
+from backend.speaking_exams import router as speaking_exams_router
+app.include_router(speaking_exams_router)
 app.include_router(speaking_videos_router)
 app.include_router(_media_hls.router)
 

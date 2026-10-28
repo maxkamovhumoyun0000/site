@@ -4105,7 +4105,6 @@ function CompetitionLobbyRules({
   const defaultRequired = mode === "duel-1v1" ? 2 : mode === "duel-3v3" ? 6 : mode === "duel-5v5" ? 10 : mode === "boss" ? 5 : mode === "daily" ? 10 : 0;
   const required = status?.required_players != null ? Number(status.required_players) : defaultRequired;
   const joined = Number(status?.participants_count ?? status?.joined_count ?? 0);
-  const entryFee = Number(status?.entry_fee ?? (mode.startsWith("duel-") ? rules.duel_entry_fee_dcoin : mode === "group" ? 0 : rules.arena_entry_fee_dcoin) ?? 0);
   const dailyFirst = Number(rules.daily_arena_reward_first ?? 25);
   const dailySecond = Number(rules.daily_arena_reward_second ?? 20);
   const dailyThird = Number(rules.daily_arena_reward_third ?? 15);
@@ -4121,7 +4120,6 @@ function CompetitionLobbyRules({
     tt("arena.rules.boss.title", "Boss Arena qoidalari");
   const base = [
     `${tt("arena.rules.subject", "Fan")}: ${subject || status?.subject || "-"}`,
-    `${tt("arena.rules.entryFee", "Kirish narxi")}: ${entryFee.toFixed(entryFee % 1 ? 1 : 0)} D'coin`,
     tt("arena.rules.timerBackend", "Timer backend tomonidan nazorat qilinadi"),
     tt("arena.rules.lateSkipped", "Kechikkan javoblar o'tkazilgan yoki noto'g'ri hisoblanadi"),
   ];
@@ -5158,14 +5156,8 @@ export function StudentCompetitionPage({
               {/* Lobby info pills — dynamic from economy settings */}
               {(() => {
                 const eco = economySettings as GenericRow;
-                const entryFeeVal = Number(
-                  mode.startsWith("duel-") ? (eco.duel_entry_fee_dcoin ?? eco.duel_entry_fee ?? 0) :
-                  mode === "group" ? 0 :
-                  (eco.arena_entry_fee_dcoin ?? eco.arena_entry_fee ?? 0)
-                );
                 const minPlayers = mode === "duel-1v1" ? 2 : mode === "duel-3v3" ? 6 : mode === "duel-5v5" ? 10 : mode === "boss" ? (eco.boss_arena_min_participants ?? 5) : mode === "daily" ? (eco.daily_arena_min_participants ?? 10) : 0;
                 const pills: Array<{ icon: string; label: string; value: string; color: string }> = [];
-                if (entryFeeVal > 0) pills.push({ icon: "💎", label: tt("arena.entryFee", "Kirish narxi"), value: `${entryFeeVal.toFixed(entryFeeVal % 1 ? 1 : 0)} D'coin`, color: "bg-amber-50 border-amber-200/60 text-amber-800 dark:bg-amber-500/10 dark:border-amber-400/20 dark:text-amber-200" });
                 if (mode !== "group" && Number(minPlayers) > 0) pills.push({ icon: "👥", label: tt("arena.rules.minimumParticipants", "Min o'yinchilar"), value: String(minPlayers), color: "bg-indigo-50 border-indigo-200/60 text-indigo-800 dark:bg-indigo-500/10 dark:border-indigo-400/20 dark:text-indigo-200" });
                 if (mode === "boss") {
                   const bossThreshold = Number(eco.boss_arena_global_threshold_percent ?? 86);

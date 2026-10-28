@@ -33,8 +33,9 @@ USER_ROLES = {"speaking_user", "student", "teacher", "support", "speaking_admin"
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 MIN_AUDIO_BYTES = 2 * 1024
 MIN_WORDS = 4
-HOURLY_LIMIT = 30
-DAILY_LIMIT = 120
+# A full mock exam is up to 17 answers, so the limits allow a few per hour.
+HOURLY_LIMIT = 60
+DAILY_LIMIT = 200
 TASHKENT = timezone(timedelta(hours=5))
 CRITERIA = ("fluency", "vocabulary", "grammar", "pronunciation")
 
@@ -76,6 +77,11 @@ def ensure_tables() -> None:
                 duration_seconds DOUBLE PRECISION NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"""
+        )
+        cur.execute("ALTER TABLE speaking_answer_analyses ADD COLUMN IF NOT EXISTS exam_id BIGINT")
+        cur.execute("ALTER TABLE speaking_answer_analyses ADD COLUMN IF NOT EXISTS step_index INTEGER")
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_speaking_answer_exam ON speaking_answer_analyses(exam_id, step_index) WHERE exam_id IS NOT NULL"
         )
         cur.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_speaking_answer_recording "
@@ -359,6 +365,31 @@ def _existing(user_id: int, client_recording_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
+def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[str, str]:
+    """Question id and idempotency key of one step of the user's open exam."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT status, steps_json FROM speaking_exams WHERE id=%s AND user_id=%s", (exam_id, user_id))
+        row = cur.fetchone()
+    except Exception:
+        conn.rollback()
+        row = None
+    finally:
+        cur.close()
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    row = dict(row)
+    if row.get("status") != "started":
+        raise HTTPException(status_code=409, detail="This exam is already finished")
+    steps = json.loads(row.get("steps_json") or "[]")
+    step = next((s for s in steps if int(s.get("index") or 0) == step_index), None)
+    if not step:
+        raise HTTPException(status_code=422, detail="Unknown exam question")
+    return str(step.get("question_id") or ""), f"exam-{exam_id}-{step_index}"
+
+
 def _enforce_limits(user_id: int) -> None:
     from backend.main import _REDIS_CLIENT
     from backend.rate_limiting import consume_rate_limit
@@ -386,6 +417,8 @@ async def analyze_speaking_answer(
     part: int | None = Form(default=None, ge=1, le=3),
     topic_title: str = Form(default="", max_length=300),
     prompt: str = Form(default="", max_length=1200),
+    exam_id: int | None = Form(default=None, ge=1),
+    step_index: int | None = Form(default=None, ge=0, le=60),
     authorization: str | None = Header(default=None),
     x_language: str | None = Header(default=None, alias="X-Language"),
 ):
@@ -405,6 +438,12 @@ async def analyze_speaking_answer(
     if raw[4:8] != b"ftyp":
         raise HTTPException(status_code=422, detail="Unsupported audio format. Please record again in the app.")
 
+    if exam_id is not None:
+        # Exam answers: the exam (not the client) decides which question this is.
+        question_id, recording_ref = _exam_step_question(user_id, int(exam_id), int(step_index or 0))
+        cached = _existing(user_id, recording_ref)
+        if cached:
+            return {"analysis": cached, "cached": True}
     question_ref = re.sub(r"[^A-Za-z0-9_.-]", "", question_id)[:64]
     numeric_id = int(question_ref) if question_ref.isdigit() else None
     row = _question_row(numeric_id)
@@ -438,7 +477,9 @@ async def analyze_speaking_answer(
     system, user_turn = _scoring_prompt(
         scale=scale, part=part_value, topic=topic, prompt=question_text, bullets=bullets,
         transcript=transcript[:6000], duration=duration, word_count=word_count,
-        result_language=_ai_result_language(x_language),
+        # Russian answers are analysed entirely in Russian; English answers
+        # get feedback in the app's interface language.
+        result_language="Russian" if subject_key == "russian" else _ai_result_language(x_language),
     )
     result = normalize_ai_result(await _score(system, user_turn), scale=scale)
     logger.info("speaking answer analyzed user=%s scale=%s ms=%s", user_id, scale, int((time.monotonic() - started) * 1000))
@@ -449,14 +490,16 @@ async def analyze_speaking_answer(
         cur.execute(
             """INSERT INTO speaking_answer_analyses
                    (user_id, question_id, question_ref, client_recording_id, subject, part, topic_title, prompt,
-                    scale, score, criteria_json, result_json, transcript, word_count, duration_seconds)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    scale, score, criteria_json, result_json, transcript, word_count, duration_seconds,
+                    exam_id, step_index)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                ON CONFLICT (user_id, client_recording_id) WHERE client_recording_id <> '' DO NOTHING
                RETURNING *""",
             (
                 user_id, numeric_id, question_ref, recording_ref, subject_key, part_value, topic[:300],
                 question_text[:1200], scale, result["score"], json.dumps(result["criteria"]),
                 json.dumps(result, ensure_ascii=False), transcript[:8000], word_count, duration,
+                exam_id, step_index if exam_id is not None else None,
             ),
         )
         saved = cur.fetchone()
@@ -658,6 +701,46 @@ def build_progress(rows: list[dict[str, Any]], learning_rows: list[dict[str, Any
     }
 
 
+def _exam_progress(user_id: int, subject_key: str) -> dict[str, Any]:
+    """Recent finished mock exams and the Daily Challenge streak."""
+    try:
+        from backend.speaking_exams import ensure_tables as ensure_exam_tables, streak_from_days, _today
+
+        ensure_exam_tables()
+    except Exception:
+        return {"mock_exams": [], "challenge_streak": {"current": 0, "best": 0}}
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """SELECT id, kind, mode, parts, overall, finished_at, result_json FROM speaking_exams
+               WHERE user_id=%s AND subject=%s AND status='finished' AND kind='mock'
+               ORDER BY finished_at DESC LIMIT 12""",
+            (user_id, subject_key),
+        )
+        exams = []
+        for row in cur.fetchall() or []:
+            item = dict(row)
+            result = json.loads(item.get("result_json") or "{}")
+            finished = item.get("finished_at")
+            exams.append({
+                "id": int(item["id"]), "mode": item.get("mode"), "parts": item.get("parts"),
+                "overall": item.get("overall"), "part_scores": result.get("part_scores") or {},
+                "finished_at": finished.isoformat() if hasattr(finished, "isoformat") else str(finished or ""),
+            })
+        exams.reverse()
+        cur.execute("SELECT day FROM speaking_daily_challenges WHERE user_id=%s AND subject=%s", (user_id, subject_key))
+        days = [dict(r)["day"] for r in cur.fetchall() or []]
+    except Exception:
+        conn.rollback()
+        return {"mock_exams": [], "challenge_streak": {"current": 0, "best": 0}}
+    finally:
+        cur.close()
+        conn.close()
+    current, best = streak_from_days(days, _today())
+    return {"mock_exams": exams, "challenge_streak": {"current": current, "best": best}}
+
+
 @router.get("/speaking/progress")
 @router.get("/api/speaking/progress")
 async def speaking_progress(
@@ -700,6 +783,7 @@ async def speaking_progress(
         cur.close()
         conn.close()
     payload = build_progress(rows, learning_rows, weeks=weeks, now=now)
+    payload.update(_exam_progress(user_id, subject_key))
     payload["subject"] = subject_key
     payload["scale"] = "ielts" if subject_key == "english" else "ten"
     payload["max_score"] = 9.0 if subject_key == "english" else 10.0
