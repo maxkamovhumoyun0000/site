@@ -132,7 +132,7 @@ from attendance_manager import (
     set_attendance_student_notify_bot,
 )
 from broadcast_system import setup_broadcast_handlers, is_broadcast_step_active
-from logging_config import get_logger
+from logging_config import get_logger, safe_error_text
 from bot_error_notify import notify_admins_unhandled_bot_error
 from ai_generator import levels_for_ai_generation
 from diamondvoy_core import DiamondVoyAdmin, admin_diamondvoy_trigger, handle_diamondvoy_admin_callback
@@ -1245,7 +1245,7 @@ async def handle_admin_text(message: Message):
             except Exception as e:
                 logger.exception("wipe_postgresql_database_and_reinit")
                 reset_admin_state(message.chat.id)
-                await message.answer(t(lang, "error_with_reason", error=str(e)))
+                await message.answer(t(lang, "error_with_reason", error=safe_error_text(e)))
                 return
             reset_admin_state(message.chat.id)
             await message.answer(t(lang, "diamondvoy_db_reset_success"))
@@ -1824,7 +1824,7 @@ async def handle_admin_text(message: Message):
                 extra_report += f"\nNote: {str(rep.note)[:800]}"
             await message.answer(base_report + extra_report)
         except Exception as e:
-            await message.answer(t(lang, "admin_ai_vocab_error", error=str(e)))
+            await message.answer(t(lang, "admin_ai_vocab_error", error=safe_error_text(e)))
 
         state['step'] = None
         state['data'] = {}
@@ -1890,7 +1890,7 @@ async def handle_admin_text(message: Message):
                 )
             )
         except Exception as e:
-            await message.answer(t(lang, "admin_ai_daily_tests_error", error=str(e)))
+            await message.answer(t(lang, "admin_ai_daily_tests_error", error=safe_error_text(e)))
 
         state['step'] = None
         state['data'] = {}

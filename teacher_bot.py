@@ -57,7 +57,7 @@ from attendance_manager import (
     set_session_opened,
     set_attendance_student_notify_bot,
 )
-from logging_config import get_logger
+from logging_config import get_logger, safe_error_text
 from bot_error_notify import notify_admins_unhandled_bot_error
 
 # Setup logger
@@ -718,7 +718,7 @@ async def handle_authenticated_message(message: Message):
                     )
                 )
         except Exception as e:
-            await message.answer(t(lang, "ai_generation_error_generic", error=str(e)))
+            await message.answer(t(lang, "ai_generation_error_generic", error=safe_error_text(e)))
         finally:
             ts['step'] = None
             ts['data'] = {}
@@ -2223,7 +2223,7 @@ async def handle_teacher_file(message: Message):
                 )
             )
         except Exception as e:
-            await message.answer(t(lang, 'error_with_reason', error=str(e)))
+            await message.answer(t(lang, 'error_with_reason', error=safe_error_text(e)))
 
         state['step'] = None
         state['data'] = {}
@@ -2285,7 +2285,7 @@ async def handle_teacher_file(message: Message):
                 )
             )
         except Exception as e:
-            await message.answer(t(lang, 'teacher_daily_tests_upload_error', error=str(e)))
+            await message.answer(t(lang, 'teacher_daily_tests_upload_error', error=safe_error_text(e)))
 
         state['step'] = None
         state['data'] = {}

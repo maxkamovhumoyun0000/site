@@ -104,10 +104,20 @@ def _xai_model_supports_reasoning_effort(model: str) -> bool:
 
 
 def _xai_image_detail() -> str:
-    raw = str(os.getenv("XAI_IMAGE_DETAIL") or "low").strip().lower()
+    # "high" lets the model read handwriting, small print and whole test
+    # pages; "low" made homework photos unreadable.
+    raw = str(os.getenv("XAI_IMAGE_DETAIL") or "high").strip().lower()
     if raw in {"low", "high", "auto"}:
         return raw
-    return "low"
+    return "high"
+
+
+def get_grok_vision_model_candidates() -> list[str]:
+    """Image-capable models only; text-only fallbacks cannot read photos."""
+    preferred = [part.strip() for part in str(os.getenv("XAI_VISION_MODEL") or "").split(",") if part.strip()]
+    text_only = ("grok-3", "grok-2", "grok-beta")
+    ordered = preferred + [m for m in get_grok_model_candidates() if not m.lower().startswith(text_only)]
+    return list(dict.fromkeys(ordered))
 
 
 def _xai_apply_payload_tuning(payload: dict[str, Any], *, model: str, stream: bool) -> dict[str, Any]:
@@ -212,7 +222,10 @@ def _xai_transient_user_message() -> str:
 
 
 def _xai_log_preview(value: Any, *, limit: int = 220) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    """Short, redacted provider text: xAI error bodies echo part of the key."""
+    from logging_config import SensitiveDataFilter
+
+    text = re.sub(r"\s+", " ", SensitiveDataFilter.redact(str(value or ""))).strip()
     if len(text) <= limit:
         return text
     return text[:limit] + "..."
@@ -371,11 +384,11 @@ async def _call_xai(
                         resp.status,
                         error_sample,
                     )
-                    last_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                    last_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                     continue
                 if _is_xai_transient_error(resp.status, error_text):
                     transient_seen = True
-                    last_transient_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                    last_transient_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                     logger.warning(
                         "xai transient error stream=0 model=%s status=%s attempt=%s/%s fallback_index=%s error_sample=%s",
                         model,
@@ -397,7 +410,7 @@ async def _call_xai(
                     model_index,
                     error_sample,
                 )
-                raise RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                raise RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
         if data is not None:
             break
         if transient_seen and attempt < retry_attempts:
@@ -429,7 +442,7 @@ async def _call_xai(
         return content
     except Exception:
         # Keep error readable for logs.
-        raise RuntimeError(f"Grok API xatosi: response shape unexpected: {type(data)} | {data}")
+        raise RuntimeError(f"Grok API xatosi: response shape unexpected: {type(data).__name__} | {_xai_log_preview(data, limit=200)}")
 
 
 async def _xai_generate(prompt: str, *, session: aiohttp.ClientSession) -> str:
@@ -514,11 +527,11 @@ async def _call_xai_stream(
                     error_text = await resp.text()
                     if _is_xai_model_missing_error(error_text):
                         logger.warning("xai stream model unavailable model=%s status=%s switching_fallback=1", model, resp.status)
-                        last_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                        last_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                         continue
                     if _is_xai_transient_error(resp.status, error_text):
                         transient_seen = True
-                        last_transient_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                        last_transient_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                         logger.warning(
                             "xai stream transient error model=%s status=%s attempt=%s/%s fallback_index=%s",
                             model,
@@ -530,7 +543,7 @@ async def _call_xai_stream(
                         if model_index + 1 < transient_fallback_limit:
                             continue
                         break
-                    raise RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                    raise RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                 logger.info("xai stream using model=%s conv_id=%s", model, X_GROK_CONV_ID)
                 usage_seen: dict[str, Any] | None = None
                 async for line in resp.content:
@@ -627,7 +640,7 @@ async def _xai_generate_text_with_web_search(
         timeout=aiohttp.ClientTimeout(total=120),
     ) as response:
         if response.status != 200:
-            detail = (await response.text())[:500]
+            detail = _xai_log_preview(await response.text(), limit=500)
             logger.error("xAI web search failed status=%s detail=%s", response.status, detail)
             raise RuntimeError("Diamondvoy web search is temporarily unavailable")
         data = await response.json(content_type=None)
@@ -682,7 +695,7 @@ async def _xai_generate_text_stream_with_images(
     }
     content: list[dict[str, Any]] = [{"type": "text", "text": str(prompt or "")}]
     image_detail = _xai_image_detail()
-    for url in (image_urls or [])[:3]:
+    for url in (image_urls or [])[:2]:
         clean_url = str(url or "").strip()
         if clean_url:
             content.append({"type": "image_url", "image_url": {"url": clean_url, "detail": image_detail}})
@@ -696,7 +709,7 @@ async def _xai_generate_text_stream_with_images(
 
     last_error: RuntimeError | None = None
     last_transient_error: RuntimeError | None = None
-    model_candidates = get_grok_model_candidates()
+    model_candidates = get_grok_vision_model_candidates()
     retry_attempts = _xai_retry_attempts()
     retry_delays = _xai_retry_delays()
     transient_fallback_limit = max(1, min(3, len(model_candidates)))
@@ -714,24 +727,26 @@ async def _xai_generate_text_stream_with_images(
                 "stream": True,
             }
             _xai_apply_payload_tuning(payload, model=model, stream=True)
+            # A total timeout cut long streamed answers off after 60 s; bound
+            # the connect and each read instead.
             async with session.post(
                 XAI_ENDPOINT,
                 headers=headers,
                 json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=None, sock_connect=20, sock_read=120),
             ) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
                     if _is_xai_model_missing_error(error_text):
-                        last_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                        last_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                         continue
                     if _is_xai_transient_error(resp.status, error_text):
                         transient_seen = True
-                        last_transient_error = RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                        last_transient_error = RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                         if model_index + 1 < transient_fallback_limit:
                             continue
                         break
-                    raise RuntimeError(f"Grok API error {resp.status}: {error_text[:300]}")
+                    raise RuntimeError(f"Grok API error {resp.status}: {_xai_log_preview(error_text, limit=300)}")
                 logger.info("xai vision stream using model=%s image_detail=%s conv_id=%s", model, image_detail, X_GROK_CONV_ID)
                 usage_seen: dict[str, Any] | None = None
                 async for line in resp.content:
@@ -2341,11 +2356,14 @@ def _normalize_rich_daily_item(item: dict[str, Any], *, subject: str, level: str
     options = _clean_options(item.get("options"), 4)
     if len(options) != 4:
         return None
+    # A missing or out-of-range answer index must drop the item: defaulting
+    # it to option 1 stored questions with a wrong answer key.
     try:
-        coi = int(item.get("correct_option_index") or 1)
-    except Exception:
-        coi = 1
-    coi = max(1, min(4, coi))
+        coi = int(item.get("correct_option_index"))
+    except (TypeError, ValueError):
+        return None
+    if coi < 1 or coi > 4:
+        return None
     payload = {
         "question_type": qt,
         "instruction": instruction,
@@ -2909,6 +2927,44 @@ async def _assign_daily_test_set(
     await asyncio.to_thread(_assign_daily_test_set_sync, subject, level, test_date, created_by)
 
 
+DAILY_TEST_PROMPT_BATCH = 25
+
+
+async def _generate_daily_tests_in_batches(
+    *,
+    subject: str,
+    level: str,
+    count: int,
+    created_by: Optional[int],
+    exclude_questions: list[str] | None,
+) -> GenerationResult:
+    remaining = int(count)
+    generated = inserted = 0
+    attempts = no_progress = 0
+    max_attempts = max(4, (int(count) // DAILY_TEST_PROMPT_BATCH) * 2 + 2)
+    while remaining > 0 and attempts < max_attempts and no_progress < 3:
+        attempts += 1
+        batch = await _generate_daily_test_questions(
+            subject=subject,
+            level=level,
+            count=min(DAILY_TEST_PROMPT_BATCH, remaining),
+            created_by=created_by,
+            exclude_questions=exclude_questions,
+        )
+        generated += int(batch.generated or 0)
+        inserted += int(batch.inserted or 0)
+        remaining -= int(batch.inserted or 0)
+        no_progress = 0 if batch.inserted else no_progress + 1
+    return GenerationResult(
+        requested=int(count),
+        generated=generated,
+        inserted=inserted,
+        skipped=max(0, int(count) - inserted),
+        attempts=attempts,
+        completed=remaining <= 0,
+    )
+
+
 async def generate_daily_tests_and_insert(
     *,
     subject: str,
@@ -2945,6 +3001,16 @@ async def generate_daily_tests_and_insert(
     lock_key = (f"daily:{subject}", level)
     lock = _ai_generation_locks.setdefault(lock_key, asyncio.Lock())
     async with lock:
+        if not assign_today_set and count > DAILY_TEST_PROMPT_BATCH:
+            # One prompt asking for hundreds of items overflowed max_tokens
+            # and failed to parse; generate in bounded batches instead.
+            return await _generate_daily_tests_in_batches(
+                subject=subject,
+                level=level,
+                count=count,
+                created_by=created_by,
+                exclude_questions=exclude_questions,
+            )
         result = await _generate_daily_test_questions(
             subject=subject,
             level=level,

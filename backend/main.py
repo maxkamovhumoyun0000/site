@@ -53,6 +53,7 @@ from pydantic import BaseModel, Field
 import push_notifications
 from backend.community_safety import SafetyStore, validate_public_text
 from backend.rate_limiting import consume_rate_limit
+from logging_config import safe_error_text
 from backend.system_metrics import build_system_advice, collect_system_metrics, find_latest_pressure_event
 import userbot_manager
 from userbot_manager import (
@@ -417,6 +418,7 @@ from diamondvoy_helpers import (
     detect_query_language,
     diamondvoy_app_system_prompt,
     diamondvoy_gemini_answer,
+    diamondvoy_language_rule,
     diamondvoy_gemini_answer_stream,
     diamondvoy_generate_chat_title,
     diamondvoy_is_subject_related,
@@ -1323,6 +1325,31 @@ DETAIL_TRANSLATIONS: dict[str, dict[str, str]] = {
         "uz": "Natija topilmadi",
         "ru": "Результат не найден",
         "en": "Result not found",
+    },
+    "Diamondvoy accepts at most 2 images per message": {
+        "uz": "Diamondvoy'ga bir xabarda 2 tagacha rasm yuborish mumkin",
+        "ru": "В одном сообщении Diamondvoy можно отправить не более 2 изображений",
+        "en": "Diamondvoy accepts at most 2 images per message",
+    },
+    "Weekly image limit reached": {
+        "uz": "Haftalik rasm limiti tugadi: Diamondvoy'ga haftasiga 8 tagacha rasm yuborish mumkin. Limit dushanba kuni yangilanadi.",
+        "ru": "Недельный лимит изображений исчерпан: Diamondvoy принимает до 8 изображений в неделю. Лимит обновится в понедельник.",
+        "en": "Weekly image limit reached: Diamondvoy accepts up to 8 images per week. The limit resets on Monday.",
+    },
+    "Admin accounts cannot sign in to the Speaking app": {
+        "uz": "Admin akkaunti bilan Speaking ilovasiga kirib bo'lmaydi",
+        "ru": "Администраторские аккаунты не могут входить в приложение Speaking",
+        "en": "Admin accounts cannot sign in to the Speaking app",
+    },
+    "AI generator is temporarily unavailable. Please try again.": {
+        "uz": "AI generator vaqtincha ishlamayapti. Qayta urinib ko'ring.",
+        "ru": "AI-генератор временно недоступен. Попробуйте ещё раз.",
+        "en": "AI generator is temporarily unavailable. Please try again.",
+    },
+    "AI generator request limit reached. Please try again later.": {
+        "uz": "AI generator so'rovlar limiti tugadi. Keyinroq urinib ko'ring.",
+        "ru": "Достигнут лимит запросов к AI-генератору. Попробуйте позже.",
+        "en": "AI generator request limit reached. Please try again later.",
     },
     "AI generation permission denied": {
         "uz": "AI generatsiya uchun ruxsat yo'q",
@@ -2356,9 +2383,10 @@ class WipeDatabaseRequest(BaseModel):
 
 
 class TeacherAiGenerationRequest(BaseModel):
-    subject: str = "English"
-    level: str = "PRE-INTERMEDIATE"
-    count: int = 20
+    subject: str = Field(default="English", max_length=40)
+    level: str = Field(default="PRE-INTERMEDIATE", max_length=40)
+    # Direct (synchronous) generation; larger amounts go through /generator/job.
+    count: int = Field(default=20, ge=1, le=200)
 
 
 class LevelGenerationConfig(BaseModel):
@@ -2368,12 +2396,14 @@ class LevelGenerationConfig(BaseModel):
 
 
 class BulkAiGenerationRequest(BaseModel):
-    subject: str = "English"
-    levels: list[LevelGenerationConfig] = Field(default_factory=list)
+    subject: str = Field(default="English", max_length=40)
+    levels: list[LevelGenerationConfig] = Field(default_factory=list, max_length=12)
 
 
 class GeneratorJobRequest(TeacherAiGenerationRequest):
     kind: Literal["vocabulary", "daily-tests", "arena"] = "vocabulary"
+    # Background jobs run in batches of 20, so they can take more.
+    count: int = Field(default=20, ge=1, le=2000)
 
 
 class TeacherBookingDecisionRequest(BaseModel):
@@ -12639,6 +12669,12 @@ DIAMONDVOY_ATTACHMENT_MIME_BY_EXT = {
 }
 DIAMONDVOY_RETENTION_DAYS = 7
 FEEDBACK_RETENTION_DAYS = 186
+# Diamondvoy vision: at most two photos per message, and learners (Student
+# and Speaking app accounts) get a weekly photo allowance shared by every app
+# because it is keyed by users.id.
+DIAMONDVOY_MAX_IMAGES_PER_MESSAGE = 2
+DIAMONDVOY_WEEKLY_IMAGE_LIMIT = max(0, int(os.getenv("DIAMONDVOY_WEEKLY_IMAGE_LIMIT", "8") or 8))
+DIAMONDVOY_VISION_MAX_SIDE = 2048
 
 
 def _upload_content_matches_extension(raw: bytes, ext: str) -> bool:
@@ -12760,7 +12796,26 @@ def _chat_media_data_url(url: str) -> str:
     raw = path.read_bytes()
     if not raw or len(raw) > CHAT_IMAGE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Rasm hajmi juda katta")
-    return f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+    # Phone photos are often 4000px+, rotated by EXIF and sometimes WEBP.
+    # Send the model an upright JPEG no larger than 2048px: it reads text as
+    # well, the request stays small, and every vision model accepts JPEG.
+    try:
+        from PIL import Image, ImageOps
+
+        with Image.open(io.BytesIO(raw)) as image:
+            image = ImageOps.exif_transpose(image)
+            if image.mode not in ("RGB", "L"):
+                background = Image.new("RGB", image.size, (255, 255, 255))
+                rgba = image.convert("RGBA")
+                background.paste(rgba, mask=rgba.split()[-1])
+                image = background
+            image.thumbnail((DIAMONDVOY_VISION_MAX_SIDE, DIAMONDVOY_VISION_MAX_SIDE))
+            out = io.BytesIO()
+            image.convert("RGB").save(out, format="JPEG", quality=88, optimize=True)
+        return f"data:image/jpeg;base64,{base64.b64encode(out.getvalue()).decode('ascii')}"
+    except Exception:
+        logger.warning("diamondvoy image normalisation failed filename=%s; sending original", filename, exc_info=True)
+        return f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 def _chat_media_metadata(url: str) -> tuple[str | None, str | None, int]:
@@ -12773,9 +12828,13 @@ def _chat_media_metadata(url: str) -> tuple[str | None, str | None, int]:
     return filename, mime_type, size
 
 
-def _validate_chat_image_urls(image_urls: list[str] | None) -> list[str]:
+def _validate_chat_image_urls(image_urls: list[str] | None, max_images: int = 3) -> list[str]:
+    if image_urls and len(image_urls) > max_images:
+        if max_images == DIAMONDVOY_MAX_IMAGES_PER_MESSAGE:
+            raise HTTPException(status_code=422, detail="Diamondvoy accepts at most 2 images per message")
+        raise HTTPException(status_code=400, detail=f"Bir xabarda {max_images} tagacha rasm yuborish mumkin")
     cleaned: list[str] = []
-    for raw in (image_urls or [])[:3]:
+    for raw in (image_urls or [])[:max_images]:
         url = str(raw or "").strip()
         if not url:
             continue
@@ -12937,8 +12996,8 @@ def _validate_diamondvoy_attachments(attachments: list[CommunityChatAttachmentRe
             raise HTTPException(status_code=413, detail="Diamondvoy uchun fayl 10 MB dan katta bo‘lmasligi kerak")
         if ext in CHAT_IMAGE_MIME_BY_EXT:
             image_count += 1
-            if image_count > 3:
-                raise HTTPException(status_code=422, detail="Bir xabarda 3 tagacha rasm yuborish mumkin")
+            if image_count > DIAMONDVOY_MAX_IMAGES_PER_MESSAGE:
+                raise HTTPException(status_code=422, detail="Diamondvoy accepts at most 2 images per message")
         seen.add(filename)
         clean.append({
             "file_name": filename.split("_", 4)[-1][:180] or filename,
@@ -13053,6 +13112,7 @@ def _diamondvoy_limit_status(user_id: int) -> dict[str, Any]:
     base_limit = max(0, int(settings.get("free_limit") or 3))
     bonus_messages = max(0, int(boost.get("bonus_messages") or 0))
     total_limit = base_limit + bonus_messages
+    images_used = int(_safe_call(lambda: _diamondvoy_images_used_this_week(int(user_id)), 0) or 0)
     return {
         "base_limit": base_limit,
         "bonus_messages": bonus_messages,
@@ -13062,6 +13122,11 @@ def _diamondvoy_limit_status(user_id: int) -> dict[str, Any]:
         "active_boosts": max(0, int(boost.get("active_boosts") or 0)),
         "boost_expires_at": boost.get("expires_at"),
         "window_hours": 24,
+        "images_limit_weekly": DIAMONDVOY_WEEKLY_IMAGE_LIMIT,
+        "images_used_week": images_used,
+        "images_remaining_week": max(0, DIAMONDVOY_WEEKLY_IMAGE_LIMIT - images_used),
+        "images_per_message": DIAMONDVOY_MAX_IMAGES_PER_MESSAGE,
+        "images_week_start": _diamondvoy_image_week_start(),
     }
 
 
@@ -13529,6 +13594,131 @@ def _diamondvoy_soft_delete_chat_final(chat_id: int, user_id: int) -> None:
             pass
         logger.exception("diamondvoy chat delete failed chat_id=%s user_id=%s", chat_id, user_id)
         raise HTTPException(status_code=500, detail="Could not delete chat")
+    finally:
+        conn.close()
+
+
+def _diamondvoy_image_week_start() -> str:
+    """Monday (Tashkent) of the current week, the image allowance window."""
+    today = datetime.now(TASHKENT_TZ).date()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
+_DIAMONDVOY_IMAGE_USAGE_READY = False
+
+
+def _ensure_diamondvoy_image_usage_schema() -> None:
+    global _DIAMONDVOY_IMAGE_USAGE_READY
+    if _DIAMONDVOY_IMAGE_USAGE_READY:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS diamondvoy_image_usage (
+                user_id BIGINT NOT NULL,
+                week_start TEXT NOT NULL,
+                images_used INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, week_start)
+            )
+            """
+        )
+        conn.commit()
+        _DIAMONDVOY_IMAGE_USAGE_READY = True
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _diamondvoy_image_quota_applies(role: str) -> bool:
+    # Students and Speaking app accounts (role "student"); staff are unlimited.
+    return str(role or "").lower() == "student" and DIAMONDVOY_WEEKLY_IMAGE_LIMIT >= 0
+
+
+def _diamondvoy_images_used_this_week(user_id: int) -> int:
+    _ensure_diamondvoy_image_usage_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT images_used FROM diamondvoy_image_usage WHERE user_id=? AND week_start=?",
+            (int(user_id), _diamondvoy_image_week_start()),
+        )
+        return max(0, int(dict(cur.fetchone() or {}).get("images_used") or 0))
+    finally:
+        conn.close()
+
+
+def _diamondvoy_reserve_images(user: dict, role: str, count: int) -> int:
+    """Atomically take `count` photos from the weekly allowance.
+
+    The increment only happens when the new total stays within the limit, so
+    concurrent requests from several apps cannot exceed it. Returns the
+    number reserved (0 when no quota applies).
+    """
+    count = max(0, int(count or 0))
+    if count == 0 or not _diamondvoy_image_quota_applies(role):
+        return 0
+    limit = DIAMONDVOY_WEEKLY_IMAGE_LIMIT
+    if count > limit:
+        raise HTTPException(status_code=429, detail="Weekly image limit reached")
+    _ensure_diamondvoy_image_usage_schema()
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            INSERT INTO diamondvoy_image_usage(user_id, week_start, images_used, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id, week_start) DO UPDATE
+                SET images_used=diamondvoy_image_usage.images_used + excluded.images_used,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE diamondvoy_image_usage.images_used + excluded.images_used <= ?
+            RETURNING images_used
+            """,
+            (user_id, _diamondvoy_image_week_start(), count, limit),
+        )
+        row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        logger.exception("diamondvoy image quota update failed user_id=%s", user_id)
+        raise HTTPException(status_code=503, detail="Diamondvoy is temporarily unavailable")
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=429, detail="Weekly image limit reached")
+    return count
+
+
+def _diamondvoy_release_images(user_id: int, count: int) -> None:
+    """Give photos back when the request did not produce an answer."""
+    count = max(0, int(count or 0))
+    if count == 0:
+        return
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            UPDATE diamondvoy_image_usage
+            SET images_used=CASE WHEN images_used > ? THEN images_used - ? ELSE 0 END, updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND week_start=?
+            """,
+            (count, count, int(user_id), _diamondvoy_image_week_start()),
+        )
+        conn.commit()
+    except Exception:
+        with suppress(Exception):
+            conn.rollback()
+        logger.warning("diamondvoy image quota release failed user_id=%s", user_id, exc_info=True)
     finally:
         conn.close()
 
@@ -19829,7 +20019,49 @@ def _build_admin_payload(user: dict) -> dict:
 
 
 def _ensure_teacher_ai_permission(user: dict) -> int:
-    raise HTTPException(status_code=403, detail="AI generation permission denied")
+    """Teachers may use the AI generator only when an admin enabled it for them."""
+    uid = int(user.get("id") or 0)
+    if uid <= 0 or not bool(_safe_call(lambda: get_teacher_ai_generation_permission(uid), False)):
+        raise HTTPException(status_code=403, detail="AI generation permission denied")
+    return uid
+
+
+def _enforce_ai_generator_rate_limit(user: dict, role: str) -> None:
+    """Per-account cap on paid generator calls (jobs, direct and bulk)."""
+    limit = int(os.getenv("AI_GENERATOR_ADMIN_REQUESTS_PER_HOUR" if role == "admin" else "AI_GENERATOR_TEACHER_REQUESTS_PER_HOUR", "60" if role == "admin" else "20") or 20)
+    allowed, retry_after = consume_rate_limit(
+        _REDIS_CLIENT,
+        f"ai-generator:user:{int(user.get('id') or 0)}",
+        limit=max(1, limit),
+        window_seconds=3600,
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="AI generator request limit reached. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _require_teacher_generator_subject(user: dict, subject: str) -> str:
+    req_subject = _normalize_subject_label(subject) or "English"
+    allowed_subjects = _teacher_subject_choices(user)
+    if req_subject not in allowed_subjects:
+        raise HTTPException(status_code=403, detail=f"You can only generate tests for your assigned subjects: {', '.join(allowed_subjects)}")
+    return req_subject
+
+
+async def _run_ai_generation_safely(coro):
+    """Turn generator failures into clear HTTP errors without leaking provider text."""
+    try:
+        return await coro
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=safe_error_text(exc, 200)) from exc
+    except Exception as exc:
+        logger.exception("ai_generator.direct failed")
+        raise HTTPException(status_code=502, detail="AI generator is temporarily unavailable. Please try again.") from exc
 
 
 def _build_support_payload(user: dict) -> dict:
@@ -21732,6 +21964,7 @@ def _enforce_diamondvoy_rate_limit(req: Request, user_id: int) -> None:
 
 
 LOGIN_IP_THROTTLE_MAX_FAILURES = max(1, int(os.getenv("LOGIN_IP_THROTTLE_MAX_FAILURES", "20") or 20))
+SPEAKING_APP_BLOCKED_ROLES = {"admin", "developer", "speaking_admin"}
 
 
 @app.post("/auth/login", response_model=TokenResponse)
@@ -21864,6 +22097,12 @@ async def login(request: LoginRequest, req: Request, response: Response):
     user = _bind_initial_student_password_device(user, device_id)
 
     user_role = _role_from_login_type(int(user.get("login_type") or 0), str(user.get("login_id") or ""))
+    # The Speaking app is for learners and staff who teach. Admin-type
+    # accounts (admin, developer, Speaking admin) manage it from the website.
+    if client_app == "speaking" and (
+        user_role in SPEAKING_APP_BLOCKED_ROLES or int(user.get("login_type") or 0) == 4
+    ):
+        raise HTTPException(status_code=403, detail="Admin accounts cannot sign in to the Speaking app")
     requested_telegram_id = int(request.telegram_id or 0)
     if requested_telegram_id > 0:
         _parse_and_validate_telegram_init_data(request.init_data, requested_telegram_id)
@@ -21874,6 +22113,8 @@ async def login(request: LoginRequest, req: Request, response: Response):
                 raise HTTPException(status_code=403, detail="Telegram ID belongs to configured admin account")
             user = env_admin_user
             user_role = "admin"
+            if client_app == "speaking":
+                raise HTTPException(status_code=403, detail="Admin accounts cannot sign in to the Speaking app")
         linked_user = get_user_by_telegram(str(requested_telegram_id))
         linked_user_id = int(linked_user.get("id") or 0) if linked_user else 0
         if linked_user_id and linked_user_id != current_user_id:
@@ -25703,6 +25944,7 @@ async def _diamondvoy_run_generation_job(
     current_chat_title: str,
     mode: str = "standard",
     cancel_event: asyncio.Event | None = None,
+    reserved_images: int = 0,
 ) -> None:
     """The actual LLM call, fully decoupled from the client's HTTP/SSE
     connection. Runs to completion (saves the assistant message + updates
@@ -25736,9 +25978,10 @@ async def _diamondvoy_run_generation_job(
         speaking_account = _diamondvoy_is_speaking_account(user)
         # Every in-app answer (website, Students, Teachers, Speaking) gets the
         # rich-tools system prompt; the Telegram prompts ban Markdown.
-        app_system_prompt = _diamondvoy_speaking_system_prompt(user, query_lang) or diamondvoy_app_system_prompt(
-            query_lang, is_admin_context=role in {"admin", "teacher", "support"}
-        )
+        app_system_prompt = (
+            _diamondvoy_speaking_system_prompt(user, query_lang)
+            or diamondvoy_app_system_prompt(query_lang, is_admin_context=role in {"admin", "teacher", "support"})
+        ) + "\n\n" + diamondvoy_language_rule(user_text, query_lang)
         role_context_hint = _diamondvoy_role_context_hint(user, role)
         # Verified, role-scoped account data (groups, students, lessons,
         # results, payments, bookings...) plus the no-test-answers rule for
@@ -25786,10 +26029,12 @@ async def _diamondvoy_run_generation_job(
             if document_context else ""
         )
         memory_note = "" if image_urls else _diamondvoy_related_memory_prompt(user_id, user_text, limit=3)
+        language_rule = diamondvoy_language_rule(user_text, query_lang)
         ai_user_text = (
             f"{role_context_hint}\n"
             f"{style_hint}\n"
-            f"Reply in the user's language when possible. Use the formatting tools from the system instructions "
+            f"{language_rule}\n"
+            "Use the formatting tools from the system instructions "
             "(Markdown, tables, $$formulas$$, fenced code, quiz_json) wherever they make the answer clearer. "
             "Do not invent facts, citations, scores, or example data and present them as real.\n"
             f"{image_note}{document_note}\n\n"
@@ -25871,6 +26116,7 @@ async def _diamondvoy_run_generation_job(
                         break
                     if cancelled:
                         _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                        _diamondvoy_release_images(user_id, reserved_images)
                         return
                     if not chunk:
                         continue
@@ -25897,6 +26143,7 @@ async def _diamondvoy_run_generation_job(
                             break
                         if cancelled:
                             _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                            _diamondvoy_release_images(user_id, reserved_images)
                             return
                         if not chunk:
                             continue
@@ -25918,6 +26165,7 @@ async def _diamondvoy_run_generation_job(
                         break
                     if cancelled:
                         _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "cancelled", "content": streamed, "chat_title": current_chat_title})
+                        _diamondvoy_release_images(user_id, reserved_images)
                         return
                     if not chunk:
                         continue
@@ -25991,6 +26239,7 @@ async def _diamondvoy_run_generation_job(
         _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "done", "content": assistant_text, "chat_title": current_chat_title})
     except Exception as exc:
         logger.exception("diamondvoy generation job failed job_id=%s chat_id=%s user_id=%s", job_id, chat_id, user_id)
+        _diamondvoy_release_images(user_id, reserved_images)
         _save_diamondvoy_gen_job({
             "job_id": job_id,
             "chat_id": chat_id,
@@ -26017,7 +26266,7 @@ async def _diamondvoy_stream_events(
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
     user_text = str(payload.message or "").strip()
     mode = _diamondvoy_resolve_mode(payload.mode, user_text)
-    legacy_image_urls = _validate_chat_image_urls(payload.image_urls)
+    legacy_image_urls = _validate_chat_image_urls(payload.image_urls, max_images=DIAMONDVOY_MAX_IMAGES_PER_MESSAGE)
     attachment_rows = _validate_diamondvoy_attachments(payload.attachments)
     attachment_urls = [str(item.get("url") or "") for item in attachment_rows]
     # Keep compatibility with old clients which post `image_urls`, while
@@ -26031,7 +26280,11 @@ async def _diamondvoy_stream_events(
     image_urls = [
         url for url in attachment_urls
         if Path(_chat_media_filename_from_url(url) or "").suffix.lower() in CHAT_IMAGE_MIME_BY_EXT
-    ][:3]
+    ]
+    # Count photos across both fields: old clients send `image_urls`, new
+    # ones `attachments`, and a mix must not slip past the cap.
+    if len(image_urls) > DIAMONDVOY_MAX_IMAGES_PER_MESSAGE:
+        raise HTTPException(status_code=422, detail="Diamondvoy accepts at most 2 images per message")
     document_context = _diamondvoy_attachment_text(attachment_rows)
     speaking_account = _diamondvoy_is_speaking_account(user)
     # Questions about the user's own account, groups, students, lessons or
@@ -26045,8 +26298,14 @@ async def _diamondvoy_stream_events(
     if request is not None:
         _enforce_diamondvoy_rate_limit(request, user_id)
 
+    reserved_images = 0
     if not regenerate:
-        _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
+        reserved_images = _diamondvoy_reserve_images(user, role, len(image_urls))
+        try:
+            _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
+        except Exception:
+            _diamondvoy_release_images(user_id, reserved_images)
+            raise
         user_message = _diamondvoy_insert_message(int(chat_id), "user", user_text)
         if not user_message:
             raise HTTPException(status_code=500, detail="Could not save user message")
@@ -26238,6 +26497,7 @@ async def _diamondvoy_stream_events(
                     current_chat_title=current_chat_title,
                     mode=mode,
                     cancel_event=cancel_event,
+                    reserved_images=reserved_images,
                 )
             )
 
@@ -27139,11 +27399,17 @@ class StudentQuizGenerateRequest(BaseModel):
 async def diamondvoy_generate_quiz(
     chat_id: int,
     payload: StudentQuizGenerateRequest,
+    request: Request = None,
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student", "teacher", "admin", "support"})
     user_id = int(user.get("id") or 0)
+    if request is not None:
+        _enforce_diamondvoy_rate_limit(request, user_id)
     topic = payload.topic.strip()
+    if not topic:
+        raise HTTPException(status_code=400, detail="topic is required")
     chat_row = _diamondvoy_get_chat_for_user_final(int(chat_id), user_id)
     current_chat_title = str(chat_row.get("title") or "Yangi chat").strip() or "Yangi chat"
 
@@ -27170,8 +27436,12 @@ Javobni FAQAT quyidagi JSON formatida qaytaring:
 Faqat valid JSON array qaytaring, boshqa hech narsa yozmang."""
 
     import aiohttp
-    async with aiohttp.ClientSession() as session:
-        gen = await _xai_generate_text(prompt, session=session, system_content="You are an expert test creator. Output only valid JSON.")
+    try:
+        async with aiohttp.ClientSession() as session:
+            gen = await _xai_generate_text(prompt, session=session, system_content="You are an expert test creator. Output only valid JSON.")
+    except Exception as exc:
+        logger.exception("diamondvoy.generate_quiz provider failed chat_id=%s", chat_id)
+        raise HTTPException(status_code=502, detail="AI generator is temporarily unavailable. Please try again.") from exc
 
     try:
         raw_json = str(gen or "").strip()
@@ -27194,6 +27464,10 @@ Faqat valid JSON array qaytaring, boshqa hech narsa yozmang."""
         raw_opts = item.get("options") if isinstance(item.get("options"), list) else []
         corr_raw = str(item.get("correct_answer") or item.get("correct") or "")
         opts, corr = _clean_and_dedup_quiz_options(raw_opts, corr_raw)
+        # Only keep gradeable questions: 2+ distinct options and a key that
+        # is one of them.
+        if len(opts) < 2 or not corr or corr not in opts:
+            continue
         expl = str(item.get("explanation") or f"To'g'ri javob: {corr}").strip()
         norm_questions.append({
             "prompt": prompt_txt,
@@ -27202,23 +27476,17 @@ Faqat valid JSON array qaytaring, boshqa hech narsa yozmang."""
             "explanation": expl,
         })
 
-    # Strict requirement: Exactly 10 questions
-    while len(norm_questions) < 10:
-        idx = len(norm_questions) + 1
-        opts = [f"{topic} asosiy qoidasi {idx}", f"{topic} istisno holati {idx}", f"Boshqa qoida {idx}", f"Noto'g'ri qo'llanish {idx}"]
-        norm_questions.append({
-            "prompt": f"{topic} mavzusiga oid {idx}-savol: Quyidagilardan qaysi biri to'g'ri?",
-            "options": opts,
-            "correct_answer": opts[0],
-            "explanation": f"{topic} bo'yicha to'g'ri qoida: {opts[0]}.",
-        })
+    # Never pad with made-up placeholder questions (they had fake answer
+    # keys). A short but real quiz is better; too few means the AI failed.
     norm_questions = norm_questions[:10]
+    if len(norm_questions) < 3:
+        raise HTTPException(status_code=502, detail="AI generator is temporarily unavailable. Please try again.")
 
     quiz_payload = {
         "type": "wizard_trigger",
         "wizard": "quiz_runner",
         "quiz_id": secrets.token_urlsafe(8),
-        "title": f"{topic} bo'yicha 10 ta test",
+        "title": f"{topic} bo'yicha {len(norm_questions)} ta test",
         "topic": topic,
         "questions": norm_questions,
     }
@@ -39385,13 +39653,17 @@ async def _run_generator_job(job_id: str, actor: dict, payload: GeneratorJobRequ
     except Exception as exc:
         elapsed_ms = int((time.monotonic() - started_monotonic) * 1000)
         logger.exception("ai_generator.job.failed job_id=%s role=%s kind=%s elapsed_ms=%s", job_id, role, kind, elapsed_ms)
+        public_error = (
+            safe_error_text(exc, 200) if isinstance(exc, (ValueError, HTTPException)) or "Grok API vaqtincha" in str(exc)
+            else "AI generator is temporarily unavailable. Please try again."
+        )
         _update_ai_generator_job(
             job_id,
             {
                 "status": "failed",
                 "phase": "failed",
                 "progress": 100,
-                "error": str(exc),
+                "error": public_error,
                 "completed_at": _ai_generator_now_iso(),
             },
             event="failed",
@@ -39405,7 +39677,7 @@ async def _run_generator_job(job_id: str, actor: dict, payload: GeneratorJobRequ
             level=level,
             count=count,
             status="failed",
-            error=str(exc),
+            error=safe_error_text(exc, 300),
             elapsed_ms=elapsed_ms,
         )
 
@@ -39455,6 +39727,8 @@ async def teacher_generator_job(payload: GeneratorJobRequest, authorization: str
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     _ensure_teacher_ai_permission(user)
+    payload.subject = _require_teacher_generator_subject(user, payload.subject)
+    _enforce_ai_generator_rate_limit(user, "teacher")
     return _create_generator_job(user, payload, "teacher")
 
 
@@ -39462,6 +39736,7 @@ async def teacher_generator_job(payload: GeneratorJobRequest, authorization: str
 async def admin_generator_job(payload: GeneratorJobRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    _enforce_ai_generator_rate_limit(user, "admin")
     return _create_generator_job(user, payload, "admin")
 
 
@@ -39508,12 +39783,14 @@ async def teacher_generate_vocabulary(payload: TeacherAiGenerationRequest, autho
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     uid = _ensure_teacher_ai_permission(user)
-    result = await generate_vocabulary_and_insert(
-        subject=_normalize_subject_label(payload.subject) or "English",
+    subject = _require_teacher_generator_subject(user, payload.subject)
+    _enforce_ai_generator_rate_limit(user, "teacher")
+    result = await _run_ai_generation_safely(generate_vocabulary_and_insert(
+        subject=subject,
         level=str(payload.level).strip().upper(),
-        count=max(1, int(payload.count)),
+        count=int(payload.count),
         added_by=uid,
-    )
+    ))
     return {"message": "Vocabulary generated", "result": result.__dict__}
 
 
@@ -39522,17 +39799,15 @@ async def teacher_generate_daily_tests(payload: TeacherAiGenerationRequest, auth
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     uid = _ensure_teacher_ai_permission(user)
-    req_subject = _normalize_subject_label(payload.subject) or "English"
-    allowed_subjects = _teacher_subject_choices(user)
-    if req_subject not in allowed_subjects:
-        raise HTTPException(status_code=403, detail=f"You can only generate tests for your assigned subjects: {', '.join(allowed_subjects)}")
-    result = await generate_daily_tests_and_insert(
+    req_subject = _require_teacher_generator_subject(user, payload.subject)
+    _enforce_ai_generator_rate_limit(user, "teacher")
+    result = await _run_ai_generation_safely(generate_daily_tests_and_insert(
         subject=req_subject,
         level=str(payload.level).strip().upper(),
-        count=max(1, int(payload.count)),
+        count=int(payload.count),
         created_by=uid,
         assign_today_set=False,
-    )
+    ))
     return {"message": "Daily tests generated", "result": result.__dict__}
 
 
@@ -39541,12 +39816,13 @@ async def admin_generate_vocabulary(payload: TeacherAiGenerationRequest, authori
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     uid = int(user.get("id") or 0)
-    result = await generate_vocabulary_and_insert(
+    _enforce_ai_generator_rate_limit(user, "admin")
+    result = await _run_ai_generation_safely(generate_vocabulary_and_insert(
         subject=_normalize_subject_label(payload.subject) or "English",
         level=str(payload.level).strip().upper(),
-        count=max(1, int(payload.count)),
+        count=int(payload.count),
         added_by=uid,
-    )
+    ))
     return {"message": "Vocabulary generated", "result": result.__dict__}
 
 
@@ -39555,13 +39831,14 @@ async def admin_generate_daily_tests(payload: TeacherAiGenerationRequest, author
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     uid = int(user.get("id") or 0)
-    result = await generate_daily_tests_and_insert(
+    _enforce_ai_generator_rate_limit(user, "admin")
+    result = await _run_ai_generation_safely(generate_daily_tests_and_insert(
         subject=_normalize_subject_label(payload.subject) or "English",
         level=str(payload.level).strip().upper(),
-        count=max(1, int(payload.count)),
+        count=int(payload.count),
         created_by=uid,
         assign_today_set=False,
-    )
+    ))
     return {"message": "Daily tests generated", "result": result.__dict__}
 
 
@@ -39570,12 +39847,14 @@ async def teacher_generate_arena(payload: TeacherAiGenerationRequest, authorizat
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     uid = _ensure_teacher_ai_permission(user)
-    result = await generate_arena_questions_and_insert(
-        subject=_normalize_subject_label(payload.subject) or "English",
+    subject = _require_teacher_generator_subject(user, payload.subject)
+    _enforce_ai_generator_rate_limit(user, "teacher")
+    result = await _run_ai_generation_safely(generate_arena_questions_and_insert(
+        subject=subject,
         level=str(payload.level).strip().upper(),
-        count=max(1, int(payload.count)),
+        count=int(payload.count),
         created_by=uid,
-    )
+    ))
     return {"message": "Arena questions generated", "result": result.__dict__}
 
 
@@ -39625,8 +39904,11 @@ async def _run_bulk_ai_generation(actor: dict, payload: BulkAiGenerationRequest)
                 )
                 one["arena_result"] = dict(arena_res.__dict__)
                 total_arena += int(one["arena_result"].get("inserted") or 0)
-        except Exception as exc:
-            one["error"] = str(exc)
+        except ValueError as exc:
+            one["error"] = safe_error_text(exc, 200)
+        except Exception:
+            logger.exception("ai_generator.bulk level failed level=%s", level)
+            one["error"] = "AI generator is temporarily unavailable. Please try again."
         rows.append(one)
 
     return {
@@ -39644,6 +39926,8 @@ async def teacher_generate_bulk(payload: BulkAiGenerationRequest, authorization:
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher"})
     _ensure_teacher_ai_permission(user)
+    payload.subject = _require_teacher_generator_subject(user, payload.subject)
+    _enforce_ai_generator_rate_limit(user, "teacher")
     result = await _run_bulk_ai_generation(user, payload)
     return {"message": "Bulk AI generation completed", "result": result}
 
@@ -39652,6 +39936,7 @@ async def teacher_generate_bulk(payload: BulkAiGenerationRequest, authorization:
 async def admin_generate_bulk(payload: BulkAiGenerationRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    _enforce_ai_generator_rate_limit(user, "admin")
     result = await _run_bulk_ai_generation(user, payload)
     return {"message": "Bulk AI generation completed", "result": result}
 

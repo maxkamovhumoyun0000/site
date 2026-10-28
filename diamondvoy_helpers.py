@@ -69,63 +69,80 @@ def sanitize_diamondvoy_reply(text: str) -> str:
     return s.strip()
 
 
+_UZ_CYRILLIC_LETTERS = set("ўқғҳЎҚҒҲ")
+_UZ_LATIN_WORDS = {
+    "men", "sen", "siz", "biz", "ular", "u", "bu", "shu", "va", "ham", "emas", "edi", "yoq", "yo'q", "bor",
+    "nima", "nega", "qanday", "qachon", "qayer", "qayerda", "qaysi", "nechta", "necha", "kim", "kerak",
+    "iltimos", "rahmat", "salom", "assalomu", "alaykum", "yordam", "ber", "bering", "berib", "tushuntir",
+    "tushuntirib", "misol", "mavzu", "savol", "javob", "haqida", "uchun", "bilan", "lekin", "yoki",
+    "juda", "ko'p", "kop", "dars", "darslar", "o'qituvchi", "o'quvchi", "guruh", "test", "testlar",
+    "qil", "qilib", "qiling", "yoz", "yozib", "aytib", "ayt", "menga", "meni", "mening", "sizga",
+    "qanaqa", "nimaga", "bormi", "yo'qmi", "bo'ladi", "bo'lsa", "bolsa", "bo'yicha", "boyicha", "tarjima",
+}
+_EN_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "what", "why", "how", "when", "where", "which",
+    "who", "can", "could", "would", "should", "do", "does", "did", "you", "your", "i", "my", "me", "we",
+    "please", "explain", "example", "examples", "difference", "between", "mean", "meaning", "write",
+    "give", "tell", "help", "with", "about", "for", "of", "to", "and", "or", "in", "on", "this", "that",
+    "lesson", "grammar", "word", "words", "sentence", "translate", "correct", "check", "make", "create",
+}
+_UZ_APOSTROPHE_RE = re.compile(r"\b(?:o|g)['ʻ’‘`]\w")
+_UZ_SUFFIX_RE = re.compile(r"\b\w{2,}(?:lar|larni|larga|larda|ning|dagi|dan|ga|da|ni|mi|man|miz|siz|sizmi|yapti|yapman|moqda|ishim|ingiz)\b")
+
+
 def detect_query_language(text: str, fallback: str = "uz") -> str:
+    """Language of a Diamondvoy question: "uz", "ru" or "en".
+
+    Uzbek can be written in Latin or Cyrillic, so Cyrillic text with the
+    Uzbek letters ў қ ғ ҳ is Uzbek, not Russian. Latin text is scored by
+    common Uzbek and English words; an unclear short text keeps the user's
+    interface language instead of guessing.
     """
-    Detect query language for Diamondvoy replies: uz/ru/en.
-    Keeps logic lightweight and deterministic.
-    """
+    fb = ((fallback or "uz").lower())[:2]
+    fb = fb if fb in ("uz", "ru", "en") else "uz"
     raw = (text or "").strip()
-    if not raw:
-        fb = ((fallback or "uz").lower())[:2]
-        return fb if fb in ("uz", "ru", "en") else "uz"
-
+    # Ignore code blocks, URLs and quoted examples when judging the language.
+    raw = re.sub(r"```[\s\S]*?```|`[^`]*`|https?://\S+", " ", raw)
+    if not raw.strip():
+        return fb
     low = raw.lower()
-    cyr = len(re.findall(r"[а-яё]", low, flags=re.I))
+    cyr = len(re.findall(r"[а-яёўқғҳ]", low))
     latin = len(re.findall(r"[a-z]", low))
+    if cyr and cyr >= latin:
+        return "uz" if any(ch in _UZ_CYRILLIC_LETTERS for ch in raw) else "ru"
 
-    # Strong Cyrillic signal -> Russian.
-    if cyr >= 3 and cyr >= latin:
-        return "ru"
-
-    uz_markers = (
-        "yo'q",
-        "yoq",
-        "bo'lsa",
-        "bolsa",
-        "uchun",
-        "qanday",
-        "nega",
-        "nima",
-        "qayer",
-        "dars",
-        "savol",
-    )
-    en_markers = (
-        "what",
-        "why",
-        "how",
-        "when",
-        "where",
-        "explain",
-        "example",
-        "please",
-        "lesson",
-        "grammar",
-    )
-
-    uz_score = sum(1 for m in uz_markers if m in low)
-    en_score = sum(1 for m in en_markers if m in low)
+    words = re.findall(r"[a-z]+(?:['ʻ’‘`][a-z]+)?", low)
+    normalized = [re.sub(r"['ʻ’‘`]", "'", w) for w in words]
+    uz_score = sum(1 for w in normalized if w in _UZ_LATIN_WORDS)
+    en_score = sum(1 for w in normalized if w in _EN_WORDS)
+    uz_score += 2 * len(_UZ_APOSTROPHE_RE.findall(low))
+    uz_score += len(_UZ_SUFFIX_RE.findall(low)) // 2
+    uz_score += len(re.findall(r"\b\w*(?:sh|ch|q|x)\w*\b", low)) // 4
     if uz_score > en_score:
         return "uz"
     if en_score > uz_score:
         return "en"
+    if cyr:
+        return "ru"
+    return fb if fb in ("uz", "en") else "uz"
 
-    if latin > 0:
-        # Uzbek default in this project for latin-script ambiguity.
-        return "uz"
 
-    fb = ((fallback or "uz").lower())[:2]
-    return fb if fb in ("uz", "ru", "en") else "uz"
+def diamondvoy_language_rule(text: str, lang: str) -> str:
+    """Hard instruction that the whole answer uses the question's language."""
+    lc = ((lang or "uz").lower())[:2]
+    cyrillic_uzbek = lc == "uz" and any(ch in _UZ_CYRILLIC_LETTERS for ch in str(text or ""))
+    name = {
+        "uz": "Uzbek (Cyrillic script)" if cyrillic_uzbek else "Uzbek (Latin script)",
+        "ru": "Russian",
+        "en": "English",
+    }.get(lc, "Uzbek (Latin script)")
+    return (
+        f"LANGUAGE RULE (mandatory): the user wrote in {name}. Write the ENTIRE answer in {name}: "
+        "every sentence, heading, list, table header, formula label and quiz question/option/explanation. "
+        "Do not switch languages mid-answer. Only exception: content the user is learning or asked to translate "
+        "(for example English example sentences in an English grammar lesson) stays in that language, "
+        f"but all explanations around it stay in {name}."
+    )
 
 
 def resolve_query_subject(question: str, subjects: list[str]) -> str:
@@ -261,6 +278,23 @@ async def diamondvoy_is_subject_related(question: str, subjects: list[str]) -> b
 
 
 DIAMONDVOY_RICH_TOOLS_SPEC = """
+
+ANSWER QUALITY:
+- Open with the direct answer in one or two sentences, then give the explanation, steps or examples.
+- Match the length to the question: a greeting or yes/no question gets one or two lines; a topic explanation gets a structured answer. No filler, no repeating the question, no "as an AI".
+- Be correct. For maths, show each step and check the result. For grammar, give the rule, 2-4 short examples and the most common mistake. If you are not sure, say so instead of guessing.
+- Adapt the difficulty to the learner's level from the verified context when it is available.
+- When an image is attached, first say briefly what it shows (task, page, subject), then work from what is actually visible. If part of it is unreadable, say which part.
+- End with at most one short, useful next step (a practice idea or follow-up question) only when it helps.
+
+WHEN TO USE EACH TOOL (choose by content, not by habit):
+- Comparing 2+ items, listing forms, schedules, results or any data with columns -> table.
+- A formula or calculation -> $$formula$$; a single variable or short expression in a sentence -> $...$.
+- Program code or a command -> fenced code block with the language.
+- The user asks to practise, test themselves or get questions -> quiz_json.
+- Steps of a procedure -> numbered list; unordered points -> bullet list; one key rule -> "> " quote.
+- Facts that need current information and web results are present -> inline [[n]](url) sources.
+- A short conversational reply -> plain sentences, no tools.
 
 FORMATTING TOOLS. The Diamond website and apps render all of these, so use them whenever they make the answer clearer (a short plain answer is still fine for a simple question):
 1. Markdown text: "## " headings for multi-part answers, **bold** for key terms, *italic*, `inline code`, "- " bullet lists, "1. " numbered lists, and "> " for a rule or tip. Never wrap the whole answer in a code block.

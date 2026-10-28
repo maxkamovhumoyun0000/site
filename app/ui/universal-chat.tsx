@@ -42,7 +42,8 @@ function playDiamondvoyThinkingVideo(video: HTMLVideoElement | null) {
   }
 }
 
-const MAX_IMAGES = 3;
+// Diamondvoy reads at most two photos per message (server-enforced too).
+const MAX_IMAGES = 2;
 const MAX_ATTACHMENTS = 5;
 const MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -2550,7 +2551,7 @@ export function UniversalChat({
     const incomingImages = selected.filter((file) => IMAGE_TYPES.has(file.type)).length;
     const existingImages = images.filter((item) => attachmentIsImage(item)).length;
     if (existingImages + incomingImages > MAX_IMAGES) {
-      setError(tt("chat.error.maxImages", "Bir xabarda 3 tagacha rasm yuborish mumkin"));
+      setError(tt("chat.error.maxImages", "Bir xabarda 2 tagacha rasm yuborish mumkin"));
       return;
     }
     setUploading(true);

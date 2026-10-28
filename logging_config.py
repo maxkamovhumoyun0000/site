@@ -39,13 +39,55 @@ class SensitiveDataFilter(logging.Filter):
     # Credentials embedded in connection URLs (postgresql://user:pass@host).
     _url_credentials = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s:/@]+):[^\s@/]+@")
     _phone = re.compile(r"(?<!\d)(\+?998)\d{7,12}(?!\d)")
+    # Provider keys that may appear without a "key=" prefix (xAI, OpenAI,
+    # Google/Firebase, Deepgram/LiveKit style), and signed JWTs.
+    _provider_key = re.compile(
+        r"\b(?:xai-[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|"
+        r"gsk_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,})"
+    )
+    _jwt = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+")
+    # Secrets in URL query strings, e.g. /voice-room-ws?token=... or ?key=...
+    _query_secret = re.compile(r"(?i)([?&](?:token|access_token|key|api_key|sig|signature|code)=)[^&\s\"']+")
+    # Exact values of secret environment variables, built lazily so values
+    # loaded after import (dotenv/systemd) are covered too.
+    _env_secret_re: re.Pattern[str] | None = None
+    _env_secret_count = -1
+
+    _env_size = -1
+
+    @classmethod
+    def _env_secrets(cls) -> re.Pattern[str] | None:
+        # Rebuild only when the environment changes (cheap per-record check).
+        if len(os.environ) == cls._env_size:
+            return cls._env_secret_re
+        cls._env_size = len(os.environ)
+        names = re.compile(r"(?i)(KEY|SECRET|TOKEN|PASSWORD|PASSWD|DSN|DATABASE_URL|API_HASH|PRIVATE)")
+        values = sorted(
+            {
+                str(value)
+                for name, value in os.environ.items()
+                if names.search(name) and len(str(value or "").strip()) >= 12
+            },
+            key=len,
+            reverse=True,
+        )
+        if len(values) != cls._env_secret_count:
+            cls._env_secret_count = len(values)
+            cls._env_secret_re = re.compile("|".join(re.escape(value) for value in values)) if values else None
+        return cls._env_secret_re
 
     @classmethod
     def redact(cls, value: object) -> str:
         text = str(value)
+        env_re = cls._env_secrets()
+        if env_re is not None:
+            text = env_re.sub("[REDACTED_SECRET]", text)
         text = cls._bearer.sub("Bearer [REDACTED]", text)
+        text = cls._jwt.sub("[REDACTED_JWT]", text)
+        text = cls._provider_key.sub("[REDACTED_KEY]", text)
         text = cls._telegram_bot_token.sub("[REDACTED_BOT_TOKEN]", text)
         text = cls._url_credentials.sub(lambda match: f"{match.group(1)}:[REDACTED]@", text)
+        text = cls._query_secret.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
         text = cls._key_value.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", text)
         return cls._phone.sub(lambda match: f"{match.group(1)}***{match.group(0)[-3:]}", text)
 
@@ -135,8 +177,25 @@ def setup_logging():
 
     logging.getLogger('aiogram').setLevel(logging.INFO)
     logging.getLogger('aiogram.event').setLevel(logging.INFO)
+    # uvicorn installs its own non-propagating handlers, so its records never
+    # reach the root filter (WebSocket lines include ?token=<JWT>). A logger
+    # level filter runs before any of that logger's handlers.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "aiohttp.access", "httpx", "telethon", "pyrogram"):
+        third_party = logging.getLogger(name)
+        if not any(isinstance(item, SensitiveDataFilter) for item in third_party.filters):
+            third_party.addFilter(sanitizer)
+    # Client libraries log full request URLs (Telegram bot URLs carry the
+    # bot token) at INFO/DEBUG; keep them at WARNING outside debugging.
+    for name in ("httpx", "httpcore", "urllib3", "aiohttp.client"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     root._diamond_logging_configured = True  # type: ignore[attr-defined]
     return logging.getLogger(__name__)
+
+
+def safe_error_text(error: object, limit: int = 300) -> str:
+    """Exception text that is safe to show to a user or chat (redacted, short)."""
+    text = SensitiveDataFilter.redact(str(error or "")).strip()
+    return (text[:limit].rstrip() + "…") if len(text) > limit else text
 
 def get_logger(name: str):
     """Get a specific logger with proper configuration"""
