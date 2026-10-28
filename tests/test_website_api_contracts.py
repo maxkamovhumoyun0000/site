@@ -47,6 +47,7 @@ TEMPLATE_EXPR_RE = re.compile(r"\$\{[^{}]*\}")
 SPEAKING_ADMIN_UI_FILES = (
     "app/ui/admin-speaking-topics.tsx",
     "app/ui/admin-speaking-notifications.tsx",
+    "app/ui/admin-speaking-videos.tsx",
     "app/ui/admin-speaking-users.tsx",
     "app/ui/speaking-live-lessons.tsx",
     "app/ui/speaking-live-management.tsx",

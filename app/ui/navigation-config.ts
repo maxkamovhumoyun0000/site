@@ -74,7 +74,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   limited_admin: ["home", "chats", "users", "groups", "payments", "attendance", "profile"],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
-  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-users", "speaking-notifications", "profile"],
+  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-videos", "speaking-users", "speaking-notifications", "profile"],
   developer: [
     "home",
     "developer-server",
@@ -148,6 +148,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "speaking-learning-paths": "Speaking Learning Path testlari",
   "speaking-live": "Live boshqaruvi",
   "speaking-schedule": "Live darslar jadvali",
+  "speaking-videos": "Video darslar",
   "speaking-notifications": "Speaking App Notification",
   videos: "Video Darslar",
   books: "Kutubxona",

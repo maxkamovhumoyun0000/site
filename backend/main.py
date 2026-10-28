@@ -53,6 +53,7 @@ from pydantic import BaseModel, Field
 import push_notifications
 from backend.community_safety import SafetyStore, validate_public_text
 from backend.rate_limiting import consume_rate_limit
+from backend import media_hls as _media_hls
 from logging_config import safe_error_text
 from backend.system_metrics import build_system_advice, collect_system_metrics, find_latest_pressure_event
 import userbot_manager
@@ -1100,7 +1101,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -8679,6 +8680,10 @@ _SPEAKING_ADMIN_WORKSPACE_PREFIXES = (
     # Speaking Learning Path staff namespace. Student routes live under
     # /speaking-lp/student/ and are intentionally not part of this allow-list.
     "/speaking-lp/staff/",
+    # Previewing uploaded lesson videos and thumbnails in the workspace.
+    "/media/stream/",
+    "/media/hls/",
+    "/media/public/",
 )
 
 _NOTIFICATION_READ_PATH_RE = re.compile(r"^/notifications/[^/]+/read$")
@@ -15592,6 +15597,10 @@ def _media_stream_signature(asset_id: int, user_id: int, exp_ts: int) -> str:
 def _issue_media_stream_token(asset_id: int, user_id: int | None = None, ttl_seconds: int | None = None) -> str:
     lifetime = max(30, int(ttl_seconds or MEDIA_STREAM_TOKEN_TTL_SECONDS))
     exp_ts = int(_now_utc().timestamp()) + lifetime
+    if lifetime >= 3600:
+        # Round up to the hour: the same viewer gets the same URL for an hour,
+        # so the player/OS HTTP cache can reuse already downloaded bytes.
+        exp_ts = ((exp_ts // 3600) + 1) * 3600
     uid = max(0, int(user_id or 0))
     sig = _media_stream_signature(int(asset_id), uid, exp_ts)
     return f"{exp_ts}.{uid}.{sig}"
@@ -15880,6 +15889,7 @@ def _serialize_video_row(row: dict, progress_row: dict | None = None, viewer_use
         "level": str(row.get("level") or "").strip(),
         "thumbnail_url": _normalize_image_asset_url(str(row.get("thumbnail_url") or "").strip() or None),
         "video_url": protected_video_url or video_url,
+        "hls_url": _media_hls.build_hls_url(video_asset_id, viewer_user_id) if video_asset_id > 0 else None,
         "video_asset_id": video_asset_id or None,
         "duration": max(0, int(row.get("duration") or 0)),
         "is_published": int(row.get("is_published") or 0) == 1,
@@ -41536,6 +41546,7 @@ async def result_media_file(filename: str):
 @app.post("/admin/upload/media")
 @app.post("/teacher/upload/media")
 @app.post("/support/upload/media")
+@app.post("/staff/speaking/upload/media")
 async def admin_upload_media(
     file: UploadFile = File(...),
     asset_type: str = Form(default="file"),
@@ -41544,7 +41555,7 @@ async def admin_upload_media(
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
-    role = _require_role(user, {"admin", "teacher", "support"})
+    role = _require_role(user, {"admin", "teacher", "support", "speaking_admin"})
     ensure_media_assets_schema()
 
     normalized_type = str(asset_type or "").strip().lower()
@@ -41552,6 +41563,13 @@ async def admin_upload_media(
         normalized_type = "file"
     if normalized_type not in {"video", "book", "pdf", "file"}:
         normalized_type = "file"
+    if role == "speaking_admin":
+        # The Speaking workspace uploads its own lesson videos and their
+        # thumbnails only; it cannot bind media to catalogue videos or books.
+        if normalized_type not in {"video", "file"}:
+            raise HTTPException(status_code=403, detail="Speaking admin can upload videos and images only")
+        target = None
+        entity_id = None
     if role in {"teacher", "support"}:
         actor_id = int(user.get("id") or 0)
         can_video = _safe_call(lambda: get_video_upload_permission(actor_id), False)
@@ -41611,6 +41629,8 @@ async def admin_upload_media(
         raise HTTPException(status_code=500, detail="Media faylni saqlab bo'lmadi. Qayta urinib ko'ring.")
 
     asset_id = int(asset.get("id") or 0)
+    if asset_id > 0 and normalized_type == "video":
+        _media_hls.schedule_transcode(asset_id)
     target_normalized = str(target or "").strip().lower()
     if asset_id > 0 and target_normalized in {"video", "book"} and int(entity_id or 0) > 0:
         conn = get_conn()
@@ -41728,16 +41748,35 @@ async def media_stream_asset(
 
     # Videos require HTTP Range support for browser seeking/scrubbing.
     if asset_type == "video" or media_type.startswith("video/"):
-        file_size = file_path.stat().st_size
+        _stat = file_path.stat()
+        file_size = _stat.st_size
+        _etag = f'"{int(asset_id)}-{file_size}-{int(_stat.st_mtime)}"'
+        _validators = {
+            "ETag": _etag,
+            "Last-Modified": formatdate(_stat.st_mtime, usegmt=True),
+        }
         range_header = request.headers.get("range", "").strip()
+        _if_range = str(request.headers.get("if-range") or "").strip()
+        if _if_range and _if_range != _etag:
+            # The client holds bytes of a different file version: send it whole.
+            range_header = ""
         if range_header:
-            _rm = re.match(r"bytes=(\d+)-(\d*)", range_header)
-            if _rm:
-                _start = int(_rm.group(1))
-                _end = int(_rm.group(2)) if _rm.group(2) else file_size - 1
+            _rm = re.match(r"bytes=(\d*)-(\d*)$", range_header.split(",", 1)[0].strip())
+            if _rm and (_rm.group(1) or _rm.group(2)):
+                if _rm.group(1):
+                    _start = int(_rm.group(1))
+                    _end = int(_rm.group(2)) if _rm.group(2) else file_size - 1
+                else:
+                    # Suffix range "bytes=-N": the last N bytes (MP4 index lookups).
+                    _start = max(0, file_size - int(_rm.group(2)))
+                    _end = file_size - 1
                 _end = min(_end, file_size - 1)
                 if _start > _end or _start >= file_size:
-                    raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+                    raise HTTPException(
+                        status_code=416,
+                        detail="Range Not Satisfiable",
+                        headers={"Content-Range": f"bytes */{file_size}"},
+                    )
                 _chunk = _end - _start + 1
 
                 def _iter_chunk(path: Path, s: int, length: int):
@@ -41761,8 +41800,9 @@ async def media_stream_asset(
                         "Content-Range": f"bytes {_start}-{_end}/{file_size}",
                         "Accept-Ranges": "bytes",
                         "Content-Length": str(_chunk),
-                        "Cache-Control": "private, max-age=3600",
+                        "Cache-Control": "private, max-age=86400",
                         "Content-Disposition": "inline",
+                        **_validators,
                     },
                 )
         # Full video response — advertise Range support
@@ -41773,7 +41813,8 @@ async def media_stream_asset(
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
-                "Cache-Control": "private, max-age=3600",
+                "Cache-Control": "private, max-age=86400",
+                **_validators,
             },
         )
 
@@ -60898,6 +60939,11 @@ from backend.speaking_live_recordings import router as speaking_live_recordings_
 app.include_router(speaking_live_recordings_router)
 from backend.speaking_chats import router as speaking_chats_router
 app.include_router(speaking_chats_router)
+from backend.speaking_answers import router as speaking_answers_router
+app.include_router(speaking_answers_router)
+from backend.speaking_videos import router as speaking_videos_router
+app.include_router(speaking_videos_router)
+app.include_router(_media_hls.router)
 
 # Additive personal-learning routes.  The module receives the established
 # authentication/role helpers instead of reimplementing session policy.
