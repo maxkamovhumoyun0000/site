@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -651,6 +652,16 @@ def build_progress(rows: list[dict[str, Any]], learning_rows: list[dict[str, Any
         })
     question_changes.sort(key=lambda item: abs(item["change"]), reverse=True)
 
+    def part_entry(part: int, values: list[float]) -> dict[str, Any]:
+        size = max(1, min(5, len(values) // 2))
+        first_avg = _avg(values[:size]) if len(values) >= 2 else None
+        recent_avg = _avg(values[-size:]) if len(values) >= 2 else None
+        return {
+            "part": part, "answers": len(values), "average_score": _avg(values),
+            "first_average": first_avg, "recent_average": recent_avg,
+            "change": round(recent_avg - first_avg, 2) if first_avg is not None and recent_avg is not None else None,
+        }
+
     return {
         "summary": {
             "total_answers": len(rows),
@@ -666,6 +677,7 @@ def build_progress(rows: list[dict[str, Any]], learning_rows: list[dict[str, Any
             "week_change": round(_avg(recent_week) - _avg(previous_week), 2) if recent_week and previous_week else None,
             "streak_days": streak,
             "active_days_30": len([d for d in active_days if (local_now.date() - d).days < 30]),
+            "practice_days": len(active_days),
             "learning_attempts": len(learning_rows),
         },
         "weekly": [
@@ -696,9 +708,165 @@ def build_progress(rows: list[dict[str, Any]], learning_rows: list[dict[str, Any
             {"key": key, "average": _avg(criteria_recent[key]), "previous_average": _avg(criteria_previous[key])}
             for key in CRITERIA
         ],
-        "by_part": [{"part": part, "answers": len(values), "average_score": _avg(values)} for part, values in by_part.items()],
+        "by_part": [part_entry(part, values) for part, values in by_part.items()],
+        "band_estimate": band_estimate_series(rows),
         "question_changes": question_changes[:20],
     }
+
+
+def band_estimate_series(rows: list[dict[str, Any]], *, window: int = 5, limit: int = 30) -> list[dict[str, Any]]:
+    """Estimated band at the end of every practice day: the rounded average of
+    the last ``window`` answers up to that day (rows oldest first)."""
+    by_day: dict[Any, int] = {}
+    ordered = [row for row in rows if _as_utc(row.get("created_at"))]
+    for index, row in enumerate(ordered):
+        by_day[_as_utc(row["created_at"]).astimezone(TASHKENT).date()] = index
+    series = []
+    for day, last_index in sorted(by_day.items()):
+        recent = [float(r.get("score") or 0) for r in ordered[max(0, last_index - window + 1): last_index + 1]]
+        series.append({
+            "date": day.isoformat(),
+            "estimate": round_half(sum(recent) / len(recent)),
+            "answers": last_index + 1,
+        })
+    return series[-limit:]
+
+
+def _topic_key(row: dict[str, Any], titles: dict[str, int]) -> tuple[str, int | None, str]:
+    title = str(row.get("topic_title") or "").strip()
+    topic_id = row.get("topic_id")
+    if topic_id is None and title:
+        topic_id = titles.get(title.casefold())
+    if topic_id is not None:
+        return f"id:{int(topic_id)}", int(topic_id), title
+    return f"title:{title.casefold()}", None, title
+
+
+def build_topic_insights(rows: list[dict[str, Any]], bank_topics: list[dict[str, Any]], *, subject: str,
+                         now: datetime, user_id: int = 0) -> dict[str, Any]:
+    """Most practised, weakest and weak topics with reasons, plus one
+    re-practice recommendation.
+
+    Weak topic signals: a low AI band, slow answers with many pauses (low
+    words per minute or a low fluency score), many grammar errors and topics
+    the learner has practised little or not at all.
+    """
+    scale_low = 5.0
+    slow_wpm = 90.0 if subject == "english" else 70.0
+    bank_by_id = {int(t["id"]): t for t in bank_topics if t.get("id") is not None}
+    titles = {str(t.get("title") or "").strip().casefold(): int(t["id"]) for t in bank_topics if t.get("title")}
+    topics: dict[str, dict[str, Any]] = {}
+    all_scores: list[float] = []
+    all_criteria: dict[str, list[float]] = {key: [] for key in CRITERIA}
+    for row in rows:
+        key, topic_id, title = _topic_key(row, titles)
+        if not title and topic_id in bank_by_id:
+            title = str(bank_by_id[topic_id].get("title") or "")
+        if not title:
+            continue
+        entry = topics.setdefault(key, {
+            "topic_id": topic_id, "title": title,
+            "part": row.get("part") or (bank_by_id.get(topic_id) or {}).get("part"),
+            "scores": [], "criteria": {k: [] for k in CRITERIA}, "wpm": [], "grammar_errors": [],
+            "seconds": 0.0, "last": None,
+        })
+        score = float(row.get("score") or 0)
+        entry["scores"].append(score)
+        all_scores.append(score)
+        try:
+            crit = json.loads(row.get("criteria_json") or "{}")
+        except ValueError:
+            crit = {}
+        for k in CRITERIA:
+            if crit.get(k) is not None:
+                entry["criteria"][k].append(float(crit[k]))
+                all_criteria[k].append(float(crit[k]))
+        duration = float(row.get("duration_seconds") or 0)
+        entry["seconds"] += duration
+        if duration >= 10:
+            entry["wpm"].append(int(row.get("word_count") or 0) * 60 / duration)
+        if row.get("grammar_errors") is not None:
+            entry["grammar_errors"].append(int(row.get("grammar_errors") or 0))
+        created = _as_utc(row.get("created_at"))
+        if created and (entry["last"] is None or created > entry["last"]):
+            entry["last"] = created
+
+    overall = _avg(all_scores)
+    overall_crit = {k: _avg(v) for k, v in all_criteria.items()}
+    items = []
+    for entry in topics.values():
+        avg = _avg(entry["scores"])
+        crit = {k: _avg(v) for k, v in entry["criteria"].items()}
+        wpm = round(sum(entry["wpm"]) / len(entry["wpm"])) if entry["wpm"] else None
+        errors = round(sum(entry["grammar_errors"]) / len(entry["grammar_errors"]), 1) if entry["grammar_errors"] else None
+        reasons: list[str] = []
+        severity = 0.0
+        if avg is not None and ((overall is not None and len(all_scores) >= 5 and avg <= overall - 0.5) or avg < scale_low):
+            reasons.append("low_band")
+            severity += max(0.5, (overall or avg) - avg + (scale_low - avg if avg < scale_low else 0))
+        fluency = crit.get("fluency")
+        if (wpm is not None and wpm < slow_wpm) or (
+            fluency is not None and overall_crit.get("fluency") is not None and fluency <= overall_crit["fluency"] - 0.5
+        ):
+            reasons.append("pauses")
+            severity += 0.75
+        grammar = crit.get("grammar")
+        if (errors is not None and errors >= 2.0) or (
+            grammar is not None and overall_crit.get("grammar") is not None and grammar <= overall_crit["grammar"] - 0.5
+        ):
+            reasons.append("grammar")
+            severity += 0.75
+        last = entry["last"]
+        if len(entry["scores"]) == 1 and last is not None and (now - last).days >= 14:
+            reasons.append("low_practice")
+            severity += 0.25
+        weakest = min((k for k in CRITERIA if crit.get(k) is not None), key=lambda k: crit[k], default=None)
+        items.append({
+            "topic_id": entry["topic_id"], "title": entry["title"][:160], "part": entry["part"],
+            "answers": len(entry["scores"]), "average_score": avg, "best_score": max(entry["scores"]),
+            "minutes": round(entry["seconds"] / 60, 1), "words_per_minute": wpm,
+            "grammar_errors_per_answer": errors, "criteria": crit, "weakest_criterion": weakest,
+            "last_practiced": last.isoformat() if last else None,
+            "reasons": reasons, "severity": round(severity, 2),
+        })
+
+    most = sorted(items, key=lambda i: (-i["answers"], -(i["average_score"] or 0)))[:6]
+    weakest_topics = sorted(
+        [i for i in items if i["average_score"] is not None],
+        key=lambda i: (i["average_score"], -i["answers"]),
+    )[:6]
+    weak = sorted([i for i in items if i["reasons"]], key=lambda i: -i["severity"])[:6]
+
+    # Topics in the bank the learner has not practised yet (stable per day).
+    practised_ids = {i["topic_id"] for i in items if i["topic_id"] is not None}
+    unpractised = [t for t in bank_topics if t.get("id") is not None and int(t["id"]) not in practised_ids]
+    rng = random.Random(f"{user_id}:{subject}:{now.astimezone(TASHKENT).date().isoformat()}")
+    rng.shuffle(unpractised)
+    for topic in unpractised[: max(0, min(3, 8 - len(weak)))]:
+        weak.append({
+            "topic_id": int(topic["id"]), "title": str(topic.get("title") or "")[:160], "part": topic.get("part"),
+            "answers": 0, "average_score": None, "best_score": None, "minutes": 0.0, "words_per_minute": None,
+            "grammar_errors_per_answer": None, "criteria": {}, "weakest_criterion": None, "last_practiced": None,
+            "reasons": ["low_practice"], "severity": 0.1,
+        })
+
+    recommendation = None
+    for item in weak:
+        if item["topic_id"] is None:
+            continue
+        reason = item["reasons"][0]
+        criterion = item["weakest_criterion"]
+        if reason == "pauses":
+            criterion = "fluency"
+        elif reason == "grammar":
+            criterion = "grammar"
+        recommendation = {
+            "topic_id": item["topic_id"], "title": item["title"], "part": item["part"],
+            "reason": reason, "criterion": criterion, "minutes": 5,
+            "average_score": item["average_score"],
+        }
+        break
+    return {"most_practiced": most, "weakest": weakest_topics, "weak": weak, "recommendation": recommendation}
 
 
 def _exam_progress(user_id: int, subject_key: str) -> dict[str, Any]:
@@ -756,15 +924,38 @@ async def speaking_progress(
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            """SELECT score, part, question_ref, prompt, topic_title, criteria_json, duration_seconds, created_at
-               FROM speaking_answer_analyses
-               WHERE user_id=%s AND subject=%s
-               ORDER BY created_at DESC LIMIT 3000""",
-            (user_id, subject_key),
+        base_columns = (
+            "a.score, a.part, a.question_ref, a.prompt, a.topic_title, a.criteria_json, a.duration_seconds, "
+            "a.word_count, a.created_at, q.topic_id"
         )
+        grammar_column = (
+            "CASE WHEN jsonb_typeof(a.result_json::jsonb -> 'grammar_errors') = 'array' "
+            "THEN jsonb_array_length(a.result_json::jsonb -> 'grammar_errors') END AS grammar_errors"
+        )
+        query = (
+            "SELECT {columns} FROM speaking_answer_analyses a "
+            "LEFT JOIN speaking_questions q ON q.id = a.question_id "
+            "WHERE a.user_id=%s AND a.subject=%s ORDER BY a.created_at DESC LIMIT 3000"
+        )
+        try:
+            cur.execute(query.format(columns=f"{base_columns}, {grammar_column}"), (user_id, subject_key))
+        except Exception:
+            # A malformed stored result must not hide the whole Progress page.
+            conn.rollback()
+            cur.execute(query.format(columns=base_columns), (user_id, subject_key))
         rows = [dict(row) for row in cur.fetchall() or []]
         rows.reverse()
+        bank_topics: list[dict[str, Any]] = []
+        try:
+            cur.execute(
+                """SELECT t.id, t.title, t.part FROM speaking_topics t
+                   WHERE LOWER(COALESCE(t.subject, 'english'))=%s
+                     AND EXISTS (SELECT 1 FROM speaking_questions q WHERE q.topic_id=t.id AND COALESCE(q.question_text,'') <> '')""",
+                (subject_key,),
+            )
+            bank_topics = [dict(row) for row in cur.fetchall() or []]
+        except Exception:
+            conn.rollback()
         learning_rows: list[dict[str, Any]] = []
         try:
             cur.execute(
@@ -783,6 +974,7 @@ async def speaking_progress(
         cur.close()
         conn.close()
     payload = build_progress(rows, learning_rows, weeks=weeks, now=now)
+    payload["topics"] = build_topic_insights(rows, bank_topics, subject=subject_key, now=now, user_id=user_id)
     payload.update(_exam_progress(user_id, subject_key))
     payload["subject"] = subject_key
     payload["scale"] = "ielts" if subject_key == "english" else "ten"

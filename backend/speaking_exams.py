@@ -246,14 +246,61 @@ def _russian_plan(bank: dict[int, list[dict[str, Any]]], rng: random.Random, *, 
     return [_step(row, part=part, index=i, subject="russian", practice=practice) for i, (part, row) in enumerate(rows_out)]
 
 
+def _related_part3(bank: dict[int, list[dict[str, Any]]], cue: dict[str, Any], count: int,
+                   rng: random.Random) -> list[dict[str, Any]]:
+    """Part 3 questions from the Part 3 topics closest to a cue card."""
+    cue_words = _words(f"{cue.get('topic_title')} {cue.get('question_text')} {cue.get('cue_card_bullet_points') or ''}")
+    topic_ids = [tid for tid, rows in bank.items() if int(rows[0].get("part") or 0) == 3]
+    rng.shuffle(topic_ids)
+
+    def overlap(tid: int) -> int:
+        text = " ".join([str(bank[tid][0].get("topic_title") or "")] + [str(r.get("question_text") or "") for r in bank[tid]])
+        return len(cue_words & _words(text))
+
+    topic_ids.sort(key=overlap, reverse=True)
+    pool: list[dict[str, Any]] = []
+    for tid in topic_ids:
+        pool.extend(bank[tid])
+        if len(pool) >= count:
+            break
+    return pool[:count]
+
+
+def topic_practice_rows(bank: dict[int, list[dict[str, Any]]], topic_id: int, subject: str,
+                        rng: random.Random) -> list[tuple[int, dict[str, Any]]]:
+    """About five minutes of speaking on one topic: (part, question) pairs.
+
+    English Part 1: 7 questions x 30 s.  Part 2: the cue card (1 min + 2 min)
+    and 2 related Part 3 questions.  Part 3: 5 questions x 60 s.  Russian:
+    5 discussion questions x 60 s.
+    """
+    rows = list(bank.get(int(topic_id)) or [])
+    if not rows:
+        return []
+    rng.shuffle(rows)
+    if subject != "english":
+        return [(3, row) for row in rows[:5]]
+    part = int(rows[0].get("part") or 1)
+    if part == 2:
+        cue = rows[0]
+        return [(2, cue)] + [(3, row) for row in _related_part3(bank, cue, 2, rng)]
+    if part == 3:
+        return [(3, row) for row in rows[:5]]
+    return [(1, row) for row in rows[:7]]
+
+
 def _challenge_seed(user_id: int, subject: str, day: date) -> int:
     digest = hashlib.sha256(f"{user_id}:{subject}:{day.isoformat()}".encode()).hexdigest()
     return int(digest[:12], 16)
 
 
-def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: bool) -> list[dict[str, Any]]:
+def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: bool,
+                topic_id: int | None = None) -> list[dict[str, Any]]:
     bank = _load_bank(subject)
-    if kind == "challenge":
+    if kind == "topic":
+        rows = topic_practice_rows(bank, int(topic_id or 0), subject, random.Random())
+        plan = [_step(row, part=part, index=i, subject=subject, practice=practice) for i, (part, row) in enumerate(rows)]
+    elif kind == "challenge":
         rng = random.Random(_challenge_seed(user_id, subject, _today()))
         if subject == "english":
             plan = _english_plan(bank, "full", rng, practice=practice, part1_count=1, part3_count=1)
@@ -282,9 +329,11 @@ def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: boo
 
 class ExamStartRequest(BaseModel):
     subject: str = Field(default="english", max_length=32)
-    kind: str = Field(default="mock", pattern="^(mock|challenge)$")
+    kind: str = Field(default="mock", pattern="^(mock|challenge|topic)$")
     mode: str = Field(default="exam", pattern="^(exam|practice)$")
     parts: str = Field(default="full", pattern="^(full|part1|part2|part3|mini)$")
+    # Required for kind "topic": the topic to practise again.
+    topic_id: int | None = Field(default=None, ge=1)
 
 
 class ExamStepResult(BaseModel):
@@ -315,7 +364,9 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
         parts = payload.parts
     else:
         parts = "full"
-    steps = _build_plan(user_id, subject, payload.kind, parts, payload.mode == "practice")
+    if payload.kind == "topic" and not payload.topic_id:
+        raise HTTPException(status_code=422, detail="topic_id is required for topic practice")
+    steps = _build_plan(user_id, subject, payload.kind, parts, payload.mode == "practice", payload.topic_id)
     conn = get_conn()
     cur = conn.cursor()
     try:
