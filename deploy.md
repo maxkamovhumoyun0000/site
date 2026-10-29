@@ -82,6 +82,21 @@ tekshiring, konfiguratsiyaning ruxsatlari saqlangan zaxira nusxasini oling,
 YAML’ni tekshirib, faqat LiveKit servisini qayta ishga tushiring. Faol dars
 bo‘lsa LiveKit restart qilmang.
 
+## O'chirilgan botlar (Teacher va Support)
+2026-10-29 dan boshlab **Teacher bot** (`diamond-site-teacher-bot`) va
+**Support bot** (`diamond-site-support-bot`) serverda o'chirilgan:
+`systemctl disable --now` bilan to'xtatilgan va reboot'dan keyin ham
+ishga tushmaydi. Ularning fayllari va servis unitlari o'chirilmagan.
+- Deploy, relaunch va smoke testlarda bu ikki botni **restart qilmang va
+  ishga tushirmang**. `scripts/activate_production_release.sh` faqat
+  backend, admin bot va student botni qayta ishga tushiradi.
+- Servis statusida ular `inactive`/`disabled` bo'lishi normal holat.
+- Qayta yoqish faqat egasining aniq ko'rsatmasi bilan:
+  `systemctl enable --now diamond-site-teacher-bot diamond-site-support-bot`,
+  so'ng ularni activation skriptidagi `BACKEND_SERVICES` ro'yxatiga va
+  ushbu runbookdagi buyruqlarga qaytaring.
+- Python compile tekshiruvida `teacher_bot.py` qoladi (kod hali repoda).
+
 ## Majburiy: Deploydan Oldin Database Backup
 
 Saytda kod, dizayn yoki API bilan bog'liq istalgan o'zgarishni productionga
@@ -251,7 +266,7 @@ upload va backup fayllariga tegilmaydi.
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'systemctl restart diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot'
+  'systemctl restart diamond-site-backend diamond-site-admin-bot diamond-site-student-bot'
 ```
 
 ## Production Log Himoyasi
@@ -291,14 +306,14 @@ Servis status:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'systemctl --no-pager --quiet is-active diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot && echo services:active'
+  'systemctl --no-pager --quiet is-active diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot && echo services:active'
 ```
 
 Restart loop tekshiruvi:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-support-bot diamond-site-teacher-bot -p ActiveState -p SubState -p NRestarts --no-pager'
+  'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot -p ActiveState -p SubState -p NRestarts --no-pager'
 ```
 
 ## Push Notifications (FCM) — Bir Martalik Sozlash
@@ -373,6 +388,6 @@ git checkout -- .
 3. Database backup olindi va fayl hajmi tekshirildi.
 4. Python compile OK.
 5. Frontend to'xtatildi, faqat `.next` cache tozalandi, `npm run build` OK bo'lgach frontend ishga tushirildi.
-6. Qolgan servislar restart qilindi.
+6. Qolgan servislar restart qilindi (Teacher va Support botlar bundan mustasno — ular o'chirilgan).
 7. Smoke test `200`.
 8. `NRestarts=0`, servislar `active/running`.
