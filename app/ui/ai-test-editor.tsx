@@ -368,6 +368,13 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
         const label = `${n}-mashqning ${subIndex + 1}-savoli`;
         const optionCount = (sub.options || []).filter((x) => String(x).trim()).length;
         if (["completion", "short"].includes(type) && !String(sub.answer || "").trim()) return `${label} uchun to'g'ri javob kerak.`;
+        if (["completion", "short"].includes(type)) {
+          const limit = Number(sub.word_limit || 0);
+          const keys = [sub.answer, ...(sub.accepted_answers || [])].map((x) => String(x || "").trim()).filter(Boolean);
+          const tooLong = keys.find((key) => limit > 0 && key.split(/\s+/).length > limit);
+          if (tooLong) return `${label}: "${tooLong}" ${limit} so'zdan uzun. So'z limitini oshiring yoki javobni qisqartiring.`;
+        }
+        if (type === "multi" && (sub.options || []).some((x) => String(x).includes("\n"))) return `${label} variantlari bir qatorda bo'lishi kerak.`;
         if (["mcq", "map", "matching"].includes(type)) {
           if (optionCount < 2) return `${label} uchun kamida 2 ta variant kerak.`;
           if (!String(sub.answer || "").trim() && sub.correct_index === undefined) return `${label} uchun to'g'ri variant belgilanmagan.`;

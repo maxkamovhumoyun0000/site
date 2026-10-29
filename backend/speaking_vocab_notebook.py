@@ -373,12 +373,23 @@ def review_due_at(row: dict[str, Any]) -> datetime | None:
     return created + timedelta(days=REVIEW_DAYS[0])
 
 
+# Learners are in Uzbekistan (UTC+5, no daylight saving time).
+TASHKENT = timezone(timedelta(hours=5))
+
+
+def local_day_start(now: datetime, days: int) -> datetime:
+    """Start (00:00 Tashkent) of the day ``days`` after ``now``'s local day, in
+    UTC, so a word due "in 1 day" is in the next morning's queue."""
+    local_day = now.astimezone(TASHKENT).date() + timedelta(days=days)
+    return datetime(local_day.year, local_day.month, local_day.day, tzinfo=TASHKENT).astimezone(timezone.utc)
+
+
 def next_review_after(stage: int, now: datetime) -> datetime | None:
     """Next due time after reaching ``stage`` successful reviews."""
     if stage >= len(REVIEW_DAYS):
         return None
     gap = REVIEW_DAYS[stage] - (REVIEW_DAYS[stage - 1] if stage > 0 else 0)
-    return now + timedelta(days=max(1, gap))
+    return local_day_start(now, max(1, gap))
 
 
 def _review_state(row: dict[str, Any]) -> dict[str, Any]:
@@ -920,15 +931,23 @@ async def review_notebook_item(
         verdict = {"ok": False, "feedback": "", "corrected": item.get("example") or ""}
     now = datetime.now(timezone.utc)
     stage = int(item.get("review_stage") or 0)
-    if verdict["ok"]:
+    due = review_due_at(item)
+    # A review before the word is due is practice: feedback, but the
+    # 1 / 3 / 7 / 14 day schedule only moves on due reviews.
+    is_due = due is not None and due <= now
+    if verdict["ok"] and is_due:
         new_stage = min(len(REVIEW_DAYS), stage + 1)
         next_at = next_review_after(new_stage, now)
         status = "learned" if new_stage >= len(REVIEW_DAYS) else (
             "saved" if item.get("status") == "difficult" else item.get("status") or "saved"
         )
+    elif verdict["ok"]:
+        new_stage = stage
+        next_at = item.get("next_review_at") or due
+        status = item.get("status") or "saved"
     else:
         new_stage = stage
-        next_at = now + timedelta(days=1)
+        next_at = local_day_start(now, 1)
         status = "difficult"
     last = {
         "ok": bool(verdict["ok"]),
@@ -937,6 +956,7 @@ async def review_notebook_item(
         "feedback": verdict.get("feedback") or "",
         "corrected": verdict.get("corrected") or "",
         "forgot": bool(forgot),
+        "practice": bool(verdict["ok"] and not is_due),
         "at": now.isoformat(),
     }
     conn = get_conn()
@@ -945,11 +965,18 @@ async def review_notebook_item(
         cur.execute(
             """UPDATE speaking_vocab_notebook SET review_stage=%s, next_review_at=%s, last_reviewed_at=%s,
                  review_count=COALESCE(review_count, 0)+1, last_review_json=%s, status=%s, updated_at=NOW()
-               WHERE id=%s AND user_id=%s RETURNING *""",
-            (new_stage, next_at, now, json.dumps(last, ensure_ascii=False), status, int(item_id), user_id),
+               WHERE id=%s AND user_id=%s AND COALESCE(review_stage, 0)=%s RETURNING *""",
+            (new_stage, next_at, now, json.dumps(last, ensure_ascii=False), status, int(item_id), user_id, stage),
         )
-        row = dict(cur.fetchone())
+        updated = cur.fetchone()
         conn.commit()
+        if updated is None:
+            # Deleted meanwhile, or another review of the word finished first.
+            cur.execute("SELECT * FROM speaking_vocab_notebook WHERE id=%s AND user_id=%s", (int(item_id), user_id))
+            updated = cur.fetchone()
+            if updated is None:
+                raise HTTPException(status_code=404, detail="Word not found")
+        row = dict(updated)
     finally:
         cur.close()
         conn.close()

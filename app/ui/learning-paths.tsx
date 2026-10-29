@@ -2070,12 +2070,17 @@ function LessonPlayerModal({
     if (playLimit > 0) {
       // A limited recording plays through once per allowed play.
       if (audioPlaying || playsLeft <= 0) return;
-      setAudioPlays((count) => count + 1);
     }
     audioRef.current.playbackRate = rate;
     audioRef.current.currentTime = 0;
     setAudioPlaying(true);
-    audioRef.current.play().catch(() => setAudioPlaying(false));
+    audioRef.current
+      .play()
+      // A play only counts once the recording really started.
+      .then(() => {
+        if (playLimit > 0) setAudioPlays((count) => count + 1);
+      })
+      .catch(() => setAudioPlaying(false));
   };
 
   const hasCurrentOptions = Array.isArray(question?.options) && question.options.length >= 2;
@@ -2235,7 +2240,7 @@ function LessonPlayerModal({
         const multiExpected = Array.isArray(s.answers)
           ? s.answers.map((x: any) => String(x).trim().toLowerCase()).sort().join(",")
           : "";
-        const multiGiven = given.split(/[,;]+/).map((x) => x.trim()).filter(Boolean).sort().join(",");
+        const multiGiven = splitMultiAnswer(given).sort().join(",");
         const ok = s.type === "multi"
           ? Boolean(multiExpected) && multiExpected === multiGiven
           : expectedAnswers.length > 0
@@ -3558,6 +3563,8 @@ function FinalExamPlayerModal({
   const loadExam = useCallback(async () => {
     setLoading(true);
     setError("");
+    // A retake starts with every recording playable again.
+    setAudioPlayCounts({});
     try {
       const data = await apiFetch(`/student/learning-tracks/${track.id}/final-exam`);
       const qs = Array.isArray(data?.questions) ? data.questions : [];
@@ -3719,12 +3726,17 @@ function FinalExamPlayerModal({
     if (!audioRef.current || !currentQuestion?.audio_url) return;
     if (examPlayLimit > 0) {
       if (audioPlaying || examPlaysLeft <= 0) return;
-      setAudioPlayCounts((prev) => ({ ...prev, [examAudioKey]: (prev[examAudioKey] || 0) + 1 }));
     }
     audioRef.current.playbackRate = rate;
     audioRef.current.currentTime = 0;
     setAudioPlaying(true);
-    audioRef.current.play().catch(() => setAudioPlaying(false));
+    audioRef.current
+      .play()
+      // A play only counts once the recording really started.
+      .then(() => {
+        if (examPlayLimit > 0) setAudioPlayCounts((prev) => ({ ...prev, [examAudioKey]: (prev[examAudioKey] || 0) + 1 }));
+      })
+      .catch(() => setAudioPlaying(false));
   };
 
   const examHasCurrentOptions = Array.isArray(currentQuestion?.options) && currentQuestion.options.length >= 2;
@@ -3900,6 +3912,13 @@ function FinalExamPlayerModal({
       if (expectedAnswersList.length > 0) {
         correctAnswerStr = expectedAnswersList.join(" | ");
       }
+    } else if (qTestType === "multi_select" || qKind === "multi_select") {
+      const expectedPicks = (Array.isArray(currentQuestion.answers) ? currentQuestion.answers : splitMultiAnswer(String(currentQuestion.correct_answer || "")))
+        .map((x: any) => String(x).trim().toLowerCase())
+        .filter(Boolean)
+        .sort()
+        .join("\n");
+      correct = Boolean(expectedPicks) && expectedPicks === splitMultiAnswer(currentAnsText).map((x) => x.toLowerCase()).sort().join("\n");
     } else if (currentQuestion.test_type === "matching" || matchingPairs.length > 0) {
       correct =
         matchingPairs.length > 0 &&
@@ -5812,6 +5831,13 @@ export function StaffLearningPaths({ apiFetch, scope = "student" }: { apiFetch: 
 }
 
 /** "Choose TWO letters": toggles options, keeps them in option order. */
+/** Picks of a "choose N" answer. Runners join them with a newline so an
+ * option may contain commas; older answers used ", ". */
+function splitMultiAnswer(value: string): string[] {
+  const text = String(value || "");
+  return (text.includes("\n") ? text.split("\n") : text.split(/[,;|]+/)).map((x) => x.trim()).filter(Boolean);
+}
+
 function MultiChoiceButtons({
   options,
   value,
@@ -5825,7 +5851,7 @@ function MultiChoiceButtons({
   disabled: boolean;
   onChange: (next: string) => void;
 }) {
-  const picked = value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const picked = splitMultiAnswer(value).map((x) => x.toLowerCase());
   return (
     <div className="flex flex-wrap gap-2">
       {options.map((opt, optIndex) => {
@@ -5840,7 +5866,7 @@ function MultiChoiceButtons({
               const nextKeys = isChosen
                 ? picked.filter((x) => x !== key)
                 : picked.length >= limit ? picked : [...picked, key];
-              onChange(options.filter((item) => nextKeys.includes(item.trim().toLowerCase())).map((item) => item.trim()).join(", "));
+              onChange(options.filter((item) => nextKeys.includes(item.trim().toLowerCase())).map((item) => item.trim()).join("\n"));
             }}
             className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-xs font-black transition-all active:translate-y-1 active:border-b-2 ${
               isChosen

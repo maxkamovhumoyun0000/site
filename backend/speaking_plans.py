@@ -292,12 +292,12 @@ def days_for_exam(exam_date: date | None, today: date) -> int | None:
     if exam_date is None:
         return None
     gap = (exam_date - today).days
-    if gap <= 0:
+    if gap < 0:
         return None
     fitting = [d for d in DURATIONS if d <= gap]
     # An exam in under a week gets a short plan that ends with a full mock
-    # on the last day before the exam.
-    return max(fitting) if fitting else gap
+    # on the last day before the exam; on exam day it is a one-day warm-up.
+    return max(fitting) if fitting else max(1, gap)
 
 
 def exam_phase(days_left: int | None) -> str:

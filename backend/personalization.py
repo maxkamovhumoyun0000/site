@@ -4579,6 +4579,13 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
                     sub["word_limit"] = max(1, min(10, int(sub["word_limit"])))
                 except (TypeError, ValueError):
                     sub.pop("word_limit", None)
+            if sub.get("word_limit") is not None:
+                # The answer key must itself fit the limit, otherwise the
+                # right answer would be graded wrong.
+                keys = [sub.get("answer"), *(sub.get("accepted_answers") or sub.get("acceptable_answers") or [])]
+                longest = max((len(str(key or "").split()) for key in keys), default=0)
+                if longest > int(sub["word_limit"]):
+                    sub["word_limit"] = min(10, longest)
             if sub.get("accepted_answers") is not None or sub.get("acceptable_answers") is not None:
                 sub["accepted_answers"] = _structured_string_list(
                     sub.get("accepted_answers") if sub.get("accepted_answers") is not None else sub.get("acceptable_answers")
@@ -4755,7 +4762,8 @@ def _learning_exam_questions(raw: dict[str, Any]) -> list[dict[str, Any]]:
                    "multi": "multi_select"}
         shared_notes = str(question.get("passage") or question.get("context") or "")
         for index, sub in enumerate(question.get("sub_questions") or []):
-            sub_kind = str(sub.get("type") or sub.get("kind") or "gap_fill").strip().lower()
+            default_kind = "multiple_choice" if len(_structured_string_list(sub.get("options"))) >= 2 else "gap_fill"
+            sub_kind = str(sub.get("type") or sub.get("kind") or default_kind).strip().lower()
             if sub_kind == "open" and kind in {"listening_set", "ielts_listening"}:
                 sub_kind = "listening_open"
             if sub_kind == "matching" and kind == "ielts_listening":
@@ -4770,6 +4778,9 @@ def _learning_exam_questions(raw: dict[str, Any]) -> list[dict[str, Any]]:
                     "play_limit": question.get("play_limit") or 0,
                     "instruction": question.get("instruction") or "",
                     "question_number": index + 1,
+                    # The exam keeps a section's questions together and in
+                    # order: one recording is played for all of them.
+                    "ielts_section": True,
                 })
             else:
                 shared["passage"] = shared_notes
@@ -5558,7 +5569,10 @@ def _learning_grade_choice_list(given: Any) -> list[str]:
     if isinstance(given, (list, tuple)):
         values = [_learning_grade_text(item).strip() for item in given]
     else:
-        values = [part.strip() for part in re.split(r"[,;|\n]+", _learning_grade_text(given))]
+        text = _learning_grade_text(given)
+        # Runners join picks with a newline so options may contain commas;
+        # older answers used ", ".
+        values = [part.strip() for part in re.split(r"\n+" if "\n" in text else r"[,;|]+", text)]
     seen: list[str] = []
     for value in values:
         if value and value.casefold() not in {item.casefold() for item in seen}:
@@ -5686,6 +5700,11 @@ def _grade_learning_question(question_payload: dict[str, Any], given: Any, *, sa
         return _learning_grade_order(qp, given), 1
     if kind in _LEARNING_GRADE_CHOICE_KINDS and (qp.get("options") or kind in _LEARNING_GRADE_TF_KINDS):
         return _learning_grade_choice(qp, given, kind), 1
+    if qp.get("word_limit") and kind in {"gap_fill", "fill_blank", "listening_gap"}:
+        # IELTS completion items split into the final exam keep their
+        # "NO MORE THAN N WORDS" rule, like inside the lesson.
+        if not _learning_within_word_limit(qp, _learning_grade_text(given)):
+            return 0, 1
     candidates = _learning_grade_candidates(qp, kind)
     if isinstance(given, dict) and isinstance(given.get("answer"), (list, tuple)):
         given = given["answer"]
@@ -6255,10 +6274,16 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
         questions = []
         for idx, l, sub_index, question in _learning_track_exam_items(lesson_rows):
             question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
-            localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
-            if localized_instruction:
-                question["instruction"] = localized_instruction
-                question["task_instruction"] = localized_instruction
+            if question.get("ielts_section"):
+                # "Write NO MORE THAN TWO WORDS" etc. must reach the learner.
+                question["exam_group"] = f"lesson-{l['lesson_id']}"
+                question["exam_group_index"] = sub_index
+                question["task_instruction"] = str(question.get("instruction") or "")
+            else:
+                localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
+                if localized_instruction:
+                    question["instruction"] = localized_instruction
+                    question["task_instruction"] = localized_instruction
             questions.append({
                 **question,
                 "id": len(questions) + 1,
@@ -6277,7 +6302,7 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
                 [(None, question) for question in questions]
             )
         ]
-
+        questions = _keep_exam_groups_together(questions)
         cur.execute("SELECT * FROM learning_track_final_progress WHERE track_id=? AND student_id=?", (track_id, uid))
         fp = cur.fetchone()
         fp_dict = dict(fp) if fp else {}
@@ -6429,6 +6454,28 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
         }
     finally:
         conn.close()
+
+
+def _keep_exam_groups_together(questions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Questions of one IELTS Listening section stay next to each other and
+    in their original order, where the first of them landed after shuffling."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for question in questions:
+        group = str(question.get("exam_group") or "")
+        if group:
+            groups.setdefault(group, []).append(question)
+    if not groups:
+        return questions
+    ordered: list[dict[str, Any]] = []
+    placed: set[str] = set()
+    for question in questions:
+        group = str(question.get("exam_group") or "")
+        if not group:
+            ordered.append(question)
+        elif group not in placed:
+            placed.add(group)
+            ordered.extend(sorted(groups[group], key=lambda item: int(item.get("exam_group_index") or 0)))
+    return ordered
 
 
 def _learning_track_exam_items(lesson_rows: list[dict[str, Any]]):
