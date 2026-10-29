@@ -1101,7 +1101,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-plan-tests", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-plan-tests", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -24848,6 +24848,17 @@ async def student_proctoring_session_complete(
     return {"session_id": int(updated.get("id") or 0), "status": str(updated.get("status") or "aborted")}
 
 
+def _sections_for_user(user: dict, role: str) -> dict[str, list[str]]:
+    """SECTIONS_BY_ROLE plus per-user sections (Speaking feedback reviewers)."""
+    try:
+        from backend.speaking_teacher_feedback import sections_for
+
+        return sections_for(user, role, SECTIONS_BY_ROLE)
+    except Exception:
+        logger.debug("per-user sections failed", exc_info=True)
+        return SECTIONS_BY_ROLE
+
+
 @app.get("/app/state")
 async def app_state(
     authorization: str | None = Header(default=None),
@@ -24885,7 +24896,7 @@ async def app_state(
                 "actual_role": actual_role,
                 "effective_role": effective_role,
                 "state_scope": "full_modular" if full_state else "boot",
-                "sections": SECTIONS_BY_ROLE,
+                "sections": _sections_for_user(user, actual_role),
                 "economy_rules": economy_rules_payload,
                 effective_role: _build_role_boot_payload(user, effective_role, economy_rules_payload),
             }
@@ -24900,7 +24911,7 @@ async def app_state(
         "actual_role": actual_role,
         "effective_role": effective_role,
         "state_scope": "full" if full_state else "boot",
-        "sections": SECTIONS_BY_ROLE,
+        "sections": _sections_for_user(user, actual_role),
         "economy_rules": economy_rules_payload,
     }
 
@@ -60988,6 +60999,8 @@ app.include_router(speaking_exams_router)
 app.include_router(speaking_plans_router)
 from backend.speaking_vocab_notebook import router as speaking_vocab_notebook_router
 app.include_router(speaking_vocab_notebook_router)
+from backend.speaking_teacher_feedback import router as speaking_teacher_feedback_router
+app.include_router(speaking_teacher_feedback_router)
 app.include_router(speaking_videos_router)
 app.include_router(_media_hls.router)
 

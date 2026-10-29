@@ -49,6 +49,7 @@ SPEAKING_ADMIN_UI_FILES = (
     "app/ui/admin-speaking-notifications.tsx",
     "app/ui/admin-speaking-videos.tsx",
     "app/ui/admin-speaking-plan-tests.tsx",
+    "app/ui/speaking-feedback.tsx",
     "app/ui/admin-speaking-users.tsx",
     "app/ui/speaking-live-lessons.tsx",
     "app/ui/speaking-live-management.tsx",

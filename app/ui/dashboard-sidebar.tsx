@@ -58,7 +58,7 @@ export function orderSections(sections: string[]) {
         "videos", "books", "homework", "support", "chats", "notifications", "profile",
       ]
     : sectionSet.has("speaking-users") && sectionSet.has("speaking-topics")
-      ? ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-videos", "speaking-plan-tests", "speaking-users", "speaking-notifications", "profile"]
+      ? ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-videos", "speaking-plan-tests", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"]
     : sectionSet.has("vocabulary-bank")
       ? [
           "home", "videos", "books", "grammar", "vocabulary-bank", "courses",

@@ -47,6 +47,7 @@ import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingVideos } from "./ui/admin-speaking-videos";
 import { AdminSpeakingPlanTests } from "./ui/admin-speaking-plan-tests";
+import { SpeakingFeedback } from "./ui/speaking-feedback";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { SpeakingAdminHome } from "./ui/speaking-live-management";
 import { SpeakingLiveLessons } from "./ui/speaking-live-lessons";
@@ -25155,6 +25156,10 @@ function DashboardShell({
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="O'QITUVCHI" onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="teacher" />;
+    } else if (currentSection === "speaking-feedback") {
+      // Shown only when the Speaking admin assigned this teacher as a reviewer
+      // (the backend adds the section per user); every API call re-checks it.
+      content = <SpeakingFeedback apiFetch={authedApiFetch} role="teacher" />;
     } else {
       content = <TeacherSection section={currentSection} data={roleData} user={user} onApiCall={onAdminCall} onNavigate={handleNavigate} />;
     }
@@ -25167,6 +25172,8 @@ function DashboardShell({
       content = <StudentProfile user={user} data={roleData} onSaveLanguage={onSaveLanguage} onSubmitReview={onSubmitReview} onLogout={onLogout} locale={locale} profileRoleLabel="SUPPORT" onOpenFeedback={() => handleNavigate("chats")} />;
     } else if (currentSection === "voice-rooms") {
       content = <ModeratorVoiceRoom role="support" />;
+    } else if (currentSection === "speaking-feedback") {
+      content = <SpeakingFeedback apiFetch={authedApiFetch} role="support" />;
     } else {
       content = <SupportSection section={currentSection} data={roleData} user={user} onBookingStatus={onBookingStatus} onBookingAttendance={onBookingAttendance} onNavigate={handleNavigate} />;
     }
@@ -25194,6 +25201,8 @@ function DashboardShell({
       content = <StaffLearningPaths apiFetch={speakingLpFetch} scope="speaking" />;
     } else if (currentSection === "speaking-schedule" && activeRole === "speaking_admin") {
       content = <SpeakingLiveLessons apiFetch={authedApiFetch} />;
+    } else if (currentSection === "speaking-feedback" && activeRole === "speaking_admin") {
+      content = <SpeakingFeedback apiFetch={authedApiFetch} role="speaking_admin" />;
     } else {
       content = (
         <AdminSection
