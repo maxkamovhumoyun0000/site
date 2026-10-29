@@ -3322,7 +3322,12 @@ async def add_learning_lesson(module_id: int, payload: LearningLessonRequest, au
         if not row: raise HTTPException(status_code=404,detail="Learning module not found")
         _learning_track_for_manager(int(dict(row)["track_id"]),user)
         if payload.source_kind in {"manual","ai"} and not payload.question_payload: raise HTTPException(status_code=422,detail="Manual or AI lesson needs a question payload")
-        question_payload = _normalize_learning_media_payload(payload.question_payload) if payload.question_payload else None
+        # The same canonical form as the batch route, so every editor (website,
+        # Teachers app) stores questions the runners and the grader agree on.
+        question_payload = (
+            _learning_library_question(_normalize_learning_media_payload(payload.question_payload))
+            if payload.question_payload else None
+        )
         topic_id = _learning_topic_for_module(cur, module_id, payload.topic_id)
         cur.execute("INSERT INTO learning_module_lessons(module_id,topic_id,title,source_kind,source_id,source_version,question_payload_json,duration_seconds,position,required) VALUES(?,?,?,?,?,?,?,?,?,?)",(module_id,topic_id,payload.title,payload.source_kind,payload.source_id,payload.source_version,json.dumps(question_payload,ensure_ascii=False) if question_payload else None,payload.duration_seconds,payload.position,1 if payload.required else 0)); lesson_id = int(cur.lastrowid or 0); conn.commit()
         _archive_learning_path_test(cur, module_id=module_id, topic_id=topic_id, title=payload.title, question=question_payload or {})
@@ -4383,6 +4388,8 @@ def _structured_string_list(raw: Any) -> list[str]:
 
 
 _LEARNING_MEDIA_FIELDS = {"audio_url", "image_url", "video_url", "thumbnail_url", "file_url"}
+# Sub-question types of an IELTS-style set whose key is several options.
+_LEARNING_MULTI_SUB_TYPES = {"multi", "multi_select", "choose_two", "multiple_answers"}
 _LEARNING_MEDIA_HOSTS = {"diamond-education.uz", "www.diamond-education.uz"}
 
 
@@ -4478,14 +4485,14 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             correct = str(raw.get("answer"))
         if not correct and raw.get("sentence"):
             correct = str(raw.get("sentence"))
-    elif kind in {"listening", "dictation", "listening_dictation", "listening_open", "listening_set"}:
+    elif kind in {"listening", "dictation", "listening_dictation", "listening_open", "listening_set", "ielts_listening"}:
         if not correct and raw.get("answer"):
             correct = str(raw.get("answer"))
 
     if not question:
         if kind == "reading_set":
             question = instruction or "Matnni o'qing va savollarga javob bering:"
-        elif kind == "listening_set":
+        elif kind in {"listening_set", "ielts_listening"}:
             question = instruction or "Audioni tinglang va savollarga javob bering:"
         else:
             question = instruction or (str(raw.get("prompt") or "").strip() if str(raw.get("prompt") or "").strip() != passage else "")
@@ -4535,16 +4542,43 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
                 normalized_blanks.append(item)
         res["answers"] = normalized_blanks
         res["blanks"] = normalized_blanks
-    if kind in {"reading_set", "listening_set"}:
+    if kind in {"reading_set", "listening_set", "ielts_listening", "multiple_choice_set"}:
         subs = raw.get("questions") if kind == "reading_set" else raw.get("sub_questions")
         subs = subs or raw.get("sub_questions") or raw.get("questions") or []
         res["sub_questions"] = []
+        if kind == "ielts_listening":
+            # One continuous recording; 0 = unlimited replays, 1 = played once
+            # like the real IELTS test.
+            try:
+                res["play_limit"] = max(0, min(5, int(raw.get("play_limit") or 0)))
+            except (TypeError, ValueError):
+                res["play_limit"] = 0
+            res["section"] = str(raw.get("section") or "").strip()[:80]
         for sub in subs:
             if not isinstance(sub, dict):
                 continue
             sub = dict(sub)
             sub_options = _structured_string_list(sub.get("options"))
             sub["options"] = sub_options
+            sub_type = str(sub.get("type") or sub.get("kind") or "").strip().lower()
+            if sub_type in _LEARNING_MULTI_SUB_TYPES:
+                # "Choose TWO letters": the key is a list; the joined text
+                # keeps older runners able to show it.
+                answers = _structured_string_list(sub.get("answers") if sub.get("answers") is not None else sub.get("answer"))
+                if len(answers) == 1 and "," in answers[0]:
+                    answers = [part.strip() for part in answers[0].split(",") if part.strip()]
+                sub["type"] = "multi"
+                sub["answers"] = answers
+                sub["answer"] = ", ".join(answers)
+                try:
+                    sub["choose"] = max(1, min(len(sub_options) or 1, int(sub.get("choose") or len(answers) or 2)))
+                except (TypeError, ValueError):
+                    sub["choose"] = max(1, len(answers))
+            if sub.get("word_limit") is not None:
+                try:
+                    sub["word_limit"] = max(1, min(10, int(sub["word_limit"])))
+                except (TypeError, ValueError):
+                    sub.pop("word_limit", None)
             if sub.get("accepted_answers") is not None or sub.get("acceptable_answers") is not None:
                 sub["accepted_answers"] = _structured_string_list(
                     sub.get("accepted_answers") if sub.get("accepted_answers") is not None else sub.get("acceptable_answers")
@@ -4709,20 +4743,37 @@ def _learning_exam_questions(raw: dict[str, Any]) -> list[dict[str, Any]]:
     if not question:
         return []
     kind = question["test_type"]
-    if kind in {"reading_set", "listening_set"}:
+    if kind in {"reading_set", "listening_set", "ielts_listening", "multiple_choice_set"}:
         result = []
         aliases = {"mcq": "multiple_choice", "true_false_ng": "true_false",
                    "tf": "true_false", "gap": "gap_fill", "short": "gap_fill",
-                   "order": "word_order", "open": "reading_open"}
-        for sub in question.get("sub_questions") or []:
-            sub_kind = str(sub.get("type") or sub.get("kind") or "gap_fill")
-            if sub_kind == "open" and kind == "listening_set":
+                   "order": "word_order", "open": "reading_open",
+                   # IELTS Listening question types.
+                   "completion": "gap_fill", "form": "gap_fill", "note": "gap_fill", "table": "gap_fill",
+                   "sentence": "gap_fill", "summary": "gap_fill",
+                   "map": "multiple_choice", "plan": "multiple_choice", "matching_letter": "multiple_choice",
+                   "multi": "multi_select"}
+        shared_notes = str(question.get("passage") or question.get("context") or "")
+        for index, sub in enumerate(question.get("sub_questions") or []):
+            sub_kind = str(sub.get("type") or sub.get("kind") or "gap_fill").strip().lower()
+            if sub_kind == "open" and kind in {"listening_set", "ielts_listening"}:
                 sub_kind = "listening_open"
-            item = _learning_library_question({
-                "passage": question.get("passage") or question.get("context") or "",
-                "audio_url": question.get("audio_url") or "",
-                **sub, "kind": aliases.get(sub_kind, sub_kind),
-            })
+            if sub_kind == "matching" and kind == "ielts_listening":
+                sub_kind = "matching_letter"
+            shared: dict[str, Any] = {"audio_url": question.get("audio_url") or ""}
+            if kind == "ielts_listening":
+                # Notes/forms use numbered gaps ([1], [2]); they are context
+                # for every question, never a fill-in passage of their own.
+                shared.update({
+                    "context": shared_notes,
+                    "image_url": question.get("image_url") or "",
+                    "play_limit": question.get("play_limit") or 0,
+                    "instruction": question.get("instruction") or "",
+                    "question_number": index + 1,
+                })
+            else:
+                shared["passage"] = shared_notes
+            item = _learning_library_question({**shared, **sub, "kind": aliases.get(sub_kind, sub_kind)})
             if item:
                 result.append(item)
         return result
@@ -5275,7 +5326,7 @@ _LEARNING_GRADE_CHOICE_KINDS = {
 }
 _LEARNING_GRADE_TF_KINDS = {"true_false", "boolean", "listening_tf"}
 _LEARNING_GRADE_ORDER_KINDS = {"word_order", "scrambled_sentence", "listening_order", "rearrange", "sentence_builder", "order"}
-_LEARNING_GRADE_SET_KINDS = {"reading_set", "listening_set", "multiple_choice_set"}
+_LEARNING_GRADE_SET_KINDS = {"reading_set", "listening_set", "multiple_choice_set", "ielts_listening"}
 _LEARNING_GRADE_AI_KINDS = {
     "speak_sentence", "write_sentence", "guided_writing", "reading_open",
     "read_aloud", "paraphrase", "dialogue_completion", "picture_description",
@@ -5500,6 +5551,44 @@ def _learning_grade_cloze(qp: dict[str, Any], given: Any) -> tuple[int, int]:
     return correct, len(expected)
 
 
+def _learning_grade_choice_list(given: Any) -> list[str]:
+    """Several picked options from a list or a "B, D" / "B;D" string."""
+    if isinstance(given, dict):
+        given = given.get("answer", given.get("selected", given.get("text")))
+    if isinstance(given, (list, tuple)):
+        values = [_learning_grade_text(item).strip() for item in given]
+    else:
+        values = [part.strip() for part in re.split(r"[,;|\n]+", _learning_grade_text(given))]
+    seen: list[str] = []
+    for value in values:
+        if value and value.casefold() not in {item.casefold() for item in seen}:
+            seen.append(value)
+    return seen
+
+
+def _learning_grade_multi(sub: dict[str, Any], given: Any) -> tuple[int, int]:
+    """IELTS "choose TWO letters": one mark per right choice, in any order;
+    extra choices beyond the number asked cancel marks."""
+    expected = [str(item).strip() for item in (sub.get("answers") or []) if str(item).strip()]
+    if not expected:
+        expected = [part.strip() for part in str(sub.get("answer") or "").split(",") if part.strip()]
+    if not expected:
+        return 0, 1
+    picked = _learning_grade_choice_list(given)
+    expected_folded = {item.casefold() for item in expected}
+    right = sum(1 for item in picked if item.casefold() in expected_folded)
+    extra = max(0, len(picked) - len(expected))
+    return max(0, right - extra), len(expected)
+
+
+def _learning_within_word_limit(sub: dict[str, Any], text: str) -> bool:
+    try:
+        limit = int(sub.get("word_limit") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    return limit <= 0 or len([word for word in re.split(r"\s+", text.strip()) if word]) <= limit
+
+
 def _learning_grade_set_item(sub: dict[str, Any], given: Any) -> int:
     text = _learning_grade_text(given).strip()
     if not text and not isinstance(given, bool):
@@ -5521,6 +5610,10 @@ def _learning_grade_set_item(sub: dict[str, Any], given: Any) -> int:
     if not candidates:
         # No answer key was authored: any non-empty answer counts, as before.
         return 1
+    if sub_kind in {"completion", "gap", "short", "form", "note", "table", "sentence", "summary"}:
+        # IELTS completion: answers over the word limit are wrong.
+        if not _learning_within_word_limit(sub, text):
+            return 0
     if sub_kind in _LEARNING_GRADE_ORDER_KINDS:
         return _learning_grade_order({"correct_answer": candidates[0], "accepted_answers": candidates[1:]}, text)
     if sub_kind in {"tf", "true_false", "true_false_ng"} and options:
@@ -5540,11 +5633,17 @@ def _learning_grade_set(qp: dict[str, Any], given: Any) -> tuple[int, int]:
         answers = [given.get(str(index + offset)) for index in range(len(subs))]
     else:
         answers = list(_learning_grade_list_answer(given, len(subs)))
-    correct = sum(
-        _learning_grade_set_item(sub, answers[index] if index < len(answers) else "")
-        for index, sub in enumerate(subs)
-    )
-    return correct, len(subs)
+    correct = 0
+    total = 0
+    for index, sub in enumerate(subs):
+        given_item = answers[index] if index < len(answers) else ""
+        if str(sub.get("type") or sub.get("kind") or "").strip().lower() in _LEARNING_MULTI_SUB_TYPES:
+            item_correct, item_total = _learning_grade_multi(sub, given_item)
+        else:
+            item_correct, item_total = _learning_grade_set_item(sub, given_item), 1
+        correct += item_correct
+        total += item_total
+    return correct, max(1, total)
 
 
 def _learning_question_needs_ai_check(qp: dict[str, Any]) -> bool:
@@ -5553,6 +5652,8 @@ def _learning_question_needs_ai_check(qp: dict[str, Any]) -> bool:
         return False
     kind = _learning_grade_kind(qp)
     if kind == "matching" or kind in _LEARNING_GRADE_SET_KINDS or kind == "passage_cloze":
+        return False
+    if kind in _LEARNING_MULTI_SUB_TYPES:
         return False
     if kind in _LEARNING_GRADE_ORDER_KINDS:
         return False
@@ -5575,6 +5676,8 @@ def _grade_learning_question(question_payload: dict[str, Any], given: Any, *, sa
         return (1, 1) if saved_ai_ok else (0, 1)
     if kind == "matching":
         return _learning_grade_matching(qp, given)
+    if kind in _LEARNING_MULTI_SUB_TYPES:
+        return _learning_grade_multi(qp, given)
     if kind in _LEARNING_GRADE_SET_KINDS:
         return _learning_grade_set(qp, given)
     if kind == "passage_cloze":

@@ -28,6 +28,7 @@ export type AiTestKind =
   | "listening_gap"
   | "listening_order"
   | "listening_set"
+  | "ielts_listening"
   | "spelling"
   | "matching"
   | "scrambled_sentence"
@@ -80,7 +81,14 @@ export type AiTestQuestion = {
     tokens?: string[];
     reference_answer?: string;
     pairs?: { left: string; right: string }[];
+    // IELTS Listening: "choose TWO letters" keys and the completion limit.
+    answers?: string[];
+    choose?: number;
+    word_limit?: number;
   }[];
+  // IELTS Listening section: 0 = unlimited replays, 1 = played once.
+  play_limit?: number;
+  section?: string | null;
   needs_audio_upload?: boolean;
   // Kengaytirilgan maydonlar
   hint?: string | null;          // spelling: ta'rif; gap_fill: qavs so'z; dictation: mavzu
@@ -194,6 +202,11 @@ export const AI_TEST_KIND_META: Record<AiTestKind, KindMeta> = {
     hint: "Bitta audio ostida bir nechta savol. Student hammasini bir oynada bajaradi.",
     check: "auto", input: "listening_set", needsAudio: true, icon: "🎧",
   },
+  ielts_listening: {
+    label: "IELTS Listening (bo'lim)",
+    hint: "Bitta uzluksiz audio (IELTS bo'limi), ixtiyoriy xarita/reja rasmi va eslatma/forma matni. Savol turlari: forma/eslatma/jadval/gap to'ldirish (so'z limiti bilan), tanlov, IKKITA harf tanlash, xarita/reja belgilash, moslashtirish.",
+    check: "auto", input: "listening_set", needsAudio: true, icon: "🎧",
+  },
   spelling: {
     label: "To'g'ri yozish",
     hint: "So'zni imlo bilan yozish. Avtomatik tekshiriladi.",
@@ -251,6 +264,7 @@ export function emptyAiQuestion(kind: AiTestKind): AiTestQuestion {
     case "listening_gap": return { ...base, audio_url: "", answer: "", accepted_answers: [], hint: "" };
     case "listening_order": return { ...base, audio_url: "", answer: "", tokens: [], distractors: [] };
     case "listening_set": return { ...base, audio_url: "", sub_questions: [{ type: "mcq", prompt: "", options: ["", ""], correct_index: 0 }] };
+    case "ielts_listening": return { ...base, audio_url: "", image_url: "", passage: "", play_limit: 1, section: "Part 1", instruction: "Questions 1-5. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer.", sub_questions: [{ type: "completion", prompt: "", answer: "", accepted_answers: [], word_limit: 2 }] };
     case "scrambled_sentence": return { ...base, answer: "", tokens: [], distractors: [] };
     case "passage_cloze": return { kind, instruction: "", passage: "", answers: [{ answer: "" }], word_bank: [] };
     case "reading_set": return { kind, passage: "", questions: [{ type: "true_false_ng", prompt: "", options: ["True", "False", "Not given"], answer: "" }] };
@@ -343,6 +357,28 @@ export function validateAiQuestions(questions: AiTestQuestion[]): string | null 
     if (q.kind === "listening_order") {
       if (!String(q.prompt || "").trim()) return `${n}-mashqda ko'rsatma bo'lishi kerak.`;
       if (!String(q.answer || "").trim()) return `${n}-mashq uchun to'g'ri gap kiritilmagan.`;
+      continue;
+    }
+    if (q.kind === "ielts_listening") {
+      const subs = q.sub_questions || [];
+      if (!subs.length) return `${n}-mashqda kamida bitta savol bo'lishi kerak.`;
+      for (let subIndex = 0; subIndex < subs.length; subIndex++) {
+        const sub = subs[subIndex];
+        const type = String(sub.type || "");
+        const label = `${n}-mashqning ${subIndex + 1}-savoli`;
+        const optionCount = (sub.options || []).filter((x) => String(x).trim()).length;
+        if (["completion", "short"].includes(type) && !String(sub.answer || "").trim()) return `${label} uchun to'g'ri javob kerak.`;
+        if (["mcq", "map", "matching"].includes(type)) {
+          if (optionCount < 2) return `${label} uchun kamida 2 ta variant kerak.`;
+          if (!String(sub.answer || "").trim() && sub.correct_index === undefined) return `${label} uchun to'g'ri variant belgilanmagan.`;
+        }
+        if (type === "multi") {
+          const picked = (sub.answers || []).filter((x) => String(x).trim());
+          if (optionCount < 3) return `${label} uchun kamida 3 ta variant kerak.`;
+          if (picked.length < 2) return `${label} uchun kamida 2 ta to'g'ri variant belgilang.`;
+        }
+        if (type !== "multi" && type !== "completion" && type !== "short" && !String(sub.prompt || "").trim() && type !== "map") return `${label} matni bo'sh.`;
+      }
       continue;
     }
     if (q.kind === "listening_set") {
@@ -927,6 +963,150 @@ function ListeningSetCard({ q, patch, uploading, onUpload }: { q: AiTestQuestion
   );
 }
 
+const IELTS_SUB_TYPES: { value: string; label: string }[] = [
+  { value: "completion", label: "Forma / eslatma / jadval / gap to'ldirish" },
+  { value: "mcq", label: "Tanlov (bitta javob)" },
+  { value: "multi", label: "Bir nechta harf tanlash (Choose TWO)" },
+  { value: "map", label: "Xarita / reja belgilash (harf)" },
+  { value: "matching", label: "Moslashtirish (A–H ro'yxatdan harf)" },
+  { value: "short", label: "Qisqa javob" },
+];
+
+const LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"];
+
+type IeltsSub = NonNullable<AiTestQuestion["sub_questions"]>[number];
+
+function emptyIeltsSub(type: string): IeltsSub {
+  if (type === "mcq") return { type, prompt: "", options: ["", "", ""], correct_index: 0, answer: "" };
+  if (type === "multi") return { type, prompt: "Which TWO ...?", options: ["", "", "", "", ""], answers: [], choose: 2 };
+  if (type === "map") return { type, prompt: "", options: LETTERS.slice(0, 6), answer: "" };
+  if (type === "matching") return { type, prompt: "", options: LETTERS.slice(0, 5), answer: "" };
+  return { type, prompt: "", answer: "", accepted_answers: [], word_limit: 2 };
+}
+
+// IELTS Listening section: one continuous recording, optional map/plan image,
+// optional notes/form text with numbered gaps [1], [2] and typed questions.
+function IeltsListeningCard({
+  q, patch, uploading, imageUploading, onUpload,
+}: { q: AiTestQuestion; patch: PatchFn; uploading: boolean; imageUploading: boolean; onUpload: UploadField }) {
+  const subs = q.sub_questions || [];
+  const patchSub = (index: number, value: IeltsSub) => {
+    const next = [...subs]; next[index] = value; patch({ sub_questions: next });
+  };
+  return (
+    <>
+      <div className={SECTION_CLS}>
+        <AssetField label="Bo'lim audiosi (uzluksiz) *" value={q.audio_url} accept="audio/*" required uploading={uploading} onUpload={(file) => onUpload("audio_url", file)} onClear={() => patch({ audio_url: "", needs_audio_upload: true })} />
+      </div>
+      <Field label="Bo'lim">
+        <select value={String(q.section || "Part 1")} onChange={(e) => patch({ section: e.target.value })} className={INPUT_CLS}>
+          {["Part 1", "Part 2", "Part 3", "Part 4"].map((part) => <option key={part} value={part}>{part}</option>)}
+        </select>
+      </Field>
+      <Field label="Audio necha marta eshitiladi">
+        <select value={String(q.play_limit ?? 1)} onChange={(e) => patch({ play_limit: Number(e.target.value) })} className={INPUT_CLS}>
+          <option value="1">1 marta (haqiqiy IELTS kabi)</option>
+          <option value="2">2 marta</option>
+          <option value="0">Cheklovsiz (mashq)</option>
+        </select>
+      </Field>
+      <FullField label="Ko'rsatma *" required>
+        <input value={String(q.instruction || "")} onChange={(e) => patch({ instruction: e.target.value })} className={INPUT_CLS} placeholder="Questions 1-10. Write NO MORE THAN TWO WORDS AND/OR A NUMBER for each answer." />
+      </FullField>
+      <div className={SECTION_CLS}>
+        <AssetField label="Xarita / reja / jadval rasmi (ixtiyoriy)" value={q.image_url} accept="image/*" uploading={imageUploading} onUpload={(file) => onUpload("image_url", file)} onClear={() => patch({ image_url: "" })} />
+      </div>
+      <FullField label="Forma / eslatma matni (ixtiyoriy; bo'sh joylarni [1], [2] ... deb belgilang)">
+        <textarea value={String(q.passage || "")} onChange={(e) => patch({ passage: e.target.value })} className={`${INPUT_CLS} min-h-[110px] font-mono`} placeholder={"HOTEL BOOKING FORM\nName: Sarah [1]\nNumber of nights: [2]\nRoom type: [3]"} />
+      </FullField>
+      <div className={SECTION_CLS}>
+        <label className={LABEL_CLS}>Savollar * <span className="font-semibold normal-case text-ink-400">(raqami matndagi [1], [2] bilan mos keladi)</span></label>
+        <div className="space-y-3">
+          {subs.map((sub, index) => {
+            const type = String(sub.type || "completion");
+            const options = sub.options || [];
+            const letterOptions = type === "map" || type === "matching";
+            return (
+              <div key={index} className="rounded-xl border border-line p-3 dark:border-white/10">
+                <div className="mb-2 flex gap-2">
+                  <strong className="pt-2 text-sm text-ink-500">{index + 1}.</strong>
+                  <select value={type} onChange={(e) => patchSub(index, emptyIeltsSub(e.target.value))} className="flex-1 rounded-lg border border-line bg-surface-soft px-2 py-1 text-sm font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white">
+                    {IELTS_SUB_TYPES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                  </select>
+                  <button type="button" onClick={() => patch({ sub_questions: subs.filter((_, i) => i !== index) })} className="px-2 text-red-500">✕</button>
+                </div>
+                <input value={String(sub.prompt || "")} onChange={(e) => patchSub(index, { ...sub, prompt: e.target.value })} className={`${INPUT_CLS} mb-2`} placeholder={type === "completion" ? "Masalan: Surname of the guest (bo'sh qoldirsa ham bo'ladi)" : type === "map" ? "Masalan: Library" : "Savol matni"} />
+                {(type === "completion" || type === "short") && (
+                  <>
+                    <div className="flex gap-2">
+                      <input value={String(sub.answer || "")} onChange={(e) => patchSub(index, { ...sub, answer: e.target.value })} className={INPUT_CLS} placeholder="To'g'ri javob" />
+                      <select value={String(sub.word_limit ?? 2)} onChange={(e) => patchSub(index, { ...sub, word_limit: Number(e.target.value) })} className="w-36 rounded-lg border border-line bg-surface-soft px-2 text-xs font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white">
+                        {[1, 2, 3, 4].map((limit) => <option key={limit} value={limit}>≤ {limit} so'z</option>)}
+                      </select>
+                    </div>
+                    <StringListEditor label="Muqobil to'g'ri javoblar (masalan, 15 / fifteen)" values={sub.accepted_answers || []} onChange={(accepted_answers) => patchSub(index, { ...sub, accepted_answers })} placeholder="Muqobil javob" addLabel="javob qo'shish" />
+                  </>
+                )}
+                {type === "mcq" && (
+                  <div className="space-y-1">
+                    {options.map((option, optionIndex) => (
+                      <div key={optionIndex} className="flex gap-2">
+                        <input type="radio" checked={Number(sub.correct_index ?? 0) === optionIndex} onChange={() => patchSub(index, { ...sub, correct_index: optionIndex, answer: option })} className="accent-cyan-500" />
+                        <span className="pt-2 text-xs font-black text-ink-500">{LETTERS[optionIndex]}</span>
+                        <input value={option} onChange={(e) => { const next = [...options]; next[optionIndex] = e.target.value; patchSub(index, { ...sub, options: next, answer: Number(sub.correct_index ?? 0) === optionIndex ? e.target.value : sub.answer }); }} className={INPUT_CLS} placeholder={`${LETTERS[optionIndex]} variant`} />
+                      </div>
+                    ))}
+                    {options.length < 5 && <button type="button" onClick={() => patchSub(index, { ...sub, options: [...options, ""] })} className="text-xs font-black text-cyan-700 dark:text-cyan-200">+ Variant</button>}
+                  </div>
+                )}
+                {type === "multi" && (
+                  <div className="space-y-1">
+                    <p className="text-[11px] font-semibold text-ink-400">To'g'ri variantlarni belgilang (masalan, ikkitasini).</p>
+                    {options.map((option, optionIndex) => {
+                      const checked = (sub.answers || []).includes(option) && option.trim() !== "";
+                      return (
+                        <div key={optionIndex} className="flex gap-2">
+                          <input type="checkbox" checked={checked} onChange={() => {
+                            const current = new Set(sub.answers || []);
+                            if (checked) current.delete(option); else if (option.trim()) current.add(option);
+                            patchSub(index, { ...sub, answers: options.filter((item) => current.has(item)), choose: Math.max(2, current.size) });
+                          }} className="accent-cyan-500" />
+                          <span className="pt-2 text-xs font-black text-ink-500">{LETTERS[optionIndex]}</span>
+                          <input value={option} onChange={(e) => {
+                            const next = [...options]; next[optionIndex] = e.target.value;
+                            const answers = (sub.answers || []).map((item) => (item === option ? e.target.value : item));
+                            patchSub(index, { ...sub, options: next, answers });
+                          }} className={INPUT_CLS} placeholder={`${LETTERS[optionIndex]} variant`} />
+                        </div>
+                      );
+                    })}
+                    {options.length < 8 && <button type="button" onClick={() => patchSub(index, { ...sub, options: [...options, ""] })} className="text-xs font-black text-cyan-700 dark:text-cyan-200">+ Variant</button>}
+                  </div>
+                )}
+                {letterOptions && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-ink-500">{type === "map" ? "Rasmdagi harflar:" : "Ro'yxat harflari:"}</span>
+                    <select value={String(options.length)} onChange={(e) => patchSub(index, { ...sub, options: LETTERS.slice(0, Number(e.target.value)), answer: LETTERS.slice(0, Number(e.target.value)).includes(String(sub.answer || "")) ? sub.answer : "" })} className="rounded-lg border border-line bg-surface-soft px-2 py-1 text-xs font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white">
+                      {[3, 4, 5, 6, 7, 8].map((count) => <option key={count} value={count}>A–{LETTERS[count - 1]}</option>)}
+                    </select>
+                    <span className="text-xs font-bold text-ink-500">To'g'ri harf:</span>
+                    <select value={String(sub.answer || "")} onChange={(e) => patchSub(index, { ...sub, answer: e.target.value })} className="rounded-lg border border-line bg-surface-soft px-2 py-1 text-xs font-bold dark:border-white/10 dark:bg-navy-950 dark:text-white">
+                      <option value="">—</option>
+                      {options.map((letter) => <option key={letter} value={letter}>{letter}</option>)}
+                    </select>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <button type="button" onClick={() => patch({ sub_questions: [...subs, emptyIeltsSub("completion")] })} className="mt-2 rounded-xl border border-line bg-surface-soft px-3 py-1.5 text-xs font-black dark:border-white/10 dark:bg-white/5 dark:text-white">+ Savol qo'shish</button>
+      </div>
+      <LevelField value={q.level} onChange={(v) => patch({ level: v })} />
+    </>
+  );
+}
+
 // spelling
 function SpellingCard({ q, patch }: { q: AiTestQuestion; patch: PatchFn }) {
   const word = String(q.word || "");
@@ -1490,6 +1670,9 @@ export function AiTestEditor({
               {q.kind === "listening_gap" && <ListeningTextCard q={q} patch={patchQ} mode="gap" uploading={isUploading("audio_url")} onUpload={uploadQ} />}
               {q.kind === "listening_order" && <ListeningOrderCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />}
               {q.kind === "listening_set" && <ListeningSetCard q={q} patch={patchQ} uploading={isUploading("audio_url")} onUpload={uploadQ} />}
+              {q.kind === "ielts_listening" && (
+                <IeltsListeningCard q={q} patch={patchQ} uploading={isUploading("audio_url")} imageUploading={isUploading("image_url")} onUpload={uploadQ} />
+              )}
               {q.kind === "spelling" && <SpellingCard q={q} patch={patchQ} />}
               {q.kind === "matching" && <MatchingCard q={q} patch={patchQ} />}
               {q.kind === "scrambled_sentence" && <ScrambledCard q={q} patch={patchQ} />}

@@ -148,6 +148,18 @@ def ensure_tables() -> None:
             )"""
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_plans_user ON speaking_plans(user_id, subject, status)")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS exam_date DATE")
+        # The learner's real exam date per subject; Home counts down to it and
+        # a new plan is fitted to it.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_exam_dates (
+                user_id BIGINT NOT NULL,
+                subject TEXT NOT NULL,
+                exam_date DATE NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, subject)
+            )"""
+        )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_plan_days (
                 id BIGSERIAL PRIMARY KEY,
@@ -269,6 +281,72 @@ def _focus_family(focus: str) -> str:
 
 def _valid_focus(focus: str) -> bool:
     return focus in PRACTICE_FOCUSES
+
+
+MAX_EXAM_DAYS_AHEAD = 730
+
+
+def days_for_exam(exam_date: date | None, today: date) -> int | None:
+    """Plan length that ends on (or just before) the exam: the longest
+    standard duration that still fits, or the days left when under a week."""
+    if exam_date is None:
+        return None
+    gap = (exam_date - today).days
+    if gap <= 0:
+        return None
+    fitting = [d for d in DURATIONS if d <= gap]
+    # An exam in under a week gets a short plan that ends with a full mock
+    # on the last day before the exam.
+    return max(fitting) if fitting else gap
+
+
+def exam_phase(days_left: int | None) -> str:
+    """How close the exam is: drives reminders and the plan's intensity."""
+    if days_left is None:
+        return "none"
+    if days_left < 0:
+        return "past"
+    if days_left == 0:
+        return "today"
+    if days_left <= 7:
+        return "final_week"
+    if days_left <= 30:
+        return "final_month"
+    return "early"
+
+
+def _parse_date(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _exam_date(cur, user_id: int, subject: str) -> date | None:
+    try:
+        cur.execute(
+            "SELECT exam_date FROM speaking_exam_dates WHERE user_id=%s AND subject=%s",
+            (int(user_id), subject),
+        )
+        row = cur.fetchone()
+    except Exception:
+        cur.connection.rollback()
+        return None
+    return _parse_date(dict(row)["exam_date"]) if row else None
+
+
+def exam_payload(exam_date: date | None, today: date) -> dict[str, Any]:
+    days_left = (exam_date - today).days if exam_date else None
+    return {
+        "exam_date": exam_date.isoformat() if exam_date else None,
+        "days_left": days_left,
+        "phase": exam_phase(days_left),
+        "recommended_days": days_for_exam(exam_date, today),
+    }
 
 
 def _json_list(raw: Any) -> list:
@@ -845,6 +923,7 @@ def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[di
         "passing_score": PASSING_SCORE,
         "items": items,
         "adaptation": {"weak": weak},
+        "exam": exam_payload(_parse_date(plan.get("exam_date")), _today()),
     }
 
 
@@ -872,6 +951,44 @@ class PlanCreate(BaseModel):
     subject: str = Field(default="english", max_length=32)
     goal: str = Field(min_length=1, max_length=8)
     days: int = Field(ge=7, le=30)
+    # Optional real exam date (YYYY-MM-DD); the plan is fitted to it.
+    exam_date: str | None = Field(default=None, max_length=10)
+
+
+class ExamDateUpdate(BaseModel):
+    subject: str = Field(default="english", max_length=32)
+    # Empty or null removes the date.
+    exam_date: str | None = Field(default=None, max_length=10)
+
+
+def _validated_exam_date(raw: str | None) -> date | None:
+    if raw is None or not str(raw).strip():
+        return None
+    parsed = _parse_date(raw)
+    today = _today()
+    if parsed is None:
+        raise HTTPException(status_code=422, detail="Exam date must be YYYY-MM-DD")
+    if parsed < today:
+        raise HTTPException(status_code=422, detail="The exam date is in the past")
+    if (parsed - today).days > MAX_EXAM_DAYS_AHEAD:
+        raise HTTPException(status_code=422, detail="The exam date is too far away")
+    return parsed
+
+
+def _save_exam_date(cur, user_id: int, subject: str, exam_date: date | None) -> None:
+    if exam_date is None:
+        cur.execute("DELETE FROM speaking_exam_dates WHERE user_id=%s AND subject=%s", (user_id, subject))
+    else:
+        cur.execute(
+            """INSERT INTO speaking_exam_dates (user_id, subject, exam_date, updated_at) VALUES (%s,%s,%s,NOW())
+               ON CONFLICT (user_id, subject) DO UPDATE SET exam_date=EXCLUDED.exam_date, updated_at=NOW()""",
+            (user_id, subject, exam_date),
+        )
+    # The active plan follows the learner's exam date.
+    cur.execute(
+        "UPDATE speaking_plans SET exam_date=%s, updated_at=NOW() WHERE user_id=%s AND subject=%s AND status='active'",
+        (exam_date, user_id, subject),
+    )
 
 
 class FocusStart(BaseModel):
@@ -917,6 +1034,7 @@ async def current_speaking_plan(subject: str = Query(default="english", max_leng
             "durations": list(DURATIONS),
             "plan": payload_plan,
             "daily": _daily_usage(cur, user_id),
+            "exam": exam_payload(_exam_date(cur, user_id, subject_key), _today()),
         }
     finally:
         cur.close()
@@ -934,19 +1052,31 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
     if payload.days not in DURATIONS:
         raise HTTPException(status_code=422, detail="A plan lasts 7, 14 or 30 days")
     user_id = int(user.get("id") or 0)
+    exam_date = _validated_exam_date(payload.exam_date)
+    days = payload.days
     conn = get_conn()
     cur = conn.cursor()
     try:
+        if exam_date is None and payload.exam_date is None:
+            exam_date = _exam_date(cur, user_id, subject_key)
+            if exam_date is not None and exam_date < _today():
+                exam_date = None
+        # With an exam date the plan never runs past the exam.
+        fitted = days_for_exam(exam_date, _today())
+        if fitted is not None and days > fitted:
+            days = fitted
         cur.execute(
             "UPDATE speaking_plans SET status='replaced', updated_at=NOW() WHERE user_id=%s AND subject=%s AND status IN ('active','completed')",
             (user_id, subject_key),
         )
+        if payload.exam_date is not None:
+            _save_exam_date(cur, user_id, subject_key, exam_date)
         cur.execute(
-            "INSERT INTO speaking_plans (user_id, subject, goal, days, started_on) VALUES (%s,%s,%s,%s,%s) RETURNING *",
-            (user_id, subject_key, payload.goal, payload.days, _today()),
+            "INSERT INTO speaking_plans (user_id, subject, goal, days, started_on, exam_date) VALUES (%s,%s,%s,%s,%s,%s) RETURNING *",
+            (user_id, subject_key, payload.goal, days, _today(), exam_date),
         )
         plan = dict(cur.fetchone())
-        for index, day in enumerate(build_plan_template(payload.days), start=1):
+        for index, day in enumerate(build_plan_template(days), start=1):
             cur.execute(
                 "INSERT INTO speaking_plan_days (plan_id, day_index, kind, base_focus, focus) VALUES (%s,%s,%s,%s,%s)",
                 (int(plan["id"]), index, day["kind"], day["focus"], day["focus"]),
@@ -975,6 +1105,40 @@ async def cancel_speaking_plan(plan_id: int, authorization: str | None = Header(
             raise HTTPException(status_code=404, detail="Plan not found")
         conn.commit()
         return {"ok": True}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.get("/speaking/exam-date")
+@router.get("/api/speaking/exam-date")
+async def get_exam_date(subject: str = Query(default="english", max_length=32), authorization: str | None = Header(default=None)):
+    user, _ = _auth(authorization, USER_ROLES)
+    ensure_tables()
+    subject_key = _subject_key(subject)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        return {"subject": subject_key, **exam_payload(_exam_date(cur, int(user.get("id") or 0), subject_key), _today())}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.put("/speaking/exam-date")
+@router.put("/api/speaking/exam-date")
+async def set_exam_date(payload: ExamDateUpdate, authorization: str | None = Header(default=None)):
+    user, _ = _auth(authorization, USER_ROLES)
+    ensure_tables()
+    subject_key = _subject_key(payload.subject)
+    exam_date = _validated_exam_date(payload.exam_date)
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        _save_exam_date(cur, user_id, subject_key, exam_date)
+        conn.commit()
+        return {"subject": subject_key, **exam_payload(exam_date, _today())}
     finally:
         cur.close()
         conn.close()

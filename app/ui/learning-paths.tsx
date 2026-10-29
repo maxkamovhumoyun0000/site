@@ -1849,6 +1849,8 @@ function LessonPlayerModal({
   const [saveFailed, setSaveFailed] = useState(false);
   const [error, setError] = useState("");
   const [audioPlaying, setAudioPlaying] = useState(false);
+  // IELTS sections may be played a limited number of times.
+  const [audioPlays, setAudioPlays] = useState(0);
   const [voiceMode, setVoiceMode] = useState(false);
   const [reviewItems, setReviewItems] = useState<TestReviewItem[]>([]);
 
@@ -1904,6 +1906,7 @@ function LessonPlayerModal({
     setMatchingRights([]);
     setClozeBlanks([]);
     setSubAnswers([]);
+    setAudioPlays(0);
     setUsedWordBank(new Set());
     setWordBankAssignments({});
     setWrongBlankPositions([]);
@@ -2060,8 +2063,15 @@ function LessonPlayerModal({
   };
 
   // Audio Playback
+  const playLimit = Number(question?.play_limit || 0);
+  const playsLeft = playLimit > 0 ? Math.max(0, playLimit - audioPlays) : Infinity;
   const playAudio = (rate = 1.0) => {
     if (!audioRef.current || !question?.audio_url) return;
+    if (playLimit > 0) {
+      // A limited recording plays through once per allowed play.
+      if (audioPlaying || playsLeft <= 0) return;
+      setAudioPlays((count) => count + 1);
+    }
     audioRef.current.playbackRate = rate;
     audioRef.current.currentTime = 0;
     setAudioPlaying(true);
@@ -2222,7 +2232,13 @@ function LessonPlayerModal({
           ...(Array.isArray(s.accepted_answers) ? s.accepted_answers.map((x: any) => String(x).trim().toLowerCase()) : []),
         ].filter(Boolean);
 
-        const ok = expectedAnswers.length > 0
+        const multiExpected = Array.isArray(s.answers)
+          ? s.answers.map((x: any) => String(x).trim().toLowerCase()).sort().join(",")
+          : "";
+        const multiGiven = given.split(/[,;]+/).map((x) => x.trim()).filter(Boolean).sort().join(",");
+        const ok = s.type === "multi"
+          ? Boolean(multiExpected) && multiExpected === multiGiven
+          : expectedAnswers.length > 0
           ? expectedAnswers.some((exp) => exp === given || given.includes(exp) || exp.includes(given))
           : Boolean(given);
         if (!ok) wrongSubs++;
@@ -2715,20 +2731,26 @@ function LessonPlayerModal({
                   <button
                     type="button"
                     onClick={() => playAudio(1.0)}
-                    className={`group relative grid h-16 w-16 shrink-0 place-items-center rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] text-white shadow-lg active:translate-y-1 active:border-b-2 hover:bg-[#1899d6] ${
+                    disabled={playLimit > 0 && (playsLeft <= 0 || audioPlaying)}
+                    className={`group relative grid h-16 w-16 shrink-0 place-items-center rounded-2xl border-2 border-b-4 border-[#1899d6] bg-[#1cb0f6] text-white shadow-lg active:translate-y-1 active:border-b-2 hover:bg-[#1899d6] disabled:opacity-50 ${
                       audioPlaying ? "ring-4 ring-[#1cb0f6]/40 animate-pulse" : ""
                     }`}
                   >
                     <span className="text-3xl">🔊</span>
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={() => playAudio(0.75)}
-                    className="flex items-center gap-1.5 rounded-2xl border-2 border-b-4 border-amber-500 bg-amber-400 px-4 py-3 text-xs font-black text-amber-950 shadow-md active:translate-y-1 active:border-b-2 hover:bg-amber-500"
-                  >
-                    <span className="text-lg">🐢</span> Sekin eshitish
-                  </button>
+                  {playLimit > 0 ? (
+                    <span className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-black text-slate-700 dark:bg-navy-800 dark:text-navy-200">
+                      {playsLeft > 0 ? `Audio yana ${playsLeft} marta eshitiladi` : "Audio eshitildi"}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => playAudio(0.75)}
+                      className="flex items-center gap-1.5 rounded-2xl border-2 border-b-4 border-amber-500 bg-amber-400 px-4 py-3 text-xs font-black text-amber-950 shadow-md active:translate-y-1 active:border-b-2 hover:bg-amber-500"
+                    >
+                      <span className="text-lg">🐢</span> Sekin eshitish
+                    </button>
+                  )}
                 </div>
               ) : null}
 
@@ -2809,7 +2831,18 @@ function LessonPlayerModal({
                               <p className="mb-2.5 text-xs font-black text-navy-900 dark:text-white">
                                 {i + 1}. {s.prompt || s.question || `Savol ${i + 1}`}
                               </p>
-                              {opts.length > 0 ? (
+                              {s.type === "multi" && opts.length > 0 ? (
+                                <MultiChoiceButtons
+                                  options={opts}
+                                  value={currentAnswers[i] || ""}
+                                  limit={Number(s.choose || (Array.isArray(s.answers) ? s.answers.length : 2)) || 2}
+                                  disabled={Boolean(result)}
+                                  onChange={(next) => {
+                                    playDuolingoSound("pop");
+                                    setSub(i, next);
+                                  }}
+                                />
+                              ) : opts.length > 0 ? (
                                 <div className="flex flex-wrap gap-2">
                                   {opts.map((opt: string) => {
                                     const isChosen = currentAnswers[i]?.trim().toLowerCase() === opt.trim().toLowerCase();
@@ -3509,6 +3542,8 @@ function FinalExamPlayerModal({
   const [wrongBlankPositions, setWrongBlankPositions] = useState<number[]>([]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  // Plays per audio URL: an IELTS section keeps its limit across questions.
+  const [audioPlayCounts, setAudioPlayCounts] = useState<Record<string, number>>({});
 
   useEffect(() => {
     document.body.classList.add("learning-test-mode");
@@ -3677,8 +3712,15 @@ function FinalExamPlayerModal({
     });
   };
 
+  const examPlayLimit = Number(currentQuestion?.play_limit || 0);
+  const examAudioKey = String(currentQuestion?.audio_url || "");
+  const examPlaysLeft = examPlayLimit > 0 ? Math.max(0, examPlayLimit - (audioPlayCounts[examAudioKey] || 0)) : Infinity;
   const playAudio = (rate = 1.0) => {
     if (!audioRef.current || !currentQuestion?.audio_url) return;
+    if (examPlayLimit > 0) {
+      if (audioPlaying || examPlaysLeft <= 0) return;
+      setAudioPlayCounts((prev) => ({ ...prev, [examAudioKey]: (prev[examAudioKey] || 0) + 1 }));
+    }
     audioRef.current.playbackRate = rate;
     audioRef.current.currentTime = 0;
     setAudioPlaying(true);
@@ -4263,12 +4305,18 @@ function FinalExamPlayerModal({
                   <button
                     type="button"
                     onClick={() => playAudio(1.0)}
-                    disabled={audioPlaying}
+                    disabled={audioPlaying || (examPlayLimit > 0 && examPlaysLeft <= 0)}
                     className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#002DFF] text-white shadow-md hover:bg-[#1429f2] disabled:opacity-50"
                   >
                     {audioPlaying ? "🔊" : "▶️"}
                   </button>
-                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">Audiolavhani tinglang</p>
+                  <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    {examPlayLimit > 0
+                      ? examPlaysLeft > 0
+                        ? `Audio yana ${examPlaysLeft} marta eshitiladi`
+                        : "Audio eshitildi"
+                      : "Audiolavhani tinglang"}
+                  </p>
                 </div>
               ) : null}
 
@@ -4464,6 +4512,24 @@ function FinalExamPlayerModal({
                           );
                         })}
                       </div>
+                    </div>
+                  );
+                }
+
+                if (currentQuestion.test_type === "multi_select" || currentQuestion.kind === "multi_select") {
+                  const opts: string[] = Array.isArray(currentQuestion.options) ? currentQuestion.options : [];
+                  return (
+                    <div className="space-y-3 pt-2">
+                      <MultiChoiceButtons
+                        options={opts}
+                        value={selected}
+                        limit={Number(currentQuestion.choose || (Array.isArray(currentQuestion.answers) ? currentQuestion.answers.length : 2)) || 2}
+                        disabled={Boolean(result)}
+                        onChange={(next) => {
+                          playDuolingoSound("pop");
+                          setSelected(next);
+                        }}
+                      />
                     </div>
                   );
                 }
@@ -5745,6 +5811,52 @@ export function StaffLearningPaths({ apiFetch, scope = "student" }: { apiFetch: 
   );
 }
 
+/** "Choose TWO letters": toggles options, keeps them in option order. */
+function MultiChoiceButtons({
+  options,
+  value,
+  limit,
+  disabled,
+  onChange,
+}: {
+  options: string[];
+  value: string;
+  limit: number;
+  disabled: boolean;
+  onChange: (next: string) => void;
+}) {
+  const picked = value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((opt, optIndex) => {
+        const key = opt.trim().toLowerCase();
+        const isChosen = picked.includes(key);
+        return (
+          <button
+            key={`${opt}-${optIndex}`}
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              const nextKeys = isChosen
+                ? picked.filter((x) => x !== key)
+                : picked.length >= limit ? picked : [...picked, key];
+              onChange(options.filter((item) => nextKeys.includes(item.trim().toLowerCase())).map((item) => item.trim()).join(", "));
+            }}
+            className={`rounded-xl border-2 border-b-4 px-3.5 py-2 text-xs font-black transition-all active:translate-y-1 active:border-b-2 ${
+              isChosen
+                ? "border-[#1899d6] bg-[#ddf4ff] text-[#1899d6] dark:border-[#1cb0f6] dark:bg-[#18394a]"
+                : "border-slate-200 bg-white text-navy-900 hover:bg-slate-50 dark:border-navy-600 dark:bg-navy-900 dark:text-white"
+            }`}
+          >
+            {String.fromCharCode(65 + optIndex)}. {opt}
+          </button>
+        );
+      })}
+      <span className="w-full text-[11px] font-bold text-slate-500">{`${limit} ta javob tanlang (${picked.length}/${limit})`}</span>
+    </div>
+  );
+}
+
 function CertificateSettingsModal({
   track,
   apiFetch,
@@ -6181,6 +6293,7 @@ const ALL_TEST_KINDS = [
   { key: "listening_order", label: "🧩 Listening: So'zlar tartibi", needsAudio: true },
   { key: "listening_open", label: "🎧 Listening: Ochiq savol", needsAudio: true },
   { key: "listening_set", label: "🎧 Listening Set (1 audio + ko'p savol)", needsAudio: true },
+  { key: "ielts_listening", label: "🎧 IELTS Listening bo'limi (forma, xarita, IKKITA harf)", needsAudio: true },
   { key: "spelling", label: "🔤 To'g'ri yozish (Imlo)", needsAudio: false },
   { key: "translation", label: "🔁 Tarjima qilish", needsAudio: false },
   { key: "speak_sentence", label: "🎙️ Gap tuzib gapirish", needsAudio: false },

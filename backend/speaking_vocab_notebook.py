@@ -23,10 +23,10 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -40,6 +40,11 @@ SOURCES = ("question", "sample_answer", "vocabulary", "feedback", "search", "ai_
 MAX_TERM_WORDS = 6
 MAX_TERM_CHARS = 60
 MAX_ITEMS = 2000
+# Days after saving on which a word comes back for review.
+REVIEW_DAYS = (1, 3, 7, 14)
+REVIEW_BATCH = 20
+MAX_REVIEW_AUDIO = 5 * 1024 * 1024
+MIN_REVIEW_AUDIO = 2 * 1024
 _SCHEMA_READY = False
 
 
@@ -95,6 +100,19 @@ def ensure_tables() -> None:
         )
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_speaking_vocab_notebook_user ON speaking_vocab_notebook(user_id, subject, updated_at DESC)"
+        )
+        # Spaced repetition: a saved word comes back after 1, 3, 7 and 14 days.
+        for ddl in (
+            "ALTER TABLE speaking_vocab_notebook ADD COLUMN IF NOT EXISTS review_stage INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE speaking_vocab_notebook ADD COLUMN IF NOT EXISTS next_review_at TIMESTAMPTZ",
+            "ALTER TABLE speaking_vocab_notebook ADD COLUMN IF NOT EXISTS last_reviewed_at TIMESTAMPTZ",
+            "ALTER TABLE speaking_vocab_notebook ADD COLUMN IF NOT EXISTS review_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE speaking_vocab_notebook ADD COLUMN IF NOT EXISTS last_review_json TEXT NOT NULL DEFAULT '{}'",
+        ):
+            cur.execute(ddl)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_speaking_vocab_notebook_review "
+            "ON speaking_vocab_notebook(user_id, subject, next_review_at)"
         )
         conn.commit()
         _SCHEMA_READY = True
@@ -327,6 +345,58 @@ def _public(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status") or "saved",
         "created_at": _iso(row.get("created_at")),
         "updated_at": _iso(row.get("updated_at")),
+        "review": _review_state(row),
+    }
+
+
+def _aware(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def review_due_at(row: dict[str, Any]) -> datetime | None:
+    """When the word is due next; None once all reviews are done."""
+    stage = int(row.get("review_stage") or 0)
+    if stage >= len(REVIEW_DAYS):
+        return None
+    explicit = _aware(row.get("next_review_at"))
+    if explicit is not None:
+        return explicit
+    created = _aware(row.get("created_at")) or datetime.now(timezone.utc)
+    return created + timedelta(days=REVIEW_DAYS[0])
+
+
+def next_review_after(stage: int, now: datetime) -> datetime | None:
+    """Next due time after reaching ``stage`` successful reviews."""
+    if stage >= len(REVIEW_DAYS):
+        return None
+    gap = REVIEW_DAYS[stage] - (REVIEW_DAYS[stage - 1] if stage > 0 else 0)
+    return now + timedelta(days=max(1, gap))
+
+
+def _review_state(row: dict[str, Any]) -> dict[str, Any]:
+    stage = int(row.get("review_stage") or 0)
+    due = review_due_at(row)
+    try:
+        last = json.loads(row.get("last_review_json") or "{}")
+    except ValueError:
+        last = {}
+    return {
+        "stage": stage,
+        "total_stages": len(REVIEW_DAYS),
+        "completed": stage >= len(REVIEW_DAYS),
+        "due_at": due.isoformat() if due else None,
+        "is_due": bool(due and due <= datetime.now(timezone.utc)),
+        "count": int(row.get("review_count") or 0),
+        "last_reviewed_at": _iso(row.get("last_reviewed_at")),
+        "last": last if isinstance(last, dict) else {},
     }
 
 
@@ -725,6 +795,165 @@ async def check_user_example(
     finally:
         cur.close()
         conn.close()
+
+
+_DUE_SQL = (
+    "COALESCE(review_stage, 0) < %s AND COALESCE(next_review_at, created_at + INTERVAL '1 day') <= NOW()"
+)
+
+
+@router.get("/speaking/notebook/review")
+@router.get("/api/speaking/notebook/review")
+async def notebook_review_queue(
+    subject: str = Query(default="english", max_length=32),
+    authorization: str | None = Header(default=None),
+):
+    """Words due for spaced-repetition review today (oldest first)."""
+    user = _user(authorization)
+    ensure_tables()
+    user_id = int(user.get("id") or 0)
+    subject_key = _subject_key(subject)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""SELECT * FROM speaking_vocab_notebook WHERE user_id=%s AND subject=%s AND {_DUE_SQL}
+                ORDER BY COALESCE(next_review_at, created_at + INTERVAL '1 day') LIMIT %s""",
+            (user_id, subject_key, len(REVIEW_DAYS), REVIEW_BATCH),
+        )
+        items = [_public(dict(r)) for r in cur.fetchall() or []]
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM speaking_vocab_notebook WHERE user_id=%s AND subject=%s AND {_DUE_SQL}",
+            (user_id, subject_key, len(REVIEW_DAYS)),
+        )
+        due = int(dict(cur.fetchone() or {}).get("n") or 0)
+        cur.execute(
+            """SELECT MIN(COALESCE(next_review_at, created_at + INTERVAL '1 day')) AS next_at
+               FROM speaking_vocab_notebook WHERE user_id=%s AND subject=%s AND COALESCE(review_stage, 0) < %s""",
+            (user_id, subject_key, len(REVIEW_DAYS)),
+        )
+        next_at = dict(cur.fetchone() or {}).get("next_at")
+        return {"items": items, "due_count": due, "next_due_at": _iso(next_at), "review_days": list(REVIEW_DAYS)}
+    finally:
+        cur.close()
+        conn.close()
+
+
+async def _judge_review_sentence(item: dict[str, Any], sentence: str, x_language: str | None) -> dict[str, Any]:
+    from backend.main import _ai_result_language
+
+    subject = item["subject"]
+    language = "Russian" if subject == "russian" else _ai_result_language(x_language)
+    target = "English" if subject == "english" else "Russian"
+    system = (
+        f"You are a friendly {target} teacher checking a vocabulary review. The learner had to SAY a sentence that "
+        "uses the vocabulary item (the text is a speech-to-text transcript, so ignore punctuation and capitals). "
+        "ok is true only if the item (or a correct grammatical form of it) is used with its right meaning and the "
+        "sentence is understandable and mostly grammatical. "
+        f"Write feedback in {language}. Return ONLY JSON: "
+        '{"ok":true,"used_item":true,"feedback":"1-2 short sentences","corrected":"a corrected natural sentence with the item"}'
+    )
+    user_turn = (
+        f"Vocabulary item: {item['term']}\n"
+        f"Meaning: {item.get('explanation') or item.get('translation_uz') or item.get('translation_ru') or ''}\n"
+        f"Learner's sentence: {sentence}"
+    )
+    try:
+        raw = await _ai_json(system, user_turn, max_tokens=500)
+    except HTTPException:
+        raise HTTPException(status_code=503, detail="AI checking is temporarily unavailable. Please try again.")
+    result = {
+        "ok": raw.get("ok") is True and raw.get("used_item") is not False,
+        "feedback": _clean(raw.get("feedback"), 400),
+        "corrected": _clean(raw.get("corrected"), 400),
+    }
+    if not is_safe(result["feedback"]) or not is_safe(result["corrected"]):
+        result.update(feedback="", corrected="")
+    return result
+
+
+@router.post("/speaking/notebook/{item_id}/review")
+@router.post("/api/speaking/notebook/{item_id}/review")
+async def review_notebook_item(
+    item_id: int,
+    file: UploadFile | None = File(default=None),
+    text: str = Form(default="", max_length=400),
+    forgot: bool = Form(default=False),
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
+    """One spaced-repetition review: the learner says (or types) a sentence
+    with the word; AI checks it. Success moves the word to the next interval
+    (1, 3, 7, 14 days); a miss brings it back tomorrow and marks it difficult."""
+    user = _user(authorization)
+    ensure_tables()
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        item = _item(cur, item_id, user_id)
+    finally:
+        cur.close()
+        conn.close()
+    sentence = _clean(text, 400)
+    transcript = ""
+    if not forgot:
+        if file is not None:
+            raw = await file.read(MAX_REVIEW_AUDIO + 1)
+            if len(raw) > MAX_REVIEW_AUDIO:
+                raise HTTPException(status_code=413, detail="The recording is too long.")
+            if len(raw) < MIN_REVIEW_AUDIO or raw[4:8] != b"ftyp":
+                raise HTTPException(status_code=422, detail="The recording is too short. Please say a full sentence.")
+            _rate_limit(user_id, "review", 120, 3600)
+            from backend.speaking_answers import _transcribe_bytes
+
+            transcript = await _transcribe_bytes(raw, "review.m4a", "en" if item["subject"] == "english" else "ru")
+            sentence = _clean(transcript, 400)
+        if len(sentence.split()) < 2:
+            raise HTTPException(status_code=422, detail="We could not hear a sentence. Please try again.")
+        if not is_safe(sentence):
+            raise HTTPException(status_code=422, detail="Please use an appropriate sentence.")
+        if file is None:
+            _rate_limit(user_id, "review", 120, 3600)
+        verdict = await _judge_review_sentence(item, sentence, x_language)
+    else:
+        verdict = {"ok": False, "feedback": "", "corrected": item.get("example") or ""}
+    now = datetime.now(timezone.utc)
+    stage = int(item.get("review_stage") or 0)
+    if verdict["ok"]:
+        new_stage = min(len(REVIEW_DAYS), stage + 1)
+        next_at = next_review_after(new_stage, now)
+        status = "learned" if new_stage >= len(REVIEW_DAYS) else (
+            "saved" if item.get("status") == "difficult" else item.get("status") or "saved"
+        )
+    else:
+        new_stage = stage
+        next_at = now + timedelta(days=1)
+        status = "difficult"
+    last = {
+        "ok": bool(verdict["ok"]),
+        "sentence": sentence,
+        "spoken": bool(transcript),
+        "feedback": verdict.get("feedback") or "",
+        "corrected": verdict.get("corrected") or "",
+        "forgot": bool(forgot),
+        "at": now.isoformat(),
+    }
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """UPDATE speaking_vocab_notebook SET review_stage=%s, next_review_at=%s, last_reviewed_at=%s,
+                 review_count=COALESCE(review_count, 0)+1, last_review_json=%s, status=%s, updated_at=NOW()
+               WHERE id=%s AND user_id=%s RETURNING *""",
+            (new_stage, next_at, now, json.dumps(last, ensure_ascii=False), status, int(item_id), user_id),
+        )
+        row = dict(cur.fetchone())
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return {"result": last, "item": _public(row)}
 
 
 def ai_search_prompt(subject: str, query: str) -> tuple[str, str]:

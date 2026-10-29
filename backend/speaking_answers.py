@@ -337,6 +337,10 @@ def _serialize(row: dict[str, Any]) -> dict[str, Any]:
         "id": int(row.get("id") or 0),
         "question_id": str(row.get("question_ref") or row.get("question_id") or ""),
         "client_recording_id": str(row.get("client_recording_id") or ""),
+        # Mock exam answers: which exam and step (their audio is kept on the
+        # device under that exam), so attempts of one question can be compared.
+        "exam_id": int(row["exam_id"]) if row.get("exam_id") is not None else None,
+        "step_index": int(row["step_index"]) if row.get("step_index") is not None else None,
         "subject": str(row.get("subject") or "english"),
         "part": row.get("part"),
         "scale": str(row.get("scale") or "ielts"),
