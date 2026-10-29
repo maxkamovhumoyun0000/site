@@ -457,6 +457,18 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
               setupWebRTC(peerId, myIdRef.current.localeCompare(peerId) < 0);
             }
           });
+        } else if (msg.type === "kicked") {
+          // The server sends moderation events at the top level.
+          leaveRoom();
+          setErrorMsg(t("voiceroom.kicked") || "Siz xonadan chetlatildingiz.");
+        } else if (msg.type === "force_mute") {
+          forceLocalMute();
+        } else if (msg.type === "demoted") {
+          if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach((track) => track.stop());
+            localStreamRef.current = null;
+          }
+          setIsOnStage(false);
         } else if (msg.type === "chat_message") {
           setChatMessages(prev => [...prev, {
             id: Math.random().toString(),

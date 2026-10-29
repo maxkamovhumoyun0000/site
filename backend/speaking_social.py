@@ -60,6 +60,11 @@ def ensure_tables() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )"""
             )
+            # Telegram / Instagram links are shown to other users only after
+            # the user saved them here (admins may have entered them before).
+            cur.execute(
+                "ALTER TABLE speaking_user_profiles ADD COLUMN IF NOT EXISTS links_public INTEGER NOT NULL DEFAULT 0"
+            )
             conn.commit()
             _schema_ready = True
         finally:
@@ -134,10 +139,13 @@ def _user_row(user_id: int) -> dict[str, Any] | None:
     )
 
 
-def _bio(user_id: int) -> str:
+def _own_profile_row(user_id: int) -> dict[str, Any]:
     ensure_tables()
-    row = _query("SELECT bio FROM speaking_user_profiles WHERE user_id=? LIMIT 1", (int(user_id),), one=True)
-    return str((row or {}).get("bio") or "")
+    return _query(
+        "SELECT bio, links_public FROM speaking_user_profiles WHERE user_id=? LIMIT 1",
+        (int(user_id),),
+        one=True,
+    ) or {}
 
 
 def _apps_used(user_id: int, row: dict[str, Any], speaking_answers: int) -> dict[str, bool]:
@@ -270,6 +278,7 @@ def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
     i_blocked, blocked_me = _blocks_of(viewer_id) if not is_me else (set(), set())
     blocked_by_me = user_id in i_blocked
     has_blocked_me = user_id in blocked_me
+    public.pop("last_active", None)
     base = {
         **public,
         "first_name": str(row.get("first_name") or "").strip(),
@@ -283,13 +292,26 @@ def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
     }
     if has_blocked_me:
         # Like messengers: someone who blocked you shows only their name.
-        return {**base, "limited": True}
+        return {
+            "id": user_id,
+            "full_name": base["full_name"],
+            "login_id": "",
+            "avatar_url": None,
+            "role": base.get("role"),
+            "is_me": False,
+            "blocked_by_me": blocked_by_me,
+            "blocked_me": True,
+            "can_message": False,
+            "limited": True,
+        }
     stats = _speaking_stats(user_id)
     presence = _presence_summary_for_user(user_id)
+    extra = _own_profile_row(user_id)
+    links_visible = is_me or int(extra.get("links_public") or 0) == 1
     return {
         **base,
         "limited": False,
-        "bio": _bio(user_id),
+        "bio": str(extra.get("bio") or ""),
         "presence": {
             "is_online": bool(presence.get("is_online")),
             "last_online_at": presence.get("last_online_at"),
@@ -300,8 +322,8 @@ def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
         "points": _points(user_id),
         "speaking": stats,
         "apps": _apps_used(user_id, row, stats["answers"]),
-        "telegram_url": str(row.get("telegram_url") or "").strip() or None,
-        "instagram_url": str(row.get("instagram_url") or "").strip() or None,
+        "telegram_url": (str(row.get("telegram_url") or "").strip() or None) if links_visible else None,
+        "instagram_url": (str(row.get("instagram_url") or "").strip() or None) if links_visible else None,
     }
 
 
@@ -351,6 +373,26 @@ def normalize_instagram(value: str) -> str | None:
 # Routes
 # ---------------------------------------------------------------------------
 
+def _limit_about(viewer_id: int) -> None:
+    """Profiles are opened one at a time from chats, search and rooms; the
+    limit stops scripted walking through every account id."""
+    try:
+        from backend.main import _REDIS_CLIENT
+        from backend.rate_limiting import consume_rate_limit
+    except Exception:
+        return
+    for window, limit in ((3600, 120), (86400, 400)):
+        allowed, retry_after = consume_rate_limit(
+            _REDIS_CLIENT, f"speaking-about:{window}:{viewer_id}", limit=limit, window_seconds=window
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many profiles opened. Please try again later.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+
 @router.get("/speaking/users/{user_id}/about")
 @router.get("/api/speaking/users/{user_id}/about")
 async def speaking_user_about(user_id: int, authorization: str | None = Header(default=None)):
@@ -358,6 +400,7 @@ async def speaking_user_about(user_id: int, authorization: str | None = Header(d
 
     viewer = _viewer(authorization)
     viewer_id = int(viewer.get("id") or 0)
+    _limit_about(viewer_id)
     if not _active_speaking_user(int(user_id)):
         raise HTTPException(status_code=404, detail="Speaking user not found")
     row = _user_row(int(user_id))
@@ -421,6 +464,7 @@ async def update_speaking_profile_me(payload: ProfileUpdateRequest, authorizatio
     if payload.instagram is not None:
         updates.append("instagram_url=?")
         params.append(normalize_instagram(payload.instagram))
+    links_saved = payload.telegram is not None or payload.instagram is not None
     bio: str | None = None
     if payload.bio is not None:
         bio = " ".join(line.strip() for line in str(payload.bio).splitlines()).strip()
@@ -437,11 +481,17 @@ async def update_speaking_profile_me(payload: ProfileUpdateRequest, authorizatio
     try:
         if updates:
             cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", (*params, uid))
-        if bio is not None:
+        if bio is not None or links_saved:
             cur.execute(
-                """INSERT INTO speaking_user_profiles (user_id, bio, updated_at) VALUES (?, ?, NOW())
-                   ON CONFLICT (user_id) DO UPDATE SET bio=EXCLUDED.bio, updated_at=NOW()""",
-                (uid, bio),
+                "INSERT INTO speaking_user_profiles (user_id) VALUES (?) ON CONFLICT (user_id) DO NOTHING",
+                (uid,),
+            )
+        if bio is not None:
+            cur.execute("UPDATE speaking_user_profiles SET bio=?, updated_at=NOW() WHERE user_id=?", (bio, uid))
+        if links_saved:
+            cur.execute(
+                "UPDATE speaking_user_profiles SET links_public=1, updated_at=NOW() WHERE user_id=?",
+                (uid,),
             )
         conn.commit()
     except Exception:

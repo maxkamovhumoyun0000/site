@@ -612,7 +612,9 @@ async def _summary(subject: str, level_label: str, score: float, answers: list[d
     )
     try:
         raw = await _score(system, user_turn[:8000])
-    except HTTPException:
+    except Exception:
+        # The summary is optional; the level is already saved.
+        logger.warning("speaking placement summary unavailable", exc_info=True)
         return "", []
     return str(raw.get("summary") or "").strip()[:700], _clean_list(raw.get("recommendations"), limit=4)
 
@@ -665,9 +667,9 @@ async def finish_speaking_placement(
     score, spoken_avg = combine_scores(subject, spoken, mcq_correct, mcq_total)
     level_code, cefr, level_label = level_for(score, subject)
     language = "Russian" if subject == "russian" else _ai_result_language(x_language)
-    summary, recommendations = await _summary(
-        subject, level_label, score, answer_results, mcq_correct, mcq_total, language,
-    )
+    # The level is saved first; the AI summary is added afterwards, so a slow
+    # model can never lose a finished test.
+    summary, recommendations = "", []
     scale = "ielts" if subject == "english" else "ten"
     now = _now()
     result_payload = {
@@ -715,6 +717,23 @@ async def finish_speaking_placement(
     finally:
         cur.close()
         conn.close()
+    summary, recommendations = await _summary(
+        subject, level_label, score, answer_results, mcq_correct, mcq_total, language,
+    )
+    if summary or recommendations:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """UPDATE speaking_placement_results SET summary=%s, recommendations_json=%s
+                   WHERE user_id=%s AND subject=%s AND test_id=%s""",
+                (summary, json.dumps(recommendations, ensure_ascii=False), user_id, subject, int(test_id)),
+            )
+            conn.commit()
+        finally:
+            cur.close()
+            conn.close()
+        saved = {**saved, "summary": summary, "recommendations_json": json.dumps(recommendations, ensure_ascii=False)}
     return {
         "result": _serialize_result(saved),
         "details": result_payload,

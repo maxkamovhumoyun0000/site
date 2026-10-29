@@ -61629,6 +61629,18 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                 _REDIS_CLIENT.rpush(f"webrtc_signal_{p}", json.dumps(msg))
                 _REDIS_CLIENT.expire(f"webrtc_signal_{p}", 3600)
 
+    async def _send_room_bans(room_id: str):
+        """Users banned from one room (for the host's unban list)."""
+        items = []
+        for banned in sorted(_REDIS_CLIENT.smembers(f"voice_room_bans_{room_id}") or set())[:200]:
+            name = _REDIS_CLIENT.get(f"voice_room_ban_{room_id}_{banned}")
+            if name is None:
+                # Expired ban: drop it from the index.
+                _REDIS_CLIENT.srem(f"voice_room_bans_{room_id}", banned)
+                continue
+            items.append({"user_id": banned, "name": name if name != "-" else ""})
+        await _send({"type": "room_bans", "items": items})
+
     async def _send_room_state(room_id: str):
         info_raw = _REDIS_CLIENT.hgetall(f"voice_room_info_{room_id}")
         if not info_raw:
@@ -61690,11 +61702,14 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     if my_user_id and _REDIS_CLIENT.sismember("voice_room_banned_users", str(my_user_id)) and my_role != "admin":
                         await _send({"type": "error", "message": "Siz ovozli xonalardan chetlashtirilgansiz."})
                         continue
-                    if my_user_id and my_role != "admin":
-                        if _REDIS_CLIENT.sismember(f"voice_room_banned_{room_id}", str(my_user_id)):
+                    # Room bans and kick cooldowns are keyed by the account id
+                    # (or the one-way guest identity for legacy web guests).
+                    moderation_identity = str(my_user_id) if my_user_id else str(guest_identity or "")
+                    if moderation_identity and my_role != "admin":
+                        if _REDIS_CLIENT.exists(f"voice_room_ban_{room_id}_{moderation_identity}"):
                             await _send({"type": "error", "code": "room_banned", "message": "Siz bu xonadan chetlashtirilgansiz."})
                             continue
-                        if _REDIS_CLIENT.exists(f"voice_room_kicked_{room_id}_{my_user_id}"):
+                        if _REDIS_CLIENT.exists(f"voice_room_kicked_{room_id}_{moderation_identity}"):
                             await _send({"type": "error", "code": "kicked_recently", "message": "Siz bu xonadan chiqarildingiz. Birozdan keyin qayta kiring."})
                             continue
                     # A block must apply beyond the screen where it was made:
@@ -62058,15 +62073,34 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         if info.get("host_id") == peer_id:
                             await _send({"type": "error", "message": "Hostni xonadan chiqarib bo'lmaydi."})
                             continue
+                        # Homework and study rooms have no real owner on the
+                        # socket (the first member to join is "host"), so a
+                        # member there may only kick, never ban or lock out.
+                        private_room = (
+                            info.get("is_homework") == "1"
+                            or info.get("is_study_room") == "1"
+                            or str(info.get("subject") or "") == "homework"
+                            or str(info.get("subject") or "").startswith("_study_room_")
+                        )
+                        if action == "room_ban" and private_room and my_role != "admin":
+                            await _send({"type": "error", "message": "Bu xonada ban qilib bo'lmaydi."})
+                            continue
                         if info.get("host_id") == my_ws_id or my_role == "admin":
                             target_info = _REDIS_CLIENT.hgetall(f"voice_room_peer_info_{peer_id}") or {}
                             target_user = str(target_info.get("user_id") or "").strip()
                             reason = "room_ban" if action == "room_ban" else "kicked"
                             if target_user:
                                 if action == "room_ban":
-                                    _REDIS_CLIENT.sadd(f"voice_room_banned_{current_room_id}", target_user)
-                                    _REDIS_CLIENT.expire(f"voice_room_banned_{current_room_id}", 30 * 86400)
-                                else:
+                                    # One key per banned user, each with its own
+                                    # 30-day expiry; the index lists them for unban.
+                                    _REDIS_CLIENT.set(
+                                        f"voice_room_ban_{current_room_id}_{target_user}",
+                                        str(target_info.get("name") or "")[:80] or "-",
+                                        ex=30 * 86400,
+                                    )
+                                    _REDIS_CLIENT.sadd(f"voice_room_bans_{current_room_id}", target_user)
+                                    _REDIS_CLIENT.expire(f"voice_room_bans_{current_room_id}", 30 * 86400)
+                                elif not private_room:
                                     # A kick keeps the user out for a while, so
                                     # an immediate rejoin does not undo it.
                                     _REDIS_CLIENT.set(f"voice_room_kicked_{current_room_id}_{target_user}", "1", ex=600)
@@ -62077,12 +62111,20 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                             await _send_room_state(current_room_id)
 
                 elif action == "room_unban":
-                    target_user_id = str(msg.get("target_user_id") or "").strip()
+                    target_user_id = str(msg.get("target_user_id") or "").strip()[:120]
                     if current_room_id and target_user_id:
                         info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
                         if info.get("host_id") == my_ws_id or my_role == "admin":
-                            _REDIS_CLIENT.srem(f"voice_room_banned_{current_room_id}", target_user_id)
+                            _REDIS_CLIENT.delete(f"voice_room_ban_{current_room_id}_{target_user_id}")
+                            _REDIS_CLIENT.srem(f"voice_room_bans_{current_room_id}", target_user_id)
                             _REDIS_CLIENT.delete(f"voice_room_kicked_{current_room_id}_{target_user_id}")
+                            await _send_room_bans(current_room_id)
+
+                elif action == "list_room_bans":
+                    if current_room_id:
+                        info = _REDIS_CLIENT.hgetall(f"voice_room_info_{current_room_id}")
+                        if info.get("host_id") == my_ws_id or my_role == "admin":
+                            await _send_room_bans(current_room_id)
                 elif action == "force_close_room":
                     if my_role == "admin" and current_room_id:
                         await _broadcast_room(current_room_id, {"type": "room_closed"})
