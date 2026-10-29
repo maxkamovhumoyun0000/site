@@ -60986,6 +60986,8 @@ from backend.speaking_exams import router as speaking_exams_router
 from backend.speaking_plans import router as speaking_plans_router
 app.include_router(speaking_exams_router)
 app.include_router(speaking_plans_router)
+from backend.speaking_vocab_notebook import router as speaking_vocab_notebook_router
+app.include_router(speaking_vocab_notebook_router)
 app.include_router(speaking_videos_router)
 app.include_router(_media_hls.router)
 
