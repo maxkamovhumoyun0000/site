@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { useWebT } from "@/app/ui/web-i18n";
 import VideoComments from "@/app/ui/video-comments";
+import { useHlsSource } from "@/app/ui/use-hls-source";
 
 function formatViews(views: number | undefined | null) {
   if (!views) return "0 views";
@@ -51,6 +52,7 @@ type VideoItem = {
   subject?: string;
   thumbnail_url?: string;
   video_url?: string;
+  hls_url?: string | null;
   duration?: number;
   view_count?: number;
   like_count?: number;
@@ -86,7 +88,10 @@ export default function StudentVideoPage({ params }: { params: { videoId: string
   const safeVideoId = useMemo(() => (/^\d+$/.test(resolvedVideoIdRaw) ? resolvedVideoIdRaw : ""), [resolvedVideoIdRaw]);
   const resolvedVideoUrl = useMemo(() => resolveMediaUrl(video?.video_url), [video?.video_url]);
   const [refreshedSrc, setRefreshedSrc] = useState("");
-  const videoSrc = refreshedSrc || resolvedVideoUrl;
+  const mp4Src = refreshedSrc || resolvedVideoUrl;
+  // Adaptive HLS (1080/720/480, 4 s segments) when the lesson is transcoded;
+  // the MP4 stream otherwise or if HLS fails.
+  const { src: videoSrc } = useHlsSource(videoRef, resolveMediaUrl(video?.hls_url || ""), mp4Src);
   const retryRef = useRef(false);
   const lastTimeRef = useRef(0);
   const replayModeRef = useRef(false);

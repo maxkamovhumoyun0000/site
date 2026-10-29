@@ -236,6 +236,7 @@ type SpeakingDirectChat = {
   other_user: CommunityChatAuthor;
   last_message?: string | null;
   last_time?: string | null;
+  unread_count?: number;
 };
 
 type SpeakingDirectMessage = {
@@ -294,6 +295,42 @@ function formatWhen(raw?: string | null) {
 function chatTimeValue(raw?: string | null) {
   const value = raw ? new Date(raw).getTime() : 0;
   return Number.isFinite(value) ? value : 0;
+}
+
+/** Newest activity first (like Telegram); rows without a time go last. */
+function sortByLatest<T>(rows: T[], timeOf: (row: T) => string | null | undefined) {
+  return rows
+    .map((row, index) => ({ row, index, time: chatTimeValue(timeOf(row)) }))
+    .sort((a, b) => {
+      if (!a.time !== !b.time) return a.time ? -1 : 1;
+      return b.time - a.time || a.index - b.index;
+    })
+    .map((item) => item.row);
+}
+
+function sameSpeakingChatList(a: SpeakingDirectChat[], b: SpeakingDirectChat[]) {
+  return a.length === b.length && a.every((chat, index) => {
+    const other = b[index];
+    return chat.id === other.id && chat.last_time === other.last_time
+      && chat.last_message === other.last_message && Number(chat.unread_count || 0) === Number(other.unread_count || 0);
+  });
+}
+
+/** Placeholder rows while a chat list or conversation loads. */
+function ChatListSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="space-y-2" aria-hidden="true">
+      {Array.from({ length: rows }).map((_, index) => (
+        <div key={index} className="skeleton-card flex items-center gap-3 p-3">
+          <div className="skeleton-media h-9 w-9 shrink-0 rounded-full" />
+          <div className="flex-1 space-y-2">
+            <div className="skeleton-line title" />
+            <div className="skeleton-line short" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function sortDiamondvoyChats(chats: DiamondvoyChat[]) {
@@ -2155,8 +2192,22 @@ export function UniversalChat({
 
   const loadSpeakingDirectChats = useCallback(async () => {
     const payload = await apiFetch("/speaking/chats/direct");
-    setSpeakingDirectChats(Array.isArray(payload?.items) ? payload.items as SpeakingDirectChat[] : []);
+    const rows = sortByLatest(
+      Array.isArray(payload?.items) ? payload.items as SpeakingDirectChat[] : [],
+      (chat) => chat.last_time,
+    );
+    // Quiet polling: only re-render when something actually changed.
+    setSpeakingDirectChats((previous) => (sameSpeakingChatList(previous, rows) ? previous : rows));
   }, [apiFetch]);
+
+  // New messages re-order the list while the chat UI is open and visible.
+  useEffect(() => {
+    if (feedbackOnly) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") loadSpeakingDirectChats().catch(() => null);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [feedbackOnly, loadSpeakingDirectChats]);
 
   const searchSpeakingContacts = useCallback(async (query: string) => {
     const normalized = query.trim();
@@ -2243,7 +2294,14 @@ export function UniversalChat({
         await loadSpeakingDirectMessages(chatId, true);
       }
       setSpeakingDirectInput("");
-      await loadSpeakingDirectChats();
+      // Move this chat to the top with its new preview right away.
+      const sentAt = String(payload?.item?.created_at || new Date().toISOString());
+      setSpeakingDirectChats((previous) => {
+        const current = previous.find((item) => item.id === chatId);
+        if (!current) return previous;
+        return [{ ...current, last_message: message, last_time: sentAt }, ...previous.filter((item) => item.id !== chatId)];
+      });
+      loadSpeakingDirectChats().catch(() => null);
       requestAnimationFrame(() => {
         const node = speakingDirectScrollRef.current;
         if (node) node.scrollTop = node.scrollHeight;
@@ -2363,7 +2421,7 @@ export function UniversalChat({
       params.set("limit", "80");
       const payload = await apiFetch(`/feedback/threads?${params.toString()}`);
       const rows = Array.isArray(payload?.items) ? payload.items : [];
-      setAdminThreads(rows as FeedbackThreadSummary[]);
+      setAdminThreads(sortByLatest(rows as FeedbackThreadSummary[], (thread) => thread.updated_at));
       setError("");
     } catch (err) {
       setError(parseError(err, tt("chat.feedback.error.loadAdmin", "Takliflar ro'yxatini yuklab bo'lmadi.")));
@@ -3073,9 +3131,11 @@ export function UniversalChat({
 
         <div className="pt-2">
           <div className="px-1 pb-2 text-[11px] font-bold uppercase text-ink-500 dark:text-navy-300">Diamondvoy</div>
-          {aiChats.length === 0 ? (
+          {aiChats.length === 0 && loadingList ? (
+            <ChatListSkeleton />
+          ) : aiChats.length === 0 ? (
             <div className="px-3 py-4 rounded-2xl border border-dashed border-[#E6EBF5] dark:border-white/10 text-xs text-ink-500 dark:text-navy-300">
-              {loadingList ? tt("common.loading", "Yuklanmoqda...") : tt("chat.ai.empty", "Hozircha chat yo'q")}
+              {tt("chat.ai.empty", "Hozircha chat yo'q")}
             </div>
           ) : (
             <div className="space-y-2">
@@ -3202,7 +3262,7 @@ export function UniversalChat({
             Diamondvoy suhbatini chap paneldan oching.
           </div>
         ) : loadingBody && aiMessages.length === 0 ? (
-          <div className="text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</div>
+          <ChatListSkeleton rows={4} />
         ) : aiMessages.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-ink-400 dark:text-slate-400 h-full">
             <DiamondvoyAvatar profileLabel="Diamondvoy" />
@@ -3441,7 +3501,7 @@ export function UniversalChat({
 
       <div ref={communityScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-4 space-y-4">
         {loadingBody && communityMessages.length === 0 ? (
-          <div className="text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</div>
+          <ChatListSkeleton rows={5} />
         ) : communityMessages.length === 0 ? (
           <div className="h-full grid place-items-center text-center px-6 text-ink-500 dark:text-navy-300">
             <div>
@@ -3577,7 +3637,7 @@ export function UniversalChat({
       {error && <div role="alert" className="border-b border-rose-200 bg-rose-50 px-4 py-2 text-sm text-rose-700 dark:border-rose-400/20 dark:bg-rose-500/10 dark:text-rose-200">{error}</div>}
       <div ref={speakingDirectScrollRef} onScroll={(event) => { const node = event.currentTarget; pinnedToBottomRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 72; }} className="flex-1 min-h-0 overflow-y-auto space-y-3 px-4 py-4">
         {loadingBody && speakingDirectMessages.length === 0 ? (
-          <p className="text-center text-sm text-ink-500 dark:text-navy-300">{tt("common.loading", "Yuklanmoqda...")}</p>
+          <ChatListSkeleton rows={4} />
         ) : speakingDirectMessages.length === 0 ? (
           <div className="grid h-full place-items-center text-center text-sm text-ink-500 dark:text-navy-300">{tt("chat.speaking.start", "Suhbatni boshlash uchun xabar yuboring.")}</div>
         ) : speakingDirectMessages.map((message) => (
@@ -3825,7 +3885,7 @@ export function UniversalChat({
               <p className="text-xs text-ink-600 dark:text-navy-300 mt-2 line-clamp-2">{thread.last_message_preview || "-"}</p>
             </button>
           ))}
-          {!adminThreads.length && <div className="text-sm text-ink-500 dark:text-navy-300">{loadingBody ? tt("common.loading", "Yuklanmoqda...") : tt("chat.feedback.emptyAdmin", "Taklif yo'q")}</div>}
+          {!adminThreads.length && (loadingBody ? <ChatListSkeleton /> : <div className="text-sm text-ink-500 dark:text-navy-300">{tt("chat.feedback.emptyAdmin", "Taklif yo'q")}</div>)}
         </div>
       </div>
 

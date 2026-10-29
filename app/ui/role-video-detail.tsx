@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api";
 import { useWebT } from "./web-i18n";
 import VideoComments from "./video-comments";
+import { useHlsSource } from "./use-hls-source";
 
 function formatViews(views: number | undefined | null) {
   if (!views) return "0 views";
@@ -42,6 +43,7 @@ type VideoItem = {
   level?: string;
   thumbnail_url?: string;
   video_url?: string;
+  hls_url?: string | null;
   duration?: number;
   view_count?: number;
   like_count?: number;
@@ -84,7 +86,9 @@ export function RoleVideoDetailPage({ role, videoId }: { role: "admin" | "teache
   const resolvedVideoIdRaw = String(videoId || params?.videoId || "").trim();
   const safeVideoId = /^\d+$/.test(resolvedVideoIdRaw) ? resolvedVideoIdRaw : "";
 
-  const videoSrc = refreshedSrc || resolveMediaUrl(video?.video_url);
+  const mp4Src = refreshedSrc || resolveMediaUrl(video?.video_url);
+  // Adaptive HLS when the lesson is transcoded; the MP4 stream otherwise.
+  const { src: videoSrc } = useHlsSource(videoRef, resolveMediaUrl(video?.hls_url || ""), mp4Src);
 
   const formattedDuration = useMemo(() => {
     const total = Math.max(0, Math.round(Number(actualDuration || video?.duration || 0)));
