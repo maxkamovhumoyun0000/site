@@ -373,8 +373,13 @@ async def list_speaking_direct_chats(authorization: str | None = Header(default=
                 for row in cur.fetchall() or []
             }
         items = []
+        # Chats with a blocked user (either direction) leave the list; they
+        # come back when the block is lifted.
+        blocked_ids = _mutually_blocked_ids(uid)
         for chat in chats:
             other_id = int(chat.get("user_high_id") if int(chat.get("user_low_id") or 0) == uid else chat.get("user_low_id") or 0)
+            if other_id in blocked_ids:
+                continue
             other = _active_speaking_user(other_id)
             if not other:
                 continue

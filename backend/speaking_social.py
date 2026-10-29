@@ -1,0 +1,530 @@
+"""Speaking app: user About pages, own profile and blocking.
+
+* ``GET /speaking/users/{id}/about``: the profile another learner sees from a
+  private chat, user search or a voice room: name, login, avatar, bio, last
+  seen, subjects, level, points, Speaking stats and which Diamond apps the
+  account uses.  Phone numbers, e-mail addresses and credentials are never
+  part of it.
+* ``GET/PATCH /speaking/profile/me``: the same page for the signed-in user,
+  plus editing the bio, Telegram / Instagram and (Speaking app accounts only)
+  the name.
+* ``GET /speaking/blocks``, ``POST/DELETE /speaking/users/{id}/block`` and
+  ``POST /speaking/users/{id}/report``: blocking and reporting.  They reuse the
+  shared ``web_user_blocks`` store, so a block made in the app also applies to
+  chats, user search and voice rooms everywhere.
+"""
+from __future__ import annotations
+
+import logging
+import re
+import threading
+import unicodedata
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel, Field
+
+from db import get_conn
+from speaking_contract import is_speaking_app_account
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+BIO_MAX = 300
+NAME_MAX = 80
+_TELEGRAM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+_INSTAGRAM_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+_SPEAKING_SOURCES = {"speaking", "speaking_app", "speaking_registration", "speaking_student_link"}
+_WEBSITE_SOURCES = {"web", "login", "qr", "password_change"}
+_TELEGRAM_SOURCES = {"telegram", "telegram_mobile_bot"}
+
+_schema_ready = False
+_schema_lock = threading.Lock()
+
+
+def ensure_tables() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS speaking_user_profiles (
+                    user_id BIGINT PRIMARY KEY,
+                    bio TEXT NOT NULL DEFAULT '',
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )"""
+            )
+            conn.commit()
+            _schema_ready = True
+        finally:
+            cur.close()
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _viewer(authorization: str | None) -> dict[str, Any]:
+    from backend.speaking_chats import _require_speaking_user
+
+    return _require_speaking_user(authorization)
+
+
+def _blocks_of(user_id: int) -> tuple[set[int], set[int]]:
+    """(ids the user blocked, ids that blocked the user)."""
+    from backend.main import community_safety
+
+    mine = community_safety.blocked_ids(int(user_id), either_direction=False)
+    both = community_safety.blocked_ids(int(user_id), either_direction=True)
+    return mine, both - mine
+
+
+def _iso(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if hasattr(value, "isoformat"):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return str(value)
+
+
+def _query(sql: str, params: tuple = (), *, one: bool = False) -> Any:
+    """Read-only query that tolerates a missing optional table."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(sql, params)
+        if one:
+            row = cur.fetchone()
+            return dict(row) if row else None
+        return [dict(row) for row in cur.fetchall() or []]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None if one else []
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        conn.close()
+
+
+def _user_row(user_id: int) -> dict[str, Any] | None:
+    from backend.main import _ensure_user_web_columns
+
+    _ensure_user_web_columns()
+    return _query(
+        """SELECT id, login_id, first_name, last_name, profile_image_url, login_type, subject, level,
+                  created_at, last_activity, last_login_at, instagram_url, telegram_url,
+                  speaking_app_account, speaking_deleted_at, blocked, access_enabled
+           FROM users WHERE id=? LIMIT 1""",
+        (int(user_id),),
+        one=True,
+    )
+
+
+def _bio(user_id: int) -> str:
+    ensure_tables()
+    row = _query("SELECT bio FROM speaking_user_profiles WHERE user_id=? LIMIT 1", (int(user_id),), one=True)
+    return str((row or {}).get("bio") or "")
+
+
+def _apps_used(user_id: int, row: dict[str, Any], speaking_answers: int) -> dict[str, bool]:
+    sources = {
+        str(item.get("source") or "").strip().lower()
+        for item in _query("SELECT DISTINCT source FROM web_user_sessions WHERE user_id=?", (int(user_id),))
+    }
+    push_apps = {
+        str(item.get("app") or "").strip().lower()
+        for item in _query("SELECT DISTINCT app FROM push_device_tokens WHERE user_id=?", (int(user_id),))
+    }
+    speaking_push = bool(_query("SELECT 1 AS x FROM speaking_push_tokens WHERE user_id=? LIMIT 1", (int(user_id),), one=True))
+    return {
+        "speaking": bool(
+            sources & _SPEAKING_SOURCES
+            or speaking_push
+            or speaking_answers > 0
+            or is_speaking_app_account(row.get("speaking_app_account"))
+        ),
+        "student": "student" in sources or "student" in push_apps,
+        "teacher": "teacher" in sources or "teacher" in push_apps,
+        "website": bool(sources & _WEBSITE_SOURCES),
+        "telegram": bool(sources & _TELEGRAM_SOURCES),
+    }
+
+
+def _subjects(user_id: int, row: dict[str, Any]) -> list[str]:
+    try:
+        from db import get_user_subjects
+
+        subjects = [str(s).strip() for s in (get_user_subjects(int(user_id)) or []) if str(s).strip()]
+    except Exception:
+        subjects = []
+    if not subjects:
+        subjects = [s.strip() for s in str(row.get("subject") or "").split(",") if s.strip()]
+    out: list[str] = []
+    for subject in subjects:
+        if subject not in out:
+            out.append(subject)
+    return out[:6]
+
+
+def _levels(user_id: int, row: dict[str, Any]) -> list[dict[str, Any]]:
+    levels: list[dict[str, Any]] = []
+    try:
+        from backend.speaking_placement import results_for
+
+        for result in results_for(int(user_id)):
+            levels.append({
+                "subject": result["subject"],
+                "level": result["level_code"],
+                "label": result["level_label"],
+                "source": "speaking_test",
+                "tested_at": result.get("tested_at"),
+            })
+    except Exception:
+        logger.debug("speaking placement results unavailable", exc_info=True)
+    student_level = str(row.get("level") or "").strip()
+    if student_level and not is_speaking_app_account(row.get("speaking_app_account")):
+        levels.append({"subject": None, "level": student_level, "label": student_level, "source": "student_app"})
+    return levels
+
+
+def _speaking_stats(user_id: int) -> dict[str, Any]:
+    from backend.speaking_exams import build_badges, streak_from_days, _today
+
+    count = _query("SELECT COUNT(*) AS n FROM speaking_answer_analyses WHERE user_id=?", (int(user_id),), one=True)
+    answers = int((count or {}).get("n") or 0)
+    mocks_rows = _query(
+        """SELECT subject, COUNT(*) AS n, MAX(overall) AS best FROM speaking_exams
+           WHERE user_id=? AND kind='mock' AND status='finished' GROUP BY subject""",
+        (int(user_id),),
+    )
+    mocks = sum(int(r.get("n") or 0) for r in mocks_rows)
+    best = {
+        str(r.get("subject") or "english"): (float(r["best"]) if r.get("best") is not None else None)
+        for r in mocks_rows
+    }
+    day_rows = _query("SELECT DISTINCT day FROM speaking_daily_challenges WHERE user_id=?", (int(user_id),))
+    days = []
+    for item in day_rows:
+        value = item.get("day")
+        try:
+            days.append(value if hasattr(value, "toordinal") and not isinstance(value, datetime)
+                        else datetime.fromisoformat(str(value)[:10]).date())
+        except ValueError:
+            continue
+    current, best_streak = streak_from_days(sorted(set(days)), _today()) if days else (0, 0)
+    strong = _query(
+        "SELECT COUNT(*) AS n FROM speaking_answer_analyses WHERE user_id=? AND subject='english' AND part=2 AND score >= 6.5",
+        (int(user_id),),
+        one=True,
+    )
+    badges = build_badges(
+        best_streak=best_streak, recordings=answers, mocks=mocks,
+        part2_strong=int((strong or {}).get("n") or 0), subject="english",
+    )
+    return {
+        "answers": answers,
+        "mock_exams": mocks,
+        "best_mock": best,
+        "streak_current": current,
+        "streak_best": best_streak,
+        "badges": [b["key"] for b in badges if b.get("earned")],
+    }
+
+
+def _points(user_id: int) -> dict[str, float]:
+    from db import get_dcoins, get_dpoints
+
+    out = {"dcoins": 0.0, "dpoints": 0.0}
+    try:
+        out["dcoins"] = round(float(get_dcoins(int(user_id)) or 0), 1)
+    except Exception:
+        pass
+    try:
+        out["dpoints"] = round(float(get_dpoints(int(user_id)) or 0), 1)
+    except Exception:
+        pass
+    return out
+
+
+def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
+    from backend.main import _first_existing_avatar_url, _presence_summary_for_user
+    from backend.speaking_chats import _public_user
+
+    user_id = int(row.get("id") or 0)
+    is_me = user_id == int(viewer_id)
+    public = _public_user(row)
+    i_blocked, blocked_me = _blocks_of(viewer_id) if not is_me else (set(), set())
+    blocked_by_me = user_id in i_blocked
+    has_blocked_me = user_id in blocked_me
+    base = {
+        **public,
+        "first_name": str(row.get("first_name") or "").strip(),
+        "last_name": str(row.get("last_name") or "").strip(),
+        "avatar_url": _first_existing_avatar_url(row.get("profile_image_url")) or public.get("avatar_url"),
+        "is_me": is_me,
+        "blocked_by_me": blocked_by_me,
+        "blocked_me": has_blocked_me,
+        "can_message": not is_me and not blocked_by_me and not has_blocked_me,
+        "speaking_account": is_speaking_app_account(row.get("speaking_app_account")),
+    }
+    if has_blocked_me:
+        # Like messengers: someone who blocked you shows only their name.
+        return {**base, "limited": True}
+    stats = _speaking_stats(user_id)
+    presence = _presence_summary_for_user(user_id)
+    return {
+        **base,
+        "limited": False,
+        "bio": _bio(user_id),
+        "presence": {
+            "is_online": bool(presence.get("is_online")),
+            "last_online_at": presence.get("last_online_at"),
+        },
+        "member_since": _iso(row.get("created_at")),
+        "subjects": _subjects(user_id, row),
+        "levels": _levels(user_id, row),
+        "points": _points(user_id),
+        "speaking": stats,
+        "apps": _apps_used(user_id, row, stats["answers"]),
+        "telegram_url": str(row.get("telegram_url") or "").strip() or None,
+        "instagram_url": str(row.get("instagram_url") or "").strip() or None,
+    }
+
+
+def _clear_user_cache(user_id: int) -> None:
+    try:
+        from backend.main import _USER_PAYLOAD_CACHE
+
+        for key in list(_USER_PAYLOAD_CACHE.keys()):
+            if isinstance(key, tuple) and key and key[0] == int(user_id):
+                _USER_PAYLOAD_CACHE.pop(key, None)
+    except Exception:
+        pass
+
+
+def _clean_name(value: str, field: str) -> str:
+    text = " ".join(unicodedata.normalize("NFC", str(value or "")).split())
+    if any(unicodedata.category(ch).startswith("C") for ch in text):
+        raise HTTPException(status_code=422, detail=f"{field} contains invalid characters")
+    if len(text) > NAME_MAX:
+        raise HTTPException(status_code=422, detail=f"{field} is too long")
+    if text and not any(ch.isalpha() for ch in text):
+        raise HTTPException(status_code=422, detail=f"{field} must contain letters")
+    return text
+
+
+def normalize_telegram(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    handle = re.sub(r"^(https?://)?(www\.)?(t\.me|telegram\.me)/", "", raw, flags=re.IGNORECASE).lstrip("@").strip("/")
+    if not _TELEGRAM_RE.match(handle):
+        raise HTTPException(status_code=422, detail="Telegram username is not valid")
+    return f"https://t.me/{handle}"
+
+
+def normalize_instagram(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    handle = re.sub(r"^(https?://)?(www\.)?instagram\.com/", "", raw, flags=re.IGNORECASE).lstrip("@").strip("/")
+    if not _INSTAGRAM_RE.match(handle) or handle.startswith(".") or handle.endswith("."):
+        raise HTTPException(status_code=422, detail="Instagram username is not valid")
+    return f"https://instagram.com/{handle}"
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@router.get("/speaking/users/{user_id}/about")
+@router.get("/api/speaking/users/{user_id}/about")
+async def speaking_user_about(user_id: int, authorization: str | None = Header(default=None)):
+    from backend.speaking_chats import _active_speaking_user
+
+    viewer = _viewer(authorization)
+    viewer_id = int(viewer.get("id") or 0)
+    if not _active_speaking_user(int(user_id)):
+        raise HTTPException(status_code=404, detail="Speaking user not found")
+    row = _user_row(int(user_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Speaking user not found")
+    return {"user": _profile_payload(row, viewer_id=viewer_id)}
+
+
+class ProfileUpdateRequest(BaseModel):
+    first_name: str | None = Field(default=None, max_length=NAME_MAX)
+    last_name: str | None = Field(default=None, max_length=NAME_MAX)
+    bio: str | None = Field(default=None, max_length=BIO_MAX)
+    telegram: str | None = Field(default=None, max_length=120)
+    instagram: str | None = Field(default=None, max_length=120)
+
+
+def _own_payload(viewer: dict[str, Any]) -> dict[str, Any]:
+    uid = int(viewer.get("id") or 0)
+    row = _user_row(uid)
+    if not row:
+        raise HTTPException(status_code=404, detail="Account not found")
+    payload = _profile_payload(row, viewer_id=uid)
+    i_blocked, _ = _blocks_of(uid)
+    payload["blocked_count"] = len(i_blocked)
+    payload["can_edit_name"] = is_speaking_app_account(row.get("speaking_app_account"))
+    return payload
+
+
+@router.get("/speaking/profile/me")
+@router.get("/api/speaking/profile/me")
+async def speaking_profile_me(authorization: str | None = Header(default=None)):
+    return {"user": _own_payload(_viewer(authorization))}
+
+
+@router.patch("/speaking/profile/me")
+@router.patch("/api/speaking/profile/me")
+async def update_speaking_profile_me(payload: ProfileUpdateRequest, authorization: str | None = Header(default=None)):
+    from backend.community_safety import validate_public_text
+
+    viewer = _viewer(authorization)
+    uid = int(viewer.get("id") or 0)
+    ensure_tables()
+    updates: list[str] = []
+    params: list[Any] = []
+    if payload.first_name is not None or payload.last_name is not None:
+        # School accounts keep the name the education centre registered.
+        if not is_speaking_app_account(viewer.get("speaking_app_account")):
+            raise HTTPException(status_code=403, detail="Your name is managed by your education centre")
+        if payload.first_name is not None:
+            first = _clean_name(payload.first_name, "First name")
+            if not first:
+                raise HTTPException(status_code=422, detail="First name is required")
+            updates.append("first_name=?")
+            params.append(first)
+        if payload.last_name is not None:
+            updates.append("last_name=?")
+            params.append(_clean_name(payload.last_name, "Last name"))
+    if payload.telegram is not None:
+        updates.append("telegram_url=?")
+        params.append(normalize_telegram(payload.telegram))
+    if payload.instagram is not None:
+        updates.append("instagram_url=?")
+        params.append(normalize_instagram(payload.instagram))
+    bio: str | None = None
+    if payload.bio is not None:
+        bio = " ".join(line.strip() for line in str(payload.bio).splitlines()).strip()
+        if any(unicodedata.category(ch) == "Cc" for ch in bio):
+            raise HTTPException(status_code=422, detail="Bio contains invalid characters")
+        if bio:
+            try:
+                bio = validate_public_text(bio)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        bio = bio[:BIO_MAX]
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if updates:
+            cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id=?", (*params, uid))
+        if bio is not None:
+            cur.execute(
+                """INSERT INTO speaking_user_profiles (user_id, bio, updated_at) VALUES (?, ?, NOW())
+                   ON CONFLICT (user_id) DO UPDATE SET bio=EXCLUDED.bio, updated_at=NOW()""",
+                (uid, bio),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+    _clear_user_cache(uid)
+    return {"user": _own_payload(viewer)}
+
+
+@router.get("/speaking/blocks")
+@router.get("/api/speaking/blocks")
+async def speaking_blocked_users(authorization: str | None = Header(default=None)):
+    from backend.main import _display_name, _first_existing_avatar_url, community_safety
+
+    viewer = _viewer(authorization)
+    community_safety.ensure_schema()
+    rows = _query(
+        """SELECT b.blocked_user_id AS id, b.created_at AS blocked_at, u.login_id, u.first_name, u.last_name,
+                  u.profile_image_url
+           FROM web_user_blocks b JOIN users u ON u.id=b.blocked_user_id
+           WHERE b.user_id=? ORDER BY b.created_at DESC LIMIT 500""",
+        (int(viewer.get("id") or 0),),
+    )
+    return {"items": [
+        {
+            "id": int(r.get("id") or 0),
+            "login_id": str(r.get("login_id") or ""),
+            "full_name": _display_name(r),
+            "avatar_url": _first_existing_avatar_url(r.get("profile_image_url")),
+            "blocked_at": _iso(r.get("blocked_at")),
+        }
+        for r in rows
+    ]}
+
+
+@router.post("/speaking/users/{user_id}/block")
+@router.post("/api/speaking/users/{user_id}/block")
+async def speaking_block_user(user_id: int, authorization: str | None = Header(default=None)):
+    from backend.main import community_safety
+
+    viewer = _viewer(authorization)
+    try:
+        community_safety.block(int(viewer.get("id") or 0), int(user_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"success": True, "blocked": True}
+
+
+@router.delete("/speaking/users/{user_id}/block")
+@router.delete("/api/speaking/users/{user_id}/block")
+async def speaking_unblock_user(user_id: int, authorization: str | None = Header(default=None)):
+    from backend.main import community_safety
+
+    viewer = _viewer(authorization)
+    community_safety.unblock(int(viewer.get("id") or 0), int(user_id))
+    return {"success": True, "blocked": False}
+
+
+class SpeakingReportRequest(BaseModel):
+    reason: Literal["harassment", "inappropriate", "spam", "privacy", "other"] = "other"
+    details: str = Field(default="", max_length=2000)
+    context: Literal["profile", "chat", "voice_room"] = "profile"
+
+
+@router.post("/speaking/users/{user_id}/report")
+@router.post("/api/speaking/users/{user_id}/report")
+async def speaking_report_user(user_id: int, payload: SpeakingReportRequest,
+                               authorization: str | None = Header(default=None)):
+    from backend.main import SafetyReportRequest, safety_report
+
+    _viewer(authorization)
+    return await safety_report(
+        SafetyReportRequest(
+            target_type="voice_user" if payload.context == "voice_room" else "user",
+            target_id=str(int(user_id)),
+            reason=payload.reason,
+            details=payload.details,
+            snapshot=f"Reported from the Speaking app ({payload.context}).",
+        ),
+        authorization,
+    )
