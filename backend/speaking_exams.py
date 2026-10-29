@@ -9,8 +9,8 @@ English mock (standard order, or a single part):
 * Part 3: 5-6 discussion questions from the Part 3 topic closest to the cue
   card, 60 s each.
 
-Russian mock: the same three stages built from Russian topics (short
-questions 45 s, a 60 s + 120 s monologue, discussion questions 60 s).
+Russian mock: about 10 questions from different Russian topics, no parts,
+up to 60 s each, scored out of 10 (mini mock 5, daily challenge 3).
 
 Each answer is recorded separately and scored by
 ``POST /speaking/answers/analyze`` with ``exam_id``/``step_index``; finishing
@@ -43,7 +43,8 @@ _SCHEMA_READY = False
 
 TIMINGS = {
     "english": {"part1": 30, "part2_prep": 60, "part2": 120, "part3": 60},
-    "russian": {"part1": 45, "part2_prep": 60, "part2": 120, "part3": 60},
+    # Russian exams have no parts: every question is answered in up to 60 s.
+    "russian": {"part1": 60, "part2_prep": 60, "part2": 120, "part3": 60},
 }
 PART_WEIGHTS = {1: 0.3, 2: 0.35, 3: 0.35}
 _STOP_WORDS = {
@@ -223,28 +224,22 @@ def _english_plan(bank: dict[int, list[dict[str, Any]]], parts: str, rng: random
 
 
 def _russian_plan(bank: dict[int, list[dict[str, Any]]], rng: random.Random, *, practice: bool,
-                  short_count: int, discussion_count: int) -> list[dict[str, Any]]:
-    topic_ids = list(bank)
+                  count: int) -> list[dict[str, Any]]:
+    """Russian exam: about ``count`` questions from different topics, no parts
+    (all steps are ``part`` 1, 60 s each), scored out of 10."""
+    topic_ids = [tid for tid, rows in bank.items() if rows]
     if not topic_ids:
         return []
     rng.shuffle(topic_ids)
-    mono_topic = max(topic_ids[: min(6, len(topic_ids))], key=lambda tid: len(bank[tid]))
-    mono_rows = list(bank[mono_topic])
-    rng.shuffle(mono_rows)
-    monologue = mono_rows[0]
-    discussion = mono_rows[1: 1 + discussion_count]
-    short_pool: list[dict[str, Any]] = []
+    picked: list[dict[str, Any]] = []
+    per_topic = 1 if len(topic_ids) >= count else 2
     for topic_id in topic_ids:
-        if topic_id == mono_topic:
-            continue
         rows = list(bank[topic_id])
         rng.shuffle(rows)
-        short_pool.extend(rows[:2])
-        if len(short_pool) >= short_count:
+        picked.extend(rows[:per_topic])
+        if len(picked) >= count:
             break
-    rows_out = [(1, row) for row in short_pool[:short_count]] + [(2, monologue)] + [(3, row) for row in discussion]
-    return [_step(row, part=part, index=i, subject="russian", practice=practice) for i, (part, row) in enumerate(rows_out)]
-
+    return [_step(row, part=1, index=i, subject="russian", practice=practice) for i, row in enumerate(picked[:count])]
 
 def _related_part3(bank: dict[int, list[dict[str, Any]]], cue: dict[str, Any], count: int,
                    rng: random.Random) -> list[dict[str, Any]]:
@@ -279,7 +274,7 @@ def topic_practice_rows(bank: dict[int, list[dict[str, Any]]], topic_id: int, su
         return []
     rng.shuffle(rows)
     if subject != "english":
-        return [(3, row) for row in rows[:5]]
+        return [(1, row) for row in rows[:5]]
     part = int(rows[0].get("part") or 1)
     if part == 2:
         cue = rows[0]
@@ -305,14 +300,14 @@ def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: boo
         if subject == "english":
             plan = _english_plan(bank, "full", rng, practice=practice, part1_count=1, part3_count=1)
         else:
-            plan = _russian_plan(bank, rng, practice=practice, short_count=1, discussion_count=1)
+            plan = _russian_plan(bank, rng, practice=practice, count=3)
     elif parts == "mini":
         # Speaking Plan mini mock: every part, fewer questions.
         rng = random.Random()
         if subject == "english":
             plan = _english_plan(bank, "full", rng, practice=practice, part1_count=4, part3_count=3)
         else:
-            plan = _russian_plan(bank, rng, practice=practice, short_count=3, discussion_count=3)
+            plan = _russian_plan(bank, rng, practice=practice, count=5)
     else:
         rng = random.Random()
         if subject == "english":
@@ -321,7 +316,7 @@ def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: boo
                 part1_count=rng.randint(6, 10), part3_count=rng.randint(5, 6),
             )
         else:
-            plan = _russian_plan(bank, rng, practice=practice, short_count=6, discussion_count=5)
+            plan = _russian_plan(bank, rng, practice=practice, count=10)
     if not plan:
         raise HTTPException(status_code=404, detail="Not enough Speaking questions for this exam yet")
     return plan
