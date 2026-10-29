@@ -403,25 +403,33 @@ async def _exam_feedback(subject: str, step_rows: list[dict[str, Any]], part_sco
     """One AI call: strengths, weaknesses and a next practice plan."""
     from backend.speaking_answers import _clean_list, _score
 
+    # The Russian exam is a flat list of questions without parts; older
+    # Russian exams with three stages keep their part labels.
+    part_less = subject == "russian" and len([k for k in part_scores if k]) <= 1
     lines = []
-    for item in step_rows:
+    for number, item in enumerate(step_rows, start=1):
         analysis = item.get("analysis") or {}
+        label = f"Question {number}" if part_less else f"Part {item['part']}"
         lines.append(
-            f"Part {item['part']} | Q: {item['prompt'][:160]} | status: {item['status']} | "
+            f"{label} | Q: {item['prompt'][:160]} | status: {item['status']} | "
             f"score: {analysis.get('score', '-')} | criteria: {json.dumps(analysis.get('criteria') or {})} | "
             f"answer: {str(analysis.get('transcript') or '')[:400]}"
         )
     exam_name = "IELTS Speaking mock exam" if scale == "ielts" else "Russian speaking exam"
     system = (
         f"You are an experienced examiner summarising a full {exam_name}. Base everything on the per-question data. "
-        f"Write every text in {language}. Return ONLY compact JSON: "
+        + ("The exam has no parts: never mention parts or stages. " if part_less else "")
+        + f"Write every text in {language}. Return ONLY compact JSON: "
         '{"summary":"3-4 sentences","strengths":["..."],"weaknesses":["..."],'
         '"next_plan":["concrete practice step for the next days"]} '
         "with 3-4 strengths, 3-4 weaknesses and 5-6 plan steps."
     )
+    part_line = "" if part_less else (
+        f"Part scores: {json.dumps({f'part{k}': v for k, v in part_scores.items()})}."
+    )
     user_turn = (
         f"Overall: {overall} ({'band' if scale == 'ielts' else 'out of 10'}). "
-        f"Part scores: {json.dumps({f'part{k}': v for k, v in part_scores.items()})}.\n" + "\n".join(lines)
+        f"{part_line}\n" + "\n".join(lines)
     )
     try:
         raw = await _score(system, user_turn[:12000])
