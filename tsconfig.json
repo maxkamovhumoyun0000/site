@@ -37,6 +37,11 @@
   ],
   "exclude": [
     "node_modules",
-    "frontend"
+    "frontend",
+    "data",
+    "logs",
+    ".venv",
+    "uploads",
+    "public/uploads"
   ]
 }
