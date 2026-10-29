@@ -259,6 +259,13 @@ def _build_plan(user_id: int, subject: str, kind: str, parts: str, practice: boo
             plan = _english_plan(bank, "full", rng, practice=practice, part1_count=1, part3_count=1)
         else:
             plan = _russian_plan(bank, rng, practice=practice, short_count=1, discussion_count=1)
+    elif parts == "mini":
+        # Speaking Plan mini mock: every part, fewer questions.
+        rng = random.Random()
+        if subject == "english":
+            plan = _english_plan(bank, "full", rng, practice=practice, part1_count=4, part3_count=3)
+        else:
+            plan = _russian_plan(bank, rng, practice=practice, short_count=3, discussion_count=3)
     else:
         rng = random.Random()
         if subject == "english":
@@ -277,7 +284,7 @@ class ExamStartRequest(BaseModel):
     subject: str = Field(default="english", max_length=32)
     kind: str = Field(default="mock", pattern="^(mock|challenge)$")
     mode: str = Field(default="exam", pattern="^(exam|practice)$")
-    parts: str = Field(default="full", pattern="^(full|part1|part2|part3)$")
+    parts: str = Field(default="full", pattern="^(full|part1|part2|part3|mini)$")
 
 
 class ExamStepResult(BaseModel):
@@ -302,7 +309,12 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject = _subject_key(payload.subject)
-    parts = payload.parts if subject == "english" and payload.kind == "mock" else "full"
+    if payload.kind != "mock":
+        parts = "full"
+    elif payload.parts == "mini" or subject == "english":
+        parts = payload.parts
+    else:
+        parts = "full"
     steps = _build_plan(user_id, subject, payload.kind, parts, payload.mode == "practice")
     conn = get_conn()
     cur = conn.cursor()

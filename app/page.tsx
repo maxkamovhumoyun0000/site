@@ -46,6 +46,7 @@ import { AdminVocabularyBank } from "./ui/admin-vocabulary-bank";
 import { AdminSpeakingTopics } from "./ui/admin-speaking-topics";
 import { AdminSpeakingNotifications } from "./ui/admin-speaking-notifications";
 import { AdminSpeakingVideos } from "./ui/admin-speaking-videos";
+import { AdminSpeakingPlanTests } from "./ui/admin-speaking-plan-tests";
 import { AdminSpeakingUsers } from "./ui/admin-speaking-users";
 import { SpeakingAdminHome } from "./ui/speaking-live-management";
 import { SpeakingLiveLessons } from "./ui/speaking-live-lessons";
@@ -18146,6 +18147,10 @@ function AdminSection({
 
   if (section === "speaking-videos") {
     return <AdminSpeakingVideos apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs || 60000 })} />;
+  }
+
+  if (section === "speaking-plan-tests") {
+    return <AdminSpeakingPlanTests apiFetch={(path, options) => requestJson(path, { method: options?.method as any, token: localStorage.getItem("diamond_token") || "", body: options?.body, signal: options?.signal, timeoutMs: options?.timeoutMs || 60000 })} />;
   }
 
   if (section === "competitions-history") {

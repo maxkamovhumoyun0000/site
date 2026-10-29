@@ -1101,7 +1101,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-plan-tests", "speaking-users", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -60983,7 +60983,9 @@ from backend.speaking_answers import router as speaking_answers_router
 app.include_router(speaking_answers_router)
 from backend.speaking_videos import router as speaking_videos_router
 from backend.speaking_exams import router as speaking_exams_router
+from backend.speaking_plans import router as speaking_plans_router
 app.include_router(speaking_exams_router)
+app.include_router(speaking_plans_router)
 app.include_router(speaking_videos_router)
 app.include_router(_media_hls.router)
 
