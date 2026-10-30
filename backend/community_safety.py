@@ -156,6 +156,7 @@ class SafetyStore:
             marker = f"[SAFETY REPORT {report_id}]"
             cur.execute("SELECT id FROM feedback_messages WHERE thread_id=? AND message_text LIKE ? LIMIT 1", (thread_id, marker + "%"))
             if not cur.fetchone():
+                cur.execute("UPDATE feedback_threads SET status='Yangi', updated_at=CURRENT_TIMESTAMP WHERE id=?", (thread_id,))
                 text = (f"{marker}\nTarget: {existing['target_type']}/{existing['target_id']}\n"
                         f"Author ID: {existing['target_user_id'] or 'unknown'}\nReason: {existing['reason']}\n"
                         f"{existing['details']}\n{str(existing['snapshot'] or '')[:2000]}")
