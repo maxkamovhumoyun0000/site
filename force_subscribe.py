@@ -7,7 +7,7 @@ from aiogram import Bot
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import FORCE_SUBSCRIBE_CHANNEL_ID, FORCE_SUBSCRIBE_CHANNEL_URL
+from config import FORCE_SUBSCRIBE, FORCE_SUBSCRIBE_CHANNEL_ID, FORCE_SUBSCRIBE_CHANNEL_URL
 from i18n import t
 
 logger = logging.getLogger(__name__)
@@ -15,11 +15,10 @@ logger = logging.getLogger(__name__)
 async def is_user_subscribed(bot: Bot, user_id: int) -> bool | None:
     """Return membership state; ``None`` means Telegram could not verify it.
 
-    The native student app and bot share this policy: configuring a channel
-    enables the gate.  That avoids an old ``FORCE_SUBSCRIBE=false`` setting
-    accidentally leaving the newly mandatory membership check disabled.
+    The app and bot share the same opt-in switch; a channel alone does not
+    force a student to subscribe.
     """
-    if not FORCE_SUBSCRIBE_CHANNEL_ID:
+    if not FORCE_SUBSCRIBE or not FORCE_SUBSCRIBE_CHANNEL_ID:
         return True
 
     try:
