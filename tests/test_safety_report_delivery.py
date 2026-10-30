@@ -61,6 +61,16 @@ class SafetyDeliveryTest(unittest.TestCase):
         self.assertEqual(conn.execute("SELECT count(*) FROM web_safety_reports").fetchone()[0], 0)
         conn.close()
 
+    def test_new_report_reopens_closed_feedback_thread(self):
+        conn = self.connect()
+        conn.execute("INSERT INTO feedback_threads(user_id,status) VALUES (1,'Yopilgan')")
+        conn.commit()
+        conn.close()
+        self.store.report(1, "user", "2", 2, "abuse", "", "", sender_role="student")
+        conn = self.connect()
+        self.assertEqual(conn.execute("SELECT status FROM feedback_threads WHERE user_id=1").fetchone()[0], "Yangi")
+        conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
