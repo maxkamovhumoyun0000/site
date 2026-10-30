@@ -438,6 +438,7 @@ def _apply_outcome(question: dict[str, Any], **kwargs: Any) -> tuple[dict[str, A
             "_duel_persist_answer": _persist,
             "personalization_api": _Personalization,
             "_competition_seed_question_timer": lambda *a, **k: None,
+            "_competition_seed_round_timers": lambda *a, **k: None,
             "_selected_option_is_correct": lambda _q, idx: int(idx) == 1,
             "_safe_call": lambda _fn, fallback: fallback,
             "_now_utc": lambda: None,
@@ -566,6 +567,124 @@ def test_speaking_lp_staff_prefix_is_allowed_for_speaking_admin():
     # Student routes are for speaking users, not part of the admin workspace.
     assert not allowed("/speaking-lp/student/paths")
     assert not allowed("/admin/payments")
+
+
+def test_round_barrier_releases_together_and_excludes_offline_players():
+    from datetime import datetime, timezone
+
+    started = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    seeded = []
+    ns = _load_main_symbols(
+        {
+            "_competition_user_progress", "_competition_questions_for_user",
+            "_competition_round_index", "_competition_waiting_for_round",
+            "_competition_seed_round_timers",
+        },
+        {
+            "_now_utc": lambda: started,
+            "_competition_seed_question_timer": lambda _s, uid, index, _q, **kw:
+                seeded.append((uid, index, kw["started_at"])),
+        },
+    )
+    session = {
+        "mode": "duel-1v1", "questions": [{"id": 1}, {"id": 2}],
+        "participants": [{"user_id": 1, "status": "active"}, {"user_id": 2, "status": "active"}],
+        "progress": {"1": {"index": 2}, "2": {"index": 1}},
+    }
+    assert ns["_competition_waiting_for_round"](session, 1)
+    assert not ns["_competition_waiting_for_round"](session, 2)
+    ns["_competition_seed_round_timers"](session)
+    assert seeded == [(2, 1, started)]
+    seeded.clear()
+    session["progress"]["2"]["index"] = 2
+    assert not ns["_competition_waiting_for_round"](session, 1)
+    ns["_competition_seed_round_timers"](session)
+    assert seeded == [(1, 2, started), (2, 2, started)]
+    session["progress"]["2"]["index"] = 1
+    session["participants"][1]["status"] = "left"
+    assert not ns["_competition_waiting_for_round"](session, 1)
+
+
+def test_offline_player_is_removed_from_round_before_question_timeout():
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    persisted = []
+    ns = _load_main_symbols(
+        {
+            "_competition_user_progress", "_competition_questions_for_user",
+            "_competition_participant_row", "_competition_round_index",
+            "_competition_waiting_for_round", "_competition_auto_skip_due_questions",
+            "_COMPETITION_EXPLICIT_LEFT_REASONS",
+        },
+        {
+            "_competition_session_phase": lambda _s: "active",
+            "_parse_utc_timestamp": lambda value: datetime.fromisoformat(value) if value else None,
+            "_now_utc": lambda: now,
+            "timedelta": timedelta,
+            "_competition_seed_round_timers": lambda _s: None,
+            "_duel_persist_session": lambda s: persisted.append(s["id"]),
+            "_competition_finalize_if_all_progress_finished": lambda _s: False,
+            "_competition_finish_user_remaining_questions": lambda *_a, **_k: False,
+            "_competition_timer_state": lambda *_a, **_k: {"deadline_at": (now + timedelta(seconds=30)).isoformat()},
+        },
+    )
+    session = {
+        "id": "cmp_presence", "mode": "duel-1v1", "questions": [{"id": 1}, {"id": 2}],
+        "participants": [
+            {"user_id": 1, "status": "active", "runtime_presence": True, "last_ping_at": now.isoformat()},
+            {"user_id": 2, "status": "active", "runtime_presence": True, "last_ping_at": (now - timedelta(seconds=16)).isoformat()},
+        ],
+        "progress": {"1": {"index": 2}, "2": {"index": 1}},
+    }
+    assert ns["_competition_auto_skip_due_questions"](session, now)
+    assert session["participants"][1]["left_reason"] == "offline_timeout"
+    assert not ns["_competition_waiting_for_round"](session, 1)
+    assert session["progress"]["2"]["index"] == 1  # can catch up on rejoin
+    assert persisted
+
+
+def test_rejoining_player_skips_missed_rounds_and_rejoins_current_round():
+    from datetime import datetime, timezone
+    import logging
+
+    skipped = []
+
+    def apply_outcome(session, uid, index, _selected, _timer, **_kwargs):
+        skipped.append(index)
+        session["progress"][str(uid)]["index"] = index + 1
+        return True
+
+    ns = _load_main_symbols(
+        {
+            "_competition_user_progress", "_competition_questions_for_user",
+            "_competition_participant_row", "_competition_round_index",
+            "_competition_restore_runtime_participant_if_needed",
+            "_COMPETITION_TERMINAL_PARTICIPANT_STATUSES",
+            "_COMPETITION_EXPLICIT_LEFT_REASONS", "_COMPETITION_RESTORABLE_LEFT_REASONS",
+        },
+        {
+            "_competition_session_phase": lambda _s: "active",
+            "_competition_user_result": lambda *_a: None,
+            "_competition_apply_question_outcome": apply_outcome,
+            "_now_utc": lambda: datetime(2026, 10, 30, tzinfo=timezone.utc),
+            "_duel_persist_session": lambda _s: None,
+            "WEB_DUEL_PLAYER_SESSION": {},
+            "logger": logging.getLogger(__name__),
+        },
+    )
+    session = {
+        "id": "cmp_rejoin", "mode": "duel-1v1", "questions": [{"id": 1}, {"id": 2}, {"id": 3}],
+        "participants": [
+            {"user_id": 1, "status": "active"},
+            {"user_id": 2, "status": "left", "left_reason": "offline_timeout"},
+        ],
+        "progress": {"1": {"index": 3}, "2": {"index": 1}},
+    }
+    assert ns["_competition_restore_runtime_participant_if_needed"](session, 2)
+    assert skipped == [1, 2]
+    assert session["progress"]["2"]["index"] == 3
+    assert session["participants"][1]["status"] == "active"
 
 
 if __name__ == "__main__":

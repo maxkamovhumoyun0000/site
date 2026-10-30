@@ -128,24 +128,40 @@ class SafetyStore:
                 WHERE b.user_id=? ORDER BY b.created_at DESC""", (int(user_id),))
             return [dict(r) for r in cur.fetchall()]
 
-    def report(self, user_id, target_type, target_id, target_user_id, reason, details, snapshot):
+    def report(self, user_id, target_type, target_id, target_user_id, reason, details, snapshot, *, sender_role="student"):
         with self.transaction() as cur:
-            cur.execute("SELECT id FROM web_safety_reports WHERE user_id=? AND target_type=? AND target_id=?", (user_id, target_type, str(target_id)))
+            cur.execute("SELECT * FROM web_safety_reports WHERE user_id=? AND target_type=? AND target_id=?", (user_id, target_type, str(target_id)))
             existing = cur.fetchone()
-            if existing:
-                return str(existing["id"]), False
-            since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-            cur.execute("SELECT COUNT(*) AS n FROM web_safety_reports WHERE user_id=? AND created_at>?", (user_id, since))
-            if int(cur.fetchone()["n"]) >= 10:
-                raise ValueError("Shikoyatlar limiti. Birozdan keyin qayta urinib ko'ring.")
-            report_id = str(uuid4())
-            cur.execute("""INSERT INTO web_safety_reports
-                (id,user_id,target_type,target_id,target_user_id,reason,details,snapshot,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,target_type,target_id) DO NOTHING""",
-                (report_id, user_id, target_type, str(target_id), target_user_id, reason, details, snapshot[:4000], datetime.now(timezone.utc).isoformat()))
-            created = cur.rowcount > 0
-            cur.execute("SELECT id FROM web_safety_reports WHERE user_id=? AND target_type=? AND target_id=?", (user_id, target_type, str(target_id)))
-            return str(cur.fetchone()["id"]), created
+            created = False
+            if not existing:
+                since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+                cur.execute("SELECT COUNT(*) AS n FROM web_safety_reports WHERE user_id=? AND created_at>?", (user_id, since))
+                if int(cur.fetchone()["n"]) >= 10:
+                    raise ValueError("Shikoyatlar limiti. Birozdan keyin qayta urinib ko'ring.")
+                cur.execute("""INSERT INTO web_safety_reports
+                    (id,user_id,target_type,target_id,target_user_id,reason,details,snapshot,created_at)
+                    VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,target_type,target_id) DO NOTHING""",
+                    (str(uuid4()), user_id, target_type, str(target_id), target_user_id, reason, details, snapshot[:4000], datetime.now(timezone.utc).isoformat()))
+                created = cur.rowcount > 0
+                cur.execute("SELECT * FROM web_safety_reports WHERE user_id=? AND target_type=? AND target_id=?", (user_id, target_type, str(target_id)))
+                existing = cur.fetchone()
+            report_id = str(existing["id"])
+            # The thread upsert serializes concurrent reports for the same user.
+            # Both the durable moderation record and its inbox copy commit together.
+            cur.execute("""INSERT INTO feedback_threads(user_id,status,created_at,updated_at)
+                VALUES (?, 'Yangi', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET updated_at=CURRENT_TIMESTAMP""", (int(user_id),))
+            cur.execute("SELECT id FROM feedback_threads WHERE user_id=?", (int(user_id),))
+            thread_id = int(cur.fetchone()["id"])
+            marker = f"[SAFETY REPORT {report_id}]"
+            cur.execute("SELECT id FROM feedback_messages WHERE thread_id=? AND message_text LIKE ? LIMIT 1", (thread_id, marker + "%"))
+            if not cur.fetchone():
+                text = (f"{marker}\nTarget: {existing['target_type']}/{existing['target_id']}\n"
+                        f"Author ID: {existing['target_user_id'] or 'unknown'}\nReason: {existing['reason']}\n"
+                        f"{existing['details']}\n{str(existing['snapshot'] or '')[:2000]}")
+                cur.execute("""INSERT INTO feedback_messages(thread_id,sender_user_id,sender_role,message_text,is_anonymous_choice,created_at)
+                    VALUES (?,?,?,?,0,CURRENT_TIMESTAMP)""", (thread_id, int(user_id), str(sender_role), text[:4000]))
+            return report_id, created
 
     def video_comments(self, video_id, viewer_id=0):
         blocked = self.blocked_ids(viewer_id)

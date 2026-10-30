@@ -2852,6 +2852,10 @@ class CompetitionAnswerRequest(BaseModel):
     question_index: int | None = None  # Client-side index for double-submit guard
 
 
+class CompetitionPresenceRequest(BaseModel):
+    active: bool
+
+
 class DiamondvoyCreateChatRequest(BaseModel):
     title: str | None = Field(default=None, max_length=160)
 
@@ -28516,20 +28520,23 @@ async def safety_report(payload: SafetyReportRequest, authorization: str | None 
                     raise HTTPException(404, "Video not found")
     if target_user_id == uid:
         raise HTTPException(400, "You cannot report yourself")
+    _ensure_final_chat_schema()
+    sender_role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     try:
-        report_id, created = community_safety.report(uid, payload.target_type, payload.target_id, target_user_id, payload.reason, payload.details, snapshot)
+        report_id, created = community_safety.report(uid, payload.target_type, payload.target_id, target_user_id, payload.reason, payload.details, snapshot, sender_role=sender_role)
     except ValueError as exc:
         raise HTTPException(429, str(exc))
     if created:
-        # Surface the ticket in the existing admin Feedback inbox, as well as
-        # the durable moderation queue. A notification outage must not lose it.
+        # The report and inbox copy have already committed atomically. Push
+        # notifications are supplementary and may be unavailable independently.
         try:
-            await feedback_send_user_message(ChatFeedbackCreateRequest(
-                message=f"[SAFETY REPORT {report_id}]\nTarget: {payload.target_type}/{payload.target_id}\nAuthor ID: {target_user_id or 'unknown'}\nReason: {payload.reason}\n{payload.details}\n{snapshot[:2000]}",
-                is_anonymous=False,
-            ), authorization)
+            text = f"[SAFETY REPORT {report_id}]\nTarget: {payload.target_type}/{payload.target_id}\nReason: {payload.reason}"
+            admin_ids = sorted(_chat_role_ids(_chat_users_map(), "admin"))
+            if admin_ids:
+                _feedback_push_admin_web_notification(sender_user=user, sender_role=sender_role, is_anonymous=False, message_text=text, admin_ids=admin_ids)
+                await _feedback_push_admin_telegram_notification(sender_user=user, sender_role=sender_role, is_anonymous=False, message_text=text)
         except Exception:
-            logger.exception("Safety report persisted; admin inbox delivery failed report_id=%s", report_id)
+            logger.exception("Safety report notification failed; inbox copy is saved report_id=%s", report_id)
     return {"success": True, "report_id": report_id}
 
 
@@ -30953,8 +30960,7 @@ def _competition_session_advisory_lock(session_id: str):
                 conn.close()
         except Exception:
             pass
-        conn = None
-        cur = None
+        raise HTTPException(status_code=503, detail="Competition session temporarily unavailable")
     try:
         yield
     finally:
@@ -31275,7 +31281,7 @@ def _competition_touch_wait_deadline(session: dict[str, Any], now: datetime | No
             if not deadline:
                 deadline = first + timedelta(seconds=300)
         elif mode == "boss":
-            deadline = first + timedelta(seconds=180)
+            deadline = first + timedelta(seconds=COMPETITION_PENDING_WAIT_SECONDS)
         else:
             deadline = first + timedelta(seconds=COMPETITION_PENDING_WAIT_SECONDS)
             
@@ -31323,7 +31329,7 @@ def _competition_ensure_wait_deadline(session: dict[str, Any], now: datetime | N
         if not deadline:
             deadline = first + timedelta(seconds=300)
     elif mode == "boss":
-        deadline = first + timedelta(seconds=180)
+        deadline = first + timedelta(seconds=COMPETITION_PENDING_WAIT_SECONDS)
     else:
         deadline = first + timedelta(seconds=COMPETITION_PENDING_WAIT_SECONDS)
         
@@ -31800,7 +31806,9 @@ def _competition_detach_user_from_session(session: dict[str, Any], user_id: int,
             break
     WEB_DUEL_PLAYER_SESSION.pop(uid, None)
     if phase == "active":
-        _competition_finish_user_remaining_questions(session, uid, reason=str(reason or "left_runtime"))
+        if str(reason or "") != "left_runtime":
+            _competition_finish_user_remaining_questions(session, uid, reason=str(reason or "left_runtime"))
+        _competition_seed_round_timers(session)
         _competition_finalize_if_all_progress_finished(session)
     if phase in {"pending", "generating"}:
         if _duel_is_mode(session.get("mode")):
@@ -32006,7 +32014,6 @@ _COMPETITION_TERMINAL_PARTICIPANT_STATUSES = {
 }
 _COMPETITION_EXPLICIT_LEFT_REASONS = {
     "left_queue",
-    "left_runtime",
     "switched_competition",
     "session_switched",
     "stale_session_switched",
@@ -32021,6 +32028,7 @@ _COMPETITION_RESTORABLE_LEFT_REASONS = {
     "heartbeat_timeout",
     "connection_lost",
     "status_offline",
+    "left_runtime",
 }
 
 
@@ -32036,6 +32044,45 @@ def _competition_user_progress(session: dict[str, Any], user_id: int) -> dict[st
     progress = session.get("progress") or {}
     uid = int(user_id)
     return progress.get(uid) or progress.get(str(uid))
+
+
+def _competition_round_index(session: dict[str, Any]) -> int | None:
+    """The earliest unanswered question among participants still in the match."""
+    indices = []
+    for row in session.get("participants") or []:
+        if str(row.get("status") or "active").lower() in {
+            "left", "cancelled", "eliminated", "blocked", "failed"
+        }:
+            continue
+        uid = int(row.get("user_id") or 0)
+        progress = _competition_user_progress(session, uid)
+        if progress is not None and _competition_questions_for_user(session, uid):
+            indices.append(int(progress.get("index") or 1))
+    return min(indices) if indices else None
+
+
+def _competition_waiting_for_round(session: dict[str, Any], user_id: int) -> bool:
+    progress = _competition_user_progress(session, user_id)
+    round_index = _competition_round_index(session)
+    return bool(progress and round_index is not None and int(progress.get("index") or 1) > round_index)
+
+
+def _competition_seed_round_timers(session: dict[str, Any]) -> None:
+    """Start the next round together, once all active players have reached it."""
+    round_index = _competition_round_index(session)
+    if round_index is None:
+        return
+    started_at = _now_utc()
+    for row in session.get("participants") or []:
+        if str(row.get("status") or "active").lower() in {
+            "left", "cancelled", "eliminated", "blocked", "failed"
+        }:
+            continue
+        uid = int(row.get("user_id") or 0)
+        progress = _competition_user_progress(session, uid)
+        questions = _competition_questions_for_user(session, uid)
+        if progress and int(progress.get("index") or 1) == round_index and round_index <= len(questions):
+            _competition_seed_question_timer(session, uid, round_index, questions[round_index - 1], started_at=started_at)
 
 
 def _competition_rank_positions(rows: list[tuple[int, Any, Any]]) -> dict[int, int]:
@@ -32152,7 +32199,21 @@ def _competition_restore_runtime_participant_if_needed(session: dict[str, Any], 
     q_index = int(progress.get("index") or 1)
     if total <= 0 or q_index > total or progress.get("finished_at"):
         return False
+    # A disconnected player may rejoin the current round, but missed rounds
+    # are recorded as unanswered rather than replayed ahead of everyone.
+    current_round = _competition_round_index(session)
+    while current_round is not None and int(progress.get("index") or 1) < current_round:
+        missed = int(progress.get("index") or 1)
+        if missed > total:
+            return False
+        _competition_apply_question_outcome(
+            session, uid, missed, None,
+            {"is_late": True, "time_remaining_sec": 0}, submitted=False,
+        )
+    if int(progress.get("index") or 1) > total:
+        return False
     row["status"] = "active"
+    row["last_ping_at"] = _now_utc().isoformat()
     row["recovered_at"] = _now_utc().isoformat()
     row["recovered_from_status"] = status
     row["recovered_from_reason"] = reason or "unknown"
@@ -32285,8 +32346,14 @@ def _competition_session_unusable_for_user(session: dict[str, Any] | None, user_
         return True
     if not session:
         return True
-    if _competition_restore_runtime_participant_if_needed(session, user_id, source="session_unusable_check"):
-        return False
+    row = _competition_participant_row(session, user_id)
+    if row and str(row.get("status") or "").lower() == "left":
+        reason = str(row.get("left_reason") or row.get("reason") or "").lower()
+        progress = _competition_user_progress(session, user_id)
+        if (_competition_session_phase(session) == "active"
+                and reason in _COMPETITION_RESTORABLE_LEFT_REASONS
+                and progress and not progress.get("finished_at")):
+            return False
     if _competition_user_left_or_blocked(session, user_id):
         return True
     if _competition_user_result(session, user_id):
@@ -34717,12 +34784,14 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
     async def _update_progress():
         try:
             for i in range(19, 81):
-                if session.get("status") != "generating" or str(session.get("generation_token") or "") != str(generation_token):
-                    break
-                session["generation_percent"] = i
-                session["stage_generation_percent"] = i
                 if i % 10 == 0:
-                    _duel_persist_session(session)
+                    with _competition_session_advisory_lock(session_id):
+                        current = _competition_load_session_from_db(session_id)
+                        if not current or current.get("status") != "generating" or str(current.get("generation_token") or "") != str(generation_token):
+                            break
+                        current["generation_percent"] = i
+                        current["stage_generation_percent"] = i
+                        _duel_persist_session(current)
                 await asyncio.sleep(12.0 / (80 - 18 + 1))
         except asyncio.CancelledError:
             pass
@@ -35289,7 +35358,6 @@ async def competition_runtime_my_active(
     else:
         sess = _competition_load_session_from_db(sid)
     if sess:
-        _competition_restore_runtime_participant_if_needed(sess, uid, source="my_active")
         if _competition_session_unusable_for_matching(sess):
             WEB_DUEL_PLAYER_SESSION.pop(uid, None)
             return {"active": False, "expired": True, "refunded": True}
@@ -35298,6 +35366,7 @@ async def competition_runtime_my_active(
                 sess = _competition_load_session_from_db(sid)
                 if sess and _competition_session_phase(sess) == "active":
                     _competition_auto_skip_due_questions(sess)
+                    _competition_restore_runtime_participant_if_needed(sess, uid, source="my_active")
     if not sess:
         WEB_DUEL_PLAYER_SESSION.pop(uid, None)
         return {"active": False}
@@ -35466,6 +35535,8 @@ async def _competition_ensure_session_for_user(session_id: str, user: dict) -> d
     # 1. Direct session lookup by requested session_id
     sess = _competition_load_session_from_db(session_id)
     if sess:
+        if not _competition_participant_row(sess, uid):
+            raise HTTPException(status_code=404, detail="Competition session not found")
         direct_phase = _competition_session_phase(sess)
         if direct_phase == "finished":
             if _competition_participant_row(sess, uid) or _competition_user_result(sess, uid) or (sess.get("result") or {}).get("error"):
@@ -35513,8 +35584,40 @@ async def competition_runtime_leave(session_id: str, authorization: str | None =
         return {"cancelled": True, "refunded": False, "phase": _competition_session_phase(sess), "status": sess.get("status")}
 
 
+@app.post("/competition/runtime/{session_id}/presence")
+async def competition_runtime_presence(session_id: str, payload: CompetitionPresenceRequest,
+                                       authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    _require_competition_learning_access(user)
+    uid = int(user.get("id") or 0)
+    sess = await _competition_ensure_session_for_user(session_id, user)
+    actual_sid = str(sess.get("id") or session_id)
+    with _competition_session_advisory_lock(actual_sid):
+        sess = _competition_load_session_from_db(actual_sid)
+        if not sess:
+            raise HTTPException(status_code=503, detail="Competition session unavailable")
+        row = _competition_participant_row(sess, uid)
+        if not row:
+            raise HTTPException(status_code=404, detail="Competition session not found")
+        if _competition_session_phase(sess) == "active":
+            if payload.active:
+                if not _competition_runtime_user_has_access(sess, uid, source="presence"):
+                    raise HTTPException(status_code=403, detail="Competition participant has left")
+                row["last_ping_at"] = _now_utc().isoformat()
+                row["runtime_presence"] = True
+            elif str(row.get("status") or "active").lower() in {"active", "joined"}:
+                row["status"] = "left"
+                row["left_at"] = _now_utc().isoformat()
+                row["left_reason"] = "offline"
+                _competition_seed_round_timers(sess)
+            _duel_persist_session(sess)
+            _competition_auto_skip_due_questions(sess)
+        return {"phase": _competition_session_phase(sess), "status": row.get("status")}
+
+
 @app.get("/competition/runtime/{session_id}/status")
-async def competition_runtime_status(session_id: str, authorization: str | None = Header(default=None)):
+async def competition_runtime_status(session_id: str, presence: bool = Query(default=False), authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_competition_learning_access(user)
@@ -35523,10 +35626,19 @@ async def competition_runtime_status(session_id: str, authorization: str | None 
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
+        sess = _competition_load_session_from_db(actual_sid)
+        if not sess:
+            raise HTTPException(status_code=503, detail="Competition session unavailable")
+        if not _competition_participant_row(sess, uid):
+            raise HTTPException(status_code=404, detail="Competition session not found")
+        if _competition_session_phase(sess) == "active" and not _competition_runtime_user_has_access(sess, uid, source="status"):
+            raise HTTPException(status_code=403, detail="Competition participant has left")
         current_phase = _competition_session_phase(sess)
         for row in (sess.get("participants") or []):
             if int(row.get("user_id") or 0) == uid:
                 row["last_ping_at"] = _now_utc().isoformat()
+                if presence:
+                    row["runtime_presence"] = True
                 _duel_persist_session(sess)
                 break
 
@@ -35583,6 +35695,13 @@ async def competition_runtime_question(
     _require_enabled_competition_mode(str(sess.get("mode") or ""))
     actual_sid = str(sess.get("id") or session_id)
     with _competition_session_advisory_lock(actual_sid):
+        sess = _competition_load_session_from_db(actual_sid)
+        if not sess:
+            raise HTTPException(status_code=503, detail="Competition session unavailable")
+        if not _competition_participant_row(sess, uid):
+            raise HTTPException(status_code=404, detail="Competition session not found")
+        if _competition_session_phase(sess) == "active" and not _competition_runtime_user_has_access(sess, uid, source="question"):
+            raise HTTPException(status_code=403, detail="Competition participant has left")
         if _duel_is_mode(sess.get("mode")):
             _require_competition_learning_access(user)
         expired_now = _duel_expire_session_if_needed(sess) if _duel_is_mode(sess.get("mode")) else _competition_expire_waiting_session_if_needed(sess)
@@ -35634,6 +35753,16 @@ async def competition_runtime_question(
         q_index = int(progress.get("index") or 1)
         if phase == "finished":
             return {"completed": True, "phase": phase, "result": _competition_user_result(sess, uid)}
+        if _competition_waiting_for_round(sess, uid):
+            return {
+                "completed": False,
+                "phase": phase,
+                "waiting_completion": True,
+                "question_index": max(1, q_index - 1),
+                "total_questions": total,
+                "live": _competition_live_lists(sess, current_user_id=uid),
+                "opponent_progress": _competition_opponent_progress(sess, uid),
+            }
         if q_index > total:
             mode = str(sess.get("mode") or "")
             is_daily_mode = mode == "daily"
@@ -35836,6 +35965,13 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
                 pregraded_question_index = pre_index
 
     with _competition_session_advisory_lock(actual_sid):
+        sess = _competition_load_session_from_db(actual_sid)
+        if not sess:
+            raise HTTPException(status_code=503, detail="Competition session unavailable")
+        if not _competition_participant_row(sess, uid):
+            raise HTTPException(status_code=404, detail="Competition session not found")
+        if _competition_session_phase(sess) == "active" and not _competition_runtime_user_has_access(sess, uid, source="answer"):
+            raise HTTPException(status_code=403, detail="Competition participant has left")
         if _duel_is_mode(sess.get("mode")):
             _require_competition_learning_access(user)
         expired_now = _duel_expire_session_if_needed(sess) if _duel_is_mode(sess.get("mode")) else _competition_expire_waiting_session_if_needed(sess)
@@ -35899,20 +36035,40 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
         mode = str(sess.get("mode") or "")
         if payload.question_index is not None:
             if payload.question_index < q_index:
-                # Stale/duplicate submit from client - silently ignore, return current state
+                # Duplicate retries must not finish a match or reveal the next
+                # round while another participant is still answering.
+                if _competition_waiting_for_round(sess, uid) or q_index > total:
+                    return {
+                        "completed": False,
+                        "status": sess.get("status"),
+                        "phase": _competition_session_phase(sess),
+                        "question_index": max(1, q_index - 1),
+                        "total_questions": total,
+                        "waiting_completion": True,
+                        "opponent_progress": _competition_opponent_progress(sess, uid),
+                        "live": _competition_live_lists(sess, current_user_id=uid),
+                    }
                 return {
-                    "completed": q_index > total,
+                    "completed": False,
                     "status": sess.get("status"),
                     "phase": _competition_session_phase(sess),
                     "stage": int(sess.get("stage") or 0),
                     "total_stages": int(sess.get("total_stages") or _competition_total_stages(mode)),
-                    "result": _competition_user_result(sess, uid) if _competition_session_phase(sess) == "finished" else None,
-                    "question_index": q_index,
+                    **(_competition_current_question_payload(sess, uid) or {}),
                 }
             elif payload.question_index > q_index:
-                # Client is ahead of server - likely a timing issue, treat as current question
-                # Don't raise an error, just process with server's q_index
-                pass
+                raise HTTPException(status_code=409, detail="Question is not active yet")
+
+        if _competition_waiting_for_round(sess, uid):
+            return {
+                "completed": False,
+                "phase": _competition_session_phase(sess),
+                "question_index": max(1, q_index - 1),
+                "total_questions": total,
+                "waiting_completion": True,
+                "opponent_progress": _competition_opponent_progress(sess, uid),
+                "live": _competition_live_lists(sess, current_user_id=uid),
+            }
 
         if q_index > total:
             ready = _competition_session_phase(sess) == "finished" and _competition_user_result(sess, uid) is not None
@@ -35966,9 +36122,20 @@ async def competition_runtime_answer(session_id: str, payload: CompetitionAnswer
         )
         _duel_persist_session(sess)
 
-        # Progress is per participant. A student goes straight to their next
-        # question; the opponent waiting state is only meaningful after the
-        # student has completed their own round.
+        if _competition_waiting_for_round(sess, uid):
+            return {
+                "completed": False,
+                "status": sess.get("status"),
+                "phase": _competition_session_phase(sess),
+                "question_index": q_index,
+                "total_questions": total,
+                "waiting_completion": True,
+                "opponent_progress": _competition_opponent_progress(sess, uid),
+                "live": _competition_live_lists(sess, current_user_id=uid),
+            }
+
+        # Release the next question only when the other active players have
+        # also answered the current round.
         next_question = _competition_current_question_payload(sess, uid)
         if next_question is not None:
             return {
@@ -36365,9 +36532,7 @@ def _competition_apply_question_outcome(
     if int(progress.get("index") or 1) > total and not progress.get("finished_at"):
         progress["finished_at"] = _now_utc().isoformat()
     session.setdefault("timers", {}).pop(f"{uid}:{q_index}", None)
-    next_index = q_index + 1
-    if next_index <= total:
-        _competition_seed_question_timer(session, uid, next_index, questions[next_index - 1])
+    _competition_seed_round_timers(session)
     return True
 
 
@@ -36375,15 +36540,22 @@ def _competition_all_progress_finished(session: dict[str, Any]) -> bool:
     progress_map = session.get("progress") or {}
     if not progress_map:
         return False
+    active_count = 0
     for pid, row in progress_map.items():
         try:
             uid = int(pid)
         except Exception:
             continue
+        participant = _competition_participant_row(session, uid)
+        if participant and str(participant.get("status") or "active").lower() in {
+            "left", "cancelled", "eliminated", "blocked", "failed"
+        }:
+            continue
+        active_count += 1
         total = len(_competition_questions_for_user(session, uid))
         if total > 0 and int((row or {}).get("index") or 1) <= total:
             return False
-    return True
+    return active_count > 0
 
 
 def _competition_finalize_if_all_progress_finished(session: dict[str, Any]) -> bool:
@@ -36391,6 +36563,12 @@ def _competition_finalize_if_all_progress_finished(session: dict[str, Any]) -> b
         return False
     if not _competition_all_progress_finished(session):
         return False
+    for participant in session.get("participants") or []:
+        if str(participant.get("status") or "").lower() == "left":
+            _competition_finish_user_remaining_questions(
+                session, int(participant.get("user_id") or 0),
+                reason=str(participant.get("left_reason") or "offline"),
+            )
     mode = str(session.get("mode") or "")
     if mode == "daily":
         _competition_finalize_daily_stage(session)
@@ -36412,17 +36590,28 @@ def _competition_auto_skip_due_questions(session: dict[str, Any], now: datetime 
     if not session or _competition_session_phase(session) != "active":
         return False
     changed = False
+    now_dt = now or _now_utc()
     for row in list(session.get("participants") or []):
         uid = int(row.get("user_id") or 0)
         if uid <= 0:
             continue
         status = str(row.get("status") or "active").strip().lower()
+        last_ping = _parse_utc_timestamp(str(row.get("last_ping_at") or ""))
+        if (status in {"active", "joined"} and row.get("runtime_presence")
+                and last_ping and (now_dt - last_ping).total_seconds() > 15):
+            row["status"] = status = "left"
+            row["left_at"] = now_dt.isoformat()
+            row["left_reason"] = "offline_timeout"
+            changed = True
         reason = str(row.get("left_reason") or row.get("reason") or "").strip().lower()
         is_explicit_left = status == "left" and reason in _COMPETITION_EXPLICIT_LEFT_REASONS
         is_terminal_failure = status in {"cancelled", "blocked", "failed"}
         if is_explicit_left or is_terminal_failure:
             if _competition_finish_user_remaining_questions(session, uid, reason=str(row.get("left_reason") or status)):
                 changed = True
+    if changed:
+        _competition_seed_round_timers(session)
+        _duel_persist_session(session)
     if _competition_finalize_if_all_progress_finished(session):
         return True
     iterations = 0
@@ -36436,6 +36625,13 @@ def _competition_auto_skip_due_questions(session: dict[str, Any], now: datetime 
             except Exception:
                 continue
             if not isinstance(progress, dict):
+                continue
+            participant = _competition_participant_row(session, uid)
+            if participant and str(participant.get("status") or "active").lower() in {
+                "left", "cancelled", "eliminated", "blocked", "failed"
+            }:
+                continue
+            if _competition_waiting_for_round(session, uid):
                 continue
             questions = _competition_questions_for_user(session, uid)
             total = len(questions)
