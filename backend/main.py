@@ -23564,11 +23564,11 @@ async def exchange_web_session_cookie(
 def _student_channel_membership_config() -> tuple[bool, str, str, str]:
     """Return the active membership policy without leaking the bot token.
 
-    A configured channel is intentionally treated as mandatory.  This keeps
-    old deployments that still have ``FORCE_SUBSCRIBE=false`` from silently
-    disabling the student-app gate after the feature has been enabled.
+    Membership is opt-in: FORCE_SUBSCRIBE can be enabled again later without
+    losing the configured channel or any existing student data.
     """
     from config import (
+        FORCE_SUBSCRIBE,
         FORCE_SUBSCRIBE_CHANNEL_ID,
         FORCE_SUBSCRIBE_CHANNEL_URL,
         STUDENT_BOT_TOKEN,
@@ -23577,7 +23577,7 @@ def _student_channel_membership_config() -> tuple[bool, str, str, str]:
     channel_id = str(FORCE_SUBSCRIBE_CHANNEL_ID or "").strip()
     channel_url = str(FORCE_SUBSCRIBE_CHANNEL_URL or "").strip()
     bot_token = str(STUDENT_BOT_TOKEN or "").strip()
-    return bool(channel_id), channel_id, channel_url, bot_token
+    return bool(FORCE_SUBSCRIBE and channel_id), channel_id, channel_url, bot_token
 
 
 async def _student_channel_membership_status(user: dict) -> dict:

@@ -14,13 +14,12 @@ FRONTEND_SERVICE="diamond-site-frontend"
 CADDY_CONFIG="/etc/caddy/Caddyfile"
 CADDY_MAINTENANCE_ROUTE="/etc/caddy/diamond-site-maintenance.caddy"
 CADDY_MAINTENANCE_PAGE="/var/www/diamond-site-maintenance.html"
-# The Teacher and Support Telegram bots are switched off (disabled on the
-# server since 2026-10-29); a release must not start them again. See
+# The Student, Teacher and Support Telegram bots are switched off; a release
+# must not start them again. See
 # deploy.md, "O'chirilgan botlar".
 BACKEND_SERVICES=(
   diamond-site-backend
   diamond-site-admin-bot
-  diamond-site-student-bot
 )
 
 if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then

@@ -82,19 +82,24 @@ tekshiring, konfiguratsiyaning ruxsatlari saqlangan zaxira nusxasini oling,
 YAML’ni tekshirib, faqat LiveKit servisini qayta ishga tushiring. Faol dars
 bo‘lsa LiveKit restart qilmang.
 
-## O'chirilgan botlar (Teacher va Support)
-2026-10-29 dan boshlab **Teacher bot** (`diamond-site-teacher-bot`) va
-**Support bot** (`diamond-site-support-bot`) serverda o'chirilgan:
+## O'chirilgan botlar (Student, Teacher va Support)
+**Student bot** (`diamond-site-student-bot`), **Teacher bot**
+(`diamond-site-teacher-bot`) va **Support bot** (`diamond-site-support-bot`)
+serverda o'chirilgan:
 `systemctl disable --now` bilan to'xtatilgan va reboot'dan keyin ham
 ishga tushmaydi. Ularning fayllari va servis unitlari o'chirilmagan.
-- Deploy, relaunch va smoke testlarda bu ikki botni **restart qilmang va
+- Deploy, relaunch va smoke testlarda bu uch botni **restart qilmang va
   ishga tushirmang**. `scripts/activate_production_release.sh` faqat
-  backend, admin bot va student botni qayta ishga tushiradi.
+  backend va admin botni qayta ishga tushiradi.
 - Servis statusida ular `inactive`/`disabled` bo'lishi normal holat.
-- Qayta yoqish faqat egasining aniq ko'rsatmasi bilan:
-  `systemctl enable --now diamond-site-teacher-bot diamond-site-support-bot`,
-  so'ng ularni activation skriptidagi `BACKEND_SERVICES` ro'yxatiga va
-  ushbu runbookdagi buyruqlarga qaytaring.
+- Qayta yoqish faqat egasining aniq ko'rsatmasi bilan; kerakli servisni
+  `systemctl enable --now <service>` orqali yoqing va activation skriptini
+  shunga moslang.
+- Student kanalga majburiy obuna tekshiruvi `FORCE_SUBSCRIBE=false` bilan
+  o'chirilgan. Kanal sozlamalari va kod saqlanadi; egasi xohlasa `.env`da
+  `FORCE_SUBSCRIBE=true` qilib, botni ham alohida yoqib, backendni qayta
+  ishga tushirish mumkin. Student bot o'chiq bo'lsa Telegram Mini App va
+  bot orqali kirish xabarlari ishlamasligini hisobga oling.
 - Python compile tekshiruvida `teacher_bot.py` qoladi (kod hali repoda).
 
 ## Majburiy: Deploydan Oldin Database Backup
@@ -266,7 +271,7 @@ upload va backup fayllariga tegilmaydi.
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'systemctl restart diamond-site-backend diamond-site-admin-bot diamond-site-student-bot'
+  'systemctl restart diamond-site-backend diamond-site-admin-bot'
 ```
 
 ## Production Log Himoyasi
@@ -306,14 +311,14 @@ Servis status:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'systemctl --no-pager --quiet is-active diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot && echo services:active'
+  'systemctl --no-pager --quiet is-active diamond-site-frontend diamond-site-backend diamond-site-admin-bot && echo services:active; systemctl is-active diamond-site-student-bot diamond-site-teacher-bot diamond-site-support-bot || true'
 ```
 
 Restart loop tekshiruvi:
 
 ```bash
 ssh -i /home/xumoyun-maxkamov/.ssh/myserver.key -o StrictHostKeyChecking=accept-new root@31.220.87.193 \
-  'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot -p ActiveState -p SubState -p NRestarts --no-pager'
+  'sleep 20 && systemctl show diamond-site-frontend diamond-site-backend diamond-site-admin-bot diamond-site-student-bot diamond-site-teacher-bot diamond-site-support-bot -p ActiveState -p SubState -p NRestarts --no-pager'
 ```
 
 ## Push Notifications (FCM) — Bir Martalik Sozlash
