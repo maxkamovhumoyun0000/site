@@ -5604,6 +5604,25 @@ def _competition_valid_unique_rows(
     return valid
 
 
+def _competition_fast_bank_candidates(rows: list[dict[str, Any]], level: str, seen: set[str]) -> list[dict[str, Any]]:
+    """Return valid, level-matched questions unseen by every participant."""
+    wanted = str(level or "").strip().upper()
+    known = set(seen)
+    result = []
+    for row in rows:
+        row_level = str(row.get("level") or "").strip().upper()
+        if row_level and wanted != "MIXED" and row_level != wanted:
+            continue
+        if not _competition_question_is_valid(row):
+            continue
+        key = _competition_question_key(row)
+        if not key or key in known:
+            continue
+        known.add(key)
+        result.append(row)
+    return result
+
+
 def _public_question_payload(row: dict[str, Any], *, question_index: int | None = None) -> dict[str, Any]:
     q = _mcq_question_from_row(row)
     qtype = str(q.get("question_type") or "multiple_choice").strip().lower()
@@ -5793,7 +5812,7 @@ async def _runtime_generate_questions(
         )
         vocabulary_rows = _competition_valid_unique_rows(
             vocabulary_rows,
-            excluded_keys={_competition_question_key(row) for row in base_rows},
+            excluded_keys=set(seen_questions) | {_competition_question_key(row) for row in base_rows},
         )
         if len(vocabulary_rows) < vocabulary_count:
             logger.error(
@@ -5806,6 +5825,27 @@ async def _runtime_generate_questions(
         result.extend(vocabulary_rows[:vocabulary_count])
         _random.shuffle(result)
         return result
+
+    # Start immediately from real, unseen questions when the bank has a
+    # complete appropriate set. Otherwise keep the existing AI generation
+    # path: a match must never start with invented or incomplete questions.
+    if mode == "boss" or _duel_is_mode(mode):
+        bank = _safe_call(lambda: get_tests_by_subject(safe_subject), []) or []
+        candidates = _competition_fast_bank_candidates(bank, safe_level, seen_questions)
+        _random.shuffle(candidates)
+        vocab_count = min(max(1, target_count - 1), max(7, int(math.ceil(target_count * 0.45))))
+        needed = target_count - vocab_count
+        reading_needed = min(needed, 3 if target_count >= 10 else 2) if target_count >= 5 else 0
+        reading = [row for row in candidates if str(_mcq_question_from_row(row).get("question_type") or "").lower() in {"reading", "reading_comprehension"}]
+        other = [row for row in candidates if row not in reading]
+        if len(reading) >= reading_needed and len(candidates) >= needed:
+            base = reading[:reading_needed] + other[:needed - reading_needed]
+            if len(base) < needed:
+                base += reading[reading_needed:needed - len(base) + reading_needed]
+            if len(base) == needed:
+                quick = _with_random_vocabulary(base)
+                if len(quick) == target_count:
+                    return quick
 
     # ── Step 1: Record timestamp BEFORE generation ──────────────────────────
     # Anything inserted after this moment belongs to THIS session only.
