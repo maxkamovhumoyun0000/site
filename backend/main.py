@@ -32742,6 +32742,7 @@ def _competition_snapshot(session: dict[str, Any], user_id: int | None = None) -
             # Level is stored per participant at join time; older sessions
             # fall back to the session level.
             "level": _competition_participant_level(session, raw_participant_rows.get(int(row.get("user_id") or 0))),
+            "team": _competition_participant_team(session, raw_participant_rows.get(int(row.get("user_id") or 0))),
         }
         for row in participants
     ]
@@ -33151,7 +33152,7 @@ def _competition_persist_session_db(session: dict[str, Any] | None) -> None:
                     sid,
                     uid,
                     str(row.get("name") or f"Player {uid}"),
-                    int(teams.get(uid) or row.get("team_no") or 1),
+                    int(_competition_participant_team(session, row) or 1),
                     str(row.get("status") or "active"),
                     float(session.get("entry_fee") or 0.0) if uid in charged else 0.0,
                     1 if uid in refunded else 0,
@@ -33737,6 +33738,9 @@ def _ensure_web_duel_runtime_schema() -> None:
 def _duel_persist_session(session: dict[str, Any] | None) -> None:
     if not session:
         return
+    if str(session.get("mode") or "") in {"duel-3v3", "duel-5v5"} and _competition_session_phase(session) in {"pending", "generating"}:
+        joined_ids = [int(row.get("user_id") or 0) for row in _competition_waiting_participants(session)]
+        session["teams"] = _competition_team_map(str(session.get("mode")), joined_ids)
     _competition_persist_session_db(session)
     if not _duel_is_mode(session.get("mode")):
         return
@@ -33805,7 +33809,7 @@ def _duel_persist_session(session: dict[str, Any] | None) -> None:
             uid = int(row.get("user_id") or 0)
             if uid <= 0:
                 continue
-            team_no = int(teams.get(uid) or row.get("team_no") or 1)
+            team_no = int(_competition_participant_team(session, row) or 1)
             cur.execute(
                 """
                 INSERT INTO web_duel_participants
@@ -36293,6 +36297,8 @@ def _competition_opponent_progress(session: dict[str, Any], current_user_id: int
     questions = session.get("questions") or []
     total = len(questions) or 5
     progress_map = session.get("progress") or {}
+    me = next((p for p in (session.get("participants") or []) if int(p.get("user_id") or 0) == int(current_user_id)), {})
+    my_team = _competition_participant_team(session, me)
     for p in session.get("participants") or []:
         uid = int(p.get("user_id") or 0)
         if uid <= 0 or uid == int(current_user_id):
@@ -36303,6 +36309,7 @@ def _competition_opponent_progress(session: dict[str, Any], current_user_id: int
         unanswered = int(p_prog.get("unanswered") or 0)
         completed = correct + wrong + unanswered
         status_str = str(p.get("status") or "active").lower()
+        team = _competition_participant_team(session, p)
         is_finished = status_str in {"finished", "left", "eliminated", "cancelled"} or completed >= total
         out.append({
             "user_id": uid,
@@ -36311,6 +36318,8 @@ def _competition_opponent_progress(session: dict[str, Any], current_user_id: int
             "total_questions": total,
             "is_finished": is_finished,
             "status": status_str,
+            "team": team,
+            "relationship": ("teammate" if team == my_team else "opponent") if team and my_team else None,
         })
     return out
 

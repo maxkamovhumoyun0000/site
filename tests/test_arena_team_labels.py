@@ -31,6 +31,7 @@ class TeamIdentityTest(unittest.TestCase):
         ns = load({'_competition_persist_session_db', '_competition_participant_team'}, {
             '_ensure_web_competition_runtime_schema': lambda: None,
             '_duel_normalize_session': lambda s: s,
+            '_competition_session_phase': lambda _s: 'active',
             '_json_default': str,
             'get_conn': Connection,
             '_now_utc': lambda: None,
@@ -49,6 +50,19 @@ class TeamIdentityTest(unittest.TestCase):
         rows = ns['_competition_opponent_progress'](session, 1)
         self.assertEqual([(r['user_id'], r['team'], r['relationship']) for r in rows],
                          [(2, 1, 'teammate'), (3, 2, 'opponent')])
+
+    def test_pending_roster_has_consistent_team_assignments(self):
+        persisted = []
+        ns = load({'_duel_persist_session', '_competition_team_map',
+                   '_competition_waiting_participants', '_competition_joined_participants'}, {
+            '_competition_session_phase': lambda _s: 'pending',
+            '_competition_persist_session_db': lambda s: persisted.append(dict(s['teams'])),
+            '_duel_is_mode': lambda _m: False,
+        })
+        session = {'mode': 'duel-3v3', 'participants': [
+            {'user_id': 1}, {'user_id': 2}, {'user_id': 3}, {'user_id': 4}]}
+        ns['_duel_persist_session'](session)
+        self.assertEqual(persisted, [{1: 1, 2: 1, 3: 1, 4: 2}])
 
 
 if __name__ == '__main__': unittest.main()
