@@ -82,7 +82,30 @@ def ensure_tables() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"""
         )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_video_progress (
+                user_id BIGINT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('speaking', 'catalog')),
+                video_id BIGINT NOT NULL,
+                position_seconds INTEGER NOT NULL DEFAULT 0 CHECK (position_seconds >= 0),
+                duration_seconds INTEGER NOT NULL DEFAULT 0 CHECK (duration_seconds >= 0),
+                completed BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, source, video_id)
+            )"""
+        )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_video_bookmarks (
+                user_id BIGINT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('speaking', 'catalog')),
+                video_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, source, video_id)
+            )"""
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_videos_subject ON speaking_videos(subject, is_published, sort_order)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_video_progress_user ON speaking_video_progress(user_id, updated_at DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_video_bookmarks_user ON speaking_video_bookmarks(user_id, created_at DESC)")
         conn.commit()
         _SCHEMA_READY = True
     finally:
@@ -166,10 +189,154 @@ def _load(subject: str, *, include_drafts: bool, viewer_id: int | None) -> list[
             if subject and row_subject and row_subject != subject:
                 continue
             picks.append(item)
-        return own + picks
+        items = own + picks
+        if viewer_id is not None:
+            _attach_viewer_state(cur, items, viewer_id)
+        return items
     finally:
         cur.close()
         conn.close()
+
+
+def _attach_viewer_state(cur: Any, items: list[dict[str, Any]], user_id: int) -> None:
+    """Add per-user watch progress and bookmarks to catalogue records."""
+    if not items:
+        return
+    cur.execute(
+        """SELECT source, video_id, position_seconds, duration_seconds, completed
+           FROM speaking_video_progress WHERE user_id = %s""",
+        (int(user_id),),
+    )
+    progress = {
+        (str(row.get("source") or ""), int(row.get("video_id") or 0)): row
+        for row in (dict(value) for value in cur.fetchall() or [])
+    }
+    cur.execute(
+        "SELECT source, video_id FROM speaking_video_bookmarks WHERE user_id = %s",
+        (int(user_id),),
+    )
+    bookmarks = {
+        (str(dict(row).get("source") or ""), int(dict(row).get("video_id") or 0))
+        for row in cur.fetchall() or []
+    }
+    for item in items:
+        key = (str(item.get("source") or ""), int(item.get("id") or 0))
+        state = progress.get(key) or {}
+        item["position_seconds"] = max(0, int(state.get("position_seconds") or 0))
+        item["progress_duration_seconds"] = max(0, int(state.get("duration_seconds") or 0))
+        item["completed"] = bool(state.get("completed"))
+        item["is_bookmarked"] = key in bookmarks
+        if not int(item.get("duration") or 0) and item["progress_duration_seconds"]:
+            item["duration"] = item["progress_duration_seconds"]
+
+
+def _visible_video(source: str, video_id: int) -> bool:
+    if source not in {"speaking", "catalog"} or video_id <= 0:
+        return False
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if source == "speaking":
+            cur.execute(
+                "SELECT 1 AS found FROM speaking_videos WHERE id = %s AND is_published = TRUE LIMIT 1",
+                (int(video_id),),
+            )
+        else:
+            cur.execute(
+                """SELECT 1 AS found FROM videos v
+                   JOIN speaking_video_picks p ON p.video_id = v.id
+                   WHERE v.id = %s AND v.is_published = 1 LIMIT 1""",
+                (int(video_id),),
+            )
+        return cur.fetchone() is not None
+    finally:
+        cur.close()
+        conn.close()
+
+
+class SpeakingVideoProgressInput(BaseModel):
+    position_seconds: int = Field(ge=0, le=24 * 3600)
+    duration_seconds: int = Field(default=0, ge=0, le=24 * 3600)
+
+
+class SpeakingVideoBookmarkInput(BaseModel):
+    saved: bool
+
+
+@router.put("/api/speaking/videos/{source}/{video_id}/progress")
+@router.put("/speaking/videos/{source}/{video_id}/progress")
+async def save_speaking_video_progress(
+    source: str,
+    video_id: int,
+    payload: SpeakingVideoProgressInput,
+    authorization: str | None = Header(default=None),
+):
+    user = _optional_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    ensure_tables()
+    if not _visible_video(source, video_id):
+        raise HTTPException(status_code=404, detail="Video not found")
+    duration = int(payload.duration_seconds)
+    position = min(int(payload.position_seconds), duration) if duration > 0 else int(payload.position_seconds)
+    completed = duration > 0 and position >= duration
+    if completed:
+        position = 0
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """INSERT INTO speaking_video_progress
+                   (user_id, source, video_id, position_seconds, duration_seconds, completed, updated_at)
+               VALUES (%s,%s,%s,%s,%s,%s,NOW())
+               ON CONFLICT (user_id, source, video_id) DO UPDATE SET
+                   position_seconds=EXCLUDED.position_seconds,
+                   duration_seconds=EXCLUDED.duration_seconds,
+                   completed=EXCLUDED.completed,
+                   updated_at=NOW()""",
+            (int(user.get("id") or 0), source, int(video_id), position, duration, completed),
+        )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return {"source": source, "id": int(video_id), "position_seconds": position, "duration_seconds": duration, "completed": completed}
+
+
+@router.put("/api/speaking/videos/{source}/{video_id}/bookmark")
+@router.put("/speaking/videos/{source}/{video_id}/bookmark")
+async def set_speaking_video_bookmark(
+    source: str,
+    video_id: int,
+    payload: SpeakingVideoBookmarkInput,
+    authorization: str | None = Header(default=None),
+):
+    user = _optional_user(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    ensure_tables()
+    if not _visible_video(source, video_id):
+        raise HTTPException(status_code=404, detail="Video not found")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        key = (int(user.get("id") or 0), source, int(video_id))
+        if payload.saved:
+            cur.execute(
+                """INSERT INTO speaking_video_bookmarks (user_id, source, video_id)
+                   VALUES (%s,%s,%s) ON CONFLICT (user_id, source, video_id) DO NOTHING""",
+                key,
+            )
+        else:
+            cur.execute(
+                "DELETE FROM speaking_video_bookmarks WHERE user_id = %s AND source = %s AND video_id = %s",
+                key,
+            )
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()
+    return {"source": source, "id": int(video_id), "is_bookmarked": payload.saved}
 
 
 @router.get("/speaking/videos")
@@ -193,7 +360,7 @@ async def record_speaking_video_view(source: str, video_id: int, authorization: 
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
     ensure_tables()
-    if source not in {"speaking", "catalog"}:
+    if not _visible_video(source, video_id):
         raise HTTPException(status_code=404, detail="Video not found")
     from backend.main import _REDIS_CLIENT
     from backend.rate_limiting import consume_rate_limit

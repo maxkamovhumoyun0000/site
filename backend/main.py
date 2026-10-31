@@ -34900,6 +34900,12 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
         session["generation_percent"] = max(18, int(session.get("generation_percent") or 0))
         session["stage_generation_percent"] = max(18, int(session.get("stage_generation_percent") or session.get("generation_percent") or 0))
         _duel_persist_session(session)
+        logger.info(
+            "competition.generation_started session_id=%s mode=%s stage=%s",
+            str(session.get("id") or session_id),
+            mode,
+            target_stage,
+        )
 
     if not session:
         return
@@ -34916,17 +34922,39 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
     difficulty = str(session.get("difficulty") or _competition_default_difficulty(mode))
 
     async def _update_progress():
+        """Report UI progress and keep a lease heartbeat alive until generation ends.
+
+        Question providers can legitimately take longer than the old 45-second
+        recovery timeout. The previous finite progress loop stopped touching the
+        lease after ~12 seconds, so status polling mistook slow-but-live work for
+        a crashed worker and invalidated its generation token, restarting the
+        same match from the beginning.
+        """
         try:
             for i in range(19, 81):
                 if i % 10 == 0:
                     with _competition_session_advisory_lock(session_id):
                         current = _competition_load_session_from_db(session_id)
                         if not current or current.get("status") != "generating" or str(current.get("generation_token") or "") != str(generation_token):
-                            break
+                            return
+                        now_iso = _now_utc().isoformat()
                         current["generation_percent"] = i
                         current["stage_generation_percent"] = i
+                        current["generation_recovery_started_at"] = now_iso
                         _duel_persist_session(current)
                 await asyncio.sleep(12.0 / (80 - 18 + 1))
+
+            # Progress intentionally tops out at 80% until questions are
+            # persisted and the match is activated. Keep refreshing the lease
+            # while the actual AI/API call is still in flight.
+            while True:
+                await asyncio.sleep(10.0)
+                with _competition_session_advisory_lock(session_id):
+                    current = _competition_load_session_from_db(session_id)
+                    if not current or current.get("status") != "generating" or str(current.get("generation_token") or "") != str(generation_token):
+                        return
+                    current["generation_recovery_started_at"] = _now_utc().isoformat()
+                    _duel_persist_session(current)
         except asyncio.CancelledError:
             pass
 
@@ -35073,6 +35101,13 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
         _duel_persist_session(session)
     await _competition_notify_started(session)
     _duel_persist_session(session)
+    logger.info(
+        "competition.generation_completed session_id=%s mode=%s stage=%s question_count=%s",
+        str(session.get("id") or session_id),
+        mode,
+        target_stage,
+        len(questions),
+    )
 
 
 @app.post("/competition/runtime/start")
@@ -35793,7 +35828,19 @@ async def competition_runtime_status(session_id: str, presence: bool = Query(def
                 current_phase = "pending"
             else:
                 recovery_dt = _parse_utc_timestamp(str(sess.get("generation_recovery_started_at") or ""))
-                if not recovery_dt or now_dt - recovery_dt > timedelta(seconds=45):
+                if not recovery_dt or now_dt - recovery_dt > timedelta(seconds=60):
+                    stale_seconds = (
+                        int((now_dt - recovery_dt).total_seconds())
+                        if recovery_dt
+                        else None
+                    )
+                    logger.warning(
+                        "competition.generation_recovery session_id=%s stage=%s progress=%s stale_seconds=%s",
+                        str(sess.get("id") or actual_sid),
+                        target_stage,
+                        int(sess.get("stage_generation_percent") or sess.get("generation_percent") or 0),
+                        stale_seconds,
+                    )
                     sess.pop("generation_token", None)
                     sess.pop("generation_task_stage", None)
                     token = _competition_prepare_generation(sess, target_stage=target_stage)
