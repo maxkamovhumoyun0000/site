@@ -3587,11 +3587,101 @@ def _can_manage_group(admin_ref_id: int, group_row: dict | None) -> bool:
     return _limited_admin_owner_visible(int(admin_ref_id), group_row.get("owner_admin_id"))
 
 
-def _student_in_manageable_payment_group(admin_ref_id: int, user_id: int) -> bool:
+def _student_in_manageable_payment_group(
+    admin_ref_id: int,
+    user_id: int,
+    group_id: int | None = None,
+) -> bool:
+    """Authorize payment access by group, never by who created the account.
+
+    A limited admin may handle a learner's payment when the learner belongs to
+    one of that admin's groups, even if another admin created the account.
+    Historical obligations/transactions keep access to old group payments
+    after a learner is removed from that group. Passing ``group_id`` narrows
+    the check to that one group and is required for payment mutations.
+    """
+    uid = int(user_id or 0)
+    if uid <= 0:
+        return False
+    target = _safe_call(lambda: get_user_by_id(uid), None)
+    if not target or int(target.get("login_type") or 0) not in (1, 2, 6):
+        return False
     if _is_general_admin_scope(admin_ref_id):
         return True
-    groups = _safe_call(lambda: get_user_groups(int(user_id)), []) or []
-    return any(_can_manage_group(int(admin_ref_id), group) for group in groups)
+
+    if group_id is not None:
+        gid = int(group_id or 0)
+        group = _safe_call(lambda: get_group(gid), None) if gid > 0 else None
+        if not group or not _can_manage_group(int(admin_ref_id), group):
+            return False
+        groups = _safe_call(lambda: get_user_groups(uid), []) or []
+        if any(int(row.get("id") or 0) == gid for row in groups):
+            return True
+        # Removed learners remain manageable for payments already recorded
+        # against this group, but cannot be added to a new group's ledger.
+        conn = None
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT 1 FROM payment_monthly_obligations
+                WHERE user_id=? AND group_id=?
+                UNION ALL
+                SELECT 1 FROM payment_transactions
+                WHERE user_id=? AND group_id=?
+                LIMIT 1
+                """,
+                (uid, gid, uid, gid),
+            )
+            found = cur.fetchone() is not None
+            return found
+        except Exception:
+            return False
+        finally:
+            if conn is not None:
+                with suppress(Exception):
+                    conn.close()
+
+    all_groups = _safe_call(get_all_groups, []) or []
+    manageable_groups = _safe_call(
+        lambda: _scope_groups_for_admin(int(admin_ref_id), all_groups),
+        [],
+    ) or []
+    visible_group_ids = {
+        int(row.get("id") or 0)
+        for row in manageable_groups
+        if int(row.get("id") or 0) > 0
+    }
+    if not visible_group_ids:
+        return False
+    groups = _safe_call(lambda: get_user_groups(uid), []) or []
+    if any(int(row.get("id") or 0) in visible_group_ids for row in groups):
+        return True
+    conn = None
+    try:
+        placeholders = ", ".join(["?"] * len(visible_group_ids))
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            SELECT 1 FROM payment_monthly_obligations
+            WHERE user_id=? AND group_id IN ({placeholders})
+            UNION ALL
+            SELECT 1 FROM payment_transactions
+            WHERE user_id=? AND group_id IN ({placeholders})
+            LIMIT 1
+            """,
+            tuple([uid, *sorted(visible_group_ids), uid, *sorted(visible_group_ids)]),
+        )
+        found = cur.fetchone() is not None
+        return found
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            with suppress(Exception):
+                conn.close()
 
 
 def _can_create_articles(user: dict) -> bool:
@@ -47940,7 +48030,7 @@ def _payment_filter_overview_by_group_scope(overview: dict[str, Any], allowed_gr
     filtered_bonus = [
         dict(row)
         for row in (overview.get("bonus_history") or [])
-        if int(row.get("group_id") or 0) <= 0 or _is_allowed_group(row.get("group_id"))
+        if _is_allowed_group(row.get("group_id"))
     ]
     return {
         **overview,
@@ -47949,6 +48039,10 @@ def _payment_filter_overview_by_group_scope(overview: dict[str, Any], allowed_gr
         "transactions": filtered_transactions,
         "refunds": filtered_refunds,
         "bonus_history": filtered_bonus,
+        # Referral rewards are user-wide rather than group-ledger records.
+        # Keep them out of a limited admin's group-scoped payment response.
+        "referral_status": None,
+        "referral_as_source": [],
     }
 
 
@@ -49296,7 +49390,7 @@ async def admin_payments_transactions(
     for row in rows:
         gid = int(row.get("group_id") or 0)
         uid = int(row.get("user_id") or 0)
-        if gid and gid not in scoped_group_ids:
+        if gid not in scoped_group_ids:
             continue
         if selected_gid > 0 and gid != selected_gid:
             continue
@@ -49415,7 +49509,7 @@ async def admin_payments_transactions(
     for row in refund_rows:
         gid = int(row.get("group_id") or 0)
         uid = int(row.get("user_id") or 0)
-        if gid and gid not in scoped_group_ids:
+        if gid not in scoped_group_ids:
             continue
         if selected_gid > 0 and gid != selected_gid:
             continue
@@ -50595,12 +50689,12 @@ async def admin_payments_calculate(
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
     target_user = _safe_call(lambda: get_user_by_id(int(user_id)), None)
-    if not _can_manage_user_globally(admin_ref, target_user):
+    if not target_user or not _student_in_manageable_payment_group(admin_ref, int(user_id)):
         raise HTTPException(status_code=403, detail="Permission denied")
     selected_group_id = int(group_id or 0)
     if selected_group_id > 0:
         group_row = _safe_call(lambda: get_group(selected_group_id), None)
-        if not _can_manage_group(admin_ref, group_row):
+        if not _student_in_manageable_payment_group(admin_ref, int(user_id), selected_group_id):
             raise HTTPException(status_code=403, detail="Permission denied")
     tz = pytz.timezone("Asia/Tashkent")
     month_key = _payment_validate_ym(ym) if str(ym or "").strip() else datetime.now(tz).strftime("%Y-%m")
@@ -50626,12 +50720,12 @@ async def admin_payments_preview(
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
     target_user = _safe_call(lambda: get_user_by_id(int(user_id)), None)
-    if not _can_manage_user_globally(admin_ref, target_user):
+    if not target_user or not _student_in_manageable_payment_group(admin_ref, int(user_id)):
         raise HTTPException(status_code=403, detail="Permission denied")
     selected_group_id = int(group_id or 0)
     if selected_group_id > 0:
         group_row = _safe_call(lambda: get_group(selected_group_id), None)
-        if not _can_manage_group(admin_ref, group_row):
+        if not _student_in_manageable_payment_group(admin_ref, int(user_id), selected_group_id):
             raise HTTPException(status_code=403, detail="Permission denied")
     tz = pytz.timezone("Asia/Tashkent")
     if year and month:
@@ -51546,15 +51640,20 @@ async def admin_payments_student_detail(
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_manage_user_globally(admin_ref, target):
-        raise HTTPException(status_code=403, detail="Permission denied")
     limited_scope = _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref)
+    if limited_scope:
+        if not _student_in_manageable_payment_group(admin_ref, int(user_id)):
+            raise HTTPException(status_code=403, detail="Permission denied")
+    elif not _can_manage_user_globally(admin_ref, target):
+        raise HTTPException(status_code=403, detail="Permission denied")
     scope_started_at = time.perf_counter()
     allowed_group_ids: set[int] = set()
     if limited_scope:
         allowed_group_ids = {int(g.get("id") or 0) for g in _scope_groups_for_admin(admin_ref, _safe_call(get_all_groups, []) or [])}
     has_any_group = True
-    if bool(include_history):
+    if limited_scope:
+        has_any_group = _student_in_manageable_payment_group(admin_ref, int(user_id))
+    elif bool(include_history):
         target_groups = _safe_call(lambda: get_user_groups(int(user_id)), []) or []
         has_any_group = bool(target_groups)
     scope_elapsed_ms = (time.perf_counter() - scope_started_at) * 1000.0
@@ -51571,10 +51670,10 @@ async def admin_payments_student_detail(
         include_history=bool(include_history),
     )
     overview_elapsed_ms = (time.perf_counter() - overview_started_at) * 1000.0
-    if not bool(include_history):
-        has_any_group = bool((overview.get("current_month") or {}).get("items"))
     if limited_scope:
         overview = _payment_filter_overview_by_group_scope(overview, allowed_group_ids)
+    if not bool(include_history) and not limited_scope:
+        has_any_group = bool((overview.get("current_month") or {}).get("items"))
     _ensure_payment_automation_schema()
     unpaid_scan_started_at = time.perf_counter()
     oldest_unpaid_rows: list[dict[str, Any]] = []
@@ -51598,7 +51697,7 @@ async def admin_payments_student_detail(
     if bool(include_history):
         for row in oldest_unpaid_rows:
             gid = int(row.get("group_id") or 0)
-            if limited_scope and gid > 0 and gid not in allowed_group_ids:
+            if limited_scope and gid not in allowed_group_ids:
                 continue
             default_ym = str(row.get("ym") or current_ym)
             break
@@ -51644,8 +51743,8 @@ async def admin_payments_penalty_preview(
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_manage_user_globally(admin_ref, target):
-        raise HTTPException(status_code=403, detail="Permission denied")
+    if int(target.get("login_type") or 0) not in (1, 2, 6):
+        raise HTTPException(status_code=400, detail="Payments are only available for students")
     groups = _safe_call(lambda: get_user_groups(int(user_id)), []) or []
     group = next((g for g in groups if int(g.get("id") or 0) == int(group_id)), None)
     if not group:
@@ -51690,8 +51789,8 @@ async def admin_payments_student_confirm(
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not _can_manage_user_globally(admin_ref, target):
-        raise HTTPException(status_code=403, detail="Permission denied")
+    if int(target.get("login_type") or 0) not in (1, 2, 6):
+        raise HTTPException(status_code=400, detail="Payments are only available for students")
     month_key = _payment_validate_ym(payload.ym)
     amount = _payment_require_positive_amount(payload.amount, field_name="amount")
     payment_method = str(payload.payment_method or "cash").strip().lower()
@@ -52157,9 +52256,6 @@ async def admin_payments_refund_transaction(
     user_id = int(tx.get("user_id") or 0)
     target = _safe_call(lambda: get_user_by_id(user_id), None)
     admin_ref = _admin_ref_id(user)
-    if not _can_manage_user_globally(admin_ref, target):
-        conn.close()
-        raise HTTPException(status_code=403, detail="Permission denied")
     group_row = _safe_call(lambda: get_group(int(tx.get("group_id") or 0)), None)
     if not _can_manage_group(admin_ref, group_row):
         conn.close()
