@@ -22,7 +22,7 @@ import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from db import get_conn
@@ -101,8 +101,8 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
-def _query(sql: str, params: tuple = (), *, one: bool = False) -> Any:
-    """Read-only query that tolerates a missing optional table."""
+def _query(sql: str, params: tuple = (), *, one: bool = False, strict: bool = False) -> Any:
+    """Read-only query; required profile data can fail closed with strict=True."""
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -116,6 +116,10 @@ def _query(sql: str, params: tuple = (), *, one: bool = False) -> Any:
             conn.rollback()
         except Exception:
             pass
+        if strict:
+            logger.exception("Speaking profile database read failed")
+            raise
+        logger.debug("Optional Speaking profile lookup unavailable", exc_info=True)
         return None if one else []
     finally:
         try:
@@ -151,17 +155,15 @@ def _own_profile_row(user_id: int) -> dict[str, Any]:
 def _apps_used(user_id: int, row: dict[str, Any], speaking_answers: int) -> dict[str, bool]:
     sources = {
         str(item.get("source") or "").strip().lower()
-        for item in _query("SELECT DISTINCT source FROM web_user_sessions WHERE user_id=?", (int(user_id),))
+        for item in _query("SELECT DISTINCT source FROM web_user_sessions WHERE user_id=?", (int(user_id),), strict=True)
     }
     push_apps = {
         str(item.get("app") or "").strip().lower()
         for item in _query("SELECT DISTINCT app FROM push_device_tokens WHERE user_id=?", (int(user_id),))
     }
-    speaking_push = bool(_query("SELECT 1 AS x FROM speaking_push_tokens WHERE user_id=? LIMIT 1", (int(user_id),), one=True))
     return {
         "speaking": bool(
             sources & _SPEAKING_SOURCES
-            or speaking_push
             or speaking_answers > 0
             or is_speaking_app_account(row.get("speaking_app_account"))
         ),
@@ -190,19 +192,16 @@ def _subjects(user_id: int, row: dict[str, Any]) -> list[str]:
 
 def _levels(user_id: int, row: dict[str, Any]) -> list[dict[str, Any]]:
     levels: list[dict[str, Any]] = []
-    try:
-        from backend.speaking_placement import results_for
+    from backend.speaking_placement import results_for
 
-        for result in results_for(int(user_id)):
-            levels.append({
-                "subject": result["subject"],
-                "level": result["level_code"],
-                "label": result["level_label"],
-                "source": "speaking_test",
-                "tested_at": result.get("tested_at"),
-            })
-    except Exception:
-        logger.debug("speaking placement results unavailable", exc_info=True)
+    for result in results_for(int(user_id)):
+        levels.append({
+            "subject": result["subject"],
+            "level": result["level_code"],
+            "label": result["level_label"],
+            "source": "speaking_test",
+            "tested_at": result.get("tested_at"),
+        })
     student_level = str(row.get("level") or "").strip()
     if student_level and not is_speaking_app_account(row.get("speaking_app_account")):
         levels.append({"subject": None, "level": student_level, "label": student_level, "source": "student_app"})
@@ -210,21 +209,26 @@ def _levels(user_id: int, row: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _speaking_stats(user_id: int) -> dict[str, Any]:
-    from backend.speaking_exams import build_badges, streak_from_days, _today
+    from backend.speaking_exams import build_badges, streak_from_days, _today, ensure_tables
 
-    count = _query("SELECT COUNT(*) AS n FROM speaking_answer_analyses WHERE user_id=?", (int(user_id),), one=True)
+    # Initialize the real progress tables lazily too, not only as a side
+    # effect of visiting the exam screens first.
+    ensure_tables()
+
+    count = _query("SELECT COUNT(*) AS n FROM speaking_answer_analyses WHERE user_id=?", (int(user_id),), one=True, strict=True)
     answers = int((count or {}).get("n") or 0)
     mocks_rows = _query(
         """SELECT subject, COUNT(*) AS n, MAX(overall) AS best FROM speaking_exams
            WHERE user_id=? AND kind='mock' AND status='finished' GROUP BY subject""",
         (int(user_id),),
+        strict=True,
     )
     mocks = sum(int(r.get("n") or 0) for r in mocks_rows)
     best = {
         str(r.get("subject") or "english"): (float(r["best"]) if r.get("best") is not None else None)
         for r in mocks_rows
     }
-    day_rows = _query("SELECT DISTINCT day FROM speaking_daily_challenges WHERE user_id=?", (int(user_id),))
+    day_rows = _query("SELECT DISTINCT day FROM speaking_daily_challenges WHERE user_id=?", (int(user_id),), strict=True)
     days = []
     for item in day_rows:
         value = item.get("day")
@@ -238,8 +242,9 @@ def _speaking_stats(user_id: int) -> dict[str, Any]:
         "SELECT COUNT(*) AS n FROM speaking_answer_analyses WHERE user_id=? AND subject='english' AND part=2 AND score >= 6.5",
         (int(user_id),),
         one=True,
+        strict=True,
     )
-    badges = build_badges(
+    badge_progress = build_badges(
         best_streak=best_streak, recordings=answers, mocks=mocks,
         part2_strong=int((strong or {}).get("n") or 0), subject="english",
     )
@@ -249,7 +254,8 @@ def _speaking_stats(user_id: int) -> dict[str, Any]:
         "best_mock": best,
         "streak_current": current,
         "streak_best": best_streak,
-        "badges": [b["key"] for b in badges if b.get("earned")],
+        "badges": [b["key"] for b in badge_progress if b.get("earned")],
+        "badge_progress": badge_progress,
     }
 
 
@@ -257,14 +263,8 @@ def _points(user_id: int) -> dict[str, float]:
     from db import get_dcoins, get_dpoints
 
     out = {"dcoins": 0.0, "dpoints": 0.0}
-    try:
-        out["dcoins"] = round(float(get_dcoins(int(user_id)) or 0), 1)
-    except Exception:
-        pass
-    try:
-        out["dpoints"] = round(float(get_dpoints(int(user_id)) or 0), 1)
-    except Exception:
-        pass
+    out["dcoins"] = round(float(get_dcoins(int(user_id)) or 0), 1)
+    out["dpoints"] = round(float(get_dpoints(int(user_id)) or 0), 1)
     return out
 
 
@@ -417,6 +417,24 @@ class ProfileUpdateRequest(BaseModel):
     instagram: str | None = Field(default=None, max_length=120)
 
 
+class SpeakingCredentialUpdateRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    login_id: str | None = Field(default=None, min_length=4, max_length=64)
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
+def _validate_credential_update(payload: SpeakingCredentialUpdateRequest) -> tuple[str | None, str | None]:
+    from backend.main import _public_registration_login_id
+
+    if payload.login_id is None and payload.new_password is None:
+        raise HTTPException(status_code=422, detail="Enter a new Login ID or password")
+    login_id = _public_registration_login_id(payload.login_id) if payload.login_id is not None else None
+    new_password = payload.new_password
+    if new_password is not None and len(new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=422, detail="Password must be no more than 72 UTF-8 bytes")
+    return login_id, new_password
+
+
 def _own_payload(viewer: dict[str, Any]) -> dict[str, Any]:
     uid = int(viewer.get("id") or 0)
     row = _user_row(uid)
@@ -433,6 +451,166 @@ def _own_payload(viewer: dict[str, Any]) -> dict[str, Any]:
 @router.get("/api/speaking/profile/me")
 async def speaking_profile_me(authorization: str | None = Header(default=None)):
     return {"user": _own_payload(_viewer(authorization))}
+
+
+@router.get("/speaking/profile/stats")
+@router.get("/api/speaking/profile/stats")
+async def speaking_profile_stats(authorization: str | None = Header(default=None)):
+    viewer = _viewer(authorization)
+    return {"stats": _speaking_stats(int(viewer.get("id") or 0))}
+
+
+@router.get("/speaking/profile/levels")
+@router.get("/api/speaking/profile/levels")
+async def speaking_profile_levels(authorization: str | None = Header(default=None)):
+    viewer = _viewer(authorization)
+    user_id = int(viewer.get("id") or 0)
+    row = _user_row(user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"items": _levels(user_id, row)}
+
+
+@router.get("/speaking/profile/badges")
+@router.get("/api/speaking/profile/badges")
+async def speaking_profile_badges(authorization: str | None = Header(default=None)):
+    viewer = _viewer(authorization)
+    stats = _speaking_stats(int(viewer.get("id") or 0))
+    return {"items": stats["badge_progress"], "earned_keys": stats["badges"]}
+
+
+@router.get("/speaking/profile/sessions")
+@router.get("/api/speaking/profile/sessions")
+async def speaking_profile_sessions(authorization: str | None = Header(default=None)):
+    _viewer(authorization)
+    from backend.main import list_user_sessions
+
+    return await list_user_sessions(authorization)
+
+
+@router.patch("/speaking/profile/credentials")
+@router.patch("/api/speaking/profile/credentials")
+async def update_speaking_profile_credentials(
+    payload: SpeakingCredentialUpdateRequest,
+    req: Request,
+    response: Response,
+    authorization: str | None = Header(default=None),
+):
+    """Update credentials on a standalone Speaking account, keeping this device signed in."""
+    from backend.main import (
+        _auth_token_response,
+        _clear_auth_caches_for_user,
+        _client_ip,
+        _create_access_token,
+        _decode_bearer_payload,
+        _issue_web_session,
+        _revoke_web_sessions,
+        clear_login_throttle,
+        get_user_by_id,
+        hash_password,
+        is_login_throttled,
+        record_login_failure,
+        verify_password,
+    )
+
+    viewer = _viewer(authorization)
+    user_id = int(viewer.get("id") or 0)
+    if user_id <= 0 or not is_speaking_app_account(viewer.get("speaking_app_account")):
+        raise HTTPException(status_code=403, detail="Only a standalone Speaking account can change credentials here")
+    login_id, new_password = _validate_credential_update(payload)
+
+    client_ip = _client_ip(req)
+    user_key = f"speaking-credentials:user:{user_id}"
+    ip_key = f"speaking-credentials:ip:{client_ip}" if client_ip else ""
+    if is_login_throttled(user_key) or (ip_key and is_login_throttled(ip_key)):
+        raise HTTPException(status_code=429, detail="Too many credential attempts. Please try again later.")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT id, login_id, password, speaking_app_account, speaking_deleted_at "
+            "FROM users WHERE id=? LIMIT 1",
+            (user_id,),
+        )
+        found = cur.fetchone()
+        current = dict(found) if found else None
+        if not current or not is_speaking_app_account(current.get("speaking_app_account")) or current.get("speaking_deleted_at"):
+            raise HTTPException(status_code=403, detail="Only an active standalone Speaking account can change credentials")
+        if not verify_password(payload.current_password, current.get("password")):
+            record_login_failure(user_key)
+            if ip_key:
+                record_login_failure(ip_key)
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+        next_login_id = login_id or str(current.get("login_id") or "")
+        if login_id is not None and login_id.upper() != str(current.get("login_id") or "").upper():
+            cur.execute(
+                "SELECT id FROM users WHERE UPPER(login_id)=? AND id<>? LIMIT 1",
+                (login_id, user_id),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="This Login ID is already in use")
+
+        assignments = ["login_id=?", "session_version=COALESCE(session_version, 1) + 1"]
+        params: list[Any] = [next_login_id]
+        if new_password is not None:
+            assignments.insert(1, "password=?")
+            params.insert(1, hash_password(new_password))
+        params.extend((user_id, current.get("password"), current.get("login_id")))
+        cur.execute(
+            f"UPDATE users SET {', '.join(assignments)} WHERE id=? AND password=? AND login_id=?",
+            tuple(params),
+        )
+        if int(getattr(cur, "rowcount", 1) or 0) == 0:
+            raise HTTPException(status_code=409, detail="Account changed. Please retry.")
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        code = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+        message = str(exc).lower()
+        if code == "23505" or "unique constraint" in message or "unique violation" in message:
+            raise HTTPException(status_code=409, detail="This Login ID is already in use") from exc
+        logger.exception("Speaking credentials update failed user_id=%s", user_id)
+        raise HTTPException(status_code=500, detail="Could not update credentials") from exc
+    finally:
+        cur.close()
+        conn.close()
+
+    clear_login_throttle(user_key)
+    if ip_key:
+        clear_login_throttle(ip_key)
+    bearer_payload = _decode_bearer_payload(authorization)
+    current_session_id = str(bearer_payload.get("sid") or bearer_payload.get("session_id") or "").strip()
+    metadata = _query(
+        "SELECT device_id, device_model FROM web_user_sessions WHERE session_id=? AND user_id=? LIMIT 1",
+        (current_session_id, user_id),
+        one=True,
+    ) if current_session_id else None
+    current_device_id = str((metadata or {}).get("device_id") or "").strip() or None
+    current_device_model = str((metadata or {}).get("device_model") or "").strip() or None
+
+    _clear_auth_caches_for_user(user_id)
+    _revoke_web_sessions(user_id, keep_session_id=None, reason="speaking_credentials_changed")
+    updated_user = get_user_by_id(user_id)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="Account not found")
+    next_session_id, ttl_hours = _issue_web_session(
+        updated_user,
+        device_id=current_device_id,
+        source="speaking_credentials_change",
+        device_model=current_device_model,
+    )
+    token = _create_access_token(
+        updated_user,
+        telegram_id=bearer_payload.get("telegram_id"),
+        session_id=next_session_id,
+        ttl_hours=ttl_hours,
+    )
+    return _auth_token_response(req, response, token, updated_user)
 
 
 @router.patch("/speaking/profile/me")

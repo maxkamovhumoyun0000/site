@@ -43317,14 +43317,10 @@ async def admin_users(
         else "COALESCE(u.speaking_app_account, 0)=0",
     ]
     params: list[Any] = []
-    if requester_role == "admin":
-        list_admin_ref = _admin_ref_id(user)
-        if not _is_general_admin_scope(list_admin_ref):
-            # Staff rows stay shared; student rows of other branches are hidden
-            # (same rule as _can_manage_user_globally).
-            owner_scope, owner_params = _limited_admin_owner_scope_sql("u.owner_admin_id", int(list_admin_ref))
-            where_clauses.append(f"(u.login_type NOT IN (1,2,6) OR {owner_scope})")
-            params.extend(owner_params)
+    # The user directory is a shared read-only index: limited admins need to
+    # find any student, including students created by another admin. Access to
+    # edit/reset/block/delete remains restricted by _can_manage_user_globally
+    # in the corresponding detail and mutation handlers.
 
     if query:
         search_terms = name_search_terms(query) or [query.upper()]
@@ -43939,12 +43935,8 @@ async def admin_search_users(q: str = Query(default=""), authorization: str | No
         "COALESCE(u.screenshot_demo, 0)=0",
     ]
     params: list[Any] = []
-    search_admin_ref = _admin_ref_id(user)
-    if not _is_general_admin_scope(search_admin_ref):
-        # Limited admins search only students of their own branch scope.
-        owner_scope, owner_params = _limited_admin_owner_scope_sql("u.owner_admin_id", int(search_admin_ref))
-        where_sql.append(owner_scope)
-        params.extend(owner_params)
+    # Match the shared user directory: search can discover users globally,
+    # while all write operations continue to enforce owner scope separately.
     if query:
         search_terms = name_search_terms(query) or [query.upper()]
         search_blob = "LOWER(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'') || ' ' || COALESCE(u.phone,'') || ' ' || COALESCE(u.login_id,''))"
