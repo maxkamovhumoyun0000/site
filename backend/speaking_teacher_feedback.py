@@ -262,6 +262,13 @@ def _is_webm_or_ogg(raw: bytes) -> bool:
     return raw[:4] == b"\x1a\x45\xdf\xa3" or raw[:4] == b"OggS"
 
 
+def _is_aac_adts(raw: bytes) -> bool:
+    # Some Android audio encoders produce AAC/ADTS frames even when the
+    # temporary filename uses an .m4a suffix. Accept that valid audio and
+    # normalize it to the server's canonical M4A format below.
+    return len(raw) > 7 and raw[0] == 0xFF and (raw[1] & 0xF0) == 0xF0
+
+
 def _new_filename(kind: str, request_id: int) -> str:
     return f"{kind}_{int(request_id)}_{secrets.token_hex(12)}.m4a"
 
@@ -316,7 +323,7 @@ async def _store_audio(raw: bytes, kind: str, request_id: int) -> str:
         tmp.write_bytes(raw)
         tmp.replace(target)
         return filename
-    if _is_webm_or_ogg(raw):
+    if _is_webm_or_ogg(raw) or _is_aac_adts(raw):
         source = target.with_suffix(".src")
         source.write_bytes(raw)
         try:
@@ -541,7 +548,7 @@ async def send_to_teacher(
     student_id = int(user.get("id") or 0)
     recording_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", client_recording_id)[:120]
     raw = await _read_upload(file)
-    if not _is_mp4(raw):
+    if not (_is_mp4(raw) or _is_aac_adts(raw) or _is_webm_or_ogg(raw)):
         raise HTTPException(status_code=422, detail="Unsupported audio format. Please record again in the app.")
 
     conn = get_conn()

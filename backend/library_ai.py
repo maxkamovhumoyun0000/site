@@ -1594,7 +1594,9 @@ def _materialize_word_practice(
     ru = lang == "Russian"
     study_ru = study_lang == "Russian"
     study_uz = study_lang == "Uzbek"
-    raw_word = str(q.get("word") or q.get("prompt") or "").strip()
+    raw_word = str(
+        q.get("target_word") or q.get("word") or q.get("clean_word") or q.get("prompt") or ""
+    ).strip()
     
     # Strip part-of-speech tags in parentheses e.g. "beat (v)" -> "beat", pos_tag: "(v)"
     pos_match = re.search(r"\(([a-zA-Z\s\.,-]+)\)", raw_word)
@@ -1647,6 +1649,7 @@ def _materialize_word_practice(
         "practice_mode": kind,
         "is_random_word_practice": True,
         "word": word,
+        "target_word": word,
         "clean_word": clean_word,
         # A random practice task must show only the exercise itself.  The
         # source word may contain a part-of-speech marker such as ``(n)``;
@@ -3721,7 +3724,9 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
         f"Task given to the student: {question.get('prompt') or ''}",
     ]
     if question.get("word"):
-        parts.append(f"The student MUST use this word: {question['word']}")
+        parts.append(
+            f"The student MUST use this word: {question['word']}. Accept the exact word or a clearly correct grammatical inflection/derived form when it preserves the intended meaning; do not reject solely because of capitalization or punctuation."
+        )
     if question.get("passage"):
         parts.append(f"Reference text:\n{question['passage']}")
     if question.get("reference_answer"):
@@ -3730,6 +3735,18 @@ def _ai_check_prompt(question: dict, answer: str, subject: str, result_language:
         parts.append(
             f"The student's level is {level}. The answer must be close to that level: "
             "not a trivial 2-word sentence for B1+, and not over-complicated for A1/A2."
+        )
+    required_language = str(question.get("required_answer_language") or "").strip()
+    if required_language in {"English", "Russian"}:
+        parts.append(
+            f"The student's answer MUST be written or spoken in {required_language}. "
+            f"If the answer is in any other language, mark it incorrect even if its meaning is right."
+        )
+    if question.get("competition_final_submission"):
+        parts.append(
+            "This is a timed Arena/Duel competition. This is the student's only submission for this question. "
+            "Never ask the student to rewrite, retry, or submit another version. Judge this answer now; "
+            "if it does not satisfy the task, mark it incorrect and provide the correction only as feedback."
         )
     parts.append(
         ("This answer was SPOKEN and transcribed by speech-to-text. "
@@ -3779,6 +3796,8 @@ def _ai_grading_cache_key(
         "reference_answer": str(question.get("reference_answer") or ""),
         "example_sentence": str(question.get("example_sentence") or ""),
         "accepted_answers": _normalize_string_list(question.get("accepted_answers")),
+        "required_answer_language": str(question.get("required_answer_language") or ""),
+        "competition_final_submission": bool(question.get("competition_final_submission")),
         "translations": [
             str(question.get("translation") or ""),
             str(question.get("translation_uz") or ""),
@@ -3856,7 +3875,10 @@ async def _fast_ai_grading_request(prompt: str) -> str:
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.0,
-                "max_tokens": 220,
+                # The grader returns corrected examples plus compact rubric
+                # JSON. 220 tokens truncates otherwise valid Russian/English
+                # sentence feedback often enough to make JSON unparseable.
+                "max_tokens": 500,
             }
             _xai_apply_payload_tuning(body, model=model, stream=False)
             if _xai_model_supports_reasoning_effort(model):
@@ -3928,21 +3950,48 @@ async def _check_with_ai(
     if not answer:
         return "wrong", {"feedback": "Javob bo'sh qoldirilgan."}
 
+    # A hard script-level gate prevents the exact-answer fast path from
+    # accepting a Russian answer in Latin script / an English answer in
+    # Cyrillic. Meaning and grammar are still judged by the AI below; this is
+    # only the unambiguous English-vs-Russian script distinction.
+    required_language = str(question.get("required_answer_language") or "").strip()
+    has_cyrillic = bool(re.search(r"[\u0400-\u04FF]", answer))
+    if (required_language == "Russian" and not has_cyrillic) or (
+        required_language == "English" and has_cyrillic
+    ):
+        if required_language == "Russian":
+            feedback_text = "Ответьте по-русски, используя кириллицу."
+        else:
+            feedback_text = "Please answer in English."
+        return "wrong", {
+            "transcript": answer if spoken else "",
+            "feedback": feedback_text,
+            "corrected": str(question.get("reference_answer") or ""),
+            "grammar_errors": [],
+            "pronunciation_errors": [],
+            "was_spoken": spoken,
+            "score": 0.0,
+        }
+
     # 1. Fast-path: agar o'quvchi javobi etalon/qabul qilingan javobga aynan yoki yaqin mos kelsa
     # (orfoqrafiya/probellar), sun'iy intellekt API sini kutmasdan 0 millisekundda to'g'ri qaytaramiz.
     ref_raw = [
         question.get("reference_answer"),
         question.get("answer"),
         question.get("example_sentence"),
-        question.get("word"),
-        question.get("clean_word"),
-        question.get("target_word"),
-        question.get("translation"),
-        question.get("translation_uz"),
-        question.get("translation_ru"),
-        question.get("meaning"),
-        *(question.get("accepted_answers") or [])
+        *(question.get("accepted_answers") or []),
     ]
+    # Do not let the vocabulary target itself satisfy a sentence-writing or
+    # translation prompt. Those kinds need the requested response, not merely
+    # an exact copy of the cue word. Read-aloud/spelling are the exceptions.
+    if kind in {"read_aloud", "spelling", "listening_dictation"}:
+        ref_raw.extend([
+            question.get("word"),
+            question.get("clean_word"),
+            question.get("target_word"),
+        ])
+    if kind == "translation":
+        ref_raw.append(question.get("translation"))
     ref_clean = set()
     for r in ref_raw:
         if not r: continue

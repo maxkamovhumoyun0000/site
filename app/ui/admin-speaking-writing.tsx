@@ -255,8 +255,13 @@ export function AdminSpeakingWriting({ apiFetch }: AdminSpeakingWritingProps) {
   }
 
   async function pickImage(file: File) {
-    if (!/\.(jpg|jpeg|png|webp|gif)$/i.test(file.name)) {
+    const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+    if (!allowedTypes.has(file.type) || !/\.(jpg|jpeg|png|webp|gif)$/i.test(file.name)) {
       setError("Faqat JPG, PNG, WEBP yoki GIF rasm yuklang.");
+      return;
+    }
+    if (file.size > 12 * 1024 * 1024) {
+      setError("Rasm hajmi 12 MB dan oshmasligi kerak.");
       return;
     }
     setUploading(true);
@@ -345,9 +350,10 @@ export function AdminSpeakingWriting({ apiFetch }: AdminSpeakingWritingProps) {
             Topshiriq matni (jadvalni Markdown ko&apos;rinishida yozish mumkin)
             <textarea value={form.prompt} onChange={(e) => setForm((prev) => ({ ...prev, prompt: e.target.value }))} className={`${inputClass} min-h-[160px]`} />
           </label>
-          {form.task_type === "task1_academic" ? (
+          {form.subject === "english" && form.task_type.startsWith("task1") ? (
             <div className="space-y-2">
-              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Grafik / jadval / diagramma rasmi</span>
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Task 1 uchun rasm (ixtiyoriy)</span>
+              <p className="text-xs text-slate-500">Grafik, jadval, xarita, jarayon diagrammasi yoki xat topshirig‘iga tegishli rasm biriktiring. Maksimal hajm: 12 MB.</p>
               <div className="flex flex-wrap items-center gap-3">
                 {form.image_url ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -357,7 +363,7 @@ export function AdminSpeakingWriting({ apiFetch }: AdminSpeakingWritingProps) {
                   {uploading ? "Yuklanmoqda…" : form.image_url ? "Rasmni almashtirish" : "+ Rasm yuklash"}
                   <input
                     type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    accept=".png,.jpg,.jpeg,.webp,.gif,image/png,image/jpeg,image/webp,image/gif"
                     className="hidden"
                     disabled={uploading}
                     onChange={(e) => {

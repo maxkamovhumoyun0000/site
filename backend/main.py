@@ -5392,6 +5392,18 @@ def _competition_uses_vocabulary_response(question: dict[str, Any]) -> bool:
     return input_type in {"text", "audio", "matching"}
 
 
+def _competition_answer_matches_subject_language(answer: str, subject: str) -> bool:
+    """Reject free-form competition answers written in the wrong subject language."""
+    normalized = _normalize_subject_label(subject)
+    if normalized not in {"English", "Russian"}:
+        return True
+    latin_count = len(re.findall(r"[A-Za-z]", answer or ""))
+    cyrillic_count = len(re.findall(r"[А-Яа-яЁё]", answer or ""))
+    if normalized == "English":
+        return latin_count > 0 and cyrillic_count == 0
+    return cyrillic_count > 0 and cyrillic_count >= latin_count
+
+
 def _competition_question_key(row: dict[str, Any]) -> str:
     """Return a stable, human-visible signature used to prevent repeats."""
     q = _mcq_question_from_row(row)
@@ -5664,6 +5676,19 @@ def _competition_question_is_valid(row: dict[str, Any]) -> bool:
     options = [str(option).strip() for option in (q.get("options") or [])]
     normalized_options = [_normalize_answer_text(option) for option in options]
     qtype = str(q.get("question_type") or "multiple_choice").strip().lower()
+    if qtype == "grammar_rules":
+        # A generic "choose the correct rule" instruction is not itself a
+        # usable exercise. Require actual rule text in every option so we do
+        # not show a rule question with empty/generic choices.
+        rule_options = [
+            _normalize_answer_text(option)
+            for option in options
+        ]
+        if len(rule_options) < 2 or any(
+            len(option) < 8 or option in {"true", "false", "yes", "no", "да", "нет"}
+            for option in rule_options
+        ):
+            return False
     if _competition_uses_vocabulary_response(q):
         if qtype == "matching":
             pairs = q.get("pairs") or []
@@ -31628,63 +31653,150 @@ async def _competition_notify_started(session: dict[str, Any]) -> None:
         return
     if session.get("start_notifications_sent"):
         return
-    session["start_notifications_sent"] = True
-    mode_title = _competition_section_for_mode(str(session.get("mode") or "daily")).replace("-", " ").title()
+    if session.get("questions"):
+        return
+    notified = {int(item) for item in (session.get("waiting_notification_user_ids") or []) if str(item).isdigit()}
+    if uid in notified:
+        return
+    mode = str(session.get("mode") or "")
+    mode_title = _competition_section_for_mode(mode or "daily").replace("-", " ").title()
     subject = str(session.get("subject") or "English")
-    # Invite links are intentionally generic by mode+subject. If the lobby
-    # referenced by this notification becomes full, the normal start endpoint
-    # creates/joins the next matching lobby instead of failing on an old id.
-    web_path = _competition_runtime_path_for_session(session, include_session_id=False)
-    telegram_url = _competition_runtime_url_for_session(session, include_session_id=False)
-    title = "Arena boshlandi" if not str(session.get("mode") or "").startswith("duel-") else "Duel boshlandi"
-    message = f"{mode_title} ({subject}) boshlandi. To'g'ridan-to'g'ri kirish uchun tugmani bosing."
-    token = (os.getenv("STUDENT_BOT_TOKEN") or "").strip()
+    is_duel = _duel_is_mode(mode)
+    title = "Raqib kutilmoqda" if is_duel else "Arena kutish holatida"
+    message = (
+        f"{mode_title} ({subject}) lobbysiga kirdingiz. Raqib qidirilmoqda; savollar tayyor bo‘lganda bellashuv boshlanadi."
+        if is_duel
+        else f"{mode_title} ({subject}) kutish jarayonida. Ishtirokchilar yig‘ilishi bilan savollar tayyorlanadi."
+    )
+    session_id = str(session.get("id") or "")
     try:
         _ensure_web_tables()
         conn = get_conn()
         cur = conn.cursor()
-        for row in _competition_joined_participants(session):
-            uid = int(row.get("user_id") or 0)
-            if uid <= 0:
-                continue
-            try:
-                _payment_upsert_web_notification(
-                    cur,
-                    user_id=uid,
-                    notification_type="competition_started",
-                    title=title,
-                    message=message,
-                    button_text="Kirish",
-                    button_url=web_path,
-                    target_screen=_competition_section_for_mode(str(session.get("mode") or "")),
-                    source_key=f"competition_started:{session.get('id')}:{uid}",
-                    meta={
-                        "session_id": str(session.get("id") or ""),
-                        "mode": str(session.get("mode") or ""),
-                        "subject": subject,
-                    },
-                )
-            except Exception:
-                logger.exception("competition web notification failed session_id=%s user_id=%s", session.get("id"), uid)
+        _payment_upsert_web_notification(
+            cur,
+            user_id=uid,
+            notification_type="competition_waiting",
+            title=title,
+            message=message,
+            button_text="Kutishni davom ettirish",
+            button_url=_competition_runtime_path_for_session(session),
+            target_screen=_competition_section_for_mode(mode),
+            source_key=f"competition_waiting:{session_id}:{uid}",
+            meta={"session_id": session_id, "mode": mode, "subject": subject, "phase": _competition_session_phase(session)},
+        )
         conn.commit()
     except Exception:
         logger.exception("competition notification storage failed session_id=%s", session.get("id"))
+        return
     finally:
         try:
             conn.close()  # type: ignore[name-defined]
         except Exception:
             pass
+    notified.add(uid)
+    session["waiting_notification_user_ids"] = sorted(notified)
+    _duel_persist_session(session)
+    threading.Thread(
+        target=push_notifications.send_push_to_user,
+        args=(uid, title, message),
+        kwargs={"data": {"notification_type": "competition_waiting", "session_id": session_id, "mode": mode, "subject": subject, "target_screen": _competition_section_for_mode(mode)}},
+        daemon=True,
+    ).start()
 
-    if not token:
+
+async def _competition_notify_lobby_join(session: dict[str, Any], joining_user_id: int) -> None:
+    """Push a lobby-entry event before question generation begins.
+
+    The join endpoint schedules this in the background so database/FCM work
+    never delays the participant's transition into the waiting room.
+    """
+    phase = _competition_session_phase(session)
+    if phase not in {"pending", "generating"}:
         return
-    notify_rows = _competition_waiting_participants(session) if _duel_is_mode(session.get("mode")) else _competition_joined_participants(session)
-    for row in notify_rows:
-        uid = int(row.get("user_id") or 0)
-        user_row = _safe_call(lambda target_uid=uid: get_user_by_id(target_uid), None) or {}
-        tg = str(user_row.get("telegram_id") or "").strip()
-        if not tg:
+    participants = _competition_waiting_participants(session)
+    joiner = next(
+        (row for row in participants if int(row.get("user_id") or 0) == int(joining_user_id)),
+        None,
+    )
+    if not joiner:
+        return
+
+    # The joining player gets the normal waiting-room notification. Existing
+    # players get one notification for this exact join event (not at the later
+    # generation/full-lobby transition).
+    await _competition_notify_waiting(session, int(joining_user_id))
+    mode = str(session.get("mode") or "")
+    is_duel = _duel_is_mode(mode)
+    title = "Raqib qo‘shildi" if is_duel else "Ishtirokchi qo‘shildi"
+    joiner_name = str(joiner.get("name") or "Yangi ishtirokchi").strip()
+    subject = str(session.get("subject") or "English")
+    message = (
+        f"{joiner_name} Duel lobbysiga qo‘shildi ({subject}). Bellashuv savollar tayyorlanishidan oldin boshlandi."
+        if is_duel
+        else f"{joiner_name} Arena kutish xonasiga qo‘shildi ({subject})."
+    )
+    session_id = str(session.get("id") or "")
+    target_screen = _competition_section_for_mode(mode)
+    _ensure_web_tables()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for row in participants:
+            recipient_id = int(row.get("user_id") or 0)
+            if recipient_id <= 0 or recipient_id == int(joining_user_id):
+                continue
+            try:
+                _payment_upsert_web_notification(
+                    cur,
+                    user_id=recipient_id,
+                    notification_type="competition_opponent_joined" if is_duel else "competition_participant_joined",
+                    title=title,
+                    message=message,
+                    button_text="Kutishni davom ettirish",
+                    button_url=_competition_runtime_path_for_session(session),
+                    target_screen=target_screen,
+                    source_key=f"competition_joined:{session_id}:{joining_user_id}:{recipient_id}",
+                    meta={
+                        "session_id": session_id,
+                        "mode": mode,
+                        "subject": subject,
+                        "phase": phase,
+                        "joining_user_id": int(joining_user_id),
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "competition join notification storage failed session_id=%s recipient_id=%s",
+                    session_id,
+                    recipient_id,
+                )
+        conn.commit()
+    except Exception:
+        logger.exception("competition lobby join notification failed session_id=%s", session_id)
+        return
+    finally:
+        conn.close()
+
+    for row in participants:
+        recipient_id = int(row.get("user_id") or 0)
+        if recipient_id <= 0 or recipient_id == int(joining_user_id):
             continue
-        await _send_telegram_text(token, tg, message, button_text="Kirish", button_url=telegram_url if telegram_url.startswith("http") else None, button_web_app=True)
+        threading.Thread(
+            target=push_notifications.send_push_to_user,
+            args=(recipient_id, title, message),
+            kwargs={
+                "data": {
+                    "notification_type": "competition_opponent_joined" if is_duel else "competition_participant_joined",
+                    "session_id": session_id,
+                    "mode": mode,
+                    "subject": subject,
+                    "joining_user_id": str(joining_user_id),
+                    "target_screen": target_screen,
+                }
+            },
+            daemon=True,
+        ).start()
 
 def _get_students_for_daily_arena(subject: str) -> list[dict[str, Any]]:
     """Return active students in groups with the given subject.
@@ -35065,6 +35177,11 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
         progress_task.cancel()
         with suppress(asyncio.CancelledError, Exception):
             await progress_task
+
+    # Treat the session's visible question text as the uniqueness boundary.
+    # This final guard covers every source (fast bank, AI, and vocabulary
+    # materialization) before the same set is delivered to all participants.
+    questions = _competition_valid_unique_rows(questions)
         
     with _competition_session_advisory_lock(session_id):
         current = _competition_load_session_from_db(session_id)
@@ -35154,7 +35271,6 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
             elif mode == "daily":
                 row["status"] = "eliminated"
         _duel_persist_session(session)
-    await _competition_notify_started(session)
     _duel_persist_session(session)
     logger.info(
         "competition.generation_completed session_id=%s mode=%s stage=%s question_count=%s",
@@ -35172,6 +35288,8 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     user_id = int(user.get("id") or 0)
     mode = payload.mode
     _require_enabled_competition_mode(mode)
+    if mode in RETIRED_TEAM_COMPETITION_MODES:
+        raise HTTPException(status_code=410, detail="3v3 and 5v5 Arena modes have been retired.")
     is_duel = _duel_is_mode(mode)
     _require_competition_learning_access(user)
     user = _require_student_face_setup_complete(user)
@@ -35412,14 +35530,16 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     should_start_generation = False
     generation_token = ""
     created_new_session = False
+    joined_now = False
     session_id = ""
     session: dict[str, Any] | None = None
 
     with _competition_queue_advisory_lock(queue_key):
         async with WEB_COMPETITION_LOCK:
-            if is_duel:
-                _duel_expire_stale_pending()
-            _competition_cleanup_stale_pending()
+            # Queue expiry and stale-session cleanup run in the background
+            # workers. Re-scanning every pending/running competition session
+            # on each join added avoidable DB latency to the hot path. The
+            # selected queue is still validated below before it is reused.
             pending_session_id = WEB_COMPETITION_PENDING_BY_KEY.get(queue_key)
             if pending_session_id:
                 pending_session = WEB_COMPETITION_SESSIONS.get(pending_session_id)
@@ -35525,6 +35645,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                     increment_duel_daily_usage(user_id, bot_mode, usage_date)
                     session.setdefault("usage_dates", {})[str(user_id)] = usage_date
                 participants.append({"user_id": user_id, "name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date, "level": level})
+                joined_now = True
                 if charged_fee > 0 and user_id not in [int(uid) for uid in session.setdefault("charged_user_ids", [])]:
                     session.setdefault("charged_user_ids", []).append(user_id)
                 if charged_fee > 0:
@@ -35532,6 +35653,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                 _competition_touch_wait_deadline(session)
                 _duel_persist_session(session)
             elif reactivated_participant:
+                joined_now = True
                 _competition_touch_wait_deadline(session)
                 _duel_persist_session(session)
 
@@ -35547,6 +35669,8 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
 
     if mode == "daily" and session:
         asyncio.create_task(_competition_notify_daily_prestart(session))
+    if session and joined_now:
+        asyncio.create_task(_competition_notify_lobby_join(session, user_id))
     if session and _competition_session_phase(session) == "pending" and not session.get("available_notifications_sent"):
         asyncio.create_task(_competition_notify_session_available(session, creator_user_id=user_id))
     if should_start_generation:
@@ -36080,6 +36204,8 @@ async def _competition_grade_vocabulary_answer(
         return bool(expected and len(submitted) == len(expected) and submitted == expected)
 
     answer = str(answer_text or "").strip()
+    if qtype != "matching" and answer and not _competition_answer_matches_subject_language(answer, subject):
+        return False
     if qtype in {"spelling", "translation"}:
         accepted = payload_data.get("accepted_answers") or question.get("accepted_answers") or []
         if not isinstance(accepted, list):
@@ -36127,19 +36253,35 @@ async def _competition_grade_vocabulary_answer(
             "target_word": str(payload_data.get("target_word") or payload_data.get("word") or ""),
             "reference_answer": str(payload_data.get("reference_answer") or payload_data.get("example_sentence") or payload_data.get("answer") or ""),
             "accepted_answers": payload_data.get("accepted_answers") or [],
+            "required_answer_language": _normalize_subject_label(subject),
+            "competition_final_submission": True,
         })
-        verdict, _feedback = await _check_with_ai(
+        verdict, feedback = await _check_with_ai(
             ai_question,
             AiTestAnswerRequest(question_index=0, answer_text=answer, audio_url=audio_url),
             subject,
             _student_lang(user),
         )
+        transcript = str(feedback.get("transcript") or answer).strip()
+        if transcript and not _competition_answer_matches_subject_language(transcript, subject):
+            return False
         return str(verdict).strip().lower() == "correct"
-    except HTTPException:
+    except HTTPException as exc:
+        if exc.status_code >= 500:
+            logger.warning(
+                "competition vocabulary grader unavailable; answer counted wrong type=%s status=%s",
+                qtype,
+                exc.status_code,
+            )
+            return False
         raise
     except Exception:
         logger.exception("competition vocabulary answer grading failed type=%s", qtype)
-        raise HTTPException(status_code=503, detail="Could not grade this answer right now; retry")
+        # A timed Arena/Duel answer is a single final attempt. A transient
+        # grader failure must not trap the player on the same question or ask
+        # them to submit the sentence again; fail closed and let the round
+        # advance as an incorrect answer.
+        return False
 
 
 @app.post("/competition/runtime/{session_id}/answer")

@@ -3615,21 +3615,45 @@ def _learning_task_instruction(
             "gap_fill": "Fill in the blank with the correct answer.", "fill_blank": "Fill in the blank with the correct answer.",
             "multiple_choice": "Choose the correct answer.", "true_false": "Decide whether the statement is true or false.",
             "spelling": "Type the word with the correct spelling.", "translation": "Translate the given word.",
+            "write_sentence": "Write a complete sentence using the given word.", "writing": "Write an answer that meets the task requirements.",
+            "guided_writing": "Write a response that follows the instructions.", "speak_sentence": "Make a sentence with the given word and say it clearly.",
+            "speaking": "Answer aloud in English.", "read_aloud": "Read the text aloud clearly.", "reading_open": "Read the passage and answer the question.",
+            "reading_set": "Read the passage and answer all questions.", "passage_cloze": "Complete each blank using the passage.",
+            "dialogue_completion": "Complete the dialogue with a suitable response.", "paraphrase": "Rewrite the sentence in your own words.",
+            "word_practice": "Complete the vocabulary exercise.",
+            "listening_tf": "Listen to the audio and choose True, False or Not Given.",
         },
         "ru": {
             "word_order": "Расположите слова в правильном порядке.", "matching": "Сопоставьте правильные пары.",
             "gap_fill": "Заполните пропуск правильным ответом.", "fill_blank": "Заполните пропуск правильным ответом.",
             "multiple_choice": "Выберите правильный ответ.", "true_false": "Определите, верно утверждение или нет.",
             "spelling": "Введите слово без ошибок.", "translation": "Переведите данное слово.",
+            "write_sentence": "Составьте полное предложение с данным словом.", "writing": "Напишите ответ согласно условиям задания.",
+            "guided_writing": "Напишите ответ, следуя инструкциям.", "speak_sentence": "Составьте предложение с данным словом и произнесите его.",
+            "speaking": "Ответьте устно на русском языке.", "read_aloud": "Чётко прочитайте текст вслух.", "reading_open": "Прочитайте текст и ответьте на вопрос.",
+            "reading_set": "Прочитайте текст и ответьте на все вопросы.", "passage_cloze": "Заполните пропуски по тексту.",
+            "dialogue_completion": "Дополните диалог подходящей репликой.", "paraphrase": "Переформулируйте предложение своими словами.",
+            "word_practice": "Выполните упражнение на лексику.",
+            "listening_tf": "Прослушайте аудио и выберите: верно, неверно или не указано.",
         },
         "uz": {
             "word_order": "So'zlarni to'g'ri tartibda joylashtiring.", "matching": "Mos juftlarni tanlang.",
             "gap_fill": "Bo'sh joyni to'g'ri javob bilan to'ldiring.", "fill_blank": "Bo'sh joyni to'g'ri javob bilan to'ldiring.",
             "multiple_choice": "To'g'ri javobni tanlang.", "true_false": "Gap to'g'ri yoki noto'g'ri ekanini belgilang.",
             "spelling": "So'zni xatosiz yozing.", "translation": "Berilgan so'zni tarjima qiling.",
+            "write_sentence": "Berilgan so'z bilan to'liq gap tuzing.", "writing": "Topshiriq shartlariga mos javob yozing.",
+            "guided_writing": "Ko'rsatmalarga amal qilib javob yozing.", "speak_sentence": "Berilgan so'z bilan gap tuzing va aniq ayting.",
+            "speaking": "O'zbek tilida og'zaki javob bering.", "read_aloud": "Matnni aniq ovoz chiqarib o'qing.", "reading_open": "Matnni o'qing va savolga javob bering.",
+            "reading_set": "Matnni o'qing va barcha savollarga javob bering.", "passage_cloze": "Matnga qarab bo'sh joylarni to'ldiring.",
+            "dialogue_completion": "Dialogni mos javob bilan to'ldiring.", "paraphrase": "Gapni o'z so'zlaringiz bilan qayta yozing.",
+            "word_practice": "Lug'at mashqini bajaring.",
+            "listening_tf": "Audioni tinglang va to'g'ri, noto'g'ri yoki berilmaganini tanlang.",
         },
     }
-    return messages[lang].get(key) or str(payload.get("instruction") or "").strip()
+    # Prefer canonical course-language copy for known renderers. Legacy bank
+    # records sometimes copied one shared (usually Uzbek) condition into all
+    # three condition_* fields; the checks above reject those for RU/EN.
+    return messages[lang].get(key) or localized_condition or str(payload.get("instruction") or "").strip()
 
 
 def _extract_node_questions(payload_obj: Any) -> list[dict]:
@@ -3955,11 +3979,78 @@ def _learning_ai_payload_is_usable(question: dict[str, Any]) -> bool:
     if kind in {"gap_fill", "fill_blank"}:
         return bool(str(question.get("correct_answer") or "").strip())
     if kind == "word_practice":
-        return bool(str(question.get("word") or question.get("correct_answer") or "").strip())
+        return (
+            bool(str(question.get("word") or question.get("correct_answer") or "").strip())
+            and bool(str(question.get("translation_uz") or "").strip())
+            and bool(str(question.get("translation_ru") or "").strip())
+        )
+    if kind in {"read_aloud", "reading_open"}:
+        return bool(str(question.get("passage") or "").strip()) and bool(
+            str(question.get("reference_answer") or question.get("correct_answer") or "").strip()
+        )
+    if kind == "reading_set":
+        return bool(str(question.get("passage") or "").strip()) and len(
+            question.get("sub_questions") or []
+        ) >= 2
+    if kind == "passage_cloze":
+        return bool(str(question.get("passage") or "").strip()) and len(
+            question.get("blanks") or []
+        ) >= 1 and len(question.get("word_bank") or []) >= 1
+    if kind == "dialogue_completion":
+        return "___" in str(question.get("passage") or "") and bool(
+            str(question.get("reference_answer") or question.get("correct_answer") or "").strip()
+        )
+    if kind in {"write_sentence", "speak_sentence", "paraphrase", "guided_writing"}:
+        if not str(question.get("reference_answer") or question.get("correct_answer") or "").strip():
+            return False
+        if kind == "guided_writing" and int(question.get("word_count") or 0) < 1:
+            return False
+        return True
     return bool(str(question.get("correct_answer") or question.get("reference_answer") or "").strip())
 
 
-def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: int) -> dict[str, Any] | None:
+def _learning_true_false_options(subject: str | None) -> tuple[str, str]:
+    language = _detect_subject_language(subject)
+    if language == "ru":
+        return ("Верно", "Неверно")
+    if language == "en":
+        return ("True", "False")
+    return ("To'g'ri", "Noto'g'ri")
+
+
+def _learning_true_false_ng_options(subject: str | None) -> tuple[str, str, str]:
+    language = _detect_subject_language(subject)
+    if language == "ru":
+        return ("Верно", "Неверно", "Не указано")
+    if language == "en":
+        return ("True", "False", "Not Given")
+    return ("To'g'ri", "Noto'g'ri", "Berilmagan")
+
+
+def _learning_true_false_value(value: Any) -> bool | None:
+    normalized = str(value or "").strip().casefold().replace("ё", "е")
+    if normalized in {"true", "correct", "yes", "верно", "правда", "истина", "да", "to'g'ri", "togri"}:
+        return True
+    if normalized in {"false", "incorrect", "no", "неверно", "неправда", "ложь", "нет", "noto'g'ri", "notogri"}:
+        return False
+    return None
+
+
+def _learning_true_false_ng_index(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value if 0 <= value <= 2 else None
+    truth = _learning_true_false_value(value)
+    if truth is not None:
+        return 0 if truth else 1
+    normalized = str(value or "").strip().casefold().replace("ё", "е")
+    if normalized in {"not given", "not_given", "ng", "не указано", "не указана", "не указаны", "berilmagan"}:
+        return 2
+    return None
+
+
+def _learning_ai_question_payload(
+    raw: dict[str, Any], *, topic: str, position: int, subject: str | None = None
+) -> dict[str, Any] | None:
     """Use the Materials Library contract for every Diamondvoy lesson test.
 
     This is deliberately a lazy import: the library router imports main only
@@ -3975,10 +4066,23 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
     prepared["kind"] = kind
     prepared["test_type"] = kind
     prepared["prompt"] = str(
-        raw.get("prompt") or raw.get("question") or f"{topic} savoli {position}"
+        raw.get("prompt") or raw.get("question") or raw.get("word") or ""
     ).strip()
+    if not prepared["prompt"]:
+        return None
     if prepared.get("answer") in (None, "") and raw.get("correct_answer") not in (None, ""):
         prepared["answer"] = raw.get("correct_answer")
+    if kind == "listening_tf":
+        raw_tf_value = (
+            prepared.get("correct") if prepared.get("correct") is not None
+            else prepared.get("correct_index") if prepared.get("correct_index") is not None
+            else prepared.get("answer")
+        )
+        tf_index = _learning_true_false_ng_index(raw_tf_value)
+        if tf_index is None:
+            return None
+        prepared["correct"] = tf_index
+        prepared["correct_index"] = tf_index
 
     # Reject ambiguous generated choices before they enter the shared
     # normalizer.  In particular, a semicolon/newline in correct_answer used
@@ -3997,6 +4101,45 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
     question["question"] = str(question.get("prompt") or prepared["prompt"])
     question["test_type"] = str(question.get("kind") or kind)
     question["explanation"] = str(raw.get("explanation") or "").strip()
+    subject_language = _detect_subject_language(subject)
+    question["subject_language"] = subject_language
+    question["language"] = subject_language
+    question["exercise_language"] = {"ru": "Russian", "en": "English", "uz": "Uzbek"}[subject_language]
+
+    # Migrate legacy question-bank true/false items into the curriculum's
+    # language instead of showing English or Uzbek choices on a Russian track.
+    if question["test_type"] == "true_false":
+        answer_is_true = _learning_true_false_value(
+            question.get("correct_answer") or question.get("answer")
+        )
+        if answer_is_true is None:
+            options_before = list(question.get("options") or [])
+            correct_index_before = int(question.get("correct_index") or 0)
+            if 0 <= correct_index_before < len(options_before):
+                answer_is_true = _learning_true_false_value(options_before[correct_index_before])
+        if answer_is_true is None:
+            return None
+        options = list(_learning_true_false_options(subject))
+        correct_index = 0 if answer_is_true else 1
+        question.update({
+            "options": options,
+            "correct_index": correct_index,
+            "correct_answer": options[correct_index],
+            "answer": options[correct_index],
+            "accepted_answers": [options[correct_index]],
+            "acceptable_answers": [options[correct_index]],
+        })
+    elif question["test_type"] == "listening_tf":
+        correct_index = max(0, min(2, int(question.get("correct_index") or 0)))
+        options = list(_learning_true_false_ng_options(subject))
+        question.update({
+            "options": options,
+            "correct_index": correct_index,
+            "correct_answer": options[correct_index],
+            "answer": options[correct_index],
+            "accepted_answers": [options[correct_index]],
+            "acceptable_answers": [options[correct_index]],
+        })
 
     options = list(question.get("options") or [])
     if question["test_type"] in {"multiple_choice", "true_false", "listening", "listening_tf"}:
@@ -4036,13 +4179,25 @@ def _learning_ai_question_payload(raw: dict[str, Any], *, topic: str, position: 
     # The word bank is the actual content for these interactive exercises.
     # Never expose it again as a duplicate heading above the work area.
     if question["test_type"] in {"scrambled_sentence", "word_order", "listening_order"}:
-        question["question"] = "So'zlardan to'g'ri gap tuzing."
+        question["question"] = {
+            "ru": "Составьте правильное предложение из слов.",
+            "en": "Build the correct sentence from the words.",
+            "uz": "So'zlardan to'g'ri gap tuzing.",
+        }[subject_language]
         question["prompt"] = question["question"]
     elif question["test_type"] == "matching":
-        question["question"] = "Mos juftlarni toping."
+        question["question"] = {
+            "ru": "Найдите подходящие пары.",
+            "en": "Find the matching pairs.",
+            "uz": "Mos juftlarni toping.",
+        }[subject_language]
         question["prompt"] = question["question"]
     elif question["test_type"] == "word_practice":
-        question["question"] = "So'zni o'rganing."
+        question["question"] = {
+            "ru": "Изучите слово.",
+            "en": "Study the word.",
+            "uz": "So'zni o'rganing.",
+        }[subject_language]
         question["prompt"] = question["question"]
     if not _learning_ai_payload_is_usable(question):
         return None
@@ -4101,6 +4256,9 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     if "word_practice" not in types_list:
         types_list.append("word_practice")
     types_str = ", ".join(types_list)
+    exercise_language_name = {
+        "ru": "Russian", "en": "English", "uz": "Uzbek"
+    }[_detect_subject_language(track_subject)]
 
     needed_count = payload.question_count or 10
     required_vocabulary_count = learning_path_vocabulary_quota(needed_count)
@@ -4123,6 +4281,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
             {**bank_question, "test_type": canonical_kind},
             topic=scoped_topic,
             position=index + 1,
+            subject=track_subject,
         )
         if normalized:
             normalized_bank.append(normalized)
@@ -4149,6 +4308,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
     prompt = (
         f"Create exactly {needed_count} safe, high-quality test questions for students on the topic: '{scoped_topic}'.\n"
         f"Subject: {track_subject}.\n"
+        f"MANDATORY exercise language: {exercise_language_name}.\n"
         f"Difficulty Level: {payload.level or 'intermediate'}.\n"
         f"Locked topic scope: '{scoped_topic}'. Topic description: '{scoped_topic_description or 'none'}'.\n"
         f"Required Exercise Types: {types_str}.\n"
@@ -4158,6 +4318,7 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "Return ONLY a valid JSON array of objects. Do NOT use markdown code blocks or conversational text.\n"
         "Each question object MUST have:\n"
         "- 'question': clear question text or prompt. Write it once only; do not prefix it with labels such as 'Complete:' or 'Rearrange:' and do not copy it into passage/passage_template.\n"
+        "- Write ALL student-facing exercise content in the mandatory exercise language above: question/prompt, passage, answer choices, answer key, accepted answers, matching pairs, word-order tokens, example sentence, explanation and spelling/translation directions. Do not mix Uzbek, Russian and English within exercise content. The only exception is an explicitly required target-language word or translation pair in a language-learning task.\n"
         "- 'condition_uz', 'condition_ru' and 'condition_en': each must be a short, natural imperative telling the student WHAT TO DO (exercise directions only). The condition is not the question and must never contain, quote, translate, summarize, or repeat the question/prompt, sentence, passage, blank text, choices, hint, or answer. Do not add a question mark or copy labels like 'Complete:' into this field.\n"
         "- Keep the roles strictly separate: condition_* = action; question/prompt/passage = the actual question or content the student works on. Never put the actual question into condition_* even when the question field is also populated.\n"
         "- Scope is strict: use ONLY the locked topic above. Do not reuse, mention, or create questions from any previous track, module, topic, request, example, or conversation.\n"
@@ -4167,9 +4328,10 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         "- For non-choice exercise types, provide usable content: read_aloud and reading_open require a complete 'passage'; dialogue_completion requires a 'passage' containing ___ for the student's line; passage_cloze requires 'passage' with ___ blanks, an 'answers' array, and a 'word_bank'; reading_set requires a complete 'passage' and a 'questions' array; guided_writing requires 'word_count' and a reference_answer. For paraphrase, write_sentence and speak_sentence include a concrete task plus reference_answer.\n"
         "- Never use listening, dictation, listening_set, or picture_description here: those require a real teacher-uploaded audio file or image and must be created through the Library editor.\n"
         "- For 'word_practice', make each item one vocabulary word and provide 'word', 'translation_uz', and 'translation_ru'. The student app will turn that word into one random vocabulary exercise, so do not expose the word or translation in the instruction.\n"
+        "- For 'translation', write the instruction and question in the mandatory exercise language, show a source word/phrase in another language, and make 'correct_answer' plus all accepted_answers the accurate translation INTO the mandatory exercise language.\n"
         "- 'options': array of string choices strictly following these rules:\n"
         "   * 'multiple_choice': exactly 4 distinct complete choices where ONE is 'correct_answer' and 3 are plausible incorrect distractors. NEVER provide multiple correct choices!\n"
-        "   * 'true_false': exactly ['To\\'g\\'ri', 'Noto\\'g\\'ri'].\n"
+        f"   * 'true_false': exactly {list(_learning_true_false_options(track_subject))!r}; correct_answer must be exactly the selected option.\n"
         "   * 'gap_fill': Either 4 full alternative phrases (1 correct and 3 distractors, e.g. ['will be traveling', 'will travel', 'are traveling', 'traveled']), OR an empty array [] so the student types the answer. NEVER split a single answer phrase into word fragments like ['will', 'be', 'traveling']!\n"
         "   * 'scrambled_sentence': Array of shuffled words or empty array []. 'correct_answer' is the full sentence.\n"
         "   * 'matching': MUST provide 'pairs': [{'left': 'word1', 'right': 'meaning1'}, {'left': 'word2', 'right': 'meaning2'}, ...]. 'correct_answer': 'word1 = meaning1; word2 = meaning2'. 'options': []. NEVER output choices like '1-A, 2-B'!\n"
@@ -4224,7 +4386,9 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
         for index, result in enumerate(parsed[:needed_count]):
             if not isinstance(result, dict):
                 continue
-            q_text = str(result.get("question") or f"{scoped_topic} savoli {index + 1}").strip()
+            q_text = str(result.get("question") or "").strip()
+            if not q_text:
+                continue
             q_type = _canonical_learning_ai_kind(
                 result.get("test_type") or types_list[index % len(types_list)]
             )
@@ -4236,9 +4400,18 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
 
             if q_type == "true_false":
                 if not options:
-                    options = ["To'g'ri", "Noto'g'ri"]
-                if correct not in options:
-                    correct = "To'g'ri"
+                    options = list(_learning_true_false_options(track_subject))
+                truth_value = _learning_true_false_value(correct)
+                if truth_value is None:
+                    truth_value = _learning_true_false_value(
+                        options[0] if options and correct.casefold() == str(options[0]).casefold()
+                        else options[1] if len(options) > 1 and correct.casefold() == str(options[1]).casefold()
+                        else ""
+                    )
+                if truth_value is None:
+                    continue
+                options = list(_learning_true_false_options(track_subject))
+                correct = options[0 if truth_value else 1]
             elif q_type in ("fill_blank", "gap_fill"):
                 norm_opts = [o.lower() for o in options]
                 norm_correct = correct.lower()
@@ -4293,7 +4466,8 @@ async def generate_learning_ai_question(module_id: int, payload: LearningAiLesso
                 question_payload["left_items"] = [p.get("left") for p in pairs if isinstance(p, dict) and p.get("left")]
                 question_payload["right_items"] = sorted([p.get("right") for p in pairs if isinstance(p, dict) and p.get("right")])
             question_payload = _learning_ai_question_payload(
-                question_payload, topic=scoped_topic, position=index + 1
+                question_payload, topic=scoped_topic, position=index + 1,
+                subject=track_subject,
             )
             if not question_payload:
                 continue
@@ -4398,7 +4572,7 @@ def _structured_string_list(raw: Any) -> list[str]:
 
 _LEARNING_MEDIA_FIELDS = {"audio_url", "image_url", "video_url", "thumbnail_url", "file_url"}
 # Sub-question types of an IELTS-style set whose key is several options.
-_LEARNING_MULTI_SUB_TYPES = {"multi", "multi_select", "choose_two", "multiple_answers"}
+_LEARNING_GRADE_MULTI_SUB_TYPES = {"multi", "multi_select", "choose_two", "multiple_answers"}
 _LEARNING_MEDIA_HOSTS = {"diamond-education.uz", "www.diamond-education.uz"}
 
 
@@ -4443,11 +4617,43 @@ def _normalize_learning_media_payload(value: Any) -> Any:
     return value
 
 
+_LEARNING_GRADE_KIND_ALIASES = {
+    "mcq": "multiple_choice", "choice": "multiple_choice", "multiple-choice": "multiple_choice",
+    "true-false": "true_false", "tf": "true_false",
+    "fill_in_the_blank": "gap_fill", "fill_blank": "gap_fill", "fill_gap": "gap_fill",
+    "gapfill": "gap_fill", "gap": "gap_fill",
+    "match": "matching", "match_pairs": "matching", "matching_pairs": "matching",
+    "reorder": "scrambled_sentence", "order_words": "scrambled_sentence",
+    "unscramble": "scrambled_sentence", "word_order": "scrambled_sentence",
+    "sentence_building": "scrambled_sentence",
+    "cloze": "passage_cloze", "cloze_passage": "passage_cloze",
+    "passage_gap_fill": "passage_cloze", "text_completion": "passage_cloze",
+    "complete_the_text": "passage_cloze", "complete_the_passage": "passage_cloze",
+    "fill_passage": "passage_cloze", "gapped_text": "passage_cloze",
+    "reading_passage": "reading_set", "reading_questions": "reading_set",
+    "text_with_questions": "reading_set", "passage_questions": "reading_set",
+    "vocabulary": "word_practice", "vocab": "word_practice", "word": "word_practice",
+    "spelling_word": "spelling", "dictation_audio": "dictation",
+    "listening_true_false": "listening_tf", "true_false_ng": "listening_tf",
+    "audio_dictation": "listening_dictation", "listening_gap_fill": "listening_gap",
+    "listening_word_order": "listening_order", "audio_open": "listening_open",
+    "audio_set": "listening_set", "audio_questions": "listening_set",
+    "listening_comprehension": "listening", "reading": "reading_open",
+    "reading_comprehension": "reading_open", "comprehension": "reading_open",
+    "open": "reading_open", "open_ended": "reading_open", "open_question": "reading_open",
+    "short_answer": "gap_fill", "speaking": "speak_sentence", "speak": "speak_sentence",
+    "writing": "guided_writing", "essay": "guided_writing", "translate": "translation",
+    "picture": "picture_description", "describe_picture": "picture_description",
+    "dialogue": "dialogue_completion", "conversation": "dialogue_completion",
+}
+
+
 def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a content-library test question to portable module format for all test types, preserving audio and extra metadata."""
     if not isinstance(raw, dict):
         return None
-    kind = str(raw.get("kind") or raw.get("test_type") or "multiple_choice").strip().lower()
+    kind = str(raw.get("kind") or raw.get("test_type") or raw.get("question_type") or "multiple_choice").strip().lower()
+    kind = _LEARNING_GRADE_KIND_ALIASES.get(kind, kind)
     question = str(raw.get("question") or raw.get("prompt") or raw.get("text") or raw.get("title") or raw.get("sentence") or raw.get("word") or "").strip()
 
     raw_opts = raw.get("options") if raw.get("options") is not None else raw.get("choices")
@@ -4477,7 +4683,7 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(correct, bool):
             correct = options[0 if correct else 1]
         if correct is None or (kind == "listening_tf" and isinstance(index, int)):
-            correct = options[index] if isinstance(index, int) and 0 <= index < len(options) else options[0]
+            correct = options[index] if isinstance(index, int) and 0 <= index < len(options) else None
     elif kind in {"fill_blank", "gap_fill", "spelling", "word_practice", "listening_gap"}:
         raw_word = str(raw.get("word") or raw.get("prompt") or "").strip()
         clean_word = re.sub(r"\s*\([a-zA-Z\s\.,-]+\)\s*", "", raw_word).strip() or raw_word
@@ -4525,7 +4731,10 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         **raw,
         "question": question,
         "options": options,
-        "correct_answer": str(correct if correct is not None else (options[0] if options else "")),
+        # Never invent option zero as the key for malformed/legacy content.
+        # A missing answer key must remain visibly ungradable, not silently
+        # turn the first choice into a false positive.
+        "correct_answer": str(correct if correct is not None else ""),
         "explanation": explanation,
         "audio_url": audio_url,
         "image_url": image_url,
@@ -4570,7 +4779,7 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             sub_options = _structured_string_list(sub.get("options"))
             sub["options"] = sub_options
             sub_type = str(sub.get("type") or sub.get("kind") or "").strip().lower()
-            if sub_type in _LEARNING_MULTI_SUB_TYPES:
+            if sub_type in _LEARNING_GRADE_MULTI_SUB_TYPES:
                 # "Choose TWO letters": the key is a list; the joined text
                 # keeps older runners able to show it.
                 answers = _structured_string_list(sub.get("answers") if sub.get("answers") is not None else sub.get("answer"))
@@ -4614,7 +4823,7 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
         "distractors", "left_items", "right_items",
         "passage_template", "blank_count", "answers",
         "hint", "word_count", "example_sentence", "direction",
-        "word", "meaning", "reference_answer", "needs_audio_upload",
+        "word", "target_word", "clean_word", "raw_word", "meaning", "reference_answer", "needs_audio_upload",
         "translation", "translation_uz", "translation_ru", "level",
         "pronunciation", "phonetic", "target_level",
     ):
@@ -4698,18 +4907,16 @@ def _learning_library_question(raw: dict[str, Any]) -> dict[str, Any] | None:
             # Never treat every option as correct.  A malformed historical
             # answer falls back to one deterministic option until an editor
             # corrects the content.
-            res["correct_answer"] = matches[0] if len(matches) == 1 else (
-                res["options"][0] if res["options"] else res["correct_answer"]
-            )
+            res["correct_answer"] = matches[0] if len(matches) == 1 else ""
         if res["options"]:
             exact = next(
                 (option for option in res["options"]
                  if option.casefold() == str(res["correct_answer"] or "").strip().casefold()),
                 None,
             )
-            res["correct_answer"] = exact or res["options"][0]
-            res["accepted_answers"] = [res["correct_answer"]]
-            res["acceptable_answers"] = [res["correct_answer"]]
+            res["correct_answer"] = exact or ""
+            res["accepted_answers"] = [res["correct_answer"]] if exact else []
+            res["acceptable_answers"] = list(res["accepted_answers"])
     # Sanitize word_bank in tense / verb form exercises or when sentences contain bracketed clues
     wb = res.get("word_bank")
     if isinstance(wb, list) and wb:
@@ -5300,15 +5507,16 @@ def _materialize_lesson_word_practice(
     if not (q_kind in {"word_practice", "vocabulary", "vocab"} or qp.get("practice_mode") in {"word_practice", "random"}):
         return qp
     import random as _rnd
-    from backend.library_ai import _materialize_word_practice, _student_lang, _study_language_name, _vocabulary_translation_language
+    from backend.library_ai import _materialize_word_practice, _study_language_name, _vocabulary_translation_language
     uid = int(user.get("id") or 0)
     # Deterministic single task per student & lesson (homework-like behavior)
     lesson_seed = int(lesson_id or 0) * 10007 + uid
     r = _rnd.Random(lesson_seed)
-    cand_variants = ["spelling", "translation", "write_sentence", "speak_sentence", "read_aloud"]
-    tr_has = bool(qp.get("translation") or qp.get("translation_uz") or qp.get("translation_ru"))
-    if not tr_has and "translation" in cand_variants:
-        cand_variants.remove("translation")
+    # Learning Path responses must stay in the course language. Translation
+    # exercises intentionally accept another language, so do not randomly
+    # materialize them here; the remaining variants are graded in the subject
+    # language.
+    cand_variants = ["spelling", "write_sentence", "speak_sentence", "read_aloud"]
     chosen_v = str(qp.get("practice_mode") or "").strip()
     if chosen_v not in cand_variants:
         chosen_v = r.choice(cand_variants)
@@ -5318,11 +5526,12 @@ def _materialize_lesson_word_practice(
     materialize_qp = dict(qp)
     if chosen_v == "translation" and materialize_qp.get("translation_reverse") is None:
         materialize_qp["translation_reverse"] = bool(r.getrandbits(1))
-    s_lang = _student_lang(user)
     st_lang = _study_language_name(str(track_subject or "English"))
     mat = _materialize_word_practice(
         materialize_qp,
-        lang=s_lang,
+        # Learning Path exercise prompts and expected answers follow the
+        # course subject, never the learner's app/interface language.
+        lang=st_lang,
         study_lang=st_lang,
         chosen_kind=chosen_v,
         translation_language=_vocabulary_translation_language(user, str(track_subject or "English")),
@@ -5390,7 +5599,9 @@ _LEARNING_GRADE_NUMBERED_RE = re.compile(r"(?:^|[,|]\s*)(\d+)\.\s?(.*?)(?=\s*[,|
 
 def _learning_grade_kind(qp: dict[str, Any]) -> str:
     kind = str(qp.get("practice_mode") or qp.get("kind") or qp.get("test_type") or "").strip().lower()
-    return "word_practice" if kind in {"random", "vocabulary", "vocab"} else kind
+    if kind in {"random", "vocabulary", "vocab"}:
+        return "word_practice"
+    return _LEARNING_GRADE_KIND_ALIASES.get(kind, kind)
 
 
 def _learning_grade_text(value: Any) -> str:
@@ -5491,10 +5702,20 @@ def _learning_grade_list_answer(given: Any, size: int) -> list[str]:
 def _learning_grade_choice(qp: dict[str, Any], given: Any, kind: str) -> int:
     options = [str(option) for option in (qp.get("options") or [])]
     correct = str(qp.get("correct_answer") or "").strip()
+    if not correct:
+        return 0
     if isinstance(given, dict) and "answer" in given and isinstance(given.get("answer"), (bool, int)):
         given = given["answer"]
     if isinstance(given, bool):
         if not options:
+            if kind in _LEARNING_GRADE_TF_KINDS:
+                normalized_correct = _normalize_learning_answer(correct)
+                expected_index = next(
+                    (index for index, aliases in enumerate(_LEARNING_GRADE_TF_ALIASES)
+                     if normalized_correct in aliases),
+                    None,
+                )
+                return int(expected_index == (0 if given else 1))
             return int(str(given).casefold() == correct.casefold())
         picked = options[0 if given else min(1, len(options) - 1)]
     elif isinstance(given, int) and 0 <= given < len(options):
@@ -5631,7 +5852,7 @@ def _learning_grade_multi(sub: dict[str, Any], given: Any) -> tuple[int, int]:
     return max(0, right - extra), len(expected)
 
 
-def _learning_within_word_limit(sub: dict[str, Any], text: str) -> bool:
+def _learning_grade_within_word_limit(sub: dict[str, Any], text: str) -> bool:
     try:
         limit = int(sub.get("word_limit") or 0)
     except (TypeError, ValueError):
@@ -5658,11 +5879,11 @@ def _learning_grade_set_item(sub: dict[str, Any], given: Any) -> int:
     if isinstance(given, bool):
         text = options[0 if given else min(1, len(options) - 1)] if options else ("true" if given else "false")
     if not candidates:
-        # No answer key was authored: any non-empty answer counts, as before.
-        return 1
+        # A missing answer key is a content defect, never a correct answer.
+        return 0
     if sub_kind in {"completion", "gap", "short", "form", "note", "table", "sentence", "summary"}:
         # IELTS completion: answers over the word limit are wrong.
-        if not _learning_within_word_limit(sub, text):
+        if not _learning_grade_within_word_limit(sub, text):
             return 0
     if sub_kind in _LEARNING_GRADE_ORDER_KINDS:
         return _learning_grade_order({"correct_answer": candidates[0], "accepted_answers": candidates[1:]}, text)
@@ -5687,7 +5908,7 @@ def _learning_grade_set(qp: dict[str, Any], given: Any) -> tuple[int, int]:
     total = 0
     for index, sub in enumerate(subs):
         given_item = answers[index] if index < len(answers) else ""
-        if str(sub.get("type") or sub.get("kind") or "").strip().lower() in _LEARNING_MULTI_SUB_TYPES:
+        if str(sub.get("type") or sub.get("kind") or "").strip().lower() in _LEARNING_GRADE_MULTI_SUB_TYPES:
             item_correct, item_total = _learning_grade_multi(sub, given_item)
         else:
             item_correct, item_total = _learning_grade_set_item(sub, given_item), 1
@@ -5703,11 +5924,11 @@ def _learning_question_needs_ai_check(qp: dict[str, Any]) -> bool:
     kind = _learning_grade_kind(qp)
     if kind == "matching" or kind in _LEARNING_GRADE_SET_KINDS or kind == "passage_cloze":
         return False
-    if kind in _LEARNING_MULTI_SUB_TYPES:
+    if kind in _LEARNING_GRADE_MULTI_SUB_TYPES:
         return False
     if kind in _LEARNING_GRADE_ORDER_KINDS:
         return False
-    if kind in _LEARNING_GRADE_CHOICE_KINDS and (qp.get("options") or kind in _LEARNING_GRADE_TF_KINDS):
+    if kind in _LEARNING_GRADE_CHOICE_KINDS:
         return False
     if kind in {"spelling", "translation"}:
         return False
@@ -5726,7 +5947,7 @@ def _grade_learning_question(question_payload: dict[str, Any], given: Any, *, sa
         return (1, 1) if saved_ai_ok else (0, 1)
     if kind == "matching":
         return _learning_grade_matching(qp, given)
-    if kind in _LEARNING_MULTI_SUB_TYPES:
+    if kind in _LEARNING_GRADE_MULTI_SUB_TYPES:
         return _learning_grade_multi(qp, given)
     if kind in _LEARNING_GRADE_SET_KINDS:
         return _learning_grade_set(qp, given)
@@ -5734,12 +5955,12 @@ def _grade_learning_question(question_payload: dict[str, Any], given: Any, *, sa
         return _learning_grade_cloze(qp, given)
     if kind in _LEARNING_GRADE_ORDER_KINDS:
         return _learning_grade_order(qp, given), 1
-    if kind in _LEARNING_GRADE_CHOICE_KINDS and (qp.get("options") or kind in _LEARNING_GRADE_TF_KINDS):
+    if kind in _LEARNING_GRADE_CHOICE_KINDS:
         return _learning_grade_choice(qp, given, kind), 1
     if qp.get("word_limit") and kind in {"gap_fill", "fill_blank", "listening_gap"}:
         # IELTS completion items split into the final exam keep their
         # "NO MORE THAN N WORDS" rule, like inside the lesson.
-        if not _learning_within_word_limit(qp, _learning_grade_text(given)):
+        if not _learning_grade_within_word_limit(qp, _learning_grade_text(given)):
             return 0, 1
     candidates = _learning_grade_candidates(qp, kind)
     if isinstance(given, dict) and isinstance(given.get("answer"), (list, tuple)):
@@ -5978,13 +6199,8 @@ async def check_learning_lesson_ai(
         add_accepted(qp.get("acceptable_answers"))
         add_accepted(qp.get("accepted_answers"))
         for candidate in [
-            clean_w,
-            raw_w,
             qp.get("answer"),
             qp.get("correct_answer"),
-            qp.get("translation"),
-            qp.get("translation_uz"),
-            qp.get("translation_ru"),
         ]:
             add_accepted(candidate)
 
@@ -6003,6 +6219,9 @@ async def check_learning_lesson_ai(
             "translation_ru": qp.get("translation_ru"),
             "meaning": qp.get("meaning"),
             "accepted_answers": acc_list,
+            "required_answer_language": {
+                "ru": "Russian", "en": "English", "uz": "Uzbek"
+            }[_detect_subject_language(subject)],
         }
 
         # Spelling and translation have explicit accepted answers.  They must
@@ -6320,7 +6539,12 @@ async def get_track_final_exam(
 
         questions = []
         for idx, l, sub_index, question in _learning_track_exam_items(lesson_rows):
+            _materialize_lesson_word_practice(
+                question, lesson_id=int(l["lesson_id"]), user=user,
+                track_subject=str(track_dict.get("subject") or "English"),
+            )
             question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
+            question["language"] = question["subject_language"]
             if question.get("ielts_section"):
                 # "Write NO MORE THAN TWO WORDS" etc. must reach the learner.
                 question["exam_group"] = f"lesson-{l['lesson_id']}"
@@ -6403,10 +6627,17 @@ async def submit_track_final_exam(track_id: int, payload: LearningLessonSubmit, 
             WHERE l.module_id IN ({','.join('?' for _ in module_ids)})
             ORDER BY l.module_id, l.position, l.id
         """, module_ids)
-        exam_items = {
-            _learning_exam_key(row["lesson_id"], sub_index): (int(row["lesson_id"]), question)
-            for _, row, sub_index, question in _learning_track_exam_items([dict(r) for r in cur.fetchall()])
-        }
+        exam_items = {}
+        for _, row, sub_index, question in _learning_track_exam_items([dict(r) for r in cur.fetchall()]):
+            _materialize_lesson_word_practice(
+                question, lesson_id=int(row["lesson_id"]), user=user,
+                track_subject=str(track_dict.get("subject") or "English"),
+            )
+            question["subject_language"] = _detect_subject_language(track_dict.get("subject"))
+            question["language"] = question["subject_language"]
+            exam_items[_learning_exam_key(row["lesson_id"], sub_index)] = (
+                int(row["lesson_id"]), question
+            )
         submitted = _learning_exam_submitted_answers(payload.answers)
         if submitted is None or (payload.score is not None and not submitted):
             # An old app sent only a self-computed score.  Nothing is stored,

@@ -518,6 +518,7 @@ async def search_speaking_vocabulary(
     query: str = Query(default="", max_length=80),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=40, ge=1, le=100),
+    bank_only: bool = Query(default=False),
 ):
     """Search the shared vocabulary bank for the anonymous Speaking app.
 
@@ -588,7 +589,7 @@ async def search_speaking_vocabulary(
 
     rows = find_matches()
     ai_generated = False
-    if not rows and _speaking_vocabulary_ai_allowed(request):
+    if not rows and not bank_only and _speaking_vocabulary_ai_allowed(request):
         try:
             generated = await _vocab_ai_try_add_missing_word(
                 selected_subject,

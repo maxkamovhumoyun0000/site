@@ -1,8 +1,9 @@
 """Speaking app: personal Vocabulary Notebook.
 
 Learners mark a word or a collocation in a question, a sample answer or the
-AI feedback and save it.  Every item is enriched once by AI, separately for
-each subject:
+AI feedback and save it. Saving is immediate: matching translations and
+examples are copied from the shared vocabulary bank, while AI enrichment is
+available only as an explicit follow-up action. Enrichment differs by subject:
 
 * English (IELTS): Uzbek and Russian translation, a simple English
   explanation, an IELTS Speaking example, IPA pronunciation, the collocation
@@ -601,17 +602,12 @@ async def save_to_notebook(payload: SaveRequest, authorization: str | None = Hea
     else:
         _rate_limit(user_id, "save", 60, 3600)
         _rate_limit(user_id, "save", 300, 86400)
-        try:
-            fields = await enrich(subject_key, term, context, topic_title)
-            if fields is None:
-                raise HTTPException(status_code=422, detail="This word cannot be saved. The notebook is for academic vocabulary.")
-            enriched = True
-        except HTTPException as exc:
-            if exc.status_code < 500:
-                raise
-            # AI is busy: keep the word with what the shared bank knows; the
-            # learner can fill the rest later with "Refresh with AI".
-            fields = {"term": term, **_bank_fields(subject_key, term)}
+        # Saving is a fast, deterministic database operation. Reuse the shared
+        # vocabulary bank when it already knows the word; AI enrichment is an
+        # explicit later action (`/enrich`), never a prerequisite for saving.
+        bank_fields = _bank_fields(subject_key, term)
+        fields = {"term": term, **bank_fields}
+        enriched = bool(bank_fields)
     fields.setdefault("term", term)
     key = term_key(fields["term"]) or key
 
@@ -999,10 +995,13 @@ def ai_search_prompt(subject: str, query: str) -> tuple[str, str]:
         )
         role = "a Russian speaking-exam vocabulary coach for Uzbek learners"
     system = (
-        f"You are {role}. The learner searches for useful vocabulary. The query may be a word, a meaning in Uzbek or "
-        "Russian, or a topic (for example 'environment'). Suggest up to 6 academic, family-safe words or collocations "
-        "that match it and are useful in speaking exams. If the query asks for sexual, vulgar, offensive, hateful or "
-        "other content inappropriate for a school app, return exactly {\"blocked\":true,\"items\":[]}. "
+        f"You are {role}. Perform a careful, multi-step vocabulary lookup for the learner's query: identify its "
+        "intended meaning and language, normalize inflections to useful dictionary forms, compare relevant senses, "
+        "then select the most accurate academic words or collocations for a speaking exam. Include precise Uzbek/Russian "
+        "translations, natural subject-appropriate examples, pronunciation and grammar. Do not invent facts, translations, "
+        "or word forms; return fewer items rather than uncertain ones. The query may be a word, a meaning in Uzbek or "
+        "Russian, or a topic. Suggest up to 6 distinct, family-safe results. If the query asks for sexual, vulgar, "
+        "offensive, hateful or other content inappropriate for a school app, return exactly {\"blocked\":true,\"items\":[]}. "
         f"Return ONLY JSON: {shape}"
     )
     return system, f"Query: {query}"

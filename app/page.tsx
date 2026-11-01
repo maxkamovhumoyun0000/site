@@ -3428,57 +3428,6 @@ function StudentHome({
           </div>
         </div>
 
-        {/* Quick Start Panel (iOS & Android App Style) */}
-        <div className="admin-dash-panel">
-          <div className="admin-dash-panel-head">
-            <span className="admin-dash-panel-title">⚡ {tt("student.dashboard.quickStart", "Tezkor bo'limlar")}</span>
-            <span className="admin-dash-panel-badge">Mobile App</span>
-          </div>
-          <div className="app-quick-actions-grid">
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("daily-test-process")}>
-              <div className="app-quick-action-icon">📝</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("student.dashboard.dailyTest", "Kunlik Test")}</div>
-                <div className="app-quick-action-sub">{tt("student.dashboard.practice", "Sinov")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("vocabulary")}>
-              <div className="app-quick-action-icon">📖</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("student.dashboard.vocabulary", "Lug'at")}</div>
-                <div className="app-quick-action-sub">{tt("student.dashboard.words", "So'zlar")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("arena-boss")}>
-              <div className="app-quick-action-icon">⚔️</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("arena.boss.title", "Boss Arena")}</div>
-                <div className="app-quick-action-sub">{tt("arena.battle", "Jang")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("duel-1v1")}>
-              <div className="app-quick-action-icon">🤺</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("student.dashboard.duel1v1", "Duel 1v1")}</div>
-                <div className="app-quick-action-sub">{tt("arena.duel", "Musobaqa")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("grammar")}>
-              <div className="app-quick-action-icon">📐</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("student.grammar.kicker", "Grammatika")}</div>
-                <div className="app-quick-action-sub">{tt("student.dashboard.topics", "Qoidalar")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate("dcoin")}>
-              <div className="app-quick-action-icon">🎁</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("student.dashboard.dcoinStore", "D'Coin Store")}</div>
-                <div className="app-quick-action-sub">{tt("student.dashboard.rewards", "Mukofot")}</div>
-              </div>
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -14638,57 +14587,6 @@ if (section === "attendance") {
           </div>
         </div>
 
-        {/* Quick Actions Panel (iOS & Android App Style) */}
-        <div className="admin-dash-panel">
-          <div className="admin-dash-panel-head">
-            <span className="admin-dash-panel-title">⚡ {tt("teacher.dashboard.quickStart", "Tezkor amallar")}</span>
-            <span className="admin-dash-panel-badge">Mobile App</span>
-          </div>
-          <div className="app-quick-actions-grid">
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("attendance")}>
-              <div className="app-quick-action-icon">📋</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.dashboard.attendance", "Davomat")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.record", "Belgilash")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("homework")}>
-              <div className="app-quick-action-icon">📝</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.dashboard.homework", "Uy vazifasi")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.check", "Tekshirish")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("tests")}>
-              <div className="app-quick-action-icon">📊</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.dashboard.tests", "Testlar")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.manage", "Boshqarish")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("dcoin")}>
-              <div className="app-quick-action-icon">💎</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.dashboard.dcoin", "D'Coin")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.reward", "Rag'bat")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("groups")}>
-              <div className="app-quick-action-icon">👥</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.groups.title", "Guruhlar")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.list", "Ro'yxat")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("books")}>
-              <div className="app-quick-action-icon">📚</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("teacher.library.title", "Kutubxona")}</div>
-                <div className="app-quick-action-sub">{tt("teacher.dashboard.books", "Materiallar")}</div>
-              </div>
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -22314,57 +22212,6 @@ function SupportSection({
           </div>
         </div>
 
-        {/* Quick Actions Panel (iOS & Android App Style) */}
-        <div className="admin-dash-panel">
-          <div className="admin-dash-panel-head">
-            <span className="admin-dash-panel-title">⚡ {tt("support.dashboard.quickActions", "Tezkor amallar")}</span>
-            <span className="admin-dash-panel-badge">Mobile App</span>
-          </div>
-          <div className="app-quick-actions-grid">
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("bookings")}>
-              <div className="app-quick-action-icon">📅</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.bookings", "Bookinglar")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.list", "Ro'yxat")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("attendance")}>
-              <div className="app-quick-action-icon">✅</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.attendance", "Davomat")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.record", "Belgilash")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("calendar")}>
-              <div className="app-quick-action-icon">🕐</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.calendar", "Jadval")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.hours", "Soatlar")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("settings")}>
-              <div className="app-quick-action-icon">⚙️</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.settings", "Sozlamalar")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.filial", "Filial")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("broadcasts")}>
-              <div className="app-quick-action-icon">📢</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.broadcasts", "Xabar")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.telegram", "Telegram")}</div>
-              </div>
-            </button>
-            <button type="button" className="app-quick-action-tile" onClick={() => onNavigate?.("books")}>
-              <div className="app-quick-action-icon">📚</div>
-              <div className="min-w-0 flex-1">
-                <div className="app-quick-action-label">{tt("support.dashboard.books", "Kitoblar")}</div>
-                <div className="app-quick-action-sub">{tt("support.dashboard.materials", "Materiallar")}</div>
-              </div>
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
