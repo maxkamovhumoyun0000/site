@@ -31653,59 +31653,84 @@ async def _competition_notify_started(session: dict[str, Any]) -> None:
         return
     if session.get("start_notifications_sent"):
         return
-    if session.get("questions"):
+    session["start_notifications_sent"] = True
+    mode_title = _competition_section_for_mode(str(session.get("mode") or "daily")).replace("-", " ").title()
+    subject = str(session.get("subject") or "English")
+    web_path = _competition_runtime_path_for_session(session, include_session_id=False)
+    telegram_url = _competition_runtime_url_for_session(session, include_session_id=False)
+    title = "Arena boshlandi" if not str(session.get("mode") or "").startswith("duel-") else "Duel boshlandi"
+    message = f"{mode_title} ({subject}) boshlandi. To'g'ridan-to'g'ri kirish uchun tugmani bosing."
+    token = (os.getenv("STUDENT_BOT_TOKEN") or "").strip()
+    try:
+        _ensure_web_tables()
+        conn = get_conn()
+        cur = conn.cursor()
+        for row in _competition_joined_participants(session):
+            uid = int(row.get("user_id") or 0)
+            if uid <= 0:
+                continue
+            try:
+                _payment_upsert_web_notification(
+                    cur,
+                    user_id=uid,
+                    notification_type="competition_started",
+                    title=title,
+                    message=message,
+                    button_text="Kirish",
+                    button_url=web_path,
+                    target_screen=_competition_section_for_mode(str(session.get("mode") or "")),
+                    source_key=f"competition_started:{session.get('id')}:{uid}",
+                    meta={"session_id": str(session.get("id") or ""), "mode": str(session.get("mode") or ""), "subject": subject},
+                )
+            except Exception:
+                logger.exception("competition web notification failed session_id=%s user_id=%s", session.get("id"), uid)
+        conn.commit()
+    except Exception:
+        logger.exception("competition notification storage failed session_id=%s", session.get("id"))
+    finally:
+        try:
+            conn.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+    if not token:
         return
-    notified = {int(item) for item in (session.get("waiting_notification_user_ids") or []) if str(item).isdigit()}
-    if uid in notified:
+    notify_rows = _competition_waiting_participants(session) if _duel_is_mode(session.get("mode")) else _competition_joined_participants(session)
+    for row in notify_rows:
+        uid = int(row.get("user_id") or 0)
+        user_row = _safe_call(lambda target_uid=uid: get_user_by_id(target_uid), None) or {}
+        tg = str(user_row.get("telegram_id") or "").strip()
+        if tg:
+            await _send_telegram_text(token, tg, message, button_text="Kirish", button_url=telegram_url if telegram_url.startswith("http") else None, button_web_app=True)
+
+
+def _competition_notify_waiting(session: dict[str, Any], user_id: int) -> None:
+    uid = int(user_id or 0)
+    if uid <= 0 or _competition_session_phase(session) not in {"pending", "generating"} or session.get("questions"):
         return
     mode = str(session.get("mode") or "")
     mode_title = _competition_section_for_mode(mode or "daily").replace("-", " ").title()
     subject = str(session.get("subject") or "English")
     is_duel = _duel_is_mode(mode)
     title = "Raqib kutilmoqda" if is_duel else "Arena kutish holatida"
-    message = (
-        f"{mode_title} ({subject}) lobbysiga kirdingiz. Raqib qidirilmoqda; savollar tayyor bo‘lganda bellashuv boshlanadi."
-        if is_duel
-        else f"{mode_title} ({subject}) kutish jarayonida. Ishtirokchilar yig‘ilishi bilan savollar tayyorlanadi."
-    )
+    message = (f"{mode_title} ({subject}) lobbysiga kirdingiz. Raqib qidirilmoqda; savollar tayyor bo‘lganda bellashuv boshlanadi." if is_duel else f"{mode_title} ({subject}) kutish jarayonida. Ishtirokchilar yig‘ilishi bilan savollar tayyorlanadi.")
     session_id = str(session.get("id") or "")
+    conn = None
     try:
         _ensure_web_tables()
         conn = get_conn()
         cur = conn.cursor()
-        _payment_upsert_web_notification(
-            cur,
-            user_id=uid,
-            notification_type="competition_waiting",
-            title=title,
-            message=message,
-            button_text="Kutishni davom ettirish",
-            button_url=_competition_runtime_path_for_session(session),
-            target_screen=_competition_section_for_mode(mode),
-            source_key=f"competition_waiting:{session_id}:{uid}",
-            meta={"session_id": session_id, "mode": mode, "subject": subject, "phase": _competition_session_phase(session)},
-        )
+        _payment_upsert_web_notification(cur, user_id=uid, notification_type="competition_waiting", title=title, message=message, button_text="Kutishni davom ettirish", button_url=_competition_runtime_path_for_session(session), target_screen=_competition_section_for_mode(mode), source_key=f"competition_waiting:{session_id}:{uid}", meta={"session_id": session_id, "mode": mode, "subject": subject, "phase": _competition_session_phase(session)})
         conn.commit()
     except Exception:
-        logger.exception("competition notification storage failed session_id=%s", session.get("id"))
+        logger.exception("competition notification storage failed session_id=%s", session_id)
         return
     finally:
-        try:
-            conn.close()  # type: ignore[name-defined]
-        except Exception:
-            pass
-    notified.add(uid)
-    session["waiting_notification_user_ids"] = sorted(notified)
-    _duel_persist_session(session)
-    threading.Thread(
-        target=push_notifications.send_push_to_user,
-        args=(uid, title, message),
-        kwargs={"data": {"notification_type": "competition_waiting", "session_id": session_id, "mode": mode, "subject": subject, "target_screen": _competition_section_for_mode(mode)}},
-        daemon=True,
-    ).start()
+        if conn is not None:
+            conn.close()
+    threading.Thread(target=push_notifications.send_push_to_user, args=(uid, title, message), kwargs={"data": {"notification_type": "competition_waiting", "session_id": session_id, "mode": mode, "subject": subject, "target_screen": _competition_section_for_mode(mode)}}, daemon=True).start()
 
 
-async def _competition_notify_lobby_join(session: dict[str, Any], joining_user_id: int) -> None:
+def _competition_notify_lobby_join(session: dict[str, Any], joining_user_id: int) -> None:
     """Push a lobby-entry event before question generation begins.
 
     The join endpoint schedules this in the background so database/FCM work
@@ -31725,7 +31750,7 @@ async def _competition_notify_lobby_join(session: dict[str, Any], joining_user_i
     # The joining player gets the normal waiting-room notification. Existing
     # players get one notification for this exact join event (not at the later
     # generation/full-lobby transition).
-    await _competition_notify_waiting(session, int(joining_user_id))
+    _competition_notify_waiting(session, int(joining_user_id))
     mode = str(session.get("mode") or "")
     is_duel = _duel_is_mode(mode)
     title = "Raqib qo‘shildi" if is_duel else "Ishtirokchi qo‘shildi"
@@ -35670,7 +35695,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     if mode == "daily" and session:
         asyncio.create_task(_competition_notify_daily_prestart(session))
     if session and joined_now:
-        asyncio.create_task(_competition_notify_lobby_join(session, user_id))
+        asyncio.create_task(asyncio.to_thread(_competition_notify_lobby_join, session, user_id))
     if session and _competition_session_phase(session) == "pending" and not session.get("available_notifications_sent"):
         asyncio.create_task(_competition_notify_session_available(session, creator_user_id=user_id))
     if should_start_generation:
