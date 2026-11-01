@@ -12741,7 +12741,27 @@ def update_group_subject(group_id: int, subject: str | None):
     with DB_WRITE_LOCK:
         conn = get_conn()
         cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT DISTINCT user_id FROM user_groups
+            WHERE group_id=?
+              AND (left_date IS NULL OR TRIM(CAST(left_date AS TEXT))='')
+            """,
+            (int(group_id),),
+        )
+        affected_user_ids = [int(_safe_get(row, "user_id") or 0) for row in (cur.fetchall() or [])]
+        old_counts = {
+            uid: _get_user_subject_count_tx(cur, uid)
+            for uid in affected_user_ids
+            if uid > 0
+        }
         cur.execute("UPDATE groups SET subject=? WHERE id=?", (subject, group_id))
+        for uid in affected_user_ids:
+            if uid <= 0:
+                continue
+            _sync_user_subjects_from_active_groups_tx(cur, uid)
+            new_count = _get_user_subject_count_tx(cur, uid)
+            _reanchor_dcoin_on_subject_count_change(cur, uid, old_counts.get(uid, new_count), new_count)
         conn.commit()
         conn.close()
 

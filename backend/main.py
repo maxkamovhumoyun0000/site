@@ -14708,14 +14708,9 @@ def _user_subjects_from_row(user: dict) -> list[str]:
                 [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
                 fallback=["English"],
             )
-        else:
-            row_subjects = _normalize_subjects(
-                [part.strip() for part in str(user.get("subject") or "").split(",") if part.strip()],
-                fallback=[],
-            )
-            for s in row_subjects:
-                if s not in group_subjects:
-                    group_subjects.append(s)
+        # Active group assignments are authoritative for enrolled students.
+        # The legacy `users.subject` snapshot can retain a former subject and
+        # must not be merged into the current group subjects.
         return _short_cache_set(_USER_SUBJECTS_CACHE, cache_key, group_subjects, ttl_seconds=8.0, max_items=8192)
     subjects = _safe_call(lambda: get_user_subjects(user_id), []) or []
     if not subjects and user.get("subject"):
@@ -30720,16 +30715,21 @@ async def student_gamified_tests_start(
     subject = _gamified_resolve_subject(user, payload.subject)
     level = _gamified_resolve_level(user_id, subject, user)
     session_id = uuid4().hex
-    # Generate fresh material via AI so questions/readings don't repeat
-    # between attempts. Fully best-effort: on any failure/timeout the
-    # builder falls back to the static curated bank, so a test always
-    # starts even if the AI is slow or down.
+    # Generate fresh material for each attempt. Questions are not loaded from
+    # daily-test/question-bank tables; only the completed attempt summary is
+    # written to test_history below. Generate the two AI materials concurrently
+    # so the request is less likely to fall back to the small repeat-prone bank.
     vocab: list[dict[str, str]] | None = None
     ai_readings: list[dict[str, Any]] | None = None
     try:
         material = await asyncio.wait_for(
-            generate_gamified_material(subject=subject, level=level, session_nonce=session_id),
-            timeout=8.0,
+            generate_gamified_material(
+                subject=subject,
+                level=level,
+                vocab_count=24,
+                session_nonce=session_id,
+            ),
+            timeout=24.0,
         )
         vocab = material.get("vocab") or None
         ai_readings = material.get("readings") or None
@@ -39262,6 +39262,8 @@ async def teacher_update_group(group_id: int, payload: GroupUpdateRequest, autho
         )
         update_group_subject(int(group_id), effective_subject)
         update_group_extra_subjects(int(group_id), [])
+        for affected_user_id in affected_user_ids:
+            _clear_user_media_caches(int(affected_user_id))
     if payload.lesson_date is not None or payload.lesson_start is not None or payload.lesson_end is not None or payload.tz is not None:
         lesson_days = group.get("lesson_date")
         if payload.lesson_date is not None:
@@ -54424,6 +54426,8 @@ async def admin_update_group(group_id: int, payload: GroupUpdateRequest, authori
         if payload.teacher_id is not None:
             update_group_teacher(int(group_id), effective_teacher_id)
         update_group_subject(int(group_id), validated_subject)
+        for affected_user_id in affected_user_ids:
+            _clear_user_media_caches(int(affected_user_id))
         if validated_subject in ("Matematika", "Ona tili", "Tarix", "Arab tili"):
             update_group_level(int(group_id), "", sync_students=True)
     elif not str(group.get("subject") or "").strip():

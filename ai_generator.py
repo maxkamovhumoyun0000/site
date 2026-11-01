@@ -3031,6 +3031,7 @@ async def _generate_reading_questions_with_passage(
     subject: str,
     level: str,
     count: int = 2,
+    session_nonce: str | None = None,
 ) -> list[dict[str, Any]]:
     """Generate `count` reading MCQs, each with a short passage (5–7 sentences).
 
@@ -3094,6 +3095,7 @@ IMPORTANT rules:
 - correct_option_index MUST point to the one correct answer in "options".
 - Do NOT include the passage answer verbatim in the question text.
 - Topics must be varied across questions (no two passages on the same topic).
+- Freshness nonce for this test attempt: {session_nonce or "none"}. Use it only to vary scenarios and wording; never include it in the output.
 
 Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
 
@@ -3248,19 +3250,32 @@ Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
     return out
 
 
-async def generate_gamified_material(*, subject: str, level: str, vocab_count: int = 16, reading_count: int = 3, session_nonce: str | None = None) -> dict[str, Any]:
+async def generate_gamified_material(*, subject: str, level: str, vocab_count: int = 24, reading_count: int = 3, session_nonce: str | None = None) -> dict[str, Any]:
     """Fresh, per-attempt raw material for a gamified test: an AI vocab batch
     plus AI reading passages. Returns {"vocab": [...], "readings": [...]}
     where readings are {passage, question, options, answer_index}. Fully
     best-effort — any failure yields an empty list for that part so the
     caller (gamified_tests.build_questions) falls back to the static bank."""
-    result: dict[str, Any] = {"vocab": [], "readings": []}
-    try:
-        result["vocab"] = await _generate_gamified_vocab(subject=subject, level=level, count=vocab_count, session_nonce=session_nonce)
-    except Exception:
-        logger.exception("generate_gamified_material: vocab generation failed")
-    try:
-        raw_readings = await _generate_reading_questions_with_passage(subject=subject, level=level, count=reading_count)
+    async def generate_vocab() -> list[dict[str, str]]:
+        try:
+            return await _generate_gamified_vocab(
+                subject=subject, level=level, count=vocab_count, session_nonce=session_nonce
+            )
+        except Exception:
+            logger.exception("generate_gamified_material: vocab generation failed")
+            return []
+
+    async def generate_readings() -> list[dict[str, Any]]:
+        try:
+            raw_readings = await _generate_reading_questions_with_passage(
+                subject=subject,
+                level=level,
+                count=reading_count,
+                session_nonce=session_nonce,
+            )
+        except Exception:
+            logger.exception("generate_gamified_material: reading generation failed")
+            return []
         readings: list[dict[str, Any]] = []
         for r in raw_readings:
             try:
@@ -3268,7 +3283,10 @@ async def generate_gamified_material(*, subject: str, level: str, vocab_count: i
             except Exception:
                 payload = {}
             opts = payload.get("options") or []
-            coi = int(payload.get("correct_option_index") or 0) - 1  # 1-indexed -> 0-indexed
+            try:
+                coi = int(payload.get("correct_option_index") or 0) - 1  # 1-indexed -> 0-indexed
+            except (TypeError, ValueError):
+                continue
             if len(opts) >= 4 and 0 <= coi < len(opts):
                 readings.append({
                     "passage": payload.get("passage", ""),
@@ -3276,10 +3294,10 @@ async def generate_gamified_material(*, subject: str, level: str, vocab_count: i
                     "options": opts[:4],
                     "answer_index": coi,
                 })
-        result["readings"] = readings
-    except Exception:
-        logger.exception("generate_gamified_material: reading generation failed")
-    return result
+        return readings
+
+    vocab, readings = await asyncio.gather(generate_vocab(), generate_readings())
+    return {"vocab": vocab, "readings": readings}
 
 
 async def ensure_vocabulary_stock_for_student_level(

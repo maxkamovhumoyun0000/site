@@ -494,8 +494,11 @@ def _tokenize(sentence: str) -> list[str]:
     return [w for w in sentence.replace(".", "").replace(",", "").split() if w]
 
 
-def _make_word_order(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
-    row = random.choice(bank)
+def _make_word_order(
+    bank: list[dict[str, str]], idx: int, subject: str = "English", *,
+    row: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    row = row or random.choice(bank)
     tokens = _tokenize(row["ex"])
     distractors = _distractor_words(bank, {row["word"]}, 2)
     chips = tokens + distractors
@@ -510,11 +513,15 @@ def _make_word_order(bank: list[dict[str, str]], idx: int, subject: str = "Engli
         "prompt": prompt,
         "words": chips,
         "_answer": tokens,
+        "_source_word": row["word"],
     }
 
 
-def _make_fill_gap(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
-    row = random.choice(bank)
+def _make_fill_gap(
+    bank: list[dict[str, str]], idx: int, subject: str = "English", *,
+    row: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    row = row or random.choice(bank)
     tokens = _tokenize(row["ex"])
     target = row["word"]
     # find the target token (case-insensitive) to blank out
@@ -537,11 +544,15 @@ def _make_fill_gap(bank: list[dict[str, str]], idx: int, subject: str = "English
         "sentence": " ".join(display),
         "options": options,
         "_answer": options.index(target),
+        "_source_word": row["word"],
     }
 
 
-def _make_mcq(bank: list[dict[str, str]], idx: int, subject: str = "English") -> dict[str, Any]:
-    row = random.choice(bank)
+def _make_mcq(
+    bank: list[dict[str, str]], idx: int, subject: str = "English", *,
+    row: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    row = row or random.choice(bank)
     options = [row["tr"]] + _distractor_translations(bank, {row["tr"]}, 3)
     random.shuffle(options)
     if _norm_subject(subject) == "Russian":
@@ -554,6 +565,7 @@ def _make_mcq(bank: list[dict[str, str]], idx: int, subject: str = "English") ->
         "prompt": prompt,
         "options": options,
         "_answer": options.index(row["tr"]),
+        "_source_word": row["word"],
     }
 
 
@@ -628,6 +640,9 @@ def build_questions(
     subj = _norm_subject(subject)
     tier = tier_for_level(level)
     bank = vocab if (vocab and len(vocab) >= 5) else _bank_for(subj, tier)
+    # Consume vocabulary as questions are built so one generated word cannot
+    # appear as a match pair and then recur in fill-gap / translation tasks.
+    remaining_bank = list(bank)
 
     questions: list[dict[str, Any]] = []
     units = 0
@@ -670,22 +685,36 @@ def build_questions(
         t = _NON_READING_TYPES[ni % len(_NON_READING_TYPES)]
         ni += 1
         if t == "word_match":
-            pairs = min(4, len(bank), count - units)
+            source_pool = remaining_bank or bank
+            pairs = min(4, len(source_pool), count - units)
             if pairs < 2:
-                questions.append(_make_mcq(bank, 0, subj))
+                source_row = random.choice(source_pool)
+                questions.append(_make_mcq(bank, 0, subj, row=source_row))
+                remaining_bank = [row for row in remaining_bank if row["word"] != source_row["word"]]
                 units += 1
             else:
-                q = _make_word_match(bank, 0, pairs=pairs, subject=subj)
+                q = _make_word_match(source_pool, 0, pairs=pairs, subject=subj)
                 questions.append(q)
+                used_words = set((q.get("_answer") or {}).keys())
+                remaining_bank = [row for row in remaining_bank if row["word"] not in used_words]
                 units += _score_units(q)
         elif t == "word_order":
-            questions.append(_make_word_order(bank, 0, subj))
+            source_pool = remaining_bank or bank
+            source_row = random.choice(source_pool)
+            questions.append(_make_word_order(bank, 0, subj, row=source_row))
+            remaining_bank = [row for row in remaining_bank if row["word"] != source_row["word"]]
             units += 1
         elif t == "fill_gap":
-            questions.append(_make_fill_gap(bank, 0, subj))
+            source_pool = remaining_bank or bank
+            source_row = random.choice(source_pool)
+            questions.append(_make_fill_gap(bank, 0, subj, row=source_row))
+            remaining_bank = [row for row in remaining_bank if row["word"] != source_row["word"]]
             units += 1
         else:
-            questions.append(_make_mcq(bank, 0, subj))
+            source_pool = remaining_bank or bank
+            source_row = random.choice(source_pool)
+            questions.append(_make_mcq(bank, 0, subj, row=source_row))
+            remaining_bank = [row for row in remaining_bank if row["word"] != source_row["word"]]
             units += 1
 
     random.shuffle(questions)
@@ -700,7 +729,7 @@ def public_question(q: dict[str, Any]) -> dict[str, Any]:
     """The client-facing question without the correct answer. Adds a
     per-question `time_limit_sec` sized to the question's actual reading
     load (20s-90s) rather than one flat number for every question."""
-    out = {k: v for k, v in q.items() if k != "_answer"}
+    out = {k: v for k, v in q.items() if not k.startswith("_")}
     out["time_limit_sec"] = _time_limit_for_question(q)
     out["score_units"] = _score_units(q)
     return out
