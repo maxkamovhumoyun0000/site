@@ -1042,8 +1042,6 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "arena-group",
         "arena-boss",
         "duel-1v1",
-        "duel-3v3",
-        "duel-5v5",
         "chats",
         "dcoin",
         "gifts",
@@ -2796,7 +2794,7 @@ class GamifiedCheckAnswerRequest(BaseModel):
 
 
 class CompetitionStartRequest(BaseModel):
-    mode: Literal["daily", "group", "boss", "duel-1v1", "duel-3v3", "duel-5v5"]
+    mode: Literal["daily", "group", "boss", "duel-1v1"]
     subject: str | None = None
     group_id: int | None = None
     proctoring_session_id: int | None = None
@@ -2804,7 +2802,7 @@ class CompetitionStartRequest(BaseModel):
     difficulty: Literal["Easy", "Medium", "Hard", "easy", "medium", "hard"] | None = None
 
 
-RETIRED_COMPETITION_MODES = frozenset({"daily", "group"})
+RETIRED_COMPETITION_MODES = frozenset({"daily", "group", "duel-3v3", "duel-5v5"})
 RETIRED_ARENA_NOTIFICATION_TYPES = frozenset({
     "arena_daily",
     "daily_arena_prestart",
@@ -2829,12 +2827,27 @@ def _is_retired_arena_notification(notification_type: str | None) -> bool:
     return False
 
 
+def _is_retired_competition_notification(row: dict[str, Any]) -> bool:
+    """Suppress old 3v3/5v5 notices without deleting notification history."""
+    mode = str(row.get("mode") or "").strip().lower().replace("_", "-")
+    if mode in {"duel-3v3", "duel-5v5", "3v3", "5v5"}:
+        return True
+    notification_type = str(row.get("type") or row.get("notification_type") or "").strip().lower()
+    if notification_type not in {
+        "competition_started", "competition_available", "duel_available", "competition_timeout",
+    }:
+        return False
+    legacy_copy = " ".join(str(row.get(key) or "") for key in ("title", "message", "button_url")).lower()
+    return bool(re.search(r"(?<!\d)(?:3\s*vs?\s*3|5\s*vs?\s*5|3v3|5v5)(?!\d)", legacy_copy))
+
+
 def _require_enabled_competition_mode(mode: str | None) -> None:
-    """Reject competition modes that were removed from all client products."""
-    if str(mode or "").strip().lower() in RETIRED_COMPETITION_MODES:
+    """Reject competition modes removed from current client products."""
+    normalized = str(mode or "").strip().lower().replace("_", "-")
+    if normalized in RETIRED_COMPETITION_MODES:
         raise HTTPException(
             status_code=410,
-            detail="Daily Arena and Group Arena have been retired.",
+            detail="This Arena/Duel mode has been retired.",
         )
 
 
@@ -6077,8 +6090,6 @@ def _competition_theme(mode: str) -> str:
         "group": ["group-alliance", "group-pulse", "group-crest"],
         "boss": ["boss-storm", "boss-crown", "boss-volt"],
         "duel-1v1": ["duel-flare", "duel-sharp", "duel-mirror"],
-        "duel-3v3": ["duel-squad", "duel-trio", "duel-impact"],
-        "duel-5v5": ["duel-warband", "duel-legion", "duel-forge"],
     }
     pool = themes.get(mode, ["core"])
     day_seed = int(datetime.now(TASHKENT_TZ).strftime("%Y%m%d"))
@@ -29464,7 +29475,7 @@ def _payment_notifications_for_user(user: dict) -> list[dict]:
     import re
     for row in rows:
         ntype = str(row.get("notification_type") or "payment")
-        if ntype.strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES:
+        if ntype.strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES or _is_retired_competition_notification(row):
             continue
         msg = str(row.get("message") or "")
         msg = re.sub(r"To'lov qabul qilindi:\s*[\d\.]+", "To'lov qabul qilindi", msg)
@@ -29584,7 +29595,7 @@ def _collect_notifications_for_user(user: dict, limit: int | None = 120) -> list
     normalized: list[dict] = []
     seen_ids: set[str] = set()
     for idx, raw in enumerate(items):
-        if str(raw.get("type") or "").strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES:
+        if str(raw.get("type") or "").strip().lower() in RETIRED_ARENA_NOTIFICATION_TYPES or _is_retired_competition_notification(raw):
             continue
         raw_id = str(raw.get("id") or raw.get("notification_id") or "").strip()
         if not raw_id:
@@ -30927,6 +30938,43 @@ async def student_gamified_tests_submit(
     return summary
 
 
+@app.get("/student/practice/history")
+async def student_practice_history(
+    limit: int = Query(default=40, ge=1, le=100),
+    authorization: str | None = Header(default=None),
+):
+    """Return recent attempts owned by the authenticated student."""
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    user_id = int(user.get("id") or 0)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, test_type, topic_id, subject, correct_count, wrong_count, "
+            "skipped_count, created_at FROM test_history WHERE user_id=? "
+            "ORDER BY created_at DESC, id DESC LIMIT ?",
+            (user_id, int(limit)),
+        )
+        items = []
+        for raw in cur.fetchall():
+            row = dict(raw)
+            created_at = row.get("created_at")
+            items.append({
+                "id": int(row.get("id") or 0),
+                "test_type": str(row.get("test_type") or "practice"),
+                "topic_id": str(row.get("topic_id") or ""),
+                "subject": str(row.get("subject") or ""),
+                "correct_count": int(row.get("correct_count") or 0),
+                "wrong_count": int(row.get("wrong_count") or 0),
+                "skipped_count": int(row.get("skipped_count") or 0),
+                "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at or ""),
+            })
+        return {"items": items}
+    finally:
+        conn.close()
+
+
 @app.post("/student/gamified-tests/check-pair")
 async def student_gamified_tests_check_pair(
     payload: GamifiedCheckPairRequest,
@@ -31275,6 +31323,8 @@ def _competition_cleanup_stale_pending(now: datetime | None = None) -> None:
 
 async def _competition_notify_session_timeout(session: dict[str, Any]) -> None:
     mode = str(session.get("mode") or "")
+    if mode.strip().lower().replace("_", "-") in RETIRED_COMPETITION_MODES:
+        return
     subject = str(session.get("subject") or "English")
     is_duel = _duel_is_mode(mode)
     title = "Duel boshlanmadi" if is_duel else "Arena boshlanmadi"
@@ -31354,6 +31404,8 @@ async def _competition_notify_session_timeout(session: dict[str, Any]) -> None:
 
 
 def _competition_schedule_timeout_notification(session: dict[str, Any]) -> None:
+    if str(session.get("mode") or "").strip().lower().replace("_", "-") in RETIRED_COMPETITION_MODES:
+        return
     if session.get("timeout_notifications_sent"):
         return
     session["timeout_notifications_sent"] = True
@@ -31557,8 +31609,6 @@ def _competition_runtime_path_for_session(session: dict[str, Any], *, include_se
         "arena-group": "/student/arena/group/run",
         "arena-boss": "/student/arena/boss/run",
         "duel-1v1": "/student/duel/1v1/run",
-        "duel-3v3": "/student/duel/3v3/run",
-        "duel-5v5": "/student/duel/5v5/run",
     }
     path = path_map.get(section, "/?role=student&section=arena")
     subject = quote(str(session.get("subject") or "English"))
@@ -31574,6 +31624,8 @@ def _competition_runtime_url_for_session(session: dict[str, Any], *, include_ses
 
 
 async def _competition_notify_started(session: dict[str, Any]) -> None:
+    if str(session.get("mode") or "").strip().lower().replace("_", "-") in RETIRED_COMPETITION_MODES:
+        return
     if session.get("start_notifications_sent"):
         return
     session["start_notifications_sent"] = True
@@ -31767,7 +31819,10 @@ async def _competition_notify_session_available(session: dict[str, Any], creator
     if session.get("available_notifications_sent"):
         return
     mode = str(session.get("mode") or "")
-    if mode == "group" or not mode:
+    normalized_mode = mode.strip().lower().replace("_", "-")
+    if normalized_mode in RETIRED_COMPETITION_MODES:
+        return
+    if normalized_mode == "group" or not mode:
         return
     session["available_notifications_sent"] = True
     subject = _normalize_subject_label(str(session.get("subject") or "English")) or "English"
@@ -31977,7 +32032,7 @@ def _competition_user_left_or_blocked(session: dict[str, Any], user_id: int) -> 
 def _competition_mark_user_left_by_proctoring(user_id: int, test_type: str | None, attempt_ref: str | None, reason: str | None = None) -> None:
     mode = str(test_type or "").strip()
     session_id = str(attempt_ref or "").strip()
-    if mode not in {"daily", "group", "boss", "duel-1v1", "duel-3v3", "duel-5v5"} or not session_id:
+    if mode not in {"daily", "group", "boss", "duel-1v1"} or not session_id:
         return
     with _competition_session_advisory_lock(session_id):
         session = _competition_load_session_from_db(session_id)
@@ -35607,7 +35662,7 @@ async def competition_runtime_history(
     uid = int(user.get("id") or 0)
     mode_value = str(mode or "").strip()
     _require_enabled_competition_mode(mode_value)
-    valid_modes = {"daily", "group", "boss", "duel-1v1", "duel-3v3", "duel-5v5"}
+    valid_modes = {"daily", "group", "boss", "duel-1v1"}
     if mode_value and mode_value not in valid_modes:
         raise HTTPException(status_code=400, detail="Invalid competition mode")
     items = _competition_history_for_user(uid, mode_value or None, int(limit))
@@ -36939,10 +36994,6 @@ def _competition_boss_summary(session: dict[str, Any]) -> dict[str, Any] | None:
 def _competition_bot_mode(mode: str) -> str:
     if mode == "duel-1v1":
         return "1v1"
-    if mode == "duel-3v3":
-        return "3v3"
-    if mode == "duel-5v5":
-        return "5v5"
     return mode
 
 
@@ -36964,8 +37015,6 @@ def _competition_section_for_mode(mode: str) -> str:
         "group": "arena-group",
         "boss": "arena-boss",
         "duel-1v1": "duel-1v1",
-        "duel-3v3": "duel-3v3",
-        "duel-5v5": "duel-5v5",
     }
     return mapping.get(mode, "arena")
 
@@ -42896,7 +42945,7 @@ async def admin_delete_course(course_id: int, authorization: str | None = Header
 # Admin history tab -> runtime modes stored in web_competition_sessions.mode.
 _ADMIN_COMPETITION_RUNTIME_MODES: dict[str, tuple[str, ...]] = {
     "arena-boss": ("boss",),
-    "duel": ("duel-1v1", "duel-3v3", "duel-5v5"),
+    "duel": ("duel-1v1",),
 }
 
 
@@ -57928,8 +57977,6 @@ def _online_student_count() -> int | None:
 # player counts, limits) are always read from runtime settings/helpers.
 _ARENA_BATTLE_CATALOG: tuple[dict[str, str], ...] = (
     {"id": "duel-1v1", "mode": "duel-1v1", "title": "Duel 1v1", "description": "Direct challenge mode", "opponent": "Random"},
-    {"id": "duel-3v3", "mode": "duel-3v3", "title": "Duel 3v3", "description": "Squad battle mode", "opponent": "Random Team"},
-    {"id": "duel-5v5", "mode": "duel-5v5", "title": "Duel 5v5", "description": "Full team clash mode", "opponent": "Random Team"},
     {"id": "boss-arena", "mode": "boss", "title": "Boss Arena", "description": "High-difficulty set", "opponent": "Global"},
 )
 
@@ -57996,13 +58043,9 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
     if battle_id == "daily-arena" or battle_id.startswith("group-"):
         _require_enabled_competition_mode("daily" if battle_id == "daily-arena" else "group")
 
-    if battle_id in {"duel-1v1", "duel-3v3", "duel-5v5"}:
-        mode_map = {
-            "duel-1v1": ("1v1", 2),
-            "duel-3v3": ("3v3", 6),
-            "duel-5v5": ("5v5", 10),
-        }
-        duel_mode, required_players = mode_map[battle_id]
+    _require_enabled_competition_mode(battle_id)
+    if battle_id == "duel-1v1":
+        duel_mode, required_players = "1v1", 2
         expiry = (_now_utc() + timedelta(minutes=10)).isoformat()
         sess = get_open_duel_session(duel_mode, subject, level)
         if not sess:
@@ -58020,13 +58063,11 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
                 required_players=int(required_players),
                 expires_at=expiry,
             )
-        current = count_duel_participants(session_id)
-        team_no = 1
-        if duel_mode == "3v3":
-            team_no = 1 if current < 3 else 2
-        elif duel_mode == "5v5":
-            team_no = 1 if current < 5 else 2
-        joined = join_duel_session(session_id, user_id, int(user.get("telegram_id") or 0) or user_id, team_no=team_no)
+        joined = join_duel_session(
+            session_id,
+            user_id,
+            int(user.get("telegram_id") or 0) or user_id,
+        )
         participants = count_duel_participants(session_id)
         if participants >= int(required_players):
             mark_duel_session_started(session_id)
@@ -61563,6 +61604,7 @@ personalization_api.configure_runtime(
     rate_limit=_personalization_rate_limit,
     ip_rate_limit=_personalization_ip_rate_limit,
     user_from_bearer=_user_row_from_bearer,
+    subjects_for_user=lambda user: _user_subjects_from_row(user),
     role_for_user=_personalization_role_for_user,
     staff_visible_student_ids=_personalization_visible_student_ids,
     staff_can_access_student=_personalization_staff_can_access_student,

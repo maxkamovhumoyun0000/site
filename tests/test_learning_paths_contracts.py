@@ -179,6 +179,11 @@ def test_learning_path_task_instruction_uses_the_subject_language():
     assert personalization._learning_task_instruction(question, "English") == "Arrange the words in the correct order."
     assert personalization._learning_task_instruction(question, "Russian") == "Расположите слова в правильном порядке."
     assert personalization._learning_task_instruction(question, "Matematika") == "So'zlarni to'g'ri tartibda joylashtiring."
+    # Instruction locale is a user preference, independent of the language
+    # being learned in the exercise itself.
+    assert personalization._learning_task_instruction(question, "Russian", "uz") == "So'zlarni to'g'ri tartibda joylashtiring."
+    assert personalization._learning_task_instruction(question, "Russian", "uz-UZ") == "So'zlarni to'g'ri tartibda joylashtiring."
+    assert personalization._learning_task_instruction(question, "English", "ru") == "Расположите слова в правильном порядке."
 
 
 def test_locked_weekly_plan_starts_with_empty_indicators():

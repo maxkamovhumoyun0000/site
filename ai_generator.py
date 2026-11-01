@@ -279,6 +279,16 @@ def _is_russian_text_valid(value: Any, *, allow_empty: bool = False) -> bool:
     return True
 
 
+def _gamified_text_matches_subject(subject: str, value: Any) -> bool:
+    """Reject mixed-language AI material before it reaches a test session."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if str(subject or "").strip().casefold() == "russian":
+        return _is_russian_text_valid(text)
+    return not _has_cyrillic_text(text)
+
+
 def _is_valid_russian_vocab_item(item: dict[str, Any]) -> bool:
     return (
         _is_russian_text_valid(item.get("word"))
@@ -3238,6 +3248,10 @@ Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
         ex = str(it.get("ex") or it.get("example") or "").strip()
         if not word or not tr or not ex:
             continue
+        # AI occasionally ignores the requested subject language. Discard
+        # that item so the session builder uses its curated same-language bank.
+        if not _gamified_text_matches_subject(subject, word) or not _gamified_text_matches_subject(subject, ex):
+            continue
         key = word.lower()
         if key in seen:
             continue
@@ -3283,6 +3297,9 @@ async def generate_gamified_material(*, subject: str, level: str, vocab_count: i
             except Exception:
                 payload = {}
             opts = payload.get("options") or []
+            text_fields = [payload.get("passage"), payload.get("question"), *opts]
+            if not all(_gamified_text_matches_subject(subject, value) for value in text_fields):
+                continue
             try:
                 coi = int(payload.get("correct_option_index") or 0) - 1  # 1-indexed -> 0-indexed
             except (TypeError, ValueError):

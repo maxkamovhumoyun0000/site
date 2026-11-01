@@ -3595,10 +3595,19 @@ def _detect_subject_language(subject: str | None) -> str:
     return "uz"
 
 
-def _learning_task_instruction(payload: dict[str, Any], subject: str | None) -> str:
-    """Return a student-facing exercise instruction in the subject language."""
+def _learning_task_instruction(
+    payload: dict[str, Any], subject: str | None, instruction_language: str | None = None,
+) -> str:
+    """Return localized directions without changing the exercise's subject language."""
     kind = str(payload.get("test_type") or payload.get("kind") or "").strip().lower()
-    lang = _detect_subject_language(subject)
+    preferred = (
+        str(instruction_language or "")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .split("-", 1)[0]
+    )
+    lang = preferred if preferred in {"uz", "ru", "en"} else _detect_subject_language(subject)
     key = "word_order" if kind in {"word_order", "scrambled_sentence", "listening_order", "rearrange", "sentence_builder"} else kind
     messages = {
         "en": {
@@ -5136,6 +5145,25 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
     try:
         cur=conn.cursor(); cur.execute("SELECT * FROM learning_tracks WHERE status != 'archived' ORDER BY subject,position,id")
         raw_tracks=_dicts(cur.fetchall()); tracks=[]
+        # Student tracks are scoped to the currently assigned group subjects.
+        # The legacy users.subject field can contain a former course, so use
+        # the same group-derived subject resolver as the student app.
+        subject_resolver = _runtime.get("subjects_for_user")
+        if _role(user) == "student" and not _lp_is_speaking() and subject_resolver:
+            try:
+                assigned = subject_resolver(user)
+            except Exception:
+                assigned = []
+            def subject_key(value: Any) -> str:
+                text = re.sub(r"[^a-zа-я0-9]+", "", str(value or "").casefold())
+                if "rus" in text or "рус" in text:
+                    return "russian"
+                if any(token in text for token in ("eng", "ingliz", "ielts", "cefr")):
+                    return "english"
+                return text
+            allowed_subjects = {subject_key(value) for value in (assigned or []) if subject_key(value)}
+            if allowed_subjects:
+                raw_tracks = [track for track in raw_tracks if subject_key(track.get("subject")) in allowed_subjects]
         by_subject: dict[str, list[dict[str, Any]]] = {}
         for tr in raw_tracks:
             sub=str(tr.get("subject") or "general").strip()
@@ -5204,7 +5232,11 @@ async def student_learning_tracks(subject: str | None = Query(default=None), aut
 
 
 @router.get("/student/learning-lessons/{lesson_id}")
-async def student_learning_lesson(lesson_id: int, authorization: str | None = Header(default=None)):
+async def student_learning_lesson(
+    lesson_id: int,
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
     user=_user(authorization); _require_lp_student(user); ensure_schema(); uid=int(user["id"]); conn=get_conn()
     try:
         cur=conn.cursor(); cur.execute("SELECT l.*,m.track_id,m.id AS module_id,m.passing_score AS module_passing,t.passing_score AS track_passing_score,t.status AS track_status,t.subject AS track_subject FROM learning_module_lessons l JOIN learning_modules m ON m.id=l.module_id JOIN learning_tracks t ON t.id=m.track_id WHERE l.id=? AND t.status != 'archived'",(lesson_id,)); row=cur.fetchone()
@@ -5225,7 +5257,11 @@ async def student_learning_lesson(lesson_id: int, authorization: str | None = He
         if isinstance(item.get("question_payload"), dict):
             qp = item["question_payload"]
             qp["subject_language"] = _detect_subject_language(item.get("track_subject"))
-            localized_instruction = _learning_task_instruction(qp, item.get("track_subject"))
+            localized_instruction = _learning_task_instruction(
+                qp,
+                item.get("track_subject"),
+                x_language or user.get("language") or user.get("vocabulary_translation_language"),
+            )
             if localized_instruction:
                 qp["instruction"] = localized_instruction
                 qp["task_instruction"] = localized_instruction
@@ -5878,7 +5914,14 @@ async def check_learning_lesson_ai(
         if not qp:
             raise HTTPException(status_code=400, detail="Savol topilmadi")
 
-        subject = (payload.subject if payload and payload.subject else None) or track_subject or "English"
+        # A stored Learning Path lesson is authoritative for its learning
+        # subject. Older clients may send a stale default subject; allowing it
+        # to override the track makes Russian answers get graded as English.
+        subject = (
+            track_subject
+            if eff_lesson_id
+            else ((payload.subject if payload and payload.subject else None) or track_subject or "English")
+        )
         answer = str((payload.answer_text if payload else "") or "").strip()
         audio_url = (payload.audio_url if payload else None) or None
         if audio_url:
@@ -6232,7 +6275,11 @@ async def claim_track_certificate(track_id: int, authorization: str | None = Hea
 
 
 @router.get("/student/learning-tracks/{track_id}/final-exam")
-async def get_track_final_exam(track_id: int, authorization: str | None = Header(default=None)):
+async def get_track_final_exam(
+    track_id: int,
+    authorization: str | None = Header(default=None),
+    x_language: str | None = Header(default=None, alias="X-Language"),
+):
     user = _user(authorization); _require_lp_student(user); ensure_schema()
     uid = int(user["id"])
     conn = get_conn()
@@ -6280,7 +6327,11 @@ async def get_track_final_exam(track_id: int, authorization: str | None = Header
                 question["exam_group_index"] = sub_index
                 question["task_instruction"] = str(question.get("instruction") or "")
             else:
-                localized_instruction = _learning_task_instruction(question, track_dict.get("subject"))
+                localized_instruction = _learning_task_instruction(
+                    question,
+                    track_dict.get("subject"),
+                    x_language or user.get("language") or user.get("vocabulary_translation_language"),
+                )
                 if localized_instruction:
                     question["instruction"] = localized_instruction
                     question["task_instruction"] = localized_instruction
