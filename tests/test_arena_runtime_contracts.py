@@ -340,7 +340,7 @@ def test_arena_battles_use_real_values():
         assert key in source, f"/arena/battles dropped {key}"
     # The catalog only holds presentation text, never numbers.
     catalog = _load_main_symbols({"_ARENA_BATTLE_CATALOG"})["_ARENA_BATTLE_CATALOG"]
-    assert [item["id"] for item in catalog] == ["duel-1v1", "duel-3v3", "duel-5v5", "boss-arena"]
+    assert [item["id"] for item in catalog] == ["duel-1v1", "boss-arena"]
     assert all(isinstance(value, str) for item in catalog for value in item.values())
 
 
@@ -685,6 +685,38 @@ def test_rejoining_player_skips_missed_rounds_and_rejoins_current_round():
     assert skipped == [1, 2]
     assert session["progress"]["2"]["index"] == 3
     assert session["participants"][1]["status"] == "active"
+
+
+def test_competition_push_targets_student_and_speaking_device_tokens():
+    import logging
+    from types import SimpleNamespace
+
+    calls = []
+
+    def send_student(user_id, title, message, *, data=None):
+        calls.append(("student", user_id, title, message, data))
+
+    def send_speaking(user_id, title, message, *, data=None):
+        calls.append(("speaking", user_id, title, message, data))
+
+    ns = _load_main_symbols(
+        {"_competition_send_push_to_user"},
+        {
+            "push_notifications": SimpleNamespace(
+                send_push_to_user=send_student,
+                send_push_to_speaking_user=send_speaking,
+            ),
+            "logger": logging.getLogger(__name__),
+        },
+    )
+    payload = {"notification_type": "competition_opponent_joined", "mode": "duel-1v1"}
+
+    ns["_competition_send_push_to_user"](
+        73, "Raqib qo‘shildi", "Duel kutish holatida", data=payload
+    )
+
+    assert [row[0] for row in calls] == ["student", "speaking"]
+    assert all(row[1] == 73 and row[4] == payload for row in calls)
 
 
 if __name__ == "__main__":

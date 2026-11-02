@@ -31707,6 +31707,39 @@ async def _competition_notify_started(session: dict[str, Any]) -> None:
             await _send_telegram_text(token, tg, message, button_text="Kirish", button_url=telegram_url if telegram_url.startswith("http") else None, button_web_app=True)
 
 
+def _competition_send_push_to_user(
+    user_id: int,
+    title: str,
+    message: str,
+    *,
+    data: dict[str, Any],
+) -> None:
+    """Deliver competition push to both Student and Speaking installations.
+
+    Student/Teacher devices are stored in ``push_device_tokens`` while
+    Speaking devices use encrypted ``speaking_push_tokens``. Matchmaking
+    events are shared across both apps, so dispatch to both stores from one
+    background worker.
+    """
+    try:
+        push_notifications.send_push_to_user(
+            int(user_id), title, message, data=data
+        )
+    except Exception:
+        logger.exception(
+            "competition push failed for student/teacher devices user_id=%s",
+            user_id,
+        )
+    try:
+        push_notifications.send_push_to_speaking_user(
+            int(user_id), title, message, data=data
+        )
+    except Exception:
+        logger.exception(
+            "competition push failed for speaking devices user_id=%s", user_id
+        )
+
+
 def _competition_notify_waiting(session: dict[str, Any], user_id: int) -> None:
     uid = int(user_id or 0)
     if uid <= 0 or _competition_session_phase(session) not in {"pending", "generating"} or session.get("questions"):
@@ -31731,7 +31764,20 @@ def _competition_notify_waiting(session: dict[str, Any], user_id: int) -> None:
     finally:
         if conn is not None:
             conn.close()
-    threading.Thread(target=push_notifications.send_push_to_user, args=(uid, title, message), kwargs={"data": {"notification_type": "competition_waiting", "session_id": session_id, "mode": mode, "subject": subject, "target_screen": _competition_section_for_mode(mode)}}, daemon=True).start()
+    threading.Thread(
+        target=_competition_send_push_to_user,
+        args=(uid, title, message),
+        kwargs={
+            "data": {
+                "notification_type": "competition_waiting",
+                "session_id": session_id,
+                "mode": mode,
+                "subject": subject,
+                "target_screen": _competition_section_for_mode(mode),
+            }
+        },
+        daemon=True,
+    ).start()
 
 
 def _competition_notify_lobby_join(session: dict[str, Any], joining_user_id: int) -> None:
@@ -31812,7 +31858,7 @@ def _competition_notify_lobby_join(session: dict[str, Any], joining_user_id: int
         if recipient_id <= 0 or recipient_id == int(joining_user_id):
             continue
         threading.Thread(
-            target=push_notifications.send_push_to_user,
+            target=_competition_send_push_to_user,
             args=(recipient_id, title, message),
             kwargs={
                 "data": {
