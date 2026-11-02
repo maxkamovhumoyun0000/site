@@ -2803,6 +2803,10 @@ class CompetitionStartRequest(BaseModel):
 
 
 RETIRED_COMPETITION_MODES = frozenset({"daily", "group", "duel-3v3", "duel-5v5"})
+# Keep the team-mode subset explicit. It is also used by the runtime start
+# guard; leaving it undefined raises a NameError in the request path and
+# turns Arena/Duel requests into generic 500 responses.
+RETIRED_TEAM_COMPETITION_MODES = frozenset({"duel-3v3", "duel-5v5"})
 RETIRED_ARENA_NOTIFICATION_TYPES = frozenset({
     "arena_daily",
     "daily_arena_prestart",
@@ -47061,14 +47065,52 @@ def _payment_recent_recalc_ok(ym: str, freshness_seconds: int = 900) -> bool:
 
 def _payment_recalc_for_view_if_stale(ym_values: list[str] | set[str], trigger_source: str, freshness_seconds: int = 900) -> None:
     """
-    View-safe recalculation:
-    - skips fresh months;
-    - runs only when stale/missing so API endpoints avoid long blocking requests.
+    Queue stale materializations without holding a payments read request open.
+
+    Recalculation walks every eligible account and is also run by the payment
+    automation worker. A Redis NX lease deduplicates dashboard/stats/list opens
+    across API workers; if Redis is unavailable, the scheduled worker remains
+    the fallback and the read path still returns its last materialized data.
     """
     for ym in {str(v or "").strip() for v in ym_values if str(v or "").strip()}:
         if _payment_recent_recalc_ok(ym, freshness_seconds=freshness_seconds):
             continue
-        _run_payment_recalculation_for_month(ym, trigger_source=trigger_source)
+        lock_key = f"payments:view-recalc:{ym}"
+        lock_token = uuid4().hex
+        try:
+            acquired = bool(_REDIS_CLIENT.set(lock_key, lock_token, nx=True, ex=1800))
+        except Exception:
+            logger.warning("payment view refresh skipped: Redis lock unavailable ym=%s", ym)
+            continue
+        if not acquired:
+            continue
+
+        def _run_refresh(month: str = ym, key: str = lock_key, token: str = lock_token) -> None:
+            try:
+                with _payment_automation_leader_lock() as is_leader:
+                    if is_leader:
+                        _run_payment_recalculation_for_month(month, trigger_source=trigger_source)
+                    else:
+                        logger.info("payment view refresh deferred to automation leader ym=%s", month)
+            except Exception:
+                logger.exception("asynchronous payment view refresh failed ym=%s", month)
+            finally:
+                try:
+                    _REDIS_CLIENT.eval(
+                        "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
+                        1,
+                        key,
+                        token,
+                    )
+                except Exception:
+                    # The lock expires automatically if Redis is unavailable.
+                    pass
+
+        threading.Thread(
+            target=_run_refresh,
+            name=f"payment-view-refresh-{ym}",
+            daemon=True,
+        ).start()
 
 
 def _payment_card_rows(active_only: bool = True) -> list[dict[str, Any]]:
@@ -51124,10 +51166,36 @@ async def admin_payments_dashboard(
     # the ledger while this dashboard still says zero.
     _ensure_payment_automation_schema()
     _payment_recalc_for_view_if_stale({month_key}, trigger_source="payments_dashboard", freshness_seconds=900)
+    scoped_group_ids = {
+        int(g.get("id") or 0)
+        for g in _scope_groups_for_admin(admin_ref, _safe_call(get_all_groups, []) or [])
+        if int(g.get("id") or 0) > 0
+    }
+    selected_gid = int(group_id or 0)
+    if selected_gid > 0:
+        selected_group = _safe_call(lambda: get_group(selected_gid), None)
+        if not _can_manage_group(admin_ref, selected_group):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        scope_filter = "o.group_id=?"
+        scope_params: tuple[Any, ...] = (selected_gid,)
+        refund_scope_filter = "r.group_id=?"
+        refund_scope_params: tuple[Any, ...] = (selected_gid,)
+    elif scoped_group_ids:
+        placeholders = ", ".join("?" for _ in scoped_group_ids)
+        values = tuple(sorted(scoped_group_ids))
+        scope_filter = f"o.group_id IN ({placeholders})"
+        scope_params = values
+        refund_scope_filter = f"r.group_id IN ({placeholders})"
+        refund_scope_params = values
+    else:
+        scope_filter = "1=0"
+        scope_params = ()
+        refund_scope_filter = "1=0"
+        refund_scope_params = ()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
-        """
+        f"""
         SELECT o.*, g.name AS group_name, g.teacher_id,
                TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name,
                TRIM(COALESCE(u.first_name,'') || ' ' || COALESCE(u.last_name,'')) AS student_name,
@@ -51136,37 +51204,37 @@ async def admin_payments_dashboard(
         LEFT JOIN groups g ON g.id = o.group_id
         LEFT JOIN users t ON t.id = g.teacher_id
         LEFT JOIN users u ON u.id = o.user_id
-        WHERE o.ym=?
+        WHERE o.ym=? AND {scope_filter}
         ORDER BY o.updated_at DESC, o.id DESC
         """,
-        (month_key,),
+        (month_key, *scope_params),
     )
     rows = [dict(row) for row in (cur.fetchall() or [])]
     cur.execute(
         """
         SELECT *
         FROM payment_job_runs
+        WHERE ym=?
         ORDER BY started_at DESC, id DESC
         LIMIT 30
-        """
+        """,
+        (month_key,),
     )
     job_rows = [dict(row) for row in (cur.fetchall() or [])]
     cur.execute(
-        """
+        f"""
         SELECT r.*, g.name AS group_name, g.teacher_id,
                TRIM(COALESCE(t.first_name,'') || ' ' || COALESCE(t.last_name,'')) AS teacher_name
         FROM payment_refunds r
         LEFT JOIN groups g ON g.id = r.group_id
         LEFT JOIN users t ON t.id = g.teacher_id
-        WHERE r.ym=?
+        WHERE r.ym=? AND {refund_scope_filter}
         ORDER BY r.created_at DESC, r.id DESC
         """,
-        (month_key,),
+        (month_key, *refund_scope_params),
     )
     refund_rows = [dict(row) for row in (cur.fetchall() or [])]
     conn.close()
-    scoped_group_ids = {int(g.get("id") or 0) for g in _scope_groups_for_admin(admin_ref, _safe_call(get_all_groups, []) or [])}
-    selected_gid = int(group_id or 0)
     status_filter = str(status or "").strip().lower()
     filtered = []
     for row in rows:
@@ -61971,17 +62039,6 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
         )
         cur.execute("DELETE FROM web_voicerooms WHERE subject = %s", (req_subject,))
             
-        # Standalone Speaking accounts are immediately active learning
-        # accounts. They can host their own practice room without a Dcoin
-        # balance; regular platform students retain the existing Dcoin rule.
-        if role == "student" and not is_speaking_app_account(user.get("speaking_app_account")):
-            settings = _get_runtime_settings()
-            price = float(settings.get("voice_room_price", 50.0))
-            if price > 0:
-                success = try_consume_dcoins(user_id, price, "Community voice room", change_type="voice_room_create")
-                if not success:
-                    raise HTTPException(status_code=400, detail="Hisobingizda yetarli Dcoin yo'q")
-                    
         # Create room
         norm_subj = req_subject
         default_title = f"Diamond Education {norm_subj} Voice Room"

@@ -43,7 +43,6 @@ from speaking_contract import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_SPEAKING_VOCAB_AI_REQUESTS: dict[str, list[float]] = {}
 _SPEAKING_VOCAB_AI_REQUEST_LIMIT = 8
 
 AI_PRIMARY_GENERATION_TIMEOUT_SECONDS = 90
@@ -484,29 +483,23 @@ def _speaking_vocabulary_ai_allowed(request: Request) -> bool:
     # The device header is client-controlled, so on its own it can be rotated
     # per request to dodge the cap. Always enforce a second, larger limit
     # keyed on the network address (resolved with the trusted-proxy rules).
-    from backend.main import _client_ip
+    from backend.main import _REDIS_CLIENT, _client_ip
+    from backend.rate_limiting import consume_rate_limit
 
     raw_id = str(request.headers.get("x-speaking-device-id") or "").strip()
     ip = str(_client_ip(request) or "unknown")
-    buckets = [
-        (hashlib.sha256(f"ip:{ip}".encode("utf-8")).hexdigest(), _SPEAKING_VOCAB_AI_REQUEST_LIMIT * 6),
-    ]
+    buckets = [(f"speaking-vocabulary-ai:ip:{ip}", _SPEAKING_VOCAB_AI_REQUEST_LIMIT * 6)]
     if raw_id:
-        buckets.append((hashlib.sha256(f"dev:{raw_id[:200]}".encode("utf-8")).hexdigest(), _SPEAKING_VOCAB_AI_REQUEST_LIMIT))
-    now = datetime.utcnow().timestamp()
-    if len(_SPEAKING_VOCAB_AI_REQUESTS) > 20000:
-        for stale_key in [k for k, v in _SPEAKING_VOCAB_AI_REQUESTS.items() if not v or now - v[-1] >= 3600]:
-            _SPEAKING_VOCAB_AI_REQUESTS.pop(stale_key, None)
-    recents: dict[str, list[float]] = {}
+        buckets.append((f"speaking-vocabulary-ai:device:{raw_id[:200]}", _SPEAKING_VOCAB_AI_REQUEST_LIMIT))
     for key, limit in buckets:
-        recent = [stamp for stamp in _SPEAKING_VOCAB_AI_REQUESTS.get(key, []) if now - stamp < 3600]
-        recents[key] = recent
-        if len(recent) >= limit:
-            _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
+        allowed, _retry_after = consume_rate_limit(
+            _REDIS_CLIENT,
+            key,
+            limit=limit,
+            window_seconds=3600,
+        )
+        if not allowed:
             return False
-    for key, recent in recents.items():
-        recent.append(now)
-        _SPEAKING_VOCAB_AI_REQUESTS[key] = recent
     return True
 
 
@@ -535,10 +528,15 @@ async def search_speaking_vocabulary(
 
     if not normalized_query:
         offset = (max(1, page) - 1) * limit
-        def get_paged_words() -> list[dict[str, Any]]:
+        def get_paged_words() -> tuple[list[dict[str, Any]], int]:
             conn = get_conn()
             try:
                 cur = conn.cursor()
+                cur.execute(
+                    "SELECT COUNT(*) AS total FROM words WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)",
+                    (selected_subject, language),
+                )
+                total = int((cur.fetchone() or {}).get("total") or 0)
                 cur.execute(
                     """
                     SELECT id, word, subject, language, level, translation_uz,
@@ -550,27 +548,49 @@ async def search_speaking_vocabulary(
                     """,
                     (selected_subject, language, limit, offset),
                 )
-                return [dict(row) for row in (cur.fetchall() or [])]
+                return [dict(row) for row in (cur.fetchall() or [])], total
             finally:
                 conn.close()
-        return {"items": get_paged_words(), "ai_generated": False, "blocked": False}
+        items, total = get_paged_words()
+        return {
+            "items": items,
+            "subject": selected_subject,
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "has_more": (page * limit) < total,
+            "ai_generated": False,
+            "blocked": False,
+        }
 
     if not is_safe_speaking_vocabulary_query(normalized_query):
         return {"items": [], "ai_generated": False, "blocked": True}
 
-    # These imports are intentionally lazy: backend.main registers this router
-    # at startup, while the existing vocabulary AI helper lives in main.
-    from backend.main import _vocab_ai_rows_for_words, _vocab_ai_try_add_missing_word, vocab_language_for_subject
+    offset = (max(1, page) - 1) * limit
 
-    language = vocab_language_for_subject(selected_subject)
-
-    def find_matches() -> list[dict[str, Any]]:
+    def find_matches(*, paginate: bool = True) -> tuple[list[dict[str, Any]], int]:
         conn = get_conn()
         try:
             cur = conn.cursor()
             pattern = f"%{normalized_query.lower()}%"
             cur.execute(
-                """
+                f"""
+                SELECT COUNT(*) AS total
+                FROM words
+                WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)
+                  AND (LOWER(word) LIKE ? OR LOWER(translation_uz) LIKE ?
+                       OR LOWER(translation_ru) LIKE ? OR LOWER(definition) LIKE ?
+                       OR LOWER(example) LIKE ?)
+                """,
+                (selected_subject, language, pattern, pattern, pattern, pattern, pattern),
+            )
+            total = int((cur.fetchone() or {}).get("total") or 0)
+            paging = " LIMIT ? OFFSET ?" if paginate else ""
+            params: tuple[Any, ...] = (selected_subject, language, pattern, pattern, pattern, pattern, pattern)
+            if paginate:
+                params += (limit, offset)
+            cur.execute(
+                f"""
                 SELECT id, word, subject, language, level, translation_uz,
                        translation_ru, definition, example
                 FROM words
@@ -579,17 +599,17 @@ async def search_speaking_vocabulary(
                        OR LOWER(translation_ru) LIKE ? OR LOWER(definition) LIKE ?
                        OR LOWER(example) LIKE ?)
                 ORDER BY id ASC
-                LIMIT 20
+                {paging}
                 """,
-                (selected_subject, language, pattern, pattern, pattern, pattern, pattern),
+                params,
             )
-            return [dict(row) for row in (cur.fetchall() or [])]
+            return [dict(row) for row in (cur.fetchall() or [])], total
         finally:
             conn.close()
 
-    rows = find_matches()
+    rows, total = find_matches()
     ai_generated = False
-    if not rows and not bank_only and _speaking_vocabulary_ai_allowed(request):
+    if total == 0 and page == 1 and not bank_only and _speaking_vocabulary_ai_allowed(request):
         try:
             generated = await _vocab_ai_try_add_missing_word(
                 selected_subject,
@@ -602,16 +622,26 @@ async def search_speaking_vocabulary(
             generated = None
         if generated:
             ai_generated = True
-            rows = find_matches()
-            if not rows:
+            rows, total = find_matches()
+            if total == 0:
                 conn = get_conn()
                 try:
                     suggestions = [generated.get("main")] + list(generated.get("related") or [])
                     words = [str((item or {}).get("word") or "") for item in suggestions]
                     rows = _vocab_ai_rows_for_words(conn, words, selected_subject, language)
+                    total = len(rows)
                 finally:
                     conn.close()
-    return {"items": rows, "ai_generated": ai_generated, "blocked": False}
+    return {
+        "items": rows,
+        "subject": selected_subject,
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "has_more": (page * limit) < total,
+        "ai_generated": ai_generated,
+        "blocked": False,
+    }
 
 
 # --- STAFF MEDIA ADMIN API ---

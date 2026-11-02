@@ -17151,6 +17151,10 @@ function AdminSection({
       if (canUseFastDashboard) {
         const dashboardParams = new URLSearchParams();
         dashboardParams.set("ym", paymentsMonthFilter);
+        // This request only needs aggregate cards and scoped comparisons; the
+        // paged student list is loaded separately. Avoid returning hundreds
+        // of full obligation rows on every filter refresh.
+        dashboardParams.set("include_items", "false");
         const dashboard = await requestJson<GenericRow>(`/admin/payments/dashboard?${dashboardParams.toString()}`, {
           token,
           signal: controller.signal,
