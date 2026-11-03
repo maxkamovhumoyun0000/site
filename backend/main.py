@@ -56032,17 +56032,60 @@ async def admin_survey_results(survey_id: int, authorization: str | None = Heade
         tg_json = {}
         if resp.get("tg_user_json"):
             try:
-                tg_json = json.loads(resp["tg_user_json"])
+                parsed_tg_json = json.loads(resp["tg_user_json"])
+                tg_json = parsed_tg_json if isinstance(parsed_tg_json, dict) else {}
             except Exception:
                 pass
 
-        tg_id = str(resp.get("telegram_id") or tg_json.get("id") or resp.get("u_telegram_id") or "").strip()
-        tg_username = str(resp.get("tg_username") or tg_json.get("username") or "").strip()
         uid = int(resp.get("user_id") or 0)  # must be before tg_full fallback
 
-        tg_first = (tg_json.get("first_name") or resp.get("tg_first_name") or "").strip()
-        tg_last = (tg_json.get("last_name") or "").strip()
-        tg_full = (resp.get("tg_full_name") or f"{tg_first} {tg_last}").strip()
+        # Recover registered profile fields independently of the optional JOIN
+        # above. Older databases can have slightly different user columns, and
+        # a failed JOIN must not reduce response cards to device badges.
+        if uid > 0 and not resp.get("first_name") and not resp.get("login_id"):
+            try:
+                cur.execute(
+                    "SELECT first_name, last_name, login_id, phone, telegram_id FROM users WHERE id=? LIMIT 1",
+                    (uid,),
+                )
+                user_row = _row_to_dict(cur.fetchone()) or {}
+                for field in ("first_name", "last_name", "login_id", "phone"):
+                    if not resp.get(field) and user_row.get(field):
+                        resp[field] = user_row[field]
+                if not resp.get("u_telegram_id") and user_row.get("telegram_id"):
+                    resp["u_telegram_id"] = user_row["telegram_id"]
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        tg_id = str(resp.get("telegram_id") or tg_json.get("id") or resp.get("u_telegram_id") or "").strip()
+        tg_username = str(resp.get("tg_username") or tg_json.get("username") or "").strip()
+
+        # Telegram-only survey participants are stored in lesson_users rather
+        # than users. Hydrate their saved name/username so admin results show
+        # the respondent, not just “Android” and “Telegram” badges.
+        if tg_id:
+            try:
+                cur.execute(
+                    "SELECT first_name, full_name, username FROM lesson_users WHERE CAST(telegram_id AS TEXT)=? LIMIT 1",
+                    (tg_id,),
+                )
+                lesson_user = _row_to_dict(cur.fetchone()) or {}
+                if lesson_user:
+                    resp["tg_first_name"] = resp.get("tg_first_name") or lesson_user.get("first_name") or ""
+                    resp["tg_full_name"] = resp.get("tg_full_name") or lesson_user.get("full_name") or ""
+                    tg_username = tg_username or str(lesson_user.get("username") or "").strip()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+        tg_first = str(tg_json.get("first_name") or resp.get("tg_first_name") or "").strip()
+        tg_last = str(tg_json.get("last_name") or "").strip()
+        tg_full = str(resp.get("tg_full_name") or f"{tg_first} {tg_last}").strip()
         if not tg_full and tg_id:
             try:
                 cur.execute("SELECT first_name, last_name, login_id, phone FROM users WHERE CAST(telegram_id AS TEXT)=? LIMIT 1", (str(tg_id),))
@@ -56060,8 +56103,8 @@ async def admin_survey_results(survey_id: int, authorization: str | None = Heade
         if not tg_full:
             tg_full = tg_first
 
-        site_first = (resp.get("first_name") or "").strip()
-        site_last = (resp.get("last_name") or "").strip()
+        site_first = str(resp.get("first_name") or "").strip()
+        site_last = str(resp.get("last_name") or "").strip()
         site_name = f"{site_first} {site_last}".strip()
 
         login_id = str(resp.get("login_id") or "").strip()
@@ -56109,7 +56152,7 @@ async def admin_survey_results(survey_id: int, authorization: str | None = Heade
             else:
                 resp["user_display"] = "Anonim foydalanuvchi"
             if not respondent_name:
-                respondent_name = "Anonim foydalanuvchi"
+                respondent_name = f"Telegram foydalanuvchisi ({tg_id})" if tg_id else "Anonim foydalanuvchi"
 
         if tg_id:
             resp["telegram_id"] = tg_id

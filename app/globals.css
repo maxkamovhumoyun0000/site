@@ -12385,6 +12385,62 @@ body:has(.overlay-modal-backdrop) {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Survey flows and their admin result dialogs stay light, even when the host
+   admin shell is using dark theme. Keep this override scoped to survey UI. */
+[data-survey-white="true"] {
+  color-scheme: light;
+  color: #0f172a;
+}
+
+[data-survey-white="true"] .survey-modal-card,
+.survey-admin-page .panel-card {
+  background: #fff !important;
+  border-color: #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+[data-survey-white="true"] .survey-modal-card .bg-surface,
+[data-survey-white="true"] .survey-modal-card .bg-surface\/50,
+[data-survey-white="true"] .survey-modal-card .bg-surface\/5,
+[data-survey-white="true"] .survey-modal-card .bg-white\/5,
+.survey-admin-page .panel-card .bg-surface {
+  background-color: #fff !important;
+}
+
+[data-survey-white="true"] .survey-modal-card .bg-body,
+[data-survey-white="true"] .survey-modal-card .bg-body\/30,
+[data-survey-white="true"] .survey-modal-card .bg-body\/50,
+[data-survey-white="true"] .survey-modal-card .bg-slate-50\/70 {
+  background-color: #f8fafc !important;
+}
+
+[data-survey-white="true"] .survey-modal-card .text-ink,
+[data-survey-white="true"] .survey-modal-card .text-ink-900,
+[data-survey-white="true"] .survey-modal-card .text-ink-700,
+[data-survey-white="true"] .survey-modal-card .text-ink-600,
+.survey-admin-page .panel-card h3,
+.survey-admin-page .panel-card td,
+.survey-admin-page .panel-card th {
+  color: #0f172a !important;
+}
+
+[data-survey-white="true"] .survey-modal-card .text-ink-500,
+.survey-admin-page .panel-card .text-ink-500 {
+  color: #64748b !important;
+}
+
+[data-survey-white="true"] .survey-modal-card .border-line,
+.survey-admin-page .panel-card .border-line {
+  border-color: #e2e8f0 !important;
+}
+
+[data-survey-white="true"] .survey-modal-card input,
+[data-survey-white="true"] .survey-modal-card textarea,
+[data-survey-white="true"] .survey-modal-card select {
+  background-color: #fff !important;
+  color: #0f172a !important;
+}
+
 @media (max-width: 640px) {
   .survey-modal-backdrop {
     align-items: stretch !important;

@@ -209,7 +209,7 @@ export function AdminSurveysPanel({
   }
 
   return (
-    <div className="page-stack">
+    <div className="page-stack survey-admin-page" data-survey-white="true">
       {/* Header section with Create Button */}
       <section className="panel-card flex items-center justify-between gap-4">
         <div>
@@ -229,6 +229,7 @@ export function AdminSurveysPanel({
       <ModalPortal open={showCreateModal}>
         <div
           className="survey-modal-backdrop fixed inset-0 z-[2147483000] bg-black/70 backdrop-blur-sm animate-fadeIn flex items-center justify-center p-3 sm:p-6"
+          data-survey-white="true"
           role="dialog"
           aria-modal="true"
           onClick={(e) => { if (e.target === e.currentTarget) setShowCreateModal(false); }}
@@ -393,6 +394,7 @@ export function AdminSurveysPanel({
         {selectedSurvey && surveyResults && (
           <div
             className="survey-modal-backdrop fixed inset-0 z-[2147483000] bg-black/60 backdrop-blur-sm animate-fadeIn flex items-center justify-center p-3 sm:p-6"
+            data-survey-white="true"
             role="dialog"
             aria-modal="true"
             onClick={(e) => { if (e.target === e.currentTarget) { setSelectedSurvey(null); setSurveyResults(null); setSelectedResponse(null); } }}
@@ -449,13 +451,13 @@ export function AdminSurveysPanel({
                                 {initial}
                               </span>
                               <div className="truncate">
-                                <h4 className="m-0 text-sm font-bold truncate group-hover:text-indigo-600 transition-colors">
+                                <h4 className="m-0 truncate text-sm font-bold text-slate-900 transition-colors group-hover:text-indigo-600">
                                   {respondentName}
                                 </h4>
-                                <p className="text-xs text-ink-500 m-0 truncate mt-0.5 flex items-center gap-1.5">
+                                <p className="m-0 mt-0.5 flex items-center gap-1.5 truncate text-xs text-slate-500">
                                   <span>📅 {formatSubmittedAt(resp.submitted_at, true)}</span>
                                 </p>
-                                {respondentMeta ? <p className="text-[11px] text-ink-500 m-0 truncate mt-0.5">{respondentMeta}</p> : null}
+                            {respondentMeta ? <p className="m-0 mt-0.5 truncate text-[11px] text-slate-500">{respondentMeta}</p> : null}
                               </div>
                             </div>
                             <button className="btn btn-primary small shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -574,6 +576,7 @@ export function AdminSurveysPanel({
       {deleteConfirm && (
         <div
           className="fixed inset-0 z-[200] bg-black/70 backdrop-blur-sm animate-fadeIn"
+          data-survey-white="true"
           data-csp-style={JSON.stringify({ display: "flex", alignItems: "center", justifyContent: "center", padding: "16px" })}
         >
           <div className="bg-surface border border-line rounded-2xl shadow-2xl w-full max-w-sm p-6 flex flex-col gap-5">

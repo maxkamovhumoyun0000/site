@@ -85,18 +85,17 @@ export function StudentSurveyScreen({
   }
 
   if (loading && !survey) {
-    return <div className="p-8 text-center text-white font-medium">Yuklanmoqda...</div>;
+    return <main className="min-h-screen bg-white p-8 text-center font-medium text-slate-700">Yuklanmoqda...</main>;
   }
 
   if (error) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
-        <div className="w-full max-w-[500px] mx-auto bg-white/5 backdrop-blur-xl border border-red-500/30 rounded-3xl p-8 text-center shadow-2xl">
+      <main className="min-h-screen flex items-center justify-center bg-white p-4">
+        <div className="w-full max-w-[500px] mx-auto rounded-3xl border border-red-200 bg-white p-8 text-center shadow-xl shadow-slate-200/60">
           <div className="text-4xl mb-4">⚠️</div>
-          <h2 className="text-xl font-bold text-red-400 mb-6">{error}</h2>
+          <h2 className="text-xl font-bold text-red-700 mb-6">{error}</h2>
           <button 
-            className="w-full py-3 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98]" 
-            data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)" })}
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-6 py-3 font-bold text-slate-800 transition-all hover:bg-slate-100 active:scale-[0.98]"
             onClick={onFinish}
           >
             Asosiy sahifaga qaytish
@@ -108,14 +107,13 @@ export function StudentSurveyScreen({
 
   if (submitted) {
     return (
-      <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
-        <div className="w-full max-w-[500px] mx-auto bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-8 text-center shadow-2xl">
+      <main className="min-h-screen flex items-center justify-center bg-white p-4">
+        <div className="w-full max-w-[500px] mx-auto rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-xl shadow-slate-200/60">
           <div className="text-6xl mb-6">🎉</div>
-          <h2 className="text-3xl font-black text-white mb-3">Rahmat!</h2>
-          <p className="text-slate-400 mb-8">Sizning javoblaringiz muvaffaqiyatli qabul qilindi.</p>
+          <h2 className="text-3xl font-black text-slate-900 mb-3">Rahmat!</h2>
+          <p className="text-slate-600 mb-8">Sizning javoblaringiz muvaffaqiyatli qabul qilindi.</p>
           <button 
-            className="w-full py-3 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98]" 
-            data-csp-style={JSON.stringify({ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" })}
+            className="w-full rounded-xl bg-indigo-600 px-6 py-3 font-bold text-white shadow-lg shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-[0.98]"
             onClick={onFinish}
           >
             Asosiy sahifaga o'tish →
@@ -153,35 +151,35 @@ export function StudentSurveyScreen({
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-4" data-csp-style={JSON.stringify({ background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)" })}>
+    <main className="min-h-screen flex items-center justify-center bg-white p-4">
       <div className="w-full max-w-[680px] mx-auto">
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-3xl p-6 md:p-10 shadow-2xl">
+        <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/60 md:p-10">
           <div className="text-center mb-8">
-            <span className="inline-block px-4 py-1.5 rounded-full text-xs font-bold tracking-wider uppercase mb-4" data-csp-style={JSON.stringify({ background: "rgba(99,102,241,0.2)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.4)" })}>
+            <span className="mb-4 inline-block rounded-full border border-indigo-100 bg-indigo-50 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-indigo-700">
               📝 So'rovnoma
             </span>
-            <h1 className="text-3xl font-black text-white mb-3">{survey.title}</h1>
-            {survey.description && <p className="text-slate-400">{survey.description}</p>}
+            <h1 className="mb-3 text-3xl font-black text-slate-900">{survey.title}</h1>
+            {survey.description && <p className="text-slate-600">{survey.description}</p>}
           </div>
 
           <div className="flex flex-col gap-5 mb-8">
             {questions.map((q: any, i: number) => (
-              <div key={q.id} className="p-5 rounded-2xl" data-csp-style={JSON.stringify({ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)" })}>
-                <h3 className="text-base font-bold text-white mb-4">{i + 1}. {q.text}</h3>
+              <div key={q.id} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+                <h3 className="mb-4 text-base font-bold text-slate-900">{i + 1}. {q.text}</h3>
                 
                 {q.type === "single_choice" ? (
                   <div className="flex flex-col gap-3">
                     {q.options.map((opt: string, oIdx: number) => (
-                      <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" data-csp-style={JSON.stringify({ background: answers[q.id] === opt ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${answers[q.id] === opt ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` })}>
+                      <label key={oIdx} className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${answers[q.id] === opt ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
                         <input 
                           type="radio" 
                           name={`q_${q.id}`} 
                           value={opt}
                           checked={answers[q.id] === opt}
                           onChange={() => setAnswers(prev => ({ ...prev, [q.id]: opt }))}
-                          className="w-5 h-5 text-indigo-500 bg-transparent border-white/20 focus:ring-indigo-500"
+                          className="h-5 w-5 border-slate-300 bg-white text-indigo-600 focus:ring-indigo-500"
                         />
-                        <span className="text-sm font-medium" data-csp-style={JSON.stringify({ color: answers[q.id] === opt ? "#fff" : "#cbd5e1" })}>{opt}</span>
+                        <span className="text-sm font-medium text-slate-700">{opt}</span>
                       </label>
                     ))}
                   </div>
@@ -190,16 +188,16 @@ export function StudentSurveyScreen({
                     {q.options.map((opt: string, oIdx: number) => {
                       const isChecked = Array.isArray(answers[q.id]) && answers[q.id].includes(opt);
                       return (
-                        <label key={oIdx} className="flex items-center gap-4 p-4 border rounded-xl cursor-pointer transition-all hover:bg-white/5" data-csp-style={JSON.stringify({ background: isChecked ? "rgba(99,102,241,0.2)" : "transparent", border: `1px solid ${isChecked ? "rgba(99,102,241,0.5)" : "rgba(255,255,255,0.1)"}` })}>
+                        <label key={oIdx} className={`flex cursor-pointer items-center gap-4 rounded-xl border p-4 transition-all ${isChecked ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-white hover:bg-slate-50"}`}>
                           <input 
                             type="checkbox" 
                             name={`q_${q.id}`} 
                             value={opt}
                             checked={isChecked}
                             onChange={() => toggleCheckbox(q.id, opt)}
-                            className="w-5 h-5 text-indigo-500 bg-transparent border-white/20 rounded focus:ring-indigo-500"
+                            className="h-5 w-5 rounded border-slate-300 bg-white text-indigo-600 focus:ring-indigo-500"
                           />
-                          <span className="text-sm font-medium" data-csp-style={JSON.stringify({ color: isChecked ? "#fff" : "#cbd5e1" })}>{opt}</span>
+                          <span className="text-sm font-medium text-slate-700">{opt}</span>
                         </label>
                       );
                     })}
@@ -213,8 +211,7 @@ export function StudentSurveyScreen({
                           key={star}
                           type="button"
                           onClick={() => setAnswers(prev => ({ ...prev, [q.id]: star }))}
-                          className="text-3xl transition-transform hover:scale-125 active:scale-95"
-                          data-csp-style={JSON.stringify({ color: selected ? "#f59e0b" : "#475569" })}
+                          className={`text-3xl transition-transform hover:scale-125 active:scale-95 ${selected ? "text-amber-500" : "text-slate-300"}`}
                         >
                           ★
                         </button>
@@ -223,7 +220,7 @@ export function StudentSurveyScreen({
                   </div>
                 ) : (
                   <textarea 
-                    className="w-full p-4 bg-white/5 border border-white/10 rounded-xl text-white placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-shadow min-h-[120px] resize-y"
+                    className="min-h-[120px] w-full resize-y rounded-xl border border-slate-300 bg-white p-4 text-slate-900 outline-none transition-shadow placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                     placeholder="Javobingizni shu yerga yozing..."
                     value={answers[q.id] || ""}
                     onChange={(e) => setAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
@@ -234,8 +231,7 @@ export function StudentSurveyScreen({
           </div>
 
           <button 
-            className="w-full py-4 px-6 rounded-xl font-bold text-white transition-all transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none disabled:transform-none" 
-            data-csp-style={JSON.stringify({ background: "linear-gradient(to right, #4f46e5, #6366f1)", boxShadow: "0 4px 14px 0 rgba(99, 102, 241, 0.39)" })}
+            className="w-full rounded-xl bg-indigo-600 px-6 py-4 font-bold text-white shadow-lg shadow-indigo-600/20 transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50 disabled:transform-none"
             disabled={!allAnswered || loading}
             onClick={submitSurvey}
           >
