@@ -57,6 +57,10 @@ from token_encryption import TokenCipher, TokenEncryptionConfigurationError
 _firebase_apps: dict[str, Any] = {}
 _firebase_lock = threading.Lock()
 _init_attempted = False
+# firebase-admin's HTTP session uses a small urllib3 connection pool. Several
+# background notification jobs can run at once in each Uvicorn worker, so bound
+# the process-wide number of synchronous sends below that pool's default size.
+_FCM_SEND_SEMAPHORE = threading.BoundedSemaphore(8)
 
 _SLOTS = ("STUDENT_ANDROID", "STUDENT_IOS", "TEACHER_ANDROID", "TEACHER_IOS", "SPEAKING_ANDROID", "SPEAKING_IOS")
 
@@ -255,6 +259,23 @@ def _send_to_token_rows(rows: list[dict[str, str]], title: str, body: str, data:
         _send_to_tokens(tokens, title, body, data, slot=slot)
 
 
+def _is_dead_fcm_token_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", "") or "").strip().lower()
+    message_text = str(exc).strip().lower()
+    error_text = f"{code} {message_text}"
+    if (
+        "unregistered" in error_text
+        or "notregistered" in error_text
+        or "registration-token-not-registered" in error_text
+    ):
+        return True
+    return (
+        "invalid-argument" in error_text
+        and "registration token" in error_text
+        and ("not valid" in error_text or "invalid" in error_text)
+    )
+
+
 def _send_to_tokens(tokens: list[str], title: str, body: str, data: dict[str, Any], *, slot: str) -> None:
     try:
         from firebase_admin import messaging
@@ -266,6 +287,7 @@ def _send_to_tokens(tokens: list[str], title: str, body: str, data: dict[str, An
     # FCM's payload `data` values must all be strings.
     str_data = {str(k): str(v) for k, v in (data or {}).items() if v is not None}
     dead_tokens: list[str] = []
+    failed_codes: dict[str, int] = {}
     try:
         for token in tokens:
             message = messaging.Message(
@@ -276,21 +298,35 @@ def _send_to_tokens(tokens: list[str], title: str, body: str, data: dict[str, An
                 apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
             )
             try:
-                messaging.send(message, app=app_instance)
+                with _FCM_SEND_SEMAPHORE:
+                    messaging.send(message, app=app_instance)
             except Exception as exc:
-                code = str(getattr(exc, "code", "") or "").lower()
-                # FCM error codes seen in practice: "UNREGISTERED",
-                # "invalid-argument"; the legacy HTTP API returns
-                # "NotRegistered" (no separator) — normalized to lowercase
-                # above, so match both spellings.
-                if "unregistered" in code or "notregistered" in code or "invalid-argument" in code:
+                code = str(getattr(exc, "code", "") or "").strip().lower()
+                # Firebase's legacy adapter sometimes exposes NotRegistered in
+                # the message but not in `exc.code`. Do not treat every
+                # INVALID_ARGUMENT as a dead token: that can also mean a bad
+                # payload and would otherwise prune valid devices.
+                if _is_dead_fcm_token_error(exc):
                     dead_tokens.append(token)
                 else:
-                    logger.warning("push_notifications: send failed for a token (slot=%s): %s", slot, exc)
+                    safe_code = code.split("/")[-1] if code else type(exc).__name__
+                    failed_codes[safe_code[:80]] = failed_codes.get(safe_code[:80], 0) + 1
     except Exception:
         logger.exception("push_notifications: unexpected error while sending (slot=%s)", slot)
     if dead_tokens:
         _prune_tokens(dead_tokens)
+        logger.info(
+            "push_notifications: pruned stale device tokens slot=%s count=%s",
+            slot,
+            len(dead_tokens),
+        )
+    if failed_codes:
+        logger.warning(
+            "push_notifications: batch send failures slot=%s count=%s codes=%s",
+            slot,
+            sum(failed_codes.values()),
+            failed_codes,
+        )
 
 
 def register_device_token(user_id: int, token: str, *, platform: str = "", app: str = "teacher") -> None:

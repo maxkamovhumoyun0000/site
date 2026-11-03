@@ -11140,9 +11140,8 @@ def _ensure_user_web_columns() -> None:
 
 def _ensure_user_web_columns_once() -> None:
     global _USER_WEB_COLUMNS_READY
-    # This migration is run during web-table startup. Rechecking dozens of
-    # ALTER TABLE statements and taking an ACCESS EXCLUSIVE NOWAIT lock from
-    # every admin list/search request added avoidable latency under load.
+    # This idempotent migration is shared across Uvicorn workers and guarded
+    # below by a session-level advisory lock for PostgreSQL.
     conn = get_conn()
     cur = conn.cursor()
     def _apply_timeouts() -> None:
@@ -11206,19 +11205,27 @@ def _ensure_user_web_columns_once() -> None:
     )
     existing_columns: set[str] = set()
     is_postgres = bool(str(DATABASE_URL or "").strip().lower().startswith(("postgresql://", "postgres://")))
+    advisory_lock_acquired = False
     if is_postgres:
-        # Startup safety: if `users` is lock-busy, skip this migration pass and
-        # allow API boot. We can retry on next startup/background paths.
+        # Serialize this idempotent migration across Uvicorn workers without
+        # taking an ACCESS EXCLUSIVE table lock (which caused benign startup
+        # warnings and could briefly contend with admin reads/writes).
         try:
             _apply_timeouts()
-            cur.execute("LOCK TABLE users IN ACCESS EXCLUSIVE MODE NOWAIT")
-            conn.rollback()
+            cur.execute("SELECT pg_try_advisory_lock(1768771172, 1196577877) AS acquired")
+            lock_row = cur.fetchone() or {}
+            advisory_lock_acquired = bool(lock_row.get("acquired"))
+            conn.commit()
+            if not advisory_lock_acquired:
+                logger.info("_ensure_user_web_columns deferred; another worker is applying the schema")
+                conn.close()
+                return
         except Exception as e:
             try:
                 conn.rollback()
             except Exception:
                 pass
-            logger.warning("_ensure_user_web_columns skipped this startup (users lock busy): %s", str(e))
+            logger.info("_ensure_user_web_columns deferred; advisory lock unavailable (%s)", type(e).__name__)
             conn.close()
             return
         try:
@@ -11286,11 +11293,21 @@ def _ensure_user_web_columns_once() -> None:
         else:
             logger.info("_ensure_user_web_columns session_version backfill=skipped")
     except Exception as e:
-        logger.warning("_ensure_user_web_columns session_version backfill failed: %s", str(e))
+        logger.warning("_ensure_user_web_columns session_version backfill failed (%s)", type(e).__name__)
         try:
             conn.rollback()
         except Exception:
             pass
+    if is_postgres and advisory_lock_acquired:
+        try:
+            # Session-level advisory locks survive the per-column commits.
+            cur.execute("SELECT pg_advisory_unlock(1768771172, 1196577877)")
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
     conn.close()
     _USER_WEB_COLUMNS_READY = True
 
@@ -30773,8 +30790,12 @@ async def student_gamified_tests_start(
         )
         vocab = material.get("vocab") or None
         ai_readings = material.get("readings") or None
+    except asyncio.TimeoutError:
+        # AI generation is best-effort; the curated fallback is expected here.
+        # Avoid emitting a full traceback for routine upstream latency.
+        logger.info("gamified start: AI material generation timed out; using curated bank")
     except Exception:
-        logger.exception("gamified start: AI material generation failed, using static bank")
+        logger.exception("gamified start: unexpected AI material failure, using curated bank")
     questions = gamified_tests.build_questions(
         subject, level=level, count=gamified_tests.QUESTION_COUNT, vocab=vocab, ai_readings=ai_readings
     )

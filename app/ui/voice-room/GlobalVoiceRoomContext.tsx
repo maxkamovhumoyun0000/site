@@ -354,11 +354,18 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
     if (wsRef.current || wsConnectingRef.current) return;
     wsConnectingRef.current = true;
     const token = await migrateBrowserSessionToCookie(getToken());
-    const query = token && !isCookieSessionMarker(token) ? `?token=${encodeURIComponent(token)}` : "";
-    const urlWithToken = `${wsUrl}${query}`;
+    // Browser WebSockets automatically send same-origin HttpOnly cookies.
+    // Never put a bearer token in the URL, where proxies and access logs may
+    // retain it. If cookie migration failed, fail closed instead of joining as
+    // an anonymous/guest user with an account session.
+    if (token && !isCookieSessionMarker(token)) {
+      wsConnectingRef.current = false;
+      setErrorMsg(t("voiceroom.session_refresh_required") || "Sessiya xavfsiz yangilanmadi. Sahifani yangilang va qayta kiring.");
+      return;
+    }
     let ws: WebSocket;
     try {
-      ws = new WebSocket(urlWithToken);
+      ws = new WebSocket(wsUrl);
     } catch (error) {
       wsConnectingRef.current = false;
       throw error;

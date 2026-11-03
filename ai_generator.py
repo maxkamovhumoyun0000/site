@@ -3042,6 +3042,7 @@ async def _generate_reading_questions_with_passage(
     level: str,
     count: int = 2,
     session_nonce: str | None = None,
+    session: aiohttp.ClientSession | None = None,
 ) -> list[dict[str, Any]]:
     """Generate `count` reading MCQs, each with a short passage (5–7 sentences).
 
@@ -3111,8 +3112,11 @@ Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
 
     prompt = _wrap_json_only_prompt(rules)
 
-    async with aiohttp.ClientSession() as sess:
-        raw_text = await _gemini_generate(prompt, session=sess)
+    if session is None:
+        async with aiohttp.ClientSession() as sess:
+            raw_text = await _gemini_generate(prompt, session=sess)
+    else:
+        raw_text = await _gemini_generate(prompt, session=session)
 
     try:
         parsed = _extract_json_array(raw_text)
@@ -3192,7 +3196,14 @@ Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
     return results
 
 
-async def _generate_gamified_vocab(*, subject: str, level: str, count: int = 16, session_nonce: str | None = None) -> list[dict[str, str]]:
+async def _generate_gamified_vocab(
+    *,
+    subject: str,
+    level: str,
+    count: int = 16,
+    session_nonce: str | None = None,
+    session: aiohttp.ClientSession | None = None,
+) -> list[dict[str, str]]:
     """Fresh AI vocab batch for a gamified test — each item is
     {word, tr (Uzbek translation), ex (short example sentence containing the
     word verbatim)}, matching the shape the gamified builders expect. The
@@ -3228,8 +3239,11 @@ Field rules:
 Return ONLY a valid JSON array. No markdown, no explanation.""".strip()
     prompt = _wrap_json_only_prompt(rules)
 
-    async with aiohttp.ClientSession() as sess:
-        raw_text = await _gemini_generate(prompt, session=sess)
+    if session is None:
+        async with aiohttp.ClientSession() as sess:
+            raw_text = await _gemini_generate(prompt, session=sess)
+    else:
+        raw_text = await _gemini_generate(prompt, session=session)
     try:
         parsed = _extract_json_array(raw_text)
     except Exception as exc:
@@ -3270,50 +3284,69 @@ async def generate_gamified_material(*, subject: str, level: str, vocab_count: i
     where readings are {passage, question, options, answer_index}. Fully
     best-effort — any failure yields an empty list for that part so the
     caller (gamified_tests.build_questions) falls back to the static bank."""
-    async def generate_vocab() -> list[dict[str, str]]:
-        try:
-            return await _generate_gamified_vocab(
-                subject=subject, level=level, count=vocab_count, session_nonce=session_nonce
-            )
-        except Exception:
-            logger.exception("generate_gamified_material: vocab generation failed")
-            return []
-
-    async def generate_readings() -> list[dict[str, Any]]:
-        try:
-            raw_readings = await _generate_reading_questions_with_passage(
-                subject=subject,
-                level=level,
-                count=reading_count,
-                session_nonce=session_nonce,
-            )
-        except Exception:
-            logger.exception("generate_gamified_material: reading generation failed")
-            return []
-        readings: list[dict[str, Any]] = []
-        for r in raw_readings:
+    # Reuse one bounded HTTP pool for both parallel requests instead of
+    # constructing two independent aiohttp sessions for every test start.
+    connector = aiohttp.TCPConnector(limit=4, limit_per_host=2, keepalive_timeout=20)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        async def generate_vocab() -> list[dict[str, str]]:
             try:
-                payload = json.loads(r.get("payload_json") or "{}")
-            except Exception:
-                payload = {}
-            opts = payload.get("options") or []
-            text_fields = [payload.get("passage"), payload.get("question"), *opts]
-            if not all(_gamified_text_matches_subject(subject, value) for value in text_fields):
-                continue
-            try:
-                coi = int(payload.get("correct_option_index") or 0) - 1  # 1-indexed -> 0-indexed
-            except (TypeError, ValueError):
-                continue
-            if len(opts) >= 4 and 0 <= coi < len(opts):
-                readings.append({
-                    "passage": payload.get("passage", ""),
-                    "question": payload.get("question", ""),
-                    "options": opts[:4],
-                    "answer_index": coi,
-                })
-        return readings
+                return await _generate_gamified_vocab(
+                    subject=subject,
+                    level=level,
+                    count=vocab_count,
+                    session_nonce=session_nonce,
+                    session=session,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "generate_gamified_material: vocab generation failed (%s); using curated bank",
+                    type(exc).__name__,
+                )
+                return []
 
-    vocab, readings = await asyncio.gather(generate_vocab(), generate_readings())
+        async def generate_readings() -> list[dict[str, Any]]:
+            try:
+                raw_readings = await _generate_reading_questions_with_passage(
+                    subject=subject,
+                    level=level,
+                    count=reading_count,
+                    session_nonce=session_nonce,
+                    session=session,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "generate_gamified_material: reading generation failed (%s); using curated bank",
+                    type(exc).__name__,
+                )
+                return []
+            readings: list[dict[str, Any]] = []
+            for r in raw_readings:
+                try:
+                    payload = json.loads(r.get("payload_json") or "{}")
+                except Exception:
+                    payload = {}
+                opts = payload.get("options") or []
+                text_fields = [payload.get("passage"), payload.get("question"), *opts]
+                if not all(_gamified_text_matches_subject(subject, value) for value in text_fields):
+                    continue
+                try:
+                    coi = int(payload.get("correct_option_index") or 0) - 1  # 1-indexed -> 0-indexed
+                except (TypeError, ValueError):
+                    continue
+                if len(opts) >= 4 and 0 <= coi < len(opts):
+                    readings.append({
+                        "passage": payload.get("passage", ""),
+                        "question": payload.get("question", ""),
+                        "options": opts[:4],
+                        "answer_index": coi,
+                    })
+            return readings
+
+        vocab, readings = await asyncio.gather(generate_vocab(), generate_readings())
     return {"vocab": vocab, "readings": readings}
 
 

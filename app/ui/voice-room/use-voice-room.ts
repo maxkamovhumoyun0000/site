@@ -213,11 +213,17 @@ export function useVoiceRoom({ role, wsUrl }: UseVoiceRoomProps) {
     if (wsRef.current || wsConnectingRef.current) return;
     wsConnectingRef.current = true;
     const token = await migrateBrowserSessionToCookie(getToken());
-    const query = token && !isCookieSessionMarker(token) ? `?token=${encodeURIComponent(token)}` : "";
-    const urlWithToken = `${wsUrl}${query}`;
+    // Same-origin WebSockets carry the HttpOnly session cookie automatically.
+    // Never expose bearer credentials in URLs; fail closed if migration did
+    // not establish the cookie rather than silently joining as a guest.
+    if (token && !isCookieSessionMarker(token)) {
+      wsConnectingRef.current = false;
+      setErrorMsg("Session could not be secured. Refresh the page and sign in again.");
+      return;
+    }
     let ws: WebSocket;
     try {
-      ws = new WebSocket(urlWithToken);
+      ws = new WebSocket(wsUrl);
     } catch (error) {
       wsConnectingRef.current = false;
       throw error;
