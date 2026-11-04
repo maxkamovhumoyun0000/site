@@ -1,5 +1,6 @@
 """Exercise the production sanitizer without importing the application server."""
 import ast
+import asyncio
 import hashlib
 import random
 import unittest
@@ -8,16 +9,36 @@ from typing import Any
 
 SOURCE = Path(__file__).resolve().parents[1] / "backend/speaking_plans.py"
 tree = ast.parse(SOURCE.read_text())
-names = {"_text", "clean_question", "clean_questions"}
+names = {"_text", "clean_question", "clean_questions", "_preparation_summary", "generate_test"}
 scope = {"Any": Any, "hashlib": hashlib, "random": random,
          "PLAN_KINDS": {"multiple_choice", "true_false", "gap_fill", "word_order", "matching",
                         "write_sentence", "paraphrase", "guided_writing", "speak_sentence", "read_aloud"}}
-exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef)
+scope.update(QUESTIONS_PER_TEST=10)
+exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                              and n.name in names], type_ignores=[]), str(SOURCE), "exec"), scope)
 clean = scope["clean_question"]
 
 
 class PlanPayloadTests(unittest.TestCase):
+    def test_progress_counts_persisted_ready_days_only(self):
+        summarize = scope['_preparation_summary']
+        days = [{'prepared_json': '[{}]'}, {'prepared_json': '[]'}, {'prepared_json': None}]
+        self.assertEqual(summarize({'preparation_status': 'preparing'}, days)['percent'], 33)
+        self.assertEqual(summarize({'preparation_status': 'failed'}, days)['ready_days'], 1)
+        self.assertEqual(summarize({'preparation_status': 'ready'}, days)['percent'], 33)
+
+    def test_short_generated_test_is_rejected(self):
+        class HttpError(Exception):
+            def __init__(self, **kwargs):
+                super().__init__(kwargs['detail'])
+        async def short_output(*args, **kwargs):
+            return {'questions': [{'kind': 'gap_fill', 'question': f'I ___ item {i}.',
+                                    'correct_answer': 'like'} for i in range(5)]}
+        scope.update(HTTPException=HttpError, _ai_json=short_output,
+                     generation_prompt=lambda *a: ('system', 'user'))
+        with self.assertRaises(HttpError):
+            asyncio.run(scope['generate_test']('english', 'grammar_accuracy', '6.0'))
+
     def test_required_word_is_never_invisible(self):
         self.assertIsNone(clean({"kind": "write_sentence", "question": "Use the given word.",
                                  "reference_answer": "I enjoy travelling."}, "english"))
