@@ -61,4 +61,5 @@ jobs:
       - name: Speaking Plan question contracts
         run: |
           python3 tests/test_speaking_plan_payloads.py
+          python3 tests/test_speaking_plan_practice.py
           python3 tests/test_speaking_exam_steps.py
