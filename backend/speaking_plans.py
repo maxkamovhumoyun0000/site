@@ -597,6 +597,11 @@ def clean_question(raw: Any, subject: str) -> dict[str, Any] | None:
     item: dict[str, Any] = {"kind": kind, "question": question, "explanation": explanation}
     if instruction:
         item["instruction"] = instruction
+    passage = _text(raw.get("passage") or raw.get("context") or raw.get("source_sentence"), 2000)
+    if passage:
+        item["passage"] = passage
+    if isinstance(raw.get("word_count"), int):
+        item["word_count"] = max(0, min(raw["word_count"], 500))
     if kind == "multiple_choice":
         options = [_text(o, 200) for o in (raw.get("options") or []) if _text(o, 200)]
         correct = _text(raw.get("correct_answer") or raw.get("answer"), 200)
@@ -645,7 +650,8 @@ def clean_question(raw: Any, subject: str) -> dict[str, Any] | None:
             rng.shuffle(tokens)
             if tokens != words:
                 break
-        item.update(correct_answer=sentence, tokens=tokens, question=question or "Put the words in the correct order.")
+        item.update(correct_answer=sentence, tokens=tokens, question=question or (
+            "Расставьте слова в правильном порядке." if subject == "russian" else "Put the words in the correct order."))
     elif kind == "matching":
         pairs = []
         for pair in raw.get("pairs") or []:
@@ -655,17 +661,19 @@ def clean_question(raw: Any, subject: str) -> dict[str, Any] | None:
         rights = {p["right"].casefold() for p in pairs}
         if len(pairs) < 3 or len(pairs) > 6 or len(lefts) != len(pairs) or len(rights) != len(pairs):
             return None
-        item.update(pairs=pairs, question=question or "Match the pairs.")
+        item.update(pairs=pairs, question=question or ("Сопоставьте пары." if subject == "russian" else "Match the pairs."))
     else:
         reference = _text(raw.get("reference_answer") or raw.get("sample_answer") or raw.get("target_sentence") or raw.get("correct_answer"), 600)
         if not question or not reference:
             return None
         item.update(reference_answer=reference, sample_answer=reference, check="ai")
         if kind == "read_aloud":
-            item.update(target_sentence=reference, sentence=reference)
-            if reference not in question:
-                item["question"] = f"{question} \u201c{reference}\u201d"
-        word = _text(raw.get("word"), 60)
+            item.update(target_sentence=reference, sentence=reference, passage=reference, input="audio")
+        elif kind == "speak_sentence":
+            item["input"] = "audio"
+        word = _text(raw.get("target_word") or raw.get("word"), 60)
+        if kind == "write_sentence" and not word:
+            return None
         if word:
             item["word"] = word
     item["language"] = "en" if subject == "english" else "ru"
