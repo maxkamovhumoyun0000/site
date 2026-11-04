@@ -920,11 +920,12 @@ def _preparation_summary(plan: dict[str, Any], days: list[dict[str, Any]]) -> di
     total = len(days)
     status = plan.get("preparation_status", "legacy")
     lease = plan.get("preparation_lease_until")
-    if status == "preparing" and isinstance(lease, datetime) and lease < datetime.now(timezone.utc):
-        status = "failed"  # interrupted worker; retry resumes committed days
+    interrupted = status == "preparing" and isinstance(lease, datetime) and lease < datetime.now(timezone.utc)
+    if interrupted:
+        status = "pending"  # app re-enqueues without losing committed days
     return {"status": status, "ready_days": ready,
             "total_days": total, "percent": ready * 100 // max(1, total),
-            "error": plan.get("preparation_error")}
+            "resume_needed": interrupted, "error": plan.get("preparation_error")}
 
 
 def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[dict[str, Any]]) -> dict[str, Any]:

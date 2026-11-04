@@ -5,7 +5,7 @@ import hashlib
 import json
 import random
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,10 @@ class PlanPayloadTests(unittest.TestCase):
         self.assertEqual(summarize({'preparation_status': 'preparing'}, days)['percent'], 33)
         self.assertEqual(summarize({'preparation_status': 'failed'}, days)['ready_days'], 1)
         self.assertEqual(summarize({'preparation_status': 'ready'}, days)['percent'], 33)
+        resumed = summarize({'preparation_status': 'preparing', 'preparation_lease_until':
+                             datetime.now(timezone.utc) - timedelta(seconds=1)}, days)
+        self.assertEqual(resumed['status'], 'pending')
+        self.assertTrue(resumed['resume_needed'])
 
     def test_short_generated_test_is_rejected(self):
         class HttpError(Exception):
