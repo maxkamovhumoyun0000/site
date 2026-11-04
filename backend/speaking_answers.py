@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 
 from db import get_conn
 
@@ -96,8 +97,75 @@ def ensure_tables() -> None:
             "CREATE INDEX IF NOT EXISTS idx_speaking_answer_user_question "
             "ON speaking_answer_analyses(user_id, question_ref, created_at DESC)"
         )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_saved_questions (
+                user_id BIGINT NOT NULL,
+                question_id BIGINT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, question_id)
+            )"""
+        )
         conn.commit()
         _SCHEMA_READY = True
+    finally:
+        cur.close()
+        conn.close()
+
+
+class SavedQuestionUpdate(BaseModel):
+    saved: bool
+
+
+@router.get("/speaking/saved-questions")
+@router.get("/api/speaking/saved-questions")
+async def saved_questions(authorization: str | None = Header(default=None)):
+    user = _user(authorization)
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """SELECT s.question_id FROM speaking_saved_questions s
+               JOIN speaking_questions q ON q.id=s.question_id
+               WHERE s.user_id=%s ORDER BY s.created_at DESC""",
+            (int(user["id"]),),
+        )
+        return {"question_ids": [str(dict(row)["question_id"]) for row in cur.fetchall()]}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.put("/speaking/saved-questions/{question_id}")
+@router.put("/api/speaking/saved-questions/{question_id}")
+async def update_saved_question(
+    question_id: int,
+    payload: SavedQuestionUpdate,
+    authorization: str | None = Header(default=None),
+):
+    user = _user(authorization)
+    if question_id <= 0:
+        raise HTTPException(status_code=422, detail="Invalid question")
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if payload.saved:
+            cur.execute("SELECT id FROM speaking_questions WHERE id=%s", (question_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Question not found")
+            cur.execute(
+                """INSERT INTO speaking_saved_questions (user_id, question_id)
+                   VALUES (%s, %s) ON CONFLICT (user_id, question_id) DO NOTHING""",
+                (int(user["id"]), question_id),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM speaking_saved_questions WHERE user_id=%s AND question_id=%s",
+                (int(user["id"]), question_id),
+            )
+        conn.commit()
+        return {"question_id": str(question_id), "saved": payload.saved}
     finally:
         cur.close()
         conn.close()
