@@ -49,6 +49,7 @@ jobs:
         run: |
           python3 -m py_compile \
             backend/main.py backend/speaking_admin.py backend/personalization.py \
+            backend/speaking_plans.py backend/speaking_plan_preparation.py backend/speaking_exams.py \
             db.py config.py userbot_manager.py \
             admin_bot.py student_bot.py teacher_bot.py support_lesson.py
 
@@ -56,3 +57,6 @@ jobs:
         # Stdlib only: checks website API paths against backend routes and
         # the Speaking admin workspace guard without a database.
         run: python3 tests/test_website_api_contracts.py
+
+      - name: Speaking Plan question contracts
+        run: python3 tests/test_speaking_plan_payloads.py

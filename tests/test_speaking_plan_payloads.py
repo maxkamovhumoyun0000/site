@@ -2,15 +2,18 @@
 import ast
 import asyncio
 import hashlib
+import json
 import random
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SOURCE = Path(__file__).resolve().parents[1] / "backend/speaking_plans.py"
 tree = ast.parse(SOURCE.read_text())
-names = {"_text", "clean_question", "clean_questions", "_preparation_summary", "generate_test"}
-scope = {"Any": Any, "hashlib": hashlib, "random": random,
+names = {"_text", "_json_list", "clean_question", "clean_questions", "_preparation_summary", "generate_test"}
+scope = {"Any": Any, "hashlib": hashlib, "random": random, "json": json,
+         "datetime": datetime, "timezone": timezone,
          "PLAN_KINDS": {"multiple_choice", "true_false", "gap_fill", "word_order", "matching",
                         "write_sentence", "paraphrase", "guided_writing", "speak_sentence", "read_aloud"}}
 scope.update(QUESTIONS_PER_TEST=10)

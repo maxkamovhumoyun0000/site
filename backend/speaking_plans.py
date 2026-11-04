@@ -149,6 +149,11 @@ def ensure_tables() -> None:
         )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_plans_user ON speaking_plans(user_id, subject, status)")
         cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS exam_date DATE")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS preparation_status TEXT NOT NULL DEFAULT 'legacy'")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS preparation_context TEXT NOT NULL DEFAULT '{}'")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS preparation_token TEXT")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS preparation_lease_until TIMESTAMPTZ")
+        cur.execute("ALTER TABLE speaking_plans ADD COLUMN IF NOT EXISTS preparation_error TEXT")
         # The learner's real exam date per subject; Home counts down to it and
         # a new plan is fitted to it.
         cur.execute(
@@ -193,6 +198,7 @@ def ensure_tables() -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"""
         )
+        cur.execute("ALTER TABLE speaking_plan_days ADD COLUMN IF NOT EXISTS prepared_json TEXT NOT NULL DEFAULT '[]'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_plan_tests_pick ON speaking_plan_tests(subject, focus, band, status)")
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_plan_attempts (
@@ -684,9 +690,15 @@ def clean_questions(raw_list: Any, subject: str) -> list[dict[str, Any]]:
     if not isinstance(raw_list, list):
         return []
     result = []
+    seen: set[str] = set()
     for raw in raw_list[:30]:
         item = clean_question(raw, subject)
         if item:
+            identity = json.dumps({k: item.get(k) for k in ("kind", "question", "passage", "word", "correct_answer", "pairs", "reference_answer")},
+                                  ensure_ascii=False, sort_keys=True).casefold()
+            if identity in seen:
+                continue
+            seen.add(identity)
             result.append(item)
     return result
 
@@ -786,7 +798,7 @@ async def generate_test(subject: str, focus: str, band: str, *, count: int = QUE
     system, user = generation_prompt(subject, focus, band, count, explanation_language, notes)
     raw = await _ai_json(system, user)
     questions = clean_questions(raw.get("questions"), subject)
-    if len(questions) < max(3, count // 2):
+    if len(questions) < count:
         raise HTTPException(status_code=502, detail="AI returned too few valid questions. Please try again.")
     title = _text(raw.get("title"), 160) or f"{focus.replace('_', ' ').title()} · {band}"
     return {"title": title, "questions": questions[:count]}
@@ -834,6 +846,17 @@ def _link_mock_days(cur, plan: dict[str, Any], days: list[dict[str, Any]]) -> bo
     changed = False
     for day in days:
         if day["kind"] not in MOCK_FOCUSES or day.get("completed_at") or int(day["day_index"]) > current:
+            continue
+        if plan.get("preparation_status", "legacy") != "legacy":
+            if day.get("exam_id"):
+                cur.execute("SELECT overall FROM speaking_exams WHERE id=%s AND user_id=%s AND status='finished'", (day["exam_id"], plan["user_id"]))
+                result = cur.fetchone()
+                if result:
+                    scale = 9.0 if plan["subject"] == "english" else 10.0
+                    score = round(float(dict(result).get("overall") or 0) * 100 / scale)
+                    cur.execute("UPDATE speaking_plan_days SET best_score=GREATEST(COALESCE(best_score,0),%s), completed_at=NOW() WHERE id=%s", (score, day["id"]))
+                    day.update(best_score=score, completed_at=datetime.now(TASHKENT))
+                    changed = True
             continue
         opened = _day_start(started + timedelta(days=int(day["day_index"]) - 1))
         parts_filter = "AND parts='full'" if day["kind"] == "full_mock" else "AND parts IN ('full','mini')"
@@ -892,6 +915,18 @@ def _daily_usage(cur, user_id: int) -> dict[str, int]:
     return {"limit": DAILY_QUESTION_LIMIT, "used": used, "remaining": max(0, DAILY_QUESTION_LIMIT - used)}
 
 
+def _preparation_summary(plan: dict[str, Any], days: list[dict[str, Any]]) -> dict[str, Any]:
+    ready = sum(1 for day in days if _json_list(day.get("prepared_json")))
+    total = len(days)
+    status = plan.get("preparation_status", "legacy")
+    lease = plan.get("preparation_lease_until")
+    if status == "preparing" and isinstance(lease, datetime) and lease < datetime.now(timezone.utc):
+        status = "failed"  # interrupted worker; retry resumes committed days
+    return {"status": status, "ready_days": ready,
+            "total_days": total, "percent": ready * 100 // max(1, total),
+            "error": plan.get("preparation_error")}
+
+
 def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[dict[str, Any]]) -> dict[str, Any]:
     current = _current_day(plan)
     started = plan["started_on"] if isinstance(plan["started_on"], date) else date.fromisoformat(str(plan["started_on"]))
@@ -913,6 +948,7 @@ def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[di
             "is_today": index == current,
             "best_score": d.get("best_score"),
             "attempts": int(d.get("attempts") or 0),
+            "prepared": bool(_json_list(d.get("prepared_json"))),
             "exam_id": d.get("exam_id"),
             "mock_parts": "full" if d["kind"] == "full_mock" else ("mini" if d["kind"] == "mini_mock" else None),
         })
@@ -931,6 +967,7 @@ def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[di
         "passing_score": PASSING_SCORE,
         "items": items,
         "adaptation": {"weak": weak},
+        "preparation": _preparation_summary(plan, days),
         "exam": exam_payload(_parse_date(plan.get("exam_date")), _today()),
     }
 
@@ -941,7 +978,10 @@ def _refresh_plan(cur, plan: dict[str, Any]) -> tuple[list[dict[str, Any]], list
     changed = False
     if plan["status"] == "active":
         changed |= _link_mock_days(cur, plan, days)
-        changed |= _apply_adaptation(cur, plan, days, weak)
+        # Prepared content and its focus are immutable snapshots. Adapt the
+        # next new plan from fresh performance instead of relabelling tests.
+        if plan.get("preparation_status", "legacy") == "legacy":
+            changed |= _apply_adaptation(cur, plan, days, weak)
         if days and all(d.get("completed_at") for d in days):
             cur.execute("UPDATE speaking_plans SET status='completed', updated_at=NOW() WHERE id=%s", (int(plan["id"]),))
             plan["status"] = "completed"
@@ -1015,6 +1055,11 @@ class SubmitAnswers(BaseModel):
     answers: list[dict[str, Any]] = Field(default_factory=list, max_length=60)
 
 
+class PracticeAnswer(BaseModel):
+    exam_key: str = Field(min_length=3, max_length=40)
+    answer: Any = None
+
+
 def _goals_payload(subject: str) -> list[dict[str, str]]:
     return [{"value": goal, "label": _goal_label(subject, goal)} for goal in GOALS[subject]]
 
@@ -1051,8 +1096,9 @@ async def current_speaking_plan(subject: str = Query(default="english", max_leng
 
 @router.post("/speaking/plans")
 @router.post("/api/speaking/plans")
-async def create_speaking_plan(payload: PlanCreate, authorization: str | None = Header(default=None)):
-    user, _ = _auth(authorization, USER_ROLES)
+async def create_speaking_plan(payload: PlanCreate, authorization: str | None = Header(default=None),
+                               x_language: str | None = Header(default=None, alias="X-Language")):
+    user, role = _auth(authorization, USER_ROLES)
     ensure_tables()
     subject_key = _subject_key(payload.subject)
     if payload.goal not in GOALS[subject_key]:
@@ -1065,6 +1111,17 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (72143, user_id))
+        existing = _active_plan(cur, user_id, subject_key)
+        if existing and existing.get("preparation_status") in ("pending", "preparing"):
+            raise HTTPException(status_code=409, detail="Your plan is already being prepared")
+        cur.execute("SELECT COUNT(*) AS n FROM speaking_plans WHERE user_id=%s AND created_at>=NOW()-INTERVAL '1 hour'", (user_id,))
+        if int(dict(cur.fetchone())["n"]) >= 3:
+            raise HTTPException(status_code=429, detail="Please wait before creating another plan")
+        profile = _profile(cur, user, role, subject_key)
+        weak = _load_weak(cur, user_id, subject_key, _goal_value(payload.goal))
+        context = {"estimate": profile.get("estimate"), "weak": weak, "goal": payload.goal,
+                   "explanation_language": x_language if x_language in EXPLANATION_LANGUAGES else "uz"}
         if exam_date is None and payload.exam_date is None:
             exam_date = _exam_date(cur, user_id, subject_key)
             if exam_date is not None and exam_date < _today():
@@ -1084,6 +1141,9 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
             (user_id, subject_key, payload.goal, days, _today(), exam_date),
         )
         plan = dict(cur.fetchone())
+        cur.execute("UPDATE speaking_plans SET preparation_status='pending', preparation_context=%s WHERE id=%s",
+                    (json.dumps(context, default=str), int(plan["id"])))
+        plan["preparation_status"] = "pending"
         for index, day in enumerate(build_plan_template(days), start=1):
             cur.execute(
                 "INSERT INTO speaking_plan_days (plan_id, day_index, kind, base_focus, focus) VALUES (%s,%s,%s,%s,%s)",
@@ -1091,6 +1151,8 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
             )
         conn.commit()
         days, weak = _refresh_plan(cur, plan)
+        from backend.speaking_plan_preparation import queue_preparation
+        queue_preparation(int(plan["id"]), user_id)
         return {"plan": _public_plan(plan, days, weak), "daily": _daily_usage(cur, user_id)}
     finally:
         cur.close()
@@ -1116,6 +1178,29 @@ async def cancel_speaking_plan(plan_id: int, authorization: str | None = Header(
     finally:
         cur.close()
         conn.close()
+
+
+@router.post("/speaking/plans/{plan_id}/prepare")
+@router.post("/api/speaking/plans/{plan_id}/prepare")
+async def resume_plan_preparation(plan_id: int, authorization: str | None = Header(default=None)):
+    user, _ = _auth(authorization, USER_ROLES)
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM speaking_plans WHERE id=%s AND user_id=%s AND status='active'",
+                    (int(plan_id), int(user["id"])))
+        plan = cur.fetchone()
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        if dict(plan).get("preparation_status") == "legacy":
+            raise HTTPException(status_code=409, detail="Create a new plan to prepare personalised exercises")
+    finally:
+        cur.close()
+        conn.close()
+    from backend.speaking_plan_preparation import queue_preparation
+    queue_preparation(int(plan_id), int(user["id"]))
+    return {"ok": True}
 
 
 @router.get("/speaking/exam-date")
@@ -1261,12 +1346,29 @@ def _served_questions(attempt_id: int, raw_questions: list[dict[str, Any]], subj
     return served
 
 
+def _resume_day_attempt(cur, user_id: int, day: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not day:
+        return None
+    cur.execute("SELECT * FROM speaking_plan_attempts WHERE user_id=%s AND plan_day_id=%s AND status='started' ORDER BY id DESC LIMIT 1", (user_id, int(day["id"])))
+    row = cur.fetchone()
+    if not row:
+        return None
+    attempt = dict(row)
+    questions = _json_list(attempt.get("questions_json"))
+    return {"attempt_id": int(attempt["id"]), "questions": questions, "total_questions": len(questions),
+            "focus": attempt["focus"], "band": attempt["band"], "passing_score": PASSING_SCORE,
+            "daily": _daily_usage(cur, user_id)}
+
+
 async def _start_attempt(user: dict[str, Any], role: str, *, subject: str, focus: str, day: dict[str, Any] | None,
                          plan: dict[str, Any] | None) -> dict[str, Any]:
     user_id = int(user.get("id") or 0)
     conn = get_conn()
     cur = conn.cursor()
     try:
+        resumed = _resume_day_attempt(cur, user_id, day)
+        if resumed:
+            return resumed
         daily = _daily_usage(cur, user_id)
         if daily["remaining"] <= 0:
             raise HTTPException(
@@ -1282,19 +1384,32 @@ async def _start_attempt(user: dict[str, Any], role: str, *, subject: str, focus
     day_index = int(day["day_index"]) if day else 1
     days_total = int(plan["days"]) if plan else 14
     band = _band_for(subject, goal, profile["estimate"], day_index, days_total)
-    test = await _pick_test(subject, focus, band, user_id)
-    questions = [q for q in _json_list(test["questions_json"]) if isinstance(q, dict)]
-    random.shuffle(questions)
-    bonus = _bonus_questions(subject, focus, band, weak)
-    questions = questions[: QUESTIONS_PER_TEST - len(bonus)] + bonus
-    questions = questions[: daily["remaining"]]
+    prepared = _json_list(day.get("prepared_json")) if day else []
+    if day and day.get("preparation_status", "legacy") != "legacy":
+        if not prepared:
+            raise HTTPException(status_code=409, detail="This day's exercises are still being prepared")
+        test = {"id": None, "title": focus, "questions_json": json.dumps(prepared)}
+        questions = prepared
+    else:
+        test = await _pick_test(subject, focus, band, user_id)
+        questions = [q for q in _json_list(test["questions_json"]) if isinstance(q, dict)]
+        random.shuffle(questions)
+        bonus = _bonus_questions(subject, focus, band, weak)
+        questions = questions[: QUESTIONS_PER_TEST - len(bonus)] + bonus
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (72144, user_id))
+        resumed = _resume_day_attempt(cur, user_id, day)
+        if resumed:
+            return resumed
+        daily = _daily_usage(cur, user_id)
+        if daily["remaining"] < len(questions):
+            raise HTTPException(status_code=429, detail="Not enough daily questions remain for this complete test")
         cur.execute(
             """INSERT INTO speaking_plan_attempts (user_id, plan_day_id, test_id, subject, focus, band)
                VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (user_id, int(day["id"]) if day else None, int(test["id"]), subject, focus, band),
+            (user_id, int(day["id"]) if day else None, test["id"], subject, focus, band),
         )
         attempt_id = int(dict(cur.fetchone())["id"])
         served = _served_questions(attempt_id, questions, subject)
@@ -1302,7 +1417,8 @@ async def _start_attempt(user: dict[str, Any], role: str, *, subject: str, focus
             "UPDATE speaking_plan_attempts SET questions_json=%s, question_count=%s WHERE id=%s",
             (json.dumps(served, ensure_ascii=False), len(served), attempt_id),
         )
-        cur.execute("UPDATE speaking_plan_tests SET uses=uses+1 WHERE id=%s", (int(test["id"]),))
+        if test["id"] is not None:
+            cur.execute("UPDATE speaking_plan_tests SET uses=uses+1 WHERE id=%s", (int(test["id"]),))
         if day:
             cur.execute("UPDATE speaking_plan_days SET attempts=attempts+1 WHERE id=%s", (int(day["id"]),))
         conn.commit()
@@ -1332,7 +1448,7 @@ async def start_plan_day(day_id: int, authorization: str | None = Header(default
     cur = conn.cursor()
     try:
         cur.execute(
-            """SELECT d.*, p.user_id, p.subject, p.goal, p.days, p.started_on, p.status AS plan_status
+            """SELECT d.*, p.user_id, p.subject, p.goal, p.days, p.started_on, p.preparation_status, p.status AS plan_status
                FROM speaking_plan_days d JOIN speaking_plans p ON p.id=d.plan_id WHERE d.id=%s""",
             (int(day_id),),
         )
@@ -1428,6 +1544,11 @@ async def check_plan_answer(
         if audio_url:
             _learning_owned_audio_path(audio_url, user_id)
         fingerprint = _learning_answer_fingerprint(answer, audio_url)
+        cur.execute("SELECT result_json FROM speaking_plan_answer_checks WHERE attempt_id=%s AND item_key=%s AND fingerprint=%s",
+                    (int(attempt_id), payload.exam_key.strip(), fingerprint))
+        cached = cur.fetchone()
+        if cached:
+            return json.loads(dict(cached)["result_json"])
 
         def finish(result: dict[str, Any]) -> dict[str, Any]:
             cur.execute(
@@ -1457,6 +1578,9 @@ async def check_plan_answer(
             "prompt": str(question.get("question") or ""),
             "instruction": str(question.get("instruction") or ""),
             "word": question.get("word"),
+            "passage": question.get("passage"),
+            "context": question.get("passage"),
+            "word_count": question.get("word_count"),
             "reference_answer": reference,
             "target_level": attempt.get("band"),
             "accepted_answers": [a for a in (question.get("accepted_answers") or []) if a],
@@ -1486,6 +1610,43 @@ async def check_plan_answer(
             "was_spoken": bool(feedback.get("was_spoken") or audio_url),
             "score": feedback.get("score") or (100.0 if ok else 0.0),
         })
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.post("/speaking/plans/attempts/{attempt_id}/check-answer")
+@router.post("/api/speaking/plans/attempts/{attempt_id}/check-answer")
+async def check_plan_practice_answer(attempt_id: int, payload: PracticeAnswer,
+                                     authorization: str | None = Header(default=None)):
+    """Lesson-style feedback without prematurely finishing the whole attempt."""
+    from backend.personalization import (
+        _grade_learning_question, _learning_given_fingerprint, _learning_owned_audio_path,
+        _learning_question_needs_ai_check,
+    )
+    user, _ = _auth(authorization, USER_ROLES)
+    ensure_tables()
+    if len(json.dumps(payload.answer, ensure_ascii=False)) > 16000:
+        raise HTTPException(status_code=422, detail="Answer is too long")
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        attempt = _attempt(cur, attempt_id, int(user["id"]))
+        question = _attempt_question(attempt, payload.exam_key)
+        given = payload.answer
+        if isinstance(given, dict) and given.get("audio_url"):
+            _learning_owned_audio_path(str(given["audio_url"]), int(user["id"]))
+        ai_ok = False
+        if _learning_question_needs_ai_check(question):
+            cur.execute("SELECT fingerprint, verdict FROM speaking_plan_answer_checks WHERE attempt_id=%s AND item_key=%s",
+                        (int(attempt_id), payload.exam_key.strip()))
+            check = dict(cur.fetchone() or {})
+            if not check or check.get("fingerprint") != _learning_given_fingerprint(given):
+                raise HTTPException(status_code=409, detail="Check this answer before submitting it")
+            ai_ok = check.get("verdict") == "correct"
+        correct, total = _grade_learning_question(question, given, saved_ai_ok=ai_ok)
+        return {"is_correct": total > 0 and correct >= total, "correct": correct, "total": total,
+                "required_score": PASSING_SCORE, "reward_coins": 0}
     finally:
         cur.close()
         conn.close()

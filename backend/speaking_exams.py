@@ -329,6 +329,7 @@ class ExamStartRequest(BaseModel):
     parts: str = Field(default="full", pattern="^(full|part1|part2|part3|mini)$")
     # Required for kind "topic": the topic to practise again.
     topic_id: int | None = Field(default=None, ge=1)
+    plan_day_id: int | None = Field(default=None, ge=1)
 
 
 class ExamStepResult(BaseModel):
@@ -361,10 +362,29 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
         parts = "full"
     if payload.kind == "topic" and not payload.topic_id:
         raise HTTPException(status_code=422, detail="topic_id is required for topic practice")
-    steps = _build_plan(user_id, subject, payload.kind, parts, payload.mode == "practice", payload.topic_id)
+    steps = None
+    if payload.plan_day_id is None:
+        steps = _build_plan(user_id, subject, payload.kind, parts, payload.mode == "practice", payload.topic_id)
     conn = get_conn()
     cur = conn.cursor()
     try:
+        if payload.plan_day_id is not None:
+            from backend.speaking_plans import ensure_tables as ensure_plan_tables, _current_day, _json_list
+            ensure_plan_tables()
+            cur.execute("""SELECT d.*, p.user_id, p.subject, p.days, p.started_on, p.status AS plan_status
+                           FROM speaking_plan_days d JOIN speaking_plans p ON p.id=d.plan_id
+                           WHERE d.id=%s AND p.user_id=%s FOR UPDATE OF d""", (payload.plan_day_id, user_id))
+            day = dict(cur.fetchone() or {})
+            if not day or day['subject'] != subject:
+                raise HTTPException(status_code=404, detail="Plan day not found")
+            if day['plan_status'] not in ('active', 'completed') or int(day['day_index']) > _current_day(day):
+                raise HTTPException(status_code=423, detail="This plan day is not available")
+            if day['kind'] not in ('mini_mock', 'full_mock') or payload.kind != 'mock':
+                raise HTTPException(status_code=422, detail="This is not a mock exam day")
+            steps = _json_list(day.get('prepared_json'))
+            if not steps:
+                raise HTTPException(status_code=409, detail="Mock exam is still being prepared")
+            parts = 'mini' if day['kind'] == 'mini_mock' else 'full'
         cur.execute(
             """INSERT INTO speaking_exams (user_id, subject, kind, mode, parts, challenge_day, steps_json)
                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id, started_at""",
@@ -372,6 +392,8 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
              _today() if payload.kind == "challenge" else None, json.dumps(steps, ensure_ascii=False)),
         )
         row = dict(cur.fetchone())
+        if payload.plan_day_id is not None:
+            cur.execute("UPDATE speaking_plan_days SET exam_id=%s, attempts=attempts+1 WHERE id=%s", (row['id'], payload.plan_day_id))
         conn.commit()
     finally:
         cur.close()
