@@ -438,12 +438,12 @@ def _existing(user_id: int, client_recording_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
-def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[str, str]:
-    """Question id and idempotency key of one step of the user's open exam."""
+def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[str, str, dict[str, Any], str]:
+    """Return the authenticated exam's own question context and retry key."""
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT status, steps_json FROM speaking_exams WHERE id=%s AND user_id=%s", (exam_id, user_id))
+        cur.execute("SELECT status, subject, steps_json FROM speaking_exams WHERE id=%s AND user_id=%s", (exam_id, user_id))
         row = cur.fetchone()
     except Exception:
         conn.rollback()
@@ -460,7 +460,7 @@ def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[st
     step = next((s for s in steps if int(s.get("index") or 0) == step_index), None)
     if not step:
         raise HTTPException(status_code=422, detail="Unknown exam question")
-    return str(step.get("question_id") or ""), f"exam-{exam_id}-{step_index}"
+    return str(step.get("question_id") or ""), f"exam-{exam_id}-{step_index}", step, str(row.get("subject") or "english")
 
 
 def _enforce_limits(user_id: int) -> None:
@@ -511,16 +511,26 @@ async def analyze_speaking_answer(
     if raw[4:8] != b"ftyp":
         raise HTTPException(status_code=422, detail="Unsupported audio format. Please record again in the app.")
 
+    exam_step = None
+    exam_subject = None
     if exam_id is not None:
         # Exam answers: the exam (not the client) decides which question this is.
-        question_id, recording_ref = _exam_step_question(user_id, int(exam_id), int(step_index or 0))
+        question_id, recording_ref, exam_step, exam_subject = _exam_step_question(user_id, int(exam_id), int(step_index or 0))
         cached = _existing(user_id, recording_ref)
         if cached:
             return {"analysis": cached, "cached": True}
     question_ref = re.sub(r"[^A-Za-z0-9_.-]", "", question_id)[:64]
     numeric_id = int(question_ref) if question_ref.isdigit() else None
     row = _question_row(numeric_id)
-    if row:
+    if exam_step is not None:
+        # Generated plan questions have no bank row. Even for bank questions,
+        # use the immutable exam snapshot rather than request-supplied text.
+        subject_key = _subject_key(exam_subject)
+        part_value = int(exam_step.get("part") or 0) or None
+        topic = str(exam_step.get("topic") or "")
+        question_text = str(exam_step.get("prompt") or "")
+        bullets = '\n'.join(str(item) for item in (exam_step.get("bullets") or []) if isinstance(item, str))
+    elif row:
         subject_key = _subject_key(row.get("subject"))
         part_value = int(row.get("part") or 0) or None
         topic = str(row.get("topic_title") or "")
