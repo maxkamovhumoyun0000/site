@@ -38,6 +38,7 @@ router = APIRouter()
 TASHKENT = timezone(timedelta(hours=5))
 DAILY_QUESTION_LIMIT = 50
 QUESTIONS_PER_TEST = 10
+PERSONAL_PLAN_QUESTIONS = 3
 PASSING_SCORE = 60
 BANK_TARGET_PER_FOCUS = 6
 STAFF_ROLES = {"speaking_admin", "admin", "superadmin", "developer"}
@@ -500,6 +501,38 @@ def _load_weak(cur, user_id: int, subject: str, goal: float) -> list[dict[str, A
     return weak_criteria(analysis_rows, test_rows, subject=subject, goal=goal)
 
 
+def _learner_activity(cur, user_id: int, subject: str) -> dict[str, Any]:
+    """Bounded, account-scoped facts; absent optional modules stay absent.
+
+    Savepoints isolate older installations with an optional table missing, without
+    rolling back plan creation. Never include transcripts or other users' data.
+    """
+    queries = {
+        "notebook": ("SELECT term FROM speaking_vocab_notebook WHERE user_id=%s AND subject=%s ORDER BY next_review_at ASC NULLS FIRST, updated_at DESC LIMIT 8", (user_id, subject)),
+        "saved_questions": ("SELECT q.question_text FROM speaking_saved_questions s JOIN speaking_questions q ON q.id=s.question_id WHERE s.user_id=%s AND q.subject=%s ORDER BY s.created_at DESC LIMIT 5", (user_id, subject)),
+        "mock_exams": ("SELECT overall FROM speaking_exams WHERE user_id=%s AND subject=%s AND status='finished' ORDER BY finished_at DESC NULLS LAST LIMIT 5", (user_id, subject)),
+        "learning_path": ("SELECT m.title, p.status, p.best_score FROM speaking_lp_learning_module_progress p JOIN speaking_lp_learning_modules m ON m.id=p.module_id JOIN speaking_lp_learning_tracks t ON t.id=m.track_id WHERE p.student_id=%s AND (CASE WHEN LOWER(t.subject) LIKE '%%rus%%' OR LOWER(t.subject) LIKE '%%рус%%' THEN 'russian' WHEN LOWER(t.subject) LIKE '%%eng%%' OR LOWER(t.subject) LIKE '%%ingliz%%' OR LOWER(t.subject) LIKE '%%ielts%%' OR LOWER(t.subject) LIKE '%%cefr%%' THEN 'english' ELSE '' END)=%s ORDER BY p.updated_at DESC LIMIT 5", (user_id, subject)),
+        "writing": ("SELECT score FROM speaking_writing_submissions WHERE user_id=%s AND subject=%s ORDER BY created_at DESC LIMIT 5", (user_id, subject)),
+        "progress": ("SELECT score, topic_title FROM speaking_answer_analyses WHERE user_id=%s AND subject=%s ORDER BY created_at DESC LIMIT 8", (user_id, subject)),
+        "teacher_feedback": ("SELECT topic_title, status, ai_score FROM speaking_feedback_requests WHERE student_id=%s AND subject=%s ORDER BY created_at DESC LIMIT 5", (user_id, subject)),
+        "videos": ("SELECT v.title, p.completed FROM speaking_video_progress p JOIN speaking_videos v ON p.source='speaking' AND p.video_id=v.id WHERE p.user_id=%s AND v.subject=%s ORDER BY p.updated_at DESC LIMIT 5", (user_id, subject)),
+    }
+    result: dict[str, Any] = {}
+    for name, (sql, params) in queries.items():
+        cur.execute('SAVEPOINT plan_optional_activity')
+        try:
+            cur.execute(sql, params)
+            rows = [dict(row) for row in cur.fetchall() or []]
+            result[name] = [{key: (_text(value, 250) if isinstance(value, str) else value)
+                             for key, value in row.items()} for row in rows]
+        except Exception:
+            cur.execute('ROLLBACK TO SAVEPOINT plan_optional_activity')
+            logger.warning('Speaking plan activity unavailable: %s', name)
+        finally:
+            cur.execute('RELEASE SAVEPOINT plan_optional_activity')
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Learner profile (Speaking account or Student account)
 # ---------------------------------------------------------------------------
@@ -932,6 +965,11 @@ def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[di
     current = _current_day(plan)
     started = plan["started_on"] if isinstance(plan["started_on"], date) else date.fromisoformat(str(plan["started_on"]))
     done = sum(1 for d in days if d.get("completed_at"))
+    try:
+        context = json.loads(plan.get('preparation_context') or '{}')
+    except (TypeError, ValueError):
+        context = {}
+    daily_blueprint = context.get('daily_blueprint') or {}
     items = []
     for d in days:
         index = int(d["day_index"])
@@ -950,6 +988,8 @@ def _public_plan(plan: dict[str, Any], days: list[dict[str, Any]], weak: list[di
             "best_score": d.get("best_score"),
             "attempts": int(d.get("attempts") or 0),
             "prepared": bool(_json_list(d.get("prepared_json"))),
+            "question_count": len(_json_list(d.get("prepared_json"))) if d['kind'] == 'practice' else None,
+            "activities": daily_blueprint.get(str(index), []),
             "exam_id": d.get("exam_id"),
             "mock_parts": "full" if d["kind"] == "full_mock" else ("mini" if d["kind"] == "mini_mock" else None),
         })
@@ -1122,7 +1162,8 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
         profile = _profile(cur, user, role, subject_key)
         weak = _load_weak(cur, user_id, subject_key, _goal_value(payload.goal))
         context = {"estimate": profile.get("estimate"), "weak": weak, "goal": payload.goal,
-                   "explanation_language": x_language if x_language in EXPLANATION_LANGUAGES else "uz"}
+                   "explanation_language": x_language if x_language in EXPLANATION_LANGUAGES else "uz",
+                   "activity": _learner_activity(cur, user_id, subject_key)}
         if exam_date is None and payload.exam_date is None:
             exam_date = _exam_date(cur, user_id, subject_key)
             if exam_date is not None and exam_date < _today():

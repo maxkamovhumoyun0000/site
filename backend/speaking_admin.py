@@ -512,6 +512,7 @@ async def search_speaking_vocabulary(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=40, ge=1, le=100),
     bank_only: bool = Query(default=False),
+    after_id: int = Query(default=0, ge=0),
 ):
     """Search the shared vocabulary bank for the anonymous Speaking app.
 
@@ -533,8 +534,8 @@ async def search_speaking_vocabulary(
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT COUNT(*) AS total FROM words WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)",
-                    (selected_subject, language),
+                    "SELECT COUNT(*) AS total FROM words WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?) AND id>?",
+                    (selected_subject, language, after_id),
                 )
                 total = int((cur.fetchone() or {}).get("total") or 0)
                 cur.execute(
@@ -542,11 +543,11 @@ async def search_speaking_vocabulary(
                     SELECT id, word, subject, language, level, translation_uz,
                            translation_ru, definition, example
                     FROM words
-                    WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?)
+                    WHERE LOWER(subject)=LOWER(?) AND LOWER(language)=LOWER(?) AND id>?
                     ORDER BY id ASC
                     LIMIT ? OFFSET ?
                     """,
-                    (selected_subject, language, limit, offset),
+                    (selected_subject, language, after_id, limit, offset),
                 )
                 return [dict(row) for row in (cur.fetchall() or [])], total
             finally:
