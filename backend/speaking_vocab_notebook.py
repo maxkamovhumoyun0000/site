@@ -54,6 +54,9 @@ def _user(authorization: str | None) -> dict[str, Any]:
 
     user = _user_row_from_bearer(authorization)
     _require_role(user, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "vocabulary_notebook")
     return user
 
 
@@ -611,6 +614,10 @@ async def save_to_notebook(payload: SaveRequest, authorization: str | None = Hea
     fields.setdefault("term", term)
     key = term_key(fields["term"]) or key
 
+    from backend.speaking_subscriptions import consume_usage_in_transaction, entitlement
+
+    plan = entitlement(user, "vocabulary_notebook")
+    weekly_limit = plan.get("weekly_limit")
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -636,6 +643,8 @@ async def save_to_notebook(payload: SaveRequest, authorization: str | None = Hea
             )
             conn.commit()
             return {"item": _public(dict(cur.fetchone())), "created": False}
+        if weekly_limit:
+            consume_usage_in_transaction(cur, user_id, "vocabulary_notebook", "week", int(weekly_limit))
         conn.commit()
         return {"item": _public(dict(row)), "created": True}
     finally:

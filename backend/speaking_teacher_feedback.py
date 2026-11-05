@@ -544,6 +544,9 @@ async def send_to_teacher(
     authorization: str | None = Header(default=None),
 ):
     user = _student(authorization)
+    from backend.speaking_subscriptions import consume_interval_in_transaction, require_feature
+
+    feedback_plan = require_feature(user, "teacher_feedback")
     ensure_tables()
     student_id = int(user.get("id") or 0)
     recording_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", client_recording_id)[:120]
@@ -581,6 +584,7 @@ async def send_to_teacher(
         info = _question_info(cur, qid)
         analysis = _analysis_for(cur, student_id, recording_ref)
         subject_key = "russian" if str(info.get("subject") or subject).lower().startswith(("rus", "ru")) else "english"
+        consume_interval_in_transaction(cur, student_id, "teacher_feedback", feedback_plan.get("interval_days"))
         cur.execute(
             """INSERT INTO speaking_feedback_requests
                  (student_id, subject, client_recording_id, analysis_id, question_id, question_text, topic_title, part,

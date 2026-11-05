@@ -125,6 +125,10 @@ def _auth(authorization: str | None, roles: set[str]) -> tuple[dict[str, Any], s
 
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, roles)
+    if role not in STAFF_ROLES:
+        from backend.speaking_subscriptions import require_feature
+
+        require_feature(user, "speaking_plan")
     return user, role
 
 
@@ -1109,6 +1113,9 @@ def _goals_payload(subject: str) -> list[dict[str, str]]:
 @router.get("/api/speaking/plans/current")
 async def current_speaking_plan(subject: str = Query(default="english", max_length=32), authorization: str | None = Header(default=None)):
     user, role = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "speaking_plan")
     ensure_tables()
     subject_key = _subject_key(subject)
     user_id = int(user.get("id") or 0)
@@ -1140,6 +1147,9 @@ async def current_speaking_plan(subject: str = Query(default="english", max_leng
 async def create_speaking_plan(payload: PlanCreate, authorization: str | None = Header(default=None),
                                x_language: str | None = Header(default=None, alias="X-Language")):
     user, role = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import consume_interval_in_transaction, require_feature
+
+    decision = require_feature(user, "speaking_plan")
     ensure_tables()
     subject_key = _subject_key(payload.subject)
     if payload.goal not in GOALS[subject_key]:
@@ -1172,6 +1182,7 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
         fitted = days_for_exam(exam_date, _today())
         if fitted is not None and days > fitted:
             days = fitted
+        consume_interval_in_transaction(cur, user_id, "speaking_plan", decision.get("interval_days"))
         cur.execute(
             "UPDATE speaking_plans SET status='replaced', updated_at=NOW() WHERE user_id=%s AND subject=%s AND status IN ('active','completed')",
             (user_id, subject_key),

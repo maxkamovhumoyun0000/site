@@ -120,6 +120,9 @@ class SavedQuestionUpdate(BaseModel):
 @router.get("/api/speaking/saved-questions")
 async def saved_questions(authorization: str | None = Header(default=None)):
     user = _user(authorization)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "saved_questions")
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
@@ -144,6 +147,9 @@ async def update_saved_question(
     authorization: str | None = Header(default=None),
 ):
     user = _user(authorization)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "saved_questions")
     if question_id <= 0:
         raise HTTPException(status_code=422, detail="Invalid question")
     ensure_tables()
@@ -505,11 +511,18 @@ async def analyze_speaking_answer(
     user = _user(authorization)
     ensure_tables()
     user_id = int(user.get("id") or 0)
+    from backend.speaking_subscriptions import consume_usage, require_feature
+
+    # Verify the paid entitlement before returning cached results, so a free
+    # account cannot replay a previous recording ID to bypass the feature gate.
+    decision = require_feature(user, "answer_analysis") if exam_id is None else None
     recording_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", client_recording_id)[:120]
     cached = _existing(user_id, recording_ref)
     if cached:
         return {"analysis": cached, "cached": True}
 
+    # Mock-exam answers are covered by the exam entitlement/cadence. The daily
+    # three/six analyses apply to standalone Speaking-question practice.
     raw = await file.read(MAX_AUDIO_BYTES + 1)
     if len(raw) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="The recording is too long (max 10 MB).")
@@ -566,6 +579,8 @@ async def analyze_speaking_answer(
             status_code=422,
             detail="We could not hear a clear answer. Please speak a little longer and closer to the microphone.",
         )
+    if exam_id is None:
+        consume_usage(user, "answer_analysis", "day", decision.get("daily_limit"))
     duration = float(duration_seconds or 0)
     system, user_turn = _scoring_prompt(
         scale=scale, part=part_value, topic=topic, prompt=question_text, bullets=bullets,
@@ -1019,6 +1034,9 @@ async def speaking_progress(
     authorization: str | None = Header(default=None),
 ):
     user = _user(authorization)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "progress")
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)

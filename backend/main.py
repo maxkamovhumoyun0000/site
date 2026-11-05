@@ -1099,7 +1099,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "profile",
     ],
     "support": ["home", "chats", "bookings", "calendar", "attendance", "bonus", "schedule", "hours", "filial", "broadcast", "leaderboard", "videos", "books", "profile"],
-    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-plan-tests", "speaking-writing", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"],
+    "speaking_admin": ["home", "speaking-topics", "speaking-learning-paths", "speaking-live", "speaking-videos", "speaking-plan-tests", "speaking-writing", "speaking-feedback", "speaking-users", "speaking-subscriptions", "speaking-notifications", "profile"],
 }
 TEACHER_STAFF_ROLES: set[str] = {"teacher", "support"}
 PUBLIC_RESULT_TYPES: tuple[str, ...] = ("IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet")
@@ -13316,6 +13316,21 @@ def _diamondvoy_limit_status(user_id: int) -> dict[str, Any]:
         used = 0
     finally:
         conn.close()
+    linked_user = _safe_call(lambda: get_user_by_id(int(user_id)), None)
+    if (
+        linked_user
+        and _role_from_login_type(int(linked_user.get("login_type") or 1), str(linked_user.get("login_id") or "")) == "student"
+        and not is_speaking_app_account(linked_user.get("speaking_app_account"))
+    ):
+        return {
+            "base_limit": None,
+            "bonus_messages": 0,
+            "total_limit": None,
+            "used": 0,
+            "remaining": -1,
+            "unlimited": True,
+            "active_boosts": 0,
+        }
     boost = _safe_call(lambda: get_diamondvoy_limit_boost_summary(int(user_id)), {}) or {}
     base_limit = max(0, int(settings.get("free_limit") or 3))
     bonus_messages = max(0, int(boost.get("bonus_messages") or 0))
@@ -26532,7 +26547,20 @@ async def _diamondvoy_stream_events(
     if not regenerate:
         reserved_images = _diamondvoy_reserve_images(user, role, len(image_urls))
         try:
-            _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
+            if speaking_account:
+                from backend.speaking_subscriptions import consume_usage_windows, entitlement
+
+                diamondvoy_access = entitlement(user, "diamondvoy")
+                consume_usage_windows(
+                    user,
+                    "diamondvoy_messages",
+                    {"day": diamondvoy_access.get("daily_limit"), "week": diamondvoy_access.get("weekly_limit")},
+                )
+            elif role == "student" and not is_speaking_app_account(user.get("speaking_app_account")):
+                # Student-linked accounts share the unlimited cross-app entitlement.
+                pass
+            else:
+                _diamondvoy_apply_usage(user, role, has_images=bool(image_urls), has_text=bool(user_text))
         except Exception:
             _diamondvoy_release_images(user_id, reserved_images)
             raise
@@ -58331,6 +58359,9 @@ async def available_battles(authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_competition_learning_access(user)
+    from backend.speaking_subscriptions import entitlement, usage_count
+
+    access = entitlement(user, "arena")
     user_id = int(user.get("id") or 0)
     rules = _competition_rule_settings()
     usage_date = _now_tashkent_date()
@@ -58363,8 +58394,8 @@ async def available_battles(authorization: str | None = Header(default=None)):
                 "entry_fee": float(_competition_entry_fee(mode)),
                 "required_players": required_players,
                 "max_players": max(required_players, _competition_max_players(mode)),
-                "daily_limit": int(COMPETITION_DAILY_JOIN_LIMIT),
-                "used_today": None if used_today is None else int(used_today),
+                "daily_limit": access.get("daily_limit"),
+                "used_today": usage_count(user, "arena", "day") if access.get("daily_limit") is not None else None,
             }
         )
     return {
@@ -58379,6 +58410,9 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_competition_learning_access(user)
+    from backend.speaking_subscriptions import consume_usage, entitlement, require_feature
+
+    access = require_feature(user, "arena")
     user_id = int(user.get("id") or 0)
     subject = _user_subjects_from_row(user)[0] if _user_subjects_from_row(user) else "English"
     level = str(user.get("level") or "PRE-INTERMEDIATE").strip().upper()
@@ -58413,6 +58447,8 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
             user_id,
             int(user.get("telegram_id") or 0) or user_id,
         )
+        if joined:
+            consume_usage(user, "arena", "day", access.get("daily_limit"))
         participants = count_duel_participants(session_id)
         if participants >= int(required_players):
             mark_duel_session_started(session_id)
@@ -58426,6 +58462,7 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
             "user_id": user_id,
         }
 
+    consume_usage(user, "arena", "day", access.get("daily_limit"))
     return {
         "message": "Joined battle",
         "match_id": f"ARENA-{random.randint(1000, 9999)}",
@@ -60468,6 +60505,10 @@ async def teacher_get_book_detail(book_id: int, authorization: str | None = Head
 async def book_pdf_stream(book_id: int, request: Request, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"student", "teacher", "admin", "support"})
+    if is_speaking_app_account(user.get("speaking_app_account")):
+        from backend.speaking_subscriptions import require_feature
+
+        require_feature(user, "library")
     book = _book_row_for_external_open(int(book_id), user, role)
     asset_id = int(book.get("pdf_asset_id") or 0)
     if asset_id <= 0:
@@ -60789,6 +60830,10 @@ async def user_get_books(
 
     if user:
         _require_role(user, {"student", "teacher", "support", "admin", "superadmin", "developer"})
+        if is_speaking_app_account(user.get("speaking_app_account")):
+            from backend.speaking_subscriptions import require_feature
+
+            require_feature(user, "library")
         user_id = int(user.get("id") or 0)
         role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
         subjects = _user_subjects_from_row(user)
@@ -60921,6 +60966,10 @@ async def user_get_book_detail(book_id: int, authorization: str | None = Header(
             user = None
     if user:
         _require_role(user, {"student", "teacher", "support"})
+        if is_speaking_app_account(user.get("speaking_app_account")):
+            from backend.speaking_subscriptions import require_feature
+
+            require_feature(user, "library")
         user_id = int(user.get("id") or 0)
         role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
     else:
@@ -61779,6 +61828,8 @@ from backend.speaking_teacher_feedback import router as speaking_teacher_feedbac
 app.include_router(speaking_teacher_feedback_router)
 from backend.speaking_social import router as speaking_social_router
 app.include_router(speaking_social_router)
+from backend.speaking_subscriptions import router as speaking_subscriptions_router
+app.include_router(speaking_subscriptions_router)
 from backend.speaking_placement import router as speaking_placement_router
 app.include_router(speaking_placement_router)
 from backend.speaking_writing import router as speaking_writing_router
@@ -62322,6 +62373,9 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
     my_subjects: list[str] = []
     my_avatar_url = ""
     guest_identity = None
+    current_user: dict[str, Any] | None = None
+    voice_usage_metered = False
+    voice_usage_last_charge = 0.0
 
     # Auth: Authorization header preferred (native apps set it on the
     # handshake; keeps the JWT out of proxy/access logs). The query-param
@@ -62352,6 +62406,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
         try:
             user = _user_row_from_bearer(f"Bearer {token}")
             if user:
+                current_user = user
                 my_user_id = int(user.get("id") or 0)
                 my_name = f"{user.get('first_name') or ''} {user.get('last_name') or ''}".strip() or "O'quvchi"
                 my_avatar_url = _first_existing_avatar_url(user.get("profile_image_url"), user.get("effective_profile_image_url")) or ""
@@ -62446,6 +62501,21 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
 
     try:
         while True:
+            if voice_usage_metered and current_user and time.monotonic() - voice_usage_last_charge >= 60:
+                try:
+                    from backend.speaking_subscriptions import consume_usage_windows, entitlement
+
+                    voice_access = entitlement(current_user, "voice_room")
+                    consume_usage_windows(
+                        current_user,
+                        "voice_room_minutes",
+                        {"day": voice_access.get("daily_limit"), "week": voice_access.get("weekly_limit")},
+                    )
+                    voice_usage_last_charge = time.monotonic()
+                except HTTPException as exc:
+                    await _send({"type": "error", "code": "voice_room_quota_exceeded", "message": "Ovozli xona uchun tarif limitingiz tugadi."})
+                    await websocket.close(code=4402, reason="Voice-room plan limit reached")
+                    break
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=0.2)
                 if len(data) > 262144:
@@ -62617,6 +62687,17 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                             except Exception as e:
                                 logger.error(f"Failed to send voice room telegram notification: {e}")
                             
+                    if current_room_id != room_id and current_user and my_role in {"student", "speaking_user"} and not is_homework_room and not is_study_room:
+                        from backend.speaking_subscriptions import consume_usage_windows, entitlement
+
+                        voice_access = entitlement(current_user, "voice_room")
+                        consume_usage_windows(
+                            current_user,
+                            "voice_room_minutes",
+                            {"day": voice_access.get("daily_limit"), "week": voice_access.get("weekly_limit")},
+                        )
+                        voice_usage_metered = voice_access.get("daily_limit") is not None or voice_access.get("weekly_limit") is not None
+                        voice_usage_last_charge = time.monotonic()
                     current_room_id = room_id
                     _REDIS_CLIENT.sadd(f"voice_room_peers_{room_id}", my_ws_id)
                     _REDIS_CLIENT.expire(f"voice_room_peers_{room_id}", 14400)
@@ -63054,6 +63135,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                             await _send_room_state(current_room_id)
                             
                     current_room_id = None
+                    voice_usage_metered = False
                     await _send({"type": "left_room"})
                         
             except asyncio.TimeoutError:
@@ -63066,6 +63148,7 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                         # Already removed from the room by the moderator.
                         _REDIS_CLIENT.srem(f"voice_room_admins_{current_room_id}", my_ws_id)
                         current_room_id = None
+                        voice_usage_metered = False
                     await _send(signal_msg)
                     
     except WebSocketDisconnect:

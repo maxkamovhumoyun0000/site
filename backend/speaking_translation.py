@@ -8,7 +8,7 @@ import os
 import re
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from backend.rate_limiting import consume_rate_limit
 
@@ -66,6 +66,7 @@ def _translation_redis_client():
 async def translate_speaking_text(
     payload: TranslationRequest,
     request: Request,
+    authorization: str | None = Header(default=None),
 ):
     """Translate text, preserving meaning, register, names, and formatting."""
     text = payload.text.strip()
@@ -73,6 +74,10 @@ async def translate_speaking_text(
         raise HTTPException(status_code=422, detail="Enter text to translate")
     if payload.source_language == payload.target_language:
         raise HTTPException(status_code=422, detail="Choose two different languages")
+    from backend.speaking_subscriptions import consume_usage_windows, require_feature
+
+    user = _authenticated_user(authorization)
+    decision = require_feature(user, "translator")
     allowed, retry_after = _translation_rate_allowed(request)
     if not allowed:
         raise HTTPException(
@@ -80,6 +85,11 @@ async def translate_speaking_text(
             detail="Translation limit reached. Please try again later.",
             headers={"Retry-After": str(retry_after)},
         )
+    consume_usage_windows(
+        user,
+        "translator",
+        {"day": decision.get("daily_limit"), "week": decision.get("weekly_limit")},
+    )
 
     source = LANGUAGE_NAMES[payload.source_language]
     target = LANGUAGE_NAMES[payload.target_language]
@@ -118,3 +128,11 @@ async def translate_speaking_text(
     if not result:
         raise HTTPException(status_code=503, detail="Translation is temporarily unavailable. Please retry.")
     return {"translation": result, "source_language": payload.source_language, "target_language": payload.target_language}
+
+
+def _authenticated_user(authorization: str | None) -> dict:
+    from backend.main import _require_role, _user_row_from_bearer
+
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"speaking_user", "student", "teacher", "support", "speaking_admin", "admin", "superadmin", "developer"})
+    return user

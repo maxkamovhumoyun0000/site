@@ -292,7 +292,16 @@ def _audit(lesson_id: int, actor_id: int, action: str, details: dict[str, Any] |
 @router.get("/speaking/live-lessons")
 @router.get("/api/speaking/live-lessons")
 async def list_my_live_lessons(authorization: str | None = Header(default=None)):
-    _auth(authorization)
+    user = _auth(authorization)
+    from backend.main import _role_from_login_type
+    from backend.speaking_contract import is_speaking_app_account
+    if (
+        _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
+        from backend.speaking_subscriptions import require_feature
+
+        require_feature(user, "schedule")
     ensure_live_lessons_schema()
     now = datetime.now(timezone.utc)
     conn = get_conn()

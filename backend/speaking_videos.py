@@ -274,6 +274,9 @@ async def save_speaking_video_progress(
     user = _optional_user(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "video_lessons")
     ensure_tables()
     if not _visible_video(source, video_id):
         raise HTTPException(status_code=404, detail="Video not found")
@@ -314,6 +317,9 @@ async def set_speaking_video_bookmark(
     user = _optional_user(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "video_lessons")
     ensure_tables()
     if not _visible_video(source, video_id):
         raise HTTPException(status_code=404, detail="Video not found")
@@ -345,10 +351,15 @@ async def list_speaking_videos(
     subject: str = Query(default="english", max_length=32),
     authorization: str | None = Header(default=None),
 ):
-    """Public catalogue; playback URLs are signed only for a signed-in viewer."""
+    """Paid lesson catalogue; only eligible users receive playback URLs."""
     ensure_tables()
     user = _optional_user(authorization)
-    viewer_id = int(user.get("id") or 0) if user else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Login required")
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "video_lessons")
+    viewer_id = int(user.get("id") or 0)
     items = _load(_subject_key(subject) or "english", include_drafts=False, viewer_id=viewer_id)
     return {"items": items, "requires_login": user is None}
 
@@ -359,6 +370,9 @@ async def record_speaking_video_view(source: str, video_id: int, authorization: 
     user = _optional_user(authorization)
     if not user:
         raise HTTPException(status_code=401, detail="Login required")
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "video_lessons")
     ensure_tables()
     if not _visible_video(source, video_id):
         raise HTTPException(status_code=404, detail="Video not found")

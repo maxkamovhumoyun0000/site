@@ -507,6 +507,7 @@ def _speaking_vocabulary_ai_allowed(request: Request) -> bool:
 @router.get("/speaking/vocabulary")
 async def search_speaking_vocabulary(
     request: Request,
+    authorization: str | None = Header(default=None),
     subject: str = Query(default="english"),
     query: str = Query(default="", max_length=80),
     page: int = Query(default=1, ge=1),
@@ -514,12 +515,18 @@ async def search_speaking_vocabulary(
     bank_only: bool = Query(default=False),
     after_id: int = Query(default=0, ge=0),
 ):
-    """Search the shared vocabulary bank for the anonymous Speaking app.
+    """Search the shared vocabulary bank for an authenticated Speaking learner.
 
     Existing entries return immediately. A safe missing word may use the same
     deduplicated AI bank writer as the Student app; adult/unsafe text exits
     before database lookup and before any AI provider sees it.
     """
+    from backend.speaking_subscriptions import require_feature
+    from backend.main import _require_role, _user_row_from_bearer
+
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"speaking_user", "student", "speaking_admin", "admin", "superadmin", "developer"})
+    require_feature(user, "vocabulary_search")
     requested_subject = str(subject or "english").strip().lower()
     selected_subject = "Russian" if requested_subject in {"russian", "ru"} else "English"
     normalized_query = " ".join(str(query or "").split()).strip()

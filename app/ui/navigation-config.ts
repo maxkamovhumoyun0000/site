@@ -97,7 +97,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "profile",
   ],
   media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
-  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-videos", "speaking-plan-tests", "speaking-writing", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"],
+  speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-subscriptions", "speaking-videos", "speaking-plan-tests", "speaking-writing", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"],
   developer: [
     "home",
     "developer-server",
@@ -171,6 +171,7 @@ export const SECTION_LABELS: Record<string, string> = {
   "speaking-learning-paths": "Speaking Learning Path testlari",
   "speaking-live": "Live boshqaruvi",
   "speaking-schedule": "Live darslar jadvali",
+  "speaking-subscriptions": "Speaking tarif so‘rovlari",
   "speaking-videos": "Video darslar",
   "speaking-plan-tests": "Speaking Plan testlari",
   "speaking-writing": "Writing topshiriqlari",

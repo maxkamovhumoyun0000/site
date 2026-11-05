@@ -351,6 +351,13 @@ def _scale(subject: str) -> tuple[str, float]:
 @router.post("/api/speaking/exams/start")
 async def start_speaking_exam(payload: ExamStartRequest, authorization: str | None = Header(default=None)):
     user = _user(authorization)
+    from backend.speaking_subscriptions import consume_interval_in_transaction, entitlement, require_feature
+
+    decision = None
+    if payload.kind == "challenge":
+        require_feature(user, "daily_challenge")
+    elif payload.kind == "mock":
+        decision = require_feature(user, "mock_exam")
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject = _subject_key(payload.subject)
@@ -385,6 +392,8 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
             if not steps:
                 raise HTTPException(status_code=409, detail="Mock exam is still being prepared")
             parts = 'mini' if day['kind'] == 'mini_mock' else 'full'
+        if payload.kind == "mock":
+            consume_interval_in_transaction(cur, user_id, "mock_exam", (decision or {}).get("interval_days"))
         cur.execute(
             """INSERT INTO speaking_exams (user_id, subject, kind, mode, parts, challenge_day, steps_json)
                VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id, started_at""",
@@ -690,6 +699,9 @@ async def speaking_challenge_today(
     authorization: str | None = Header(default=None),
 ):
     user = _user(authorization)
+    from backend.speaking_subscriptions import require_feature
+
+    require_feature(user, "daily_challenge")
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)

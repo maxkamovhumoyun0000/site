@@ -173,6 +173,15 @@ def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Speaking account is inactive")
     if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
         raise HTTPException(status_code=403, detail="Speaking account is unavailable")
+    from backend.main import _role_from_login_type
+    from backend.speaking_contract import is_speaking_app_account
+    if (
+        _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
+        from backend.speaking_subscriptions import require_feature
+
+        require_feature(user, "chats")
     return user
 
 

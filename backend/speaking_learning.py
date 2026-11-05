@@ -33,9 +33,17 @@ AI_CHECKED_TYPES = {
 
 
 def _user(authorization: str | None, *, staff: bool = False) -> dict[str, Any]:
-    from backend.main import _require_role, _user_row_from_bearer
+    from backend.main import _require_role, _role_from_login_type, _user_row_from_bearer
     user = _user_row_from_bearer(authorization)
     _require_role(user, STAFF_ROLES if staff else {"speaking_user", "student", "teacher", "speaking_admin", "admin", "superadmin", "developer"})
+    from backend.speaking_contract import is_speaking_app_account
+    if not staff and (
+        _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
+        or is_speaking_app_account(user.get("speaking_app_account"))
+    ):
+        from backend.speaking_subscriptions import require_feature
+
+        require_feature(user, "learning_path")
     return user
 
 
