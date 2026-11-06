@@ -21644,6 +21644,10 @@ def ensure_homework_schema() -> None:
                 ("subject", "TEXT"),
                 ("requires_voice_message", "BOOLEAN DEFAULT FALSE"),
                 ("requires_file", "BOOLEAN DEFAULT FALSE"),
+                ("requires_essay", "BOOLEAN DEFAULT FALSE"),
+                ("essay_prompt", "TEXT"),
+                ("file_prompt", "TEXT"),
+                ("voice_prompt", "TEXT"),
                 ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
                 ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
@@ -22822,6 +22826,9 @@ def create_homework(
     requires_voice_message: bool = False,
     requires_file: bool = False,
     requires_essay: bool = False,
+    essay_prompt: str | None = None,
+    file_prompt: str | None = None,
+    voice_prompt: str | None = None,
     is_voiceroom: bool = False,
     voiceroom_groups: list[dict] | None = None,
     idempotency_key: str | None = None,
@@ -22870,9 +22877,9 @@ def create_homework(
         cur.execute(
             """
             INSERT INTO web_homeworks(
-                teacher_id, student_id, group_id, target_type, homework_kind, subject, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, is_voiceroom, idempotency_key, status
+                teacher_id, student_id, group_id, target_type, homework_kind, subject, title, description, due_at, image_url, dcoin_effect, requires_voice_message, requires_file, requires_essay, essay_prompt, file_prompt, voice_prompt, is_voiceroom, idempotency_key, status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
             """,
             (
                 int(teacher_id),
@@ -22889,6 +22896,9 @@ def create_homework(
                 bool(requires_voice_message),
                 bool(requires_file),
                 bool(requires_essay),
+                str(essay_prompt or "").strip() or None,
+                str(file_prompt or "").strip() or None,
+                str(voice_prompt or "").strip() or None,
                 bool(is_voiceroom),
                 request_key,
             ),
@@ -22995,6 +23005,10 @@ def update_homework(
     homework_kind: str = "both",
     requires_voice_message: bool = False,
     requires_file: bool = False,
+    requires_essay: bool = False,
+    essay_prompt: str | None = None,
+    file_prompt: str | None = None,
+    voice_prompt: str | None = None,
 ) -> dict | None:
     ensure_homework_schema()
     normalized_kind = str(homework_kind or "both").strip().lower()
@@ -23014,6 +23028,10 @@ def update_homework(
                 dcoin_effect=?,
                 requires_voice_message=?,
                 requires_file=?,
+                requires_essay=?,
+                essay_prompt=?,
+                file_prompt=?,
+                voice_prompt=?,
                 updated_at=CURRENT_TIMESTAMP
             WHERE id=?
             """,
@@ -23026,6 +23044,10 @@ def update_homework(
                 float(dcoin_effect or 0),
                 bool(requires_voice_message),
                 bool(requires_file),
+                bool(requires_essay),
+                str(essay_prompt or "").strip() or None,
+                str(file_prompt or "").strip() or None,
+                str(voice_prompt or "").strip() or None,
                 int(homework_id),
             ),
         )

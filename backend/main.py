@@ -2388,6 +2388,13 @@ class TeacherAiGenerationRequest(BaseModel):
     count: int = Field(default=20, ge=1, le=200)
 
 
+class TeacherHomeworkTestRequest(BaseModel):
+    topic: str | None = Field(default=None, max_length=300)
+    subject: str | None = Field(default=None, max_length=40)
+    question_count: int = Field(default=5, ge=1, le=50)
+    raw_test_text: str | None = Field(default=None, max_length=30000)
+
+
 class LevelGenerationConfig(BaseModel):
     level: str
     daily_tests_count: int = Field(default=0, ge=0, le=500)
@@ -2484,6 +2491,9 @@ class HomeworkCreateRequest(BaseModel):
     requires_voice_message: bool | None = False
     requires_file: bool | None = False
     requires_essay: bool | None = False
+    essay_prompt: str | None = Field(default=None, max_length=4000)
+    file_prompt: str | None = Field(default=None, max_length=4000)
+    voice_prompt: str | None = Field(default=None, max_length=4000)
     is_voiceroom: bool | None = False
     voiceroom_groups: list[dict] | None = None
     dcoin_effect: float = Field(default=0.0, ge=-500.0, le=500.0)
@@ -27275,11 +27285,16 @@ class DiamondVoyWizardActionRequest(BaseModel):
     deadline_iso: str | None = None
     title: str | None = None
     description: str | None = None
+    essay_prompt: str | None = None
+    file_prompt: str | None = None
+    voice_prompt: str | None = None
     manual_test: list[dict] | None = None
     instruction: str | None = None
     topic: str | None = None
     question_count: int | None = None
-    raw_test_text: str | None = None
+    raw_test_text: str | None = Field(default=None, max_length=30000)
+    pair_index: int | None = Field(default=None, ge=0, le=500)
+    other_pair_index: int | None = Field(default=None, ge=0, le=500)
 
 import os
 import json
@@ -27305,6 +27320,9 @@ def _get_homework_wizard_state(chat_id: int, user_id: int) -> dict:
         "deadline_iso": None,
         "title": None,
         "description": None,
+        "essay_prompt": None,
+        "file_prompt": None,
+        "voice_prompt": None,
         "manual_test": None,
     }
 
@@ -27323,6 +27341,7 @@ async def diamondvoy_homework_start(chat_id: int, authorization: str | None = He
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"teacher", "support"})
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     key = f"{chat_id}_{user_id}"
     # Non-destructive: only seed a fresh draft if none exists yet. Every
     # client (app + site) calls this endpoint on every wizard-card mount —
@@ -27396,6 +27415,7 @@ async def diamondvoy_homework_state(chat_id: int, authorization: str | None = He
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher", "support"})
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     return {"ok": True, "state": _get_homework_wizard_state(chat_id, user_id)}
 
 @app.post("/chats/diamondvoy/{chat_id}/homework/action")
@@ -27403,6 +27423,7 @@ async def diamondvoy_homework_action(chat_id: int, payload: DiamondVoyWizardActi
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher", "support"})
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     state = _get_homework_wizard_state(chat_id, user_id)
     
     if payload.action == "select_target":
@@ -27418,9 +27439,28 @@ async def diamondvoy_homework_action(chat_id: int, payload: DiamondVoyWizardActi
         state["content_types"] = payload.content_types or []
         state["step"] = "details"
     elif payload.action == "set_details":
+        if not str(payload.title or "").strip() or not str(payload.deadline_iso or "").strip():
+            raise HTTPException(status_code=422, detail="Homework title and deadline are required")
+        content_types = state.get("content_types") or []
+        if "text" in content_types and not str(payload.essay_prompt or "").strip() and not str(payload.description or "").strip():
+            raise HTTPException(status_code=422, detail="Written task instructions are required")
+        if ("image" in content_types or "file" in content_types) and not str(payload.file_prompt or "").strip() and not str(payload.description or "").strip():
+            raise HTTPException(status_code=422, detail="File task instructions are required")
+        if "voice" in content_types and not str(payload.voice_prompt or "").strip() and not str(payload.description or "").strip():
+            raise HTTPException(status_code=422, detail="Voice task instructions are required")
         state["deadline_iso"] = payload.deadline_iso
         state["title"] = payload.title
-        state["description"] = payload.description
+        state["essay_prompt"] = payload.essay_prompt
+        state["file_prompt"] = payload.file_prompt
+        state["voice_prompt"] = payload.voice_prompt
+        state["description"] = " — ".join(
+            value for value in [
+                str(payload.title or "").strip(),
+                str(payload.essay_prompt or "").strip(),
+                str(payload.file_prompt or "").strip(),
+                str(payload.voice_prompt or "").strip(),
+            ] if value
+        )
         if "test" in state["content_types"] or "ai_test" in state["content_types"]:
             state["step"] = "test"
         else:
@@ -27504,6 +27544,20 @@ async def diamondvoy_homework_action(chat_id: int, payload: DiamondVoyWizardActi
                     vg["student2_name"] = str(chunk[1].get("first_name") or "")
                 vgs.append(vg)
             state["voiceroom_groups"] = vgs
+    elif payload.action == "swap_voiceroom_pair":
+        groups = state.get("voiceroom_groups") or []
+        first = int(payload.pair_index if payload.pair_index is not None else -1)
+        second = int(payload.other_pair_index if payload.other_pair_index is not None else -1)
+        if first < 0 or second < 0 or first >= len(groups) or second >= len(groups) or first == second:
+            raise HTTPException(status_code=422, detail="Invalid VoiceRoom pair selection")
+        first_group = dict(groups[first])
+        second_group = dict(groups[second])
+        first_id, first_name = first_group.get("student1_id"), first_group.get("student1_name")
+        second_id, second_name = second_group.get("student1_id"), second_group.get("student1_name")
+        first_group["student1_id"], first_group["student1_name"] = second_id, second_name
+        second_group["student1_id"], second_group["student1_name"] = first_id, first_name
+        groups[first], groups[second] = first_group, second_group
+        state["voiceroom_groups"] = groups
     
     _save_homework_wizard_state(chat_id, user_id, state)
     return {"ok": True, "state": state}
@@ -27543,14 +27597,32 @@ def _clean_and_dedup_quiz_options(options: list[Any], correct_answer: str = "") 
 
     return cleaned[:4], matched
 
+
+def _required_quiz_correct_index(item: dict[str, Any]) -> int:
+    """Reject missing answer keys instead of silently marking option A correct."""
+    try:
+        index = int(item.get("correct_option_index"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AI did not provide a valid correct answer index") from exc
+    if index < 0 or index > 3:
+        raise ValueError("AI returned a correct answer index outside 0-3")
+    return index
+
 @app.post("/chats/diamondvoy/{chat_id}/homework/generate-test")
 async def diamondvoy_homework_generate_test(chat_id: int, payload: DiamondVoyWizardActionRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
-    _require_role(user, {"teacher", "support"})
+    role = _require_role(user, {"teacher", "support"})
+    _ensure_teacher_ai_permission(user)
+    _enforce_ai_generator_rate_limit(user, "teacher")
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     state = _get_homework_wizard_state(chat_id, user_id)
+    topic = str(payload.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="A test topic is required")
+    question_count = max(1, min(50, int(payload.question_count or 5)))
     
-    prompt = f"Generate {payload.question_count or 5} multiple-choice questions for the topic: {payload.topic}.\nThe language of the questions and options MUST match the language of the topic (e.g. if the topic is in Russian, generate in Russian; if in Uzbek, generate in Uzbek). Provide the response as a JSON array of objects with 'question', 'options' (array of 4 strings), and 'correct_option_index' (0-3)."
+    prompt = f"Generate exactly {question_count} multiple-choice questions for the topic: {topic}.\nThe language of the questions and options MUST match the language of the topic. Determine the correct answer for each question from its content. Provide a JSON array of objects with question, four options, and a mandatory correct_option_index (0-3); never omit it or assume index 0."
     import aiohttp
     async with aiohttp.ClientSession() as session:
         gen = await _xai_generate_text(prompt, session=session, system_content="You are an educational content creator. Output only valid JSON without markdown wrapping.")
@@ -27564,7 +27636,7 @@ async def diamondvoy_homework_generate_test(chat_id: int, payload: DiamondVoyWiz
         norm_q = []
         for q in questions:
             opts, _ = _clean_and_dedup_quiz_options(q.get("options", []), "")
-            coi = max(0, min(len(opts) - 1, int(q.get("correct_option_index", 0))))
+            coi = _required_quiz_correct_index(q)
             norm_q.append({
                 "question": q.get("question", ""),
                 "options": opts,
@@ -27581,13 +27653,16 @@ async def diamondvoy_homework_generate_test(chat_id: int, payload: DiamondVoyWiz
 async def diamondvoy_homework_modify_test(chat_id: int, payload: DiamondVoyWizardActionRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher", "support"})
+    _ensure_teacher_ai_permission(user)
+    _enforce_ai_generator_rate_limit(user, "teacher")
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     state = _get_homework_wizard_state(chat_id, user_id)
     
     if not state.get("manual_test"):
         raise HTTPException(status_code=400, detail="No test to modify")
         
-    prompt = f"Here is an existing JSON test: {json.dumps(state['manual_test'])}\nInstruction: {payload.instruction}\nOutput the modified test as a JSON array of objects with 'question', 'options' (array of 4 strings), and 'correct_option_index' (0-3)."
+    prompt = f"Here is an existing JSON test: {json.dumps(state['manual_test'])}\nInstruction: {payload.instruction}\nOutput the modified test as a JSON array of objects with 'question', 'options' (array of 4 strings), and a mandatory correct_option_index (0-3) for every question. Determine the correct answer; never assume index 0."
     import aiohttp
     async with aiohttp.ClientSession() as session:
         gen = await _xai_generate_text(prompt, session=session, system_content="You are an educational content creator. Output only valid JSON without markdown wrapping.")
@@ -27603,7 +27678,7 @@ async def diamondvoy_homework_modify_test(chat_id: int, payload: DiamondVoyWizar
             norm_q.append({
                 "question": q.get("question", ""),
                 "options": q.get("options", ["A", "B", "C", "D"])[:4],
-                "correct_option_index": max(0, min(3, int(q.get("correct_option_index", 0))))
+                "correct_option_index": _required_quiz_correct_index(q)
             })
         state["manual_test"] = norm_q
         _save_homework_wizard_state(chat_id, user_id, state)
@@ -27615,13 +27690,16 @@ async def diamondvoy_homework_modify_test(chat_id: int, payload: DiamondVoyWizar
 async def diamondvoy_homework_parse_test(chat_id: int, payload: DiamondVoyWizardActionRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"teacher", "support"})
+    _ensure_teacher_ai_permission(user)
+    _enforce_ai_generator_rate_limit(user, "teacher")
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     state = _get_homework_wizard_state(chat_id, user_id)
     
     if not payload.raw_test_text:
         raise HTTPException(status_code=400, detail="No raw test text provided")
         
-    prompt = f"Parse the following raw test text into a JSON array of objects with 'question', 'options' (array of 4 strings), and 'correct_option_index' (0-3). Try to infer the correct option if it is marked (e.g. with a star or tick), otherwise default to 0. Raw test text:\n\n{payload.raw_test_text}"
+    prompt = f"Parse the following raw test text into a JSON array of objects with 'question', 'options' (array of 4 strings), and a mandatory 'correct_option_index' (0-3). Use a visibly marked key when present; otherwise infer the correct answer from the question and options. Never omit the index or assume option 0. Raw test text:\n\n{payload.raw_test_text}"
     import aiohttp
     async with aiohttp.ClientSession() as session:
         gen = await _xai_generate_text(prompt, session=session, system_content="You are an educational content creator. Output only valid JSON without markdown wrapping.")
@@ -27635,7 +27713,7 @@ async def diamondvoy_homework_parse_test(chat_id: int, payload: DiamondVoyWizard
         norm_q = []
         for q in questions:
             opts, _ = _clean_and_dedup_quiz_options(q.get("options", []), "")
-            coi = max(0, min(len(opts) - 1, int(q.get("correct_option_index", 0))))
+            coi = _required_quiz_correct_index(q)
             norm_q.append({
                 "question": q.get("question", ""),
                 "options": opts,
@@ -27648,6 +27726,107 @@ async def diamondvoy_homework_parse_test(chat_id: int, payload: DiamondVoyWizard
     except Exception as e:
         raise HTTPException(status_code=400, detail="Failed to parse test: " + str(e))
     return {"ok": True, "state": state}
+
+
+async def _teacher_homework_test_questions(prompt: str) -> list[dict[str, Any]]:
+    """Generate or parse a teacher's quiz without creating a Diamondvoy chat."""
+    import aiohttp
+    async with aiohttp.ClientSession() as session:
+        generated = await _xai_generate_text(
+            prompt,
+            session=session,
+            system_content=(
+                "You are an educational assessment assistant. Return only a valid JSON array. "
+                "Each item must contain question, options (exactly four strings), and "
+                "correct_option_index (integer 0-3). Do not add markdown or commentary."
+            ),
+        )
+    raw_json = str(generated or "").strip()
+    match = re.search(r"\[.*\]", raw_json, re.DOTALL)
+    if match:
+        raw_json = match.group(0)
+    parsed = json.loads(raw_json)
+    if not isinstance(parsed, list) or not parsed:
+        raise ValueError("No questions returned")
+    normalized: list[dict[str, Any]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        options, _ = _clean_and_dedup_quiz_options(item.get("options") or [], "")
+        try:
+            correct_index = _required_quiz_correct_index(item)
+        except ValueError:
+            continue
+        normalized.append({
+            "question": question,
+            "options": options,
+            "correct_option_index": correct_index,
+        })
+    if not normalized:
+        raise ValueError("No valid questions returned")
+    return normalized
+
+
+@app.post("/teacher/homework/test/generate")
+async def teacher_homework_test_generate(
+    payload: TeacherHomeworkTestRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    _ensure_teacher_ai_permission(user)
+    _enforce_ai_generator_rate_limit(user, "teacher")
+    topic = str(payload.topic or "").strip()
+    if not topic:
+        raise HTTPException(status_code=422, detail="A test topic is required")
+    subject = _require_teacher_generator_subject(user, payload.subject) if payload.subject else ""
+    subject_hint = f"Subject: {subject}. " if subject else ""
+    prompt = (
+        f"{subject_hint}Create exactly {payload.question_count} multiple-choice questions "
+        f"about this topic: {topic}. Write questions and options in the same language "
+        "as the topic/subject. Make distractors plausible and ensure one unambiguous "
+        "correct answer per question. Return a JSON array with question, four options, "
+        "and a mandatory correct_option_index (0-3). Never omit the key."
+    )
+    try:
+        questions = await _teacher_homework_test_questions(prompt)
+    except Exception as exc:
+        logger.exception("teacher.homework_test.generate_failed teacher_id=%s", user.get("id"))
+        raise HTTPException(status_code=502, detail="Could not generate the test. Please try again.") from exc
+    return {"questions": questions}
+
+
+@app.post("/teacher/homework/test/parse")
+async def teacher_homework_test_parse(
+    payload: TeacherHomeworkTestRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"teacher"})
+    _ensure_teacher_ai_permission(user)
+    _enforce_ai_generator_rate_limit(user, "teacher")
+    raw_text = str(payload.raw_test_text or "").strip()
+    if not raw_text:
+        raise HTTPException(status_code=422, detail="Paste test text to parse")
+    subject = _require_teacher_generator_subject(user, payload.subject) if payload.subject else ""
+    subject_hint = f"The subject is {subject}. Preserve the source language. " if subject else "Preserve the source language. "
+    prompt = (
+        "Extract multiple-choice questions from this teacher-provided test. "
+        f"{subject_hint}Return only a JSON array. Each item must contain question, "
+        "four options, and a mandatory correct_option_index (0-3). Use a marked correct answer when present; "
+        "otherwise infer it from the question and options, never omit the index or assume option 0. "
+        "Do not invent extra questions. Source text:\n\n"
+        f"{raw_text}"
+    )
+    try:
+        questions = await _teacher_homework_test_questions(prompt)
+    except Exception as exc:
+        logger.exception("teacher.homework_test.parse_failed teacher_id=%s", user.get("id"))
+        raise HTTPException(status_code=422, detail="Could not parse questions from that text.") from exc
+    return {"questions": questions}
 
 class StudentQuizGenerateRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=300)
@@ -27758,10 +27937,11 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"teacher", "support"})
     user_id = int(user.get("id") or 0)
+    _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     key = f"{chat_id}_{user_id}"
     state = _get_homework_wizard_state(chat_id, user_id)
     
-    if not state.get("target_id") or not state.get("deadline_iso") or not state.get("description"):
+    if not state.get("target_id") or not state.get("deadline_iso") or not state.get("title"):
         raise HTTPException(status_code=400, detail="Missing required homework fields")
         
     c_types = state.get("content_types") or []
@@ -27775,7 +27955,7 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
     else:
         hk_kind = "list"
         
-    req_file = "image" in c_types or "file" in c_types or "text" in c_types
+    req_file = "image" in c_types or "file" in c_types
     req_voice = "voice" in c_types
     is_voiceroom = "voiceroom" in c_types
     
@@ -27810,7 +27990,7 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
         teacher_id=user_id,
         student_id=student_id,
         title=state.get("title") or "DiamondVoy Homework",
-        description=state["description"],
+        description=state.get("description") or str(state.get("title") or "DiamondVoy Homework"),
         due_at=state["deadline_iso"],
         image_url=None,
         dcoin_effect=0.0,
@@ -27818,6 +27998,10 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
         homework_kind=hk_kind,
         requires_voice_message=req_voice,
         requires_file=req_file,
+        requires_essay="text" in c_types,
+        essay_prompt=state.get("essay_prompt"),
+        file_prompt=state.get("file_prompt"),
+        voice_prompt=state.get("voice_prompt"),
         is_voiceroom=is_voiceroom,
         voiceroom_groups=voiceroom_groups,
     )
@@ -38429,8 +38613,17 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
+    if payload.requires_essay and not str(payload.essay_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="Written task instructions are required")
+    if payload.requires_file and not str(payload.file_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="File task instructions are required")
+    if payload.requires_voice_message and not str(payload.voice_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="Voice task instructions are required")
     if not description:
-        description = title
+        description = " — ".join(
+            value for value in [title, str(payload.essay_prompt or "").strip(), str(payload.file_prompt or "").strip(), str(payload.voice_prompt or "").strip()]
+            if value
+        )
     audience_count = 0
     if group_id > 0:
         group = _safe_call(lambda: get_group(group_id), None)
@@ -38485,6 +38678,9 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
             requires_voice_message=payload.requires_voice_message or False,
             requires_file=payload.requires_file or False,
             requires_essay=payload.requires_essay or False,
+            essay_prompt=payload.essay_prompt,
+            file_prompt=payload.file_prompt,
+            voice_prompt=payload.voice_prompt,
             is_voiceroom=payload.is_voiceroom or False,
             voiceroom_groups=voiceroom_groups,
             idempotency_key=payload.idempotency_key,
@@ -38539,8 +38735,17 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
+    if payload.requires_essay and not str(payload.essay_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="Written task instructions are required")
+    if payload.requires_file and not str(payload.file_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="File task instructions are required")
+    if payload.requires_voice_message and not str(payload.voice_prompt or "").strip() and not description:
+        raise HTTPException(status_code=422, detail="Voice task instructions are required")
     if not description:
-        description = title
+        description = " — ".join(
+            value for value in [title, str(payload.essay_prompt or "").strip(), str(payload.file_prompt or "").strip(), str(payload.voice_prompt or "").strip()]
+            if value
+        )
     if not due_at:
         raise HTTPException(status_code=400, detail="Homework deadline is required")
     try:
@@ -38555,6 +38760,9 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
             requires_voice_message=payload.requires_voice_message or False,
             requires_file=payload.requires_file or False,
             requires_essay=payload.requires_essay or False,
+            essay_prompt=payload.essay_prompt,
+            file_prompt=payload.file_prompt,
+            voice_prompt=payload.voice_prompt,
             is_voiceroom=payload.is_voiceroom or False,
         )
     except Exception as exc:
@@ -38632,12 +38840,20 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
         teacher_id = int(homework.get("teacher_id") or 0)
         title = str(homework.get("title") or "")
         description = str(homework.get("description") or homework.get("content") or "")
+        essay_prompt = str(homework.get("essay_prompt") or "").strip()
+        file_prompt = str(homework.get("file_prompt") or "").strip()
+        voice_prompt = str(homework.get("voice_prompt") or "").strip()
 
         req_voice = bool(homework.get("requires_voice_message"))
         req_file = bool(homework.get("requires_file"))
         req_essay = bool(homework.get("requires_essay"))
         is_voiceroom = bool(homework.get("is_voiceroom"))
         hw_kind = str(homework.get("homework_kind") or "both").lower()
+
+        # VoiceRoom homework is a live paired activity, not an AI-graded
+        # submission. Its completion is determined by the recorded room state.
+        if is_voiceroom:
+            return False
 
         note = str(submission.get("note") or "").strip()
         voice_url = str(submission.get("voice_message_url") or "").strip()
@@ -38732,6 +38948,9 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
 O'QITUVCHI TARAFIYIDAN BERILGAN TOPSHIRIQ VA KO'RSATMALAR:
 - Topshiriq nomi / mavzusi: {title}
 - Topshiriq ko'rsatmasi (Teacher instructions): {description if description else "(Ko'rsatma yo'q)"}
+- Yozma javobning alohida mavzusi: {essay_prompt if essay_prompt else "(Ko'rsatilmagan)"}
+- Rasm/fayl bilan bajariladigan aniq vazifa: {file_prompt if file_prompt else "(Ko'rsatilmagan)"}
+- Ovozli javobning alohida mavzusi: {voice_prompt if voice_prompt else "(Ko'rsatilmagan)"}
 - Majburiy talablar:
   * Yozma esse/javob majburiymi: {"HA (MAJBURIY)" if req_essay else "Yo'q"}
   * Ovozli xabar (voice message) majburiymi: {"HA (MAJBURIY)" if req_voice else "Yo'q"}
@@ -38760,7 +38979,7 @@ Rasm/fayllardan ko'rilgan dalil:
 {voiceroom_info}
 
 QATTIQQOL BAHOLASH QOIDALARI:
-1. MAZMUN VA TOPSHIRIQ KO'RSATMASIGA MOSLIK (CRITICAL): O'quvchi yozgan matnni ({note}) o'qituvchining vazifa ko'rsatmasi ({description}) va mavzusiga ({title}) TAQQOSLANG!
+1. MAZMUN VA TOPSHIRIQ KO'RSATMASIGA MOSLIK (CRITICAL): O'quvchi yozgan matnni ({note}) homework_id={homework_id} uchun saqlangan vazifa ko'rsatmasi ({description}), yozma mavzu ({essay_prompt}) va nomi ({title}) bilan TAQQOSLANG. Har bir o'quvchi uchun bir xil homework ko'rsatmasidan foydalaning; oldingi o'quvchining javobini mezon sifatida ishlatmang.
    - Agar o'quvchi shunchaki ma'nosiz harflar ("asdf", "qqq", "123"), "bajarildi", "ok", "hello" kabi yuzaki o'ta qisqa (<10 so'z) matn, yoki topshiriq mavzusiga umuman aloqasiz matn yuborgan bo'lsa:
      "score": 0..20, "accepted": false, "feedback": "Topshiriq matni o'qituvchi bergan ko'rsatmaga javob bermaydi yoki ma'nosiz. Qayta bajaring!"
 2. MAJBURITY TALABLAR YETISHMASLIGI: Agar majburiy rasm, majburiy voice yoki majburiy esse yuborilmagan bo'lsa, "score": 0..40, "accepted": false.

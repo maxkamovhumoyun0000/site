@@ -932,10 +932,15 @@ function DiamondVoyHomeworkWizard({
   const [error, setError] = useState("");
 
   const [selTarget, setSelTarget] = useState("");
+  const [targetSearch, setTargetSearch] = useState("");
   const [contentTypes, setContentTypes] = useState<string[]>([]);
+  const [configType, setConfigType] = useState<string | null>(null);
+  const [configPrompt, setConfigPrompt] = useState("");
   const [deadline, setDeadline] = useState("");
   const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [essayPrompt, setEssayPrompt] = useState("");
+  const [filePrompt, setFilePrompt] = useState("");
+  const [voicePrompt, setVoicePrompt] = useState("");
   const [manualTest, setManualTest] = useState<any[]>([]);
   
   // AI Gen fields
@@ -944,6 +949,34 @@ function DiamondVoyHomeworkWizard({
   const [qCount, setQCount] = useState("5");
   const [modifyInstruction, setModifyInstruction] = useState("");
   const [rawTestText, setRawTestText] = useState("");
+  const filteredTargets = targets.filter((target) => {
+    const query = targetSearch.trim().toLowerCase();
+    return !query || `${target.name || ""} ${target.subject || ""} ${target.label || ""}`.toLowerCase().includes(query);
+  });
+
+  function openTypeConfig(type: string) {
+    if (type === "voiceroom" || type === "test") {
+      setContentTypes((current) => current.includes(type)
+        ? current.filter((item) => item !== type)
+        : type === "voiceroom" ? ["voiceroom"] : [...current.filter((item) => item !== "voiceroom"), type]);
+      return;
+    }
+    if (contentTypes.includes(type)) {
+      setContentTypes((current) => current.filter((item) => item !== type));
+      return;
+    }
+    setConfigPrompt(type === "text" ? essayPrompt : type === "voice" ? voicePrompt : filePrompt);
+    setConfigType(type);
+  }
+
+  function saveTypeConfig() {
+    if (!configType || !configPrompt.trim()) return;
+    if (configType === "text") setEssayPrompt(configPrompt.trim());
+    else if (configType === "voice") setVoicePrompt(configPrompt.trim());
+    else setFilePrompt(configPrompt.trim());
+    setContentTypes((current) => [...new Set([...current.filter((item) => item !== "voiceroom"), configType])]);
+    setConfigType(null);
+  }
   useEffect(() => {
     let active = true;
     setLoading(true);
@@ -1009,13 +1042,14 @@ function DiamondVoyHomeworkWizard({
         {state.step === "target" && (
           <div className="space-y-2">
             <label className="block font-medium">{tt("chat.wizard.selectTarget", "Guruh yoki o'quvchini tanlang")}</label>
+            <input value={targetSearch} onChange={(e) => setTargetSearch(e.target.value)} placeholder="Guruh yoki o‘quvchini qidiring" className="w-full px-3 py-2 border border-line dark:border-white/10 rounded-xl bg-transparent" />
             <select
               value={selTarget}
               onChange={(e) => setSelTarget(e.target.value)}
               className="w-full px-3 py-2 border border-line dark:border-white/10 rounded-xl bg-transparent"
             >
               <option value="">-- Tanlang --</option>
-              {targets.map((t, idx) => (
+              {filteredTargets.map((t, idx) => (
                 <option key={idx} value={JSON.stringify(t)}>
                   {t.type === "group" ? `Guruh: ${t.name}` : `O'quvchi: ${t.name} (${t.label})`}
                 </option>
@@ -1045,22 +1079,7 @@ function DiamondVoyHomeworkWizard({
             <div className="flex flex-col gap-2">
               {["text", "image", "file", "voice", "voiceroom", "test"].map((ct) => (
                 <label key={ct} className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={contentTypes.includes(ct)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        if (ct === "voiceroom") {
-                          setContentTypes(["voiceroom"]);
-                        } else {
-                          setContentTypes([...contentTypes.filter((x) => x !== "voiceroom"), ct]);
-                        }
-                      } else {
-                        setContentTypes(contentTypes.filter((x) => x !== ct));
-                      }
-                    }}
-                    className="w-4 h-4 rounded text-cyan-500"
-                  />
+                  <input type="checkbox" checked={contentTypes.includes(ct)} onChange={() => openTypeConfig(ct)} className="w-4 h-4 rounded text-cyan-500" />
                   <span>{ct.replace("_", " ").toUpperCase()}</span>
                 </label>
               ))}
@@ -1096,18 +1115,10 @@ function DiamondVoyHomeworkWizard({
                 className="w-full px-3 py-2 border border-line dark:border-white/10 rounded-xl bg-transparent"
               />
             </div>
-            <div>
-              <label className="block font-medium mb-1">{tt("chat.wizard.desc", "Tavsif")}</label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                rows={3}
-                className="w-full px-3 py-2 border border-line dark:border-white/10 rounded-xl bg-transparent"
-              />
-            </div>
+            <div className="rounded-xl bg-surface-soft dark:bg-white/5 p-3 text-xs">{contentTypes.filter((type) => !["test", "voiceroom"].includes(type)).map((type) => type === "text" ? essayPrompt : type === "voice" ? voicePrompt : filePrompt).filter(Boolean).join(" · ") || "Ko‘rsatmalar tanlangan vazifa turlariga biriktiriladi."}</div>
             <button
-              disabled={!deadline || !title.trim() || !description.trim() || loading}
-              onClick={() => handleAction("action", { action: "set_details", deadline_iso: new Date(deadline).toISOString(), title, description })}
+              disabled={!deadline || !title.trim() || loading || (contentTypes.includes("text") && !essayPrompt.trim()) || ((contentTypes.includes("image") || contentTypes.includes("file")) && !filePrompt.trim()) || (contentTypes.includes("voice") && !voicePrompt.trim())}
+              onClick={() => handleAction("action", { action: "set_details", deadline_iso: new Date(deadline).toISOString(), title, essay_prompt: essayPrompt, file_prompt: filePrompt, voice_prompt: voicePrompt })}
               className="w-full px-4 py-2 bg-cyan-500 text-white font-bold rounded-xl disabled:opacity-50"
             >
               {tt("chat.wizard.next", "Keyingisi")}
@@ -1232,6 +1243,16 @@ function DiamondVoyHomeworkWizard({
                   {state.voiceroom_groups.map((vg: any, idx: number) => (
                     <div key={idx} className="bg-white/5 p-2 rounded border border-white/10 text-xs">
                       {vg.student1_name} + {vg.student2_name || "(None)"} {vg.student3_name ? ` + ${vg.student3_name}` : ""}
+                      {state.voiceroom_groups.length > 1 ? (
+                        <select aria-label={`Juftlik ${idx + 1} ni almashtirish`} defaultValue="" disabled={loading} className="mt-2 w-full rounded-lg border border-line bg-transparent px-2 py-1 dark:border-white/10" onChange={(event) => {
+                          const other = Number(event.target.value);
+                          if (Number.isInteger(other) && other >= 0) handleAction("action", { action: "swap_voiceroom_pair", pair_index: idx, other_pair_index: other });
+                          event.currentTarget.value = "";
+                        }}>
+                          <option value="">Juftlikni almashtirish…</option>
+                          {state.voiceroom_groups.map((_: any, otherIndex: number) => otherIndex !== idx ? <option key={otherIndex} value={otherIndex}>Juftlik {otherIndex + 1} bilan</option> : null)}
+                        </select>
+                      ) : null}
                     </div>
                   ))}
                 </div>
@@ -1254,6 +1275,19 @@ function DiamondVoyHomeworkWizard({
           </div>
         )}
       </div>
+      {configType ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" onClick={() => setConfigType(null)}>
+          <section role="dialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl dark:bg-[#1A2332]" onClick={(event) => event.stopPropagation()}>
+            <h5 className="font-bold">{configType === "text" ? "Yozma javob ko‘rsatmasi" : configType === "voice" ? "Ovozli javob mavzusi" : "Rasm yoki fayl topshirig‘i"}</h5>
+            <p className="mt-1 text-xs text-ink-500">{configType === "text" ? "Mavzu, hajm va talablarni kiriting." : configType === "voice" ? "O‘quvchi nima haqida gapirishini belgilang." : "O‘quvchi nima yuborishi kerakligini yozing."}</p>
+            <textarea value={configPrompt} onChange={(event) => setConfigPrompt(event.target.value)} rows={5} className="mt-4 w-full rounded-xl border border-line bg-transparent p-3 dark:border-white/10" />
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="rounded-xl border border-line px-4 py-2 dark:border-white/10" onClick={() => setConfigType(null)}>Bekor qilish</button>
+              <button type="button" className="rounded-xl bg-cyan-500 px-4 py-2 font-bold text-white disabled:opacity-50" disabled={!configPrompt.trim()} onClick={saveTypeConfig}>Saqlash</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StrictInt
 
 from db import get_conn
 from speaking_contract import is_speaking_app_account
@@ -78,6 +78,23 @@ def ensure_tables() -> None:
             """CREATE UNIQUE INDEX IF NOT EXISTS uq_speaking_subscription_pending_user
                ON speaking_subscription_requests(user_id) WHERE status='pending'"""
         )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_subscription_prices (
+                plan_code TEXT NOT NULL,
+                term_code TEXT NOT NULL,
+                price_uzs BIGINT NOT NULL CHECK (price_uzs >= 0),
+                updated_by BIGINT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY(plan_code, term_code)
+            )"""
+        )
+        for plan_code, plan in PLANS.items():
+            for term_code, price in plan["prices"].items():
+                cur.execute(
+                    """INSERT INTO speaking_subscription_prices(plan_code,term_code,price_uzs)
+                       VALUES(%s,%s,%s) ON CONFLICT(plan_code,term_code) DO NOTHING""",
+                    (plan_code, term_code, int(price)),
+                )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_entitlement_usage (
                 user_id BIGINT NOT NULL,
@@ -360,6 +377,11 @@ def _status_payload(user: dict[str, Any]) -> dict[str, Any]:
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices")
+        prices = {
+            (str(row["plan_code"]), str(row["term_code"])): int(row["price_uzs"])
+            for row in cur.fetchall()
+        }
         cur.execute("SELECT id, plan_code, term_code, amount_uzs, status, created_at FROM speaking_subscription_requests WHERE user_id=%s ORDER BY id DESC LIMIT 1", (uid,))
         request = cur.fetchone()
         features = {name: entitlement(user, name, plan_record=plan) for name in (
@@ -375,7 +397,7 @@ def _status_payload(user: dict[str, Any]) -> dict[str, Any]:
             "request": dict(request) if request else None,
             "plans": [
                 {"code": code, "name": value["name"], "terms": [
-                    {"code": term, "label": TERMS[term]["label"], "days": TERMS[term]["days"], "price_uzs": price}
+                {"code": term, "label": TERMS[term]["label"], "days": TERMS[term]["days"], "price_uzs": prices.get((code, term), int(price))}
                     for term, price in value["prices"].items()
                 ]}
                 for code, value in PLANS.items()
@@ -403,7 +425,6 @@ class PlanRequest(BaseModel):
 async def create_speaking_subscription_request(payload: PlanRequest, authorization: str | None = Header(default=None)):
     user = _user(authorization)
     ensure_tables()
-    amount = int(PLANS[payload.plan_code]["prices"][payload.term_code])
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -411,9 +432,22 @@ async def create_speaking_subscription_request(payload: PlanRequest, authorizati
             "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
             ("speaking-subscription-request", str(int(user["id"]))),
         )
-        cur.execute("SELECT id FROM speaking_subscription_requests WHERE user_id=%s AND status='pending' LIMIT 1", (int(user["id"]),))
-        if cur.fetchone():
-            raise HTTPException(status_code=409, detail={"code": "subscription_request_pending"})
+        cur.execute(
+            "SELECT id,plan_code,term_code,amount_uzs,status,created_at FROM speaking_subscription_requests WHERE user_id=%s AND status='pending' ORDER BY id DESC LIMIT 1",
+            (int(user["id"]),),
+        )
+        existing = cur.fetchone()
+        if existing:
+            conn.commit()
+            return {"request": dict(existing), "duplicate": True}
+        cur.execute(
+            "SELECT price_uzs FROM speaking_subscription_prices WHERE plan_code=%s AND term_code=%s",
+            (payload.plan_code, payload.term_code),
+        )
+        price_row = cur.fetchone()
+        if not price_row:
+            raise HTTPException(status_code=503, detail={"code": "subscription_price_unavailable"})
+        amount = int(dict(price_row)["price_uzs"])
         cur.execute(
             """INSERT INTO speaking_subscription_requests(user_id,plan_code,term_code,amount_uzs)
                VALUES(%s,%s,%s,%s) RETURNING id,plan_code,term_code,amount_uzs,status,created_at""",
@@ -421,7 +455,71 @@ async def create_speaking_subscription_request(payload: PlanRequest, authorizati
         )
         row = dict(cur.fetchone())
         conn.commit()
-        return {"request": row}
+        return {"request": row, "duplicate": False}
+    except HTTPException:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+class SubscriptionPriceMatrix(BaseModel):
+    prices: dict[str, dict[str, StrictInt]]
+
+
+def _price_matrix(cur: Any) -> dict[str, dict[str, int]]:
+    cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices ORDER BY plan_code,term_code")
+    return _group_prices(cur.fetchall())
+
+
+def _group_prices(rows: list[Any]) -> dict[str, dict[str, int]]:
+    grouped: dict[str, dict[str, int]] = {}
+    for row in rows:
+        data = dict(row)
+        grouped.setdefault(str(data["plan_code"]), {})[str(data["term_code"])] = int(data["price_uzs"])
+    return grouped
+
+
+@router.get("/staff/speaking/subscription-prices")
+async def get_speaking_subscription_prices(authorization: str | None = Header(default=None)):
+    _speaking_admin(authorization)
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        return {"prices": _price_matrix(cur), "terms": TERMS}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@router.put("/staff/speaking/subscription-prices")
+async def update_speaking_subscription_prices(payload: SubscriptionPriceMatrix, authorization: str | None = Header(default=None)):
+    admin = _speaking_admin(authorization)
+    ensure_tables()
+    expected_plans = set(PLANS)
+    expected_terms = set(TERMS)
+    if set(payload.prices) != expected_plans:
+        raise HTTPException(status_code=422, detail={"code": "invalid_plan_codes"})
+    for plan_code, terms in payload.prices.items():
+        if set(terms) != expected_terms or any(isinstance(price, bool) or price < 0 or price > 100_000_000 for price in terms.values()):
+            raise HTTPException(status_code=422, detail={"code": "invalid_subscription_prices", "plan_code": plan_code})
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("speaking-subscription-prices",))
+        for plan_code, terms in payload.prices.items():
+            for term_code, price in terms.items():
+                cur.execute(
+                    """INSERT INTO speaking_subscription_prices(plan_code,term_code,price_uzs,updated_by,updated_at)
+                       VALUES(%s,%s,%s,%s,NOW()) ON CONFLICT(plan_code,term_code) DO UPDATE
+                       SET price_uzs=EXCLUDED.price_uzs,updated_by=EXCLUDED.updated_by,updated_at=NOW()""",
+                    (plan_code, term_code, int(price), int(admin.get("id") or 0)),
+                )
+        conn.commit()
+        cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices ORDER BY plan_code,term_code")
+        return {"prices": _group_prices(cur.fetchall())}
     except HTTPException:
         conn.rollback()
         raise
