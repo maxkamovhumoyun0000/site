@@ -280,7 +280,7 @@ def entitlement(user: dict[str, Any], feature: str, *, plan_record: Any = _UNSET
         elif tier == "pro":
             daily, weekly = 120, 600
         elif tier == "plus":
-            daily, weekly = 120, 600
+            daily, weekly = 60, 300
         else:
             daily, weekly = 30, 150
     elif feature == "vocabulary_notebook":
