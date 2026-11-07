@@ -20865,6 +20865,7 @@ def ensure_content_tests_schema() -> None:
                     options_json TEXT NOT NULL,
                     correct_option_index INTEGER NOT NULL,
                     explanation TEXT,
+                    time_limit_sec INTEGER DEFAULT 30,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -20878,6 +20879,7 @@ def ensure_content_tests_schema() -> None:
                     options_json TEXT NOT NULL,
                     correct_option_index INTEGER NOT NULL,
                     explanation TEXT,
+                    time_limit_sec INTEGER DEFAULT 30,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -21615,7 +21617,7 @@ def save_content_test_result(user_id: int, content_type: str, content_id: int, s
     return get_content_test_result(user_id, normalized_type, content_id)
 
 
-def ensure_homework_schema() -> None:
+def _ensure_homework_schema_full() -> None:
     if _schema_ready("homework"):
         return
     conn = get_conn()
@@ -22802,6 +22804,11 @@ def transfer_dcoins_atomic(
             conn.close()
 
 def ensure_homework_schema():
+    # Keep the complete schema initializer as the source of truth. This
+    # module historically had a second definition of ensure_homework_schema
+    # below, which shadowed the initializer above and silently skipped its
+    # prompt columns and supporting submission/VoiceRoom tables.
+    _ensure_homework_schema_full()
     with DB_WRITE_LOCK:
         conn = get_conn()
         cur = conn.cursor()
@@ -22821,12 +22828,12 @@ def ensure_homework_schema():
                     ("requires_voice_message", "BOOLEAN DEFAULT FALSE"),
                     ("requires_file", "BOOLEAN DEFAULT FALSE"),
                     ("requires_essay", "BOOLEAN DEFAULT FALSE"),
-                    # Type-specific teacher instructions are required by the
-                    # current web/app homework creation flows. Keep these
-                    # nullable so existing homework remains unchanged.
+                    # Type-specific teacher instructions are nullable to
+                    # preserve all existing homework rows.
                     ("essay_prompt", "TEXT"),
                     ("file_prompt", "TEXT"),
                     ("voice_prompt", "TEXT"),
+                    ("subject", "TEXT"),
                     ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
                     # A client-generated key makes POST retries safe.  It is
                     # deliberately nullable so existing and manually-created
