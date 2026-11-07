@@ -7,6 +7,7 @@ Quota decisions are made here on the server, never trusted from the client.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from contextvars import ContextVar
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -19,6 +20,57 @@ router = APIRouter()
 TASHKENT = timezone(timedelta(hours=5))
 _SCHEMA_READY = False
 _UNSET = object()
+_PRODUCT_CODE: ContextVar[str] = ContextVar("speaking_product_code", default="english")
+
+
+def normalize_product_code(value: Any) -> str:
+    return "russian" if str(value or "").strip().lower() in {"ru", "russian"} else "english"
+
+
+def set_product_code(value: Any) -> Any:
+    return _PRODUCT_CODE.set(normalize_product_code(value))
+
+
+def reset_product_code(token: Any) -> None:
+    _PRODUCT_CODE.reset(token)
+
+
+def current_product_code() -> str:
+    return _PRODUCT_CODE.get()
+
+
+def _plan_rank(plan_code: Any) -> int:
+    code = str(plan_code or "").strip().lower()
+    return {"plus": 1, "pro": 2}.get(code, 0)
+
+
+def _subscription_activation_dates(
+    plan_code: str,
+    existing: list[dict[str, Any]],
+    now: datetime,
+    duration_days: int,
+) -> tuple[datetime, datetime, bool]:
+    """Activate upgrades immediately without forfeiting already-paid time.
+
+    Renewals and downgrades remain queued after the latest existing term. An
+    upgrade replaces the current/future tier immediately and carries the
+    remaining paid time forward before adding the newly purchased term.
+    """
+    current_rank = max(
+        (
+            _plan_rank(item.get("plan_code"))
+            for item in existing
+            if item.get("starts_at") is None or item["starts_at"] <= now
+        ),
+        default=0,
+    )
+    latest_expiry = max(
+        [now, *(item["expires_at"] for item in existing if item.get("expires_at"))]
+    )
+    upgrading = _plan_rank(plan_code) > current_rank
+    starts_at = now if upgrading else latest_expiry
+    expires_at = latest_expiry + timedelta(days=duration_days) if upgrading else starts_at + timedelta(days=duration_days)
+    return starts_at, expires_at, upgrading
 
 TERMS: dict[str, dict[str, Any]] = {
     "week": {"days": 7, "label": "7 kun"},
@@ -50,6 +102,7 @@ def ensure_tables() -> None:
             """CREATE TABLE IF NOT EXISTS speaking_user_subscriptions (
                 id BIGSERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
+                product_code TEXT NOT NULL DEFAULT 'english',
                 plan_code TEXT NOT NULL,
                 starts_at TIMESTAMPTZ NOT NULL,
                 expires_at TIMESTAMPTZ NOT NULL,
@@ -58,11 +111,14 @@ def ensure_tables() -> None:
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"""
         )
+        cur.execute("ALTER TABLE speaking_user_subscriptions ADD COLUMN IF NOT EXISTS product_code TEXT NOT NULL DEFAULT 'english'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_subscriptions_user ON speaking_user_subscriptions(user_id, status, expires_at DESC)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_subscriptions_user_product ON speaking_user_subscriptions(user_id, product_code, status, expires_at DESC)")
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_subscription_requests (
                 id BIGSERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
+                product_code TEXT NOT NULL DEFAULT 'english',
                 plan_code TEXT NOT NULL,
                 term_code TEXT NOT NULL,
                 amount_uzs BIGINT NOT NULL,
@@ -73,47 +129,87 @@ def ensure_tables() -> None:
                 reviewed_at TIMESTAMPTZ
             )"""
         )
+        cur.execute("ALTER TABLE speaking_subscription_requests ADD COLUMN IF NOT EXISTS product_code TEXT NOT NULL DEFAULT 'english'")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_speaking_subscription_requests_status ON speaking_subscription_requests(status, created_at DESC)")
+        cur.execute("DROP INDEX IF EXISTS uq_speaking_subscription_pending_user")
         cur.execute(
-            """CREATE UNIQUE INDEX IF NOT EXISTS uq_speaking_subscription_pending_user
-               ON speaking_subscription_requests(user_id) WHERE status='pending'"""
+            """CREATE UNIQUE INDEX IF NOT EXISTS uq_speaking_subscription_pending_user_product
+               ON speaking_subscription_requests(user_id,product_code) WHERE status='pending'"""
         )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_subscription_prices (
+                product_code TEXT NOT NULL DEFAULT 'english',
                 plan_code TEXT NOT NULL,
                 term_code TEXT NOT NULL,
                 price_uzs BIGINT NOT NULL CHECK (price_uzs >= 0),
                 updated_by BIGINT,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY(plan_code, term_code)
+                CONSTRAINT speaking_subscription_prices_product_pkey PRIMARY KEY(product_code, plan_code, term_code)
             )"""
+        )
+        cur.execute("ALTER TABLE speaking_subscription_prices ADD COLUMN IF NOT EXISTS product_code TEXT NOT NULL DEFAULT 'english'")
+        cur.execute(
+            """DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_subscription_prices'::regclass AND contype='p' AND conname='speaking_subscription_prices_pkey')
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_subscription_prices'::regclass AND contype='p' AND conname='speaking_subscription_prices_product_pkey') THEN
+                    ALTER TABLE speaking_subscription_prices DROP CONSTRAINT speaking_subscription_prices_pkey;
+                    ALTER TABLE speaking_subscription_prices ADD CONSTRAINT speaking_subscription_prices_product_pkey PRIMARY KEY(product_code,plan_code,term_code);
+                END IF;
+            END $$"""
         )
         for plan_code, plan in PLANS.items():
             for term_code, price in plan["prices"].items():
                 cur.execute(
-                    """INSERT INTO speaking_subscription_prices(plan_code,term_code,price_uzs)
-                       VALUES(%s,%s,%s) ON CONFLICT(plan_code,term_code) DO NOTHING""",
-                    (plan_code, term_code, int(price)),
+                    """INSERT INTO speaking_subscription_prices(product_code,plan_code,term_code,price_uzs)
+                       VALUES(%s,%s,%s,%s) ON CONFLICT(product_code,plan_code,term_code) DO NOTHING""",
+                    ("english", plan_code, term_code, int(price)),
+                )
+                cur.execute(
+                    """INSERT INTO speaking_subscription_prices(product_code,plan_code,term_code,price_uzs)
+                       VALUES(%s,%s,%s,%s) ON CONFLICT(product_code,plan_code,term_code) DO NOTHING""",
+                    ("russian", plan_code, term_code, int(price)),
                 )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_entitlement_usage (
                 user_id BIGINT NOT NULL,
+                product_code TEXT NOT NULL DEFAULT 'english',
                 feature TEXT NOT NULL,
                 window_key TEXT NOT NULL,
                 used INTEGER NOT NULL DEFAULT 0,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY(user_id, feature, window_key)
+                CONSTRAINT speaking_entitlement_usage_product_pkey PRIMARY KEY(user_id, product_code, feature, window_key)
             )"""
+        )
+        cur.execute("ALTER TABLE speaking_entitlement_usage ADD COLUMN IF NOT EXISTS product_code TEXT NOT NULL DEFAULT 'english'")
+        cur.execute(
+            """DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_entitlement_usage'::regclass AND contype='p' AND conname='speaking_entitlement_usage_pkey')
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_entitlement_usage'::regclass AND contype='p' AND conname='speaking_entitlement_usage_product_pkey') THEN
+                    ALTER TABLE speaking_entitlement_usage DROP CONSTRAINT speaking_entitlement_usage_pkey;
+                    ALTER TABLE speaking_entitlement_usage ADD CONSTRAINT speaking_entitlement_usage_product_pkey PRIMARY KEY(user_id,product_code,feature,window_key);
+                END IF;
+            END $$"""
         )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS speaking_entitlement_sessions (
                 user_id BIGINT NOT NULL,
+                product_code TEXT NOT NULL DEFAULT 'english',
                 feature TEXT NOT NULL,
                 session_key TEXT NOT NULL,
                 window_key TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                PRIMARY KEY(user_id, feature, session_key)
+                CONSTRAINT speaking_entitlement_sessions_product_pkey PRIMARY KEY(user_id, product_code, feature, session_key)
             )"""
+        )
+        cur.execute("ALTER TABLE speaking_entitlement_sessions ADD COLUMN IF NOT EXISTS product_code TEXT NOT NULL DEFAULT 'english'")
+        cur.execute(
+            """DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_entitlement_sessions'::regclass AND contype='p' AND conname='speaking_entitlement_sessions_pkey')
+                   AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='speaking_entitlement_sessions'::regclass AND contype='p' AND conname='speaking_entitlement_sessions_product_pkey') THEN
+                    ALTER TABLE speaking_entitlement_sessions DROP CONSTRAINT speaking_entitlement_sessions_pkey;
+                    ALTER TABLE speaking_entitlement_sessions ADD CONSTRAINT speaking_entitlement_sessions_product_pkey PRIMARY KEY(user_id,product_code,feature,session_key);
+                END IF;
+            END $$"""
         )
         conn.commit()
         _SCHEMA_READY = True
@@ -137,16 +233,17 @@ def _student_linked(user: dict[str, Any]) -> bool:
     return role == "student" and not is_speaking_app_account(user.get("speaking_app_account"))
 
 
-def active_plan(user_id: int) -> dict[str, Any] | None:
+def active_plan(user_id: int, product_code: str | None = None) -> dict[str, Any] | None:
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
     try:
         cur.execute(
             """SELECT plan_code, starts_at, expires_at FROM speaking_user_subscriptions
-               WHERE user_id=%s AND status='active' AND starts_at<=NOW() AND expires_at>NOW()
-               ORDER BY expires_at DESC LIMIT 1""",
-            (int(user_id),),
+               WHERE user_id=%s AND product_code=%s AND status='active' AND starts_at<=NOW() AND expires_at>NOW()
+               ORDER BY CASE LOWER(plan_code) WHEN 'pro' THEN 2 WHEN 'plus' THEN 1 ELSE 0 END DESC,
+                        expires_at DESC LIMIT 1""",
+            (int(user_id), normalize_product_code(product_code or current_product_code())),
         )
         row = cur.fetchone()
         return dict(row) if row else None
@@ -228,6 +325,7 @@ def entitlement(user: dict[str, Any], feature: str, *, plan_record: Any = _UNSET
 
     return {
         "allowed": bool(allowed), "feature": feature,
+        "product_code": current_product_code(),
         "plan_code": tier, "student_linked": linked,
         "daily_limit": daily, "weekly_limit": weekly,
         "interval_days": interval_days,
@@ -274,18 +372,18 @@ def consume_usage_in_transaction(cur: Any, user_id: int, feature: str, window: s
     if limit <= 0:
         raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "used": 0, "limit": int(limit), "reset_in_days": reset})
     cur.execute(
-        """INSERT INTO speaking_entitlement_usage(user_id, feature, window_key, used)
-           VALUES(%s,%s,%s,1)
-           ON CONFLICT(user_id,feature,window_key) DO UPDATE
+        """INSERT INTO speaking_entitlement_usage(user_id, product_code, feature, window_key, used)
+           VALUES(%s,%s,%s,%s,1)
+           ON CONFLICT(user_id,product_code,feature,window_key) DO UPDATE
            SET used=speaking_entitlement_usage.used+1, updated_at=NOW()
            WHERE speaking_entitlement_usage.used < %s RETURNING used""",
-        (int(user_id), feature, key, int(limit)),
+        (int(user_id), current_product_code(), feature, key, int(limit)),
     )
     row = cur.fetchone()
     if not row:
         cur.execute(
-            "SELECT used FROM speaking_entitlement_usage WHERE user_id=%s AND feature=%s AND window_key=%s",
-            (int(user_id), feature, key),
+            "SELECT used FROM speaking_entitlement_usage WHERE user_id=%s AND product_code=%s AND feature=%s AND window_key=%s",
+            (int(user_id), current_product_code(), feature, key),
         )
         used = int(dict(cur.fetchone() or {}).get("used") or 0)
         raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "used": used, "limit": int(limit), "reset_in_days": reset})
@@ -302,8 +400,8 @@ def release_usage(user: dict[str, Any], feature: str, window_key: str) -> None:
         cur.execute(
             """UPDATE speaking_entitlement_usage
                SET used=GREATEST(used-1,0), updated_at=NOW()
-               WHERE user_id=%s AND feature=%s AND window_key=%s""",
-            (int(user.get("id") or 0), feature, window_key),
+               WHERE user_id=%s AND product_code=%s AND feature=%s AND window_key=%s""",
+            (int(user.get("id") or 0), current_product_code(), feature, window_key),
         )
         conn.commit()
     except Exception:
@@ -325,9 +423,9 @@ def reserve_arena_session(user: dict[str, Any], session_key: str, daily_limit: i
     cur = conn.cursor()
     try:
         cur.execute(
-            """INSERT INTO speaking_entitlement_sessions(user_id,feature,session_key,window_key)
-               VALUES(%s,'arena',%s,%s) ON CONFLICT DO NOTHING RETURNING session_key""",
-            (int(user.get("id") or 0), str(session_key), window_key),
+            """INSERT INTO speaking_entitlement_sessions(user_id,product_code,feature,session_key,window_key)
+               VALUES(%s,%s,'arena',%s,%s) ON CONFLICT DO NOTHING RETURNING session_key""",
+            (int(user.get("id") or 0), current_product_code(), str(session_key), window_key),
         )
         reserved = bool(cur.fetchone())
         if reserved:
@@ -349,16 +447,16 @@ def release_arena_session(user: dict[str, Any], session_key: str) -> None:
     cur = conn.cursor()
     try:
         cur.execute(
-            """DELETE FROM speaking_entitlement_sessions WHERE user_id=%s AND feature='arena'
+            """DELETE FROM speaking_entitlement_sessions WHERE user_id=%s AND product_code=%s AND feature='arena'
                AND session_key=%s RETURNING window_key""",
-            (int(user.get("id") or 0), str(session_key)),
+            (int(user.get("id") or 0), current_product_code(), str(session_key)),
         )
         row = cur.fetchone()
         if row:
             cur.execute(
                 """UPDATE speaking_entitlement_usage SET used=GREATEST(used-1,0),updated_at=NOW()
-                   WHERE user_id=%s AND feature='arena' AND window_key=%s""",
-                (int(user.get("id") or 0), dict(row)["window_key"]),
+                   WHERE user_id=%s AND product_code=%s AND feature='arena' AND window_key=%s""",
+                (int(user.get("id") or 0), current_product_code(), dict(row)["window_key"]),
             )
         conn.commit()
     except Exception:
@@ -401,7 +499,7 @@ def usage_count(user: dict[str, Any], feature: str, window: str) -> int:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT used FROM speaking_entitlement_usage WHERE user_id=%s AND feature=%s AND window_key=%s", (int(user.get("id") or 0), feature, key))
+        cur.execute("SELECT used FROM speaking_entitlement_usage WHERE user_id=%s AND product_code=%s AND feature=%s AND window_key=%s", (int(user.get("id") or 0), current_product_code(), feature, key))
         return int(dict(cur.fetchone() or {}).get("used") or 0)
     finally:
         cur.close()
@@ -435,8 +533,8 @@ def consume_interval_in_transaction(cur: Any, user_id: int, feature: str, interv
     )
     cur.execute(
         """SELECT window_key FROM speaking_entitlement_usage
-           WHERE user_id=%s AND feature=%s ORDER BY updated_at DESC LIMIT 1""",
-        (int(user_id), feature),
+           WHERE user_id=%s AND product_code=%s AND feature=%s ORDER BY updated_at DESC LIMIT 1""",
+        (int(user_id), current_product_code(), feature),
     )
     row = cur.fetchone()
     if row:
@@ -451,26 +549,27 @@ def consume_interval_in_transaction(cur: Any, user_id: int, feature: str, interv
             raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "retry_after_days": remaining})
     stamp = datetime.now(timezone.utc).isoformat()
     cur.execute(
-        """INSERT INTO speaking_entitlement_usage(user_id, feature, window_key, used)
-           VALUES(%s,%s,%s,1) ON CONFLICT(user_id,feature,window_key)
+        """INSERT INTO speaking_entitlement_usage(user_id,product_code,feature,window_key,used)
+           VALUES(%s,%s,%s,%s,1) ON CONFLICT(user_id,product_code,feature,window_key)
            DO UPDATE SET used=speaking_entitlement_usage.used+1, updated_at=NOW()""",
-        (int(user_id), feature, f"at:{stamp}"),
+        (int(user_id), current_product_code(), feature, f"at:{stamp}"),
     )
 
 
 def _status_payload(user: dict[str, Any]) -> dict[str, Any]:
     ensure_tables()
     uid = int(user.get("id") or 0)
-    plan = active_plan(uid)
+    product_code = current_product_code()
+    plan = active_plan(uid, product_code)
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices")
+        cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices WHERE product_code=%s", (product_code,))
         prices = {
             (str(row["plan_code"]), str(row["term_code"])): int(row["price_uzs"])
             for row in cur.fetchall()
         }
-        cur.execute("SELECT id, plan_code, term_code, amount_uzs, status, created_at FROM speaking_subscription_requests WHERE user_id=%s ORDER BY id DESC LIMIT 1", (uid,))
+        cur.execute("SELECT id, plan_code, term_code, amount_uzs, status, created_at, product_code FROM speaking_subscription_requests WHERE user_id=%s AND product_code=%s ORDER BY id DESC LIMIT 1", (uid, product_code))
         request = cur.fetchone()
         features = {name: entitlement(user, name, plan_record=plan) for name in (
             "speaking_questions", "daily_challenge", "library", "learning_path", "arena",
@@ -479,6 +578,7 @@ def _status_payload(user: dict[str, Any]) -> dict[str, Any]:
             "translator", "video_lessons", "progress", "chats", "schedule",
         )}
         return {
+            "product_code": product_code,
             "plan_code": str((plan or {}).get("plan_code") or "free"),
             "expires_at": (plan or {}).get("expires_at"),
             "student_linked": _student_linked(user),
@@ -518,28 +618,28 @@ async def create_speaking_subscription_request(payload: PlanRequest, authorizati
     try:
         cur.execute(
             "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
-            ("speaking-subscription-request", str(int(user["id"]))),
+            (f"speaking-subscription-request:{current_product_code()}", str(int(user["id"]))),
         )
         cur.execute(
-            "SELECT id,plan_code,term_code,amount_uzs,status,created_at FROM speaking_subscription_requests WHERE user_id=%s AND status='pending' ORDER BY id DESC LIMIT 1",
-            (int(user["id"]),),
+            "SELECT id,plan_code,term_code,amount_uzs,status,created_at,product_code FROM speaking_subscription_requests WHERE user_id=%s AND product_code=%s AND status='pending' ORDER BY id DESC LIMIT 1",
+            (int(user["id"]), current_product_code()),
         )
         existing = cur.fetchone()
         if existing:
             conn.commit()
             return {"request": dict(existing), "duplicate": True}
         cur.execute(
-            "SELECT price_uzs FROM speaking_subscription_prices WHERE plan_code=%s AND term_code=%s",
-            (payload.plan_code, payload.term_code),
+            "SELECT price_uzs FROM speaking_subscription_prices WHERE product_code=%s AND plan_code=%s AND term_code=%s",
+            (current_product_code(), payload.plan_code, payload.term_code),
         )
         price_row = cur.fetchone()
         if not price_row:
             raise HTTPException(status_code=503, detail={"code": "subscription_price_unavailable"})
         amount = int(dict(price_row)["price_uzs"])
         cur.execute(
-            """INSERT INTO speaking_subscription_requests(user_id,plan_code,term_code,amount_uzs)
-               VALUES(%s,%s,%s,%s) RETURNING id,plan_code,term_code,amount_uzs,status,created_at""",
-            (int(user["id"]), payload.plan_code, payload.term_code, amount),
+            """INSERT INTO speaking_subscription_requests(user_id,product_code,plan_code,term_code,amount_uzs)
+               VALUES(%s,%s,%s,%s,%s) RETURNING id,plan_code,term_code,amount_uzs,status,created_at,product_code""",
+            (int(user["id"]), current_product_code(), payload.plan_code, payload.term_code, amount),
         )
         row = dict(cur.fetchone())
         conn.commit()
@@ -553,11 +653,12 @@ async def create_speaking_subscription_request(payload: PlanRequest, authorizati
 
 
 class SubscriptionPriceMatrix(BaseModel):
+    product_code: str = Field(default="english", pattern="^(english|russian)$")
     prices: dict[str, dict[str, StrictInt]]
 
 
-def _price_matrix(cur: Any) -> dict[str, dict[str, int]]:
-    cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices ORDER BY plan_code,term_code")
+def _price_matrix(cur: Any, product_code: str = "english") -> dict[str, dict[str, int]]:
+    cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices WHERE product_code=%s ORDER BY plan_code,term_code", (normalize_product_code(product_code),))
     return _group_prices(cur.fetchall())
 
 
@@ -570,13 +671,13 @@ def _group_prices(rows: list[Any]) -> dict[str, dict[str, int]]:
 
 
 @router.get("/staff/speaking/subscription-prices")
-async def get_speaking_subscription_prices(authorization: str | None = Header(default=None)):
+async def get_speaking_subscription_prices(product_code: str = Query(default="english", pattern="^(english|russian)$"), authorization: str | None = Header(default=None)):
     _speaking_admin(authorization)
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
     try:
-        return {"prices": _price_matrix(cur), "terms": TERMS}
+        return {"product_code": product_code, "prices": _price_matrix(cur, product_code), "terms": TERMS}
     finally:
         cur.close()
         conn.close()
@@ -600,14 +701,13 @@ async def update_speaking_subscription_prices(payload: SubscriptionPriceMatrix, 
         for plan_code, terms in payload.prices.items():
             for term_code, price in terms.items():
                 cur.execute(
-                    """INSERT INTO speaking_subscription_prices(plan_code,term_code,price_uzs,updated_by,updated_at)
-                       VALUES(%s,%s,%s,%s,NOW()) ON CONFLICT(plan_code,term_code) DO UPDATE
+                    """INSERT INTO speaking_subscription_prices(product_code,plan_code,term_code,price_uzs,updated_by,updated_at)
+                       VALUES(%s,%s,%s,%s,%s,NOW()) ON CONFLICT(product_code,plan_code,term_code) DO UPDATE
                        SET price_uzs=EXCLUDED.price_uzs,updated_by=EXCLUDED.updated_by,updated_at=NOW()""",
-                    (plan_code, term_code, int(price), int(admin.get("id") or 0)),
+                    (normalize_product_code(payload.product_code), plan_code, term_code, int(price), int(admin.get("id") or 0)),
                 )
         conn.commit()
-        cur.execute("SELECT plan_code,term_code,price_uzs FROM speaking_subscription_prices ORDER BY plan_code,term_code")
-        return {"prices": _group_prices(cur.fetchall())}
+        return {"product_code": normalize_product_code(payload.product_code), "prices": _price_matrix(cur, payload.product_code)}
     except HTTPException:
         conn.rollback()
         raise
@@ -626,22 +726,29 @@ def _speaking_admin(authorization: str | None) -> dict[str, Any]:
 
 
 @router.get("/staff/speaking/subscription-requests")
-async def list_speaking_subscription_requests(status: str = Query(default="pending", pattern="^(pending|approved|rejected|all)$"), authorization: str | None = Header(default=None)):
+async def list_speaking_subscription_requests(status: str = Query(default="pending", pattern="^(pending|approved|rejected|all)$"), product_code: str = Query(default="all", pattern="^(english|russian|all)$"), authorization: str | None = Header(default=None)):
     _speaking_admin(authorization)
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
     try:
-        where = "" if status == "all" else "WHERE r.status=%s"
-        params: tuple[Any, ...] = () if status == "all" else (status,)
+        filters: list[str] = []
+        params_list: list[Any] = []
+        if status != "all":
+            filters.append("r.status=%s")
+            params_list.append(status)
+        if product_code != "all":
+            filters.append("r.product_code=%s")
+            params_list.append(product_code)
+        where = "WHERE " + " AND ".join(filters) if filters else ""
         cur.execute(
-            f"""SELECT r.id,r.user_id,r.plan_code,r.term_code,r.amount_uzs,r.status,r.review_note,r.created_at,r.reviewed_at,
+            f"""SELECT r.id,r.user_id,r.product_code,r.plan_code,r.term_code,r.amount_uzs,r.status,r.review_note,r.created_at,r.reviewed_at,
                        COALESCE(u.login_id,'') AS login_id,COALESCE(u.first_name,'') AS first_name,
                        COALESCE(u.last_name,'') AS last_name,COALESCE(c.email,'') AS email
                 FROM speaking_subscription_requests r LEFT JOIN users u ON u.id=r.user_id
                 LEFT JOIN speaking_account_contacts c ON c.user_id=r.user_id {where}
                 ORDER BY r.created_at DESC LIMIT 300""",
-            params,
+            tuple(params_list),
         )
         return {"items": [dict(row) for row in cur.fetchall()]}
     finally:
@@ -673,13 +780,35 @@ async def review_speaking_subscription_request(request_id: int, payload: ReviewR
         cur.execute("UPDATE speaking_subscription_requests SET status=%s,reviewed_by=%s,review_note=%s,reviewed_at=NOW() WHERE id=%s", (decision, int(admin.get("id") or 0), payload.note.strip(), request_id))
         if decision == "approved":
             days = int(TERMS[str(request["term_code"])] ["days"])
+            product_code = normalize_product_code(request.get("product_code"))
+            user_id = int(request["user_id"])
+            # Serialize approvals for this user/product so overlapping
+            # requests cannot race the active-tier decision.
             cur.execute(
-                """INSERT INTO speaking_user_subscriptions(user_id,plan_code,starts_at,expires_at,status,approved_by)
-                   SELECT %s,%s,starts_at,starts_at+(%s * INTERVAL '1 day'),'active',%s
-                   FROM (SELECT GREATEST(NOW(),COALESCE(MAX(expires_at),NOW())) AS starts_at
-                         FROM speaking_user_subscriptions WHERE user_id=%s AND status='active' AND expires_at>NOW()) current_plan
-                   RETURNING id,expires_at""",
-                (int(request["user_id"]), str(request["plan_code"]), days, int(admin.get("id") or 0), int(request["user_id"])),
+                "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                (f"speaking-subscription:{product_code}", str(user_id)),
+            )
+            cur.execute(
+                """SELECT id,plan_code,starts_at,expires_at FROM speaking_user_subscriptions
+                   WHERE user_id=%s AND product_code=%s AND status='active' AND expires_at>NOW()
+                   ORDER BY expires_at DESC FOR UPDATE""",
+                (user_id, product_code),
+            )
+            existing = [dict(row) for row in cur.fetchall()]
+            now = datetime.now(timezone.utc)
+            starts_at, expires_at, upgrading = _subscription_activation_dates(
+                str(request["plan_code"]), existing, now, days
+            )
+            if upgrading and existing:
+                cur.execute(
+                    """UPDATE speaking_user_subscriptions SET status='superseded'
+                       WHERE user_id=%s AND product_code=%s AND status='active' AND expires_at>NOW()""",
+                    (user_id, product_code),
+                )
+            cur.execute(
+                """INSERT INTO speaking_user_subscriptions(user_id,product_code,plan_code,starts_at,expires_at,status,approved_by)
+                   VALUES(%s,%s,%s,%s,%s,'active',%s) RETURNING id,expires_at""",
+                (user_id, product_code, str(request["plan_code"]), starts_at, expires_at, int(admin.get("id") or 0)),
             )
             subscription = dict(cur.fetchone())
         else:

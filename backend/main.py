@@ -465,6 +465,18 @@ app = FastAPI(
     openapi_url="/openapi.json" if _API_DOCS_ENABLED else None,
 )
 
+
+@app.middleware("http")
+async def speaking_product_context(request: Request, call_next):
+    """Scope subscription/accounting operations to the client app variant."""
+    from backend.speaking_subscriptions import reset_product_code, set_product_code
+
+    context_token = set_product_code(request.headers.get("X-Speaking-Product"))
+    try:
+        return await call_next(request)
+    finally:
+        reset_product_code(context_token)
+
 GENERATOR_JOBS: dict[str, dict[str, Any]] = {}
 
 
@@ -8173,6 +8185,8 @@ def _create_access_token(
         "iat": issued_at,
         "exp": issued_at + timedelta(hours=lifetime_hours),
     }
+    from backend.speaking_subscriptions import current_product_code
+    token_payload["speaking_product"] = current_product_code()
     sid = str(session_id or "").strip()
     if sid:
         token_payload["sid"] = sid
@@ -8551,6 +8565,12 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
     token = ""
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
+    payload = _decode_bearer_payload(authorization)
+    token_product = str(payload.get("speaking_product") or "").strip().lower()
+    if token_product in {"english", "russian"}:
+        from backend.speaking_subscriptions import set_product_code
+        set_product_code(token_product)
+    if token:
         cached = _AUTH_USER_ROW_CACHE.get(token)
         if cached and cached[0] > time.time():
             cached_row = dict(cached[1])
@@ -8559,7 +8579,6 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
             if is_speaking_app_account(cached_row.get("speaking_app_account")) and cached_row.get("speaking_deleted_at"):
                 raise HTTPException(status_code=401, detail="Session expired. Please login again")
             return cached_row
-    payload = _decode_bearer_payload(authorization)
     user_id = payload.get("sub")
     if not user_id or str(user_id).strip() == "" or str(user_id).strip().lower() == "none":
         raise HTTPException(status_code=401, detail="Invalid token payload")

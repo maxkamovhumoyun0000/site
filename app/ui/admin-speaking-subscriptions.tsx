@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 type RequestRow = {
   id: number;
   user_id: number;
+  product_code: "english" | "russian";
   login_id: string;
   first_name: string;
   last_name: string;
@@ -34,6 +35,7 @@ const emptyPrices: PriceMatrix = {
 
 export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch }) {
   const [status, setStatus] = useState("pending");
+  const [productCode, setProductCode] = useState<"english" | "russian">("english");
   const [items, setItems] = useState<RequestRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -49,14 +51,14 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
     setLoading(true);
     setError("");
     try {
-      const payload = await apiFetch(`/staff/speaking/subscription-requests?status=${status}`);
+      const payload = await apiFetch(`/staff/speaking/subscription-requests?status=${status}&product_code=${productCode}`);
       setItems(Array.isArray(payload?.items) ? payload.items : []);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Tarif so‘rovlari yuklanmadi.");
     } finally {
       setLoading(false);
     }
-  }, [apiFetch, status]);
+  }, [apiFetch, productCode, status]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), 0);
@@ -67,7 +69,7 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
     setPriceLoading(true);
     setPriceError("");
     try {
-      const payload = await apiFetch("/staff/speaking/subscription-prices");
+      const payload = await apiFetch(`/staff/speaking/subscription-prices?product_code=${productCode}`);
       const incoming = payload?.prices;
       if (!incoming?.plus || !incoming?.pro) throw new Error("Tarif narxlari javobi noto‘g‘ri.");
       setPrices({
@@ -79,7 +81,7 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
     } finally {
       setPriceLoading(false);
     }
-  }, [apiFetch]);
+  }, [apiFetch, productCode]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadPrices(), 0);
@@ -93,7 +95,7 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
     try {
       const payload = await apiFetch("/staff/speaking/subscription-prices", {
         method: "PUT",
-        body: { prices },
+        body: { product_code: productCode, prices },
       });
       if (!payload?.prices) throw new Error("Narxlar saqlanmadi.");
       setPriceNotice("Tarif narxlari saqlandi. Yangi so‘rovlarda shu narxlar ishlatiladi.");
@@ -139,6 +141,10 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
           <p className="mt-1 text-sm text-slate-500">To‘lovni tekshiring, so‘ng tarifni tasdiqlang yoki rad eting.</p>
         </div>
         <div className="flex gap-2">
+          <select aria-label="Ilova tili" value={productCode} onChange={(event) => setProductCode(event.target.value as "english" | "russian")} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+            <option value="english">English app</option>
+            <option value="russian">Русский app</option>
+          </select>
           <select aria-label="So‘rov holati" value={status} onChange={(event) => setStatus(event.target.value)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
             <option value="pending">Kutilmoqda</option>
             <option value="approved">Tasdiqlangan</option>
@@ -152,7 +158,7 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
       <section className="rounded-2xl border border-indigo-100 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-black text-slate-900">Plus / Pro narxlari</h2>
+            <h2 className="text-lg font-black text-slate-900">{productCode === "russian" ? "Русский app — Plus / Pro narxlari" : "English app — Plus / Pro narxlari"}</h2>
             <p className="mt-1 max-w-2xl text-sm text-slate-500">Narxni Speaking admin o‘zgartiradi. Yangi tarif so‘rovlari saqlangan narxni oladi; avval yuborilgan so‘rov summasi o‘zgarmaydi.</p>
           </div>
           <button type="button" onClick={() => void loadPrices()} disabled={priceLoading || priceSaving} className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-50">Narxlarni yangilash</button>
@@ -202,6 +208,7 @@ export function AdminSpeakingSubscriptions({ apiFetch }: { apiFetch: ApiFetch })
                   <span className={`rounded-full px-2.5 py-1 text-[11px] font-black uppercase ${item.status === "pending" ? "bg-amber-100 text-amber-800" : item.status === "approved" ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>{item.status}</span>
                 </div>
                 <p className="mt-1 text-sm text-slate-500">So‘rov #{item.id} · {item.login_id}{item.email ? ` · ${item.email}` : ""} · Foydalanuvchi ID {item.user_id}</p>
+                <p className="mt-1 text-xs font-bold uppercase tracking-wide text-indigo-700">{item.product_code === "russian" ? "Русский app" : "English app"}</p>
                 <p className="mt-3 text-sm text-slate-600">So‘rov: {dateLabel(item.created_at)}</p>
               </div>
               <div className="min-w-48 rounded-xl bg-slate-50 p-3 text-right">
