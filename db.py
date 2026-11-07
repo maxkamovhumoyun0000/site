@@ -7542,6 +7542,18 @@ def ensure_monthly_payments_table():
     conn = get_conn()
     cur = conn.cursor()
     cur.execute('''
+    CREATE TABLE IF NOT EXISTS payment_billing_exempt_months (
+        ym TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+    ''')
+    cur.execute('''
+    INSERT INTO payment_billing_exempt_months(ym, reason)
+    VALUES ('2026-10', 'October 2026 billing reset; billing starts in November')
+    ON CONFLICT(ym) DO NOTHING
+    ''')
+    cur.execute('''
     CREATE TABLE IF NOT EXISTS monthly_payments (
         id BIGSERIAL PRIMARY KEY,
         user_id BIGINT NOT NULL,
@@ -12891,6 +12903,10 @@ def set_month_paid(user_id: int, ym: str | None = None, group_id: int | None = N
         conn = get_conn()
         cur = conn.cursor()
         try:
+            cur.execute("SELECT 1 FROM payment_billing_exempt_months WHERE ym=? LIMIT 1", (str(ym),))
+            if cur.fetchone() is not None:
+                conn.rollback()
+                return
             if paid:
                 cur.execute(
                     '''
@@ -12933,6 +12949,11 @@ def is_month_paid(user_id: int, ym: str | None = None, group_id: int | None = No
     ensure_monthly_payments_table()
     conn = get_conn()
     cur = conn.cursor()
+    cur.execute("SELECT 1 FROM payment_billing_exempt_months WHERE ym=? LIMIT 1", (str(ym),))
+    exempt = cur.fetchone() is not None
+    if exempt:
+        conn.close()
+        return True
     if group_id is None:
         cur.execute("SELECT paid FROM monthly_payments WHERE user_id=? AND ym=?", (user_id, ym))
     else:
@@ -12962,6 +12983,10 @@ def mark_notified_day(user_id: int, day: int, ym: str | None = None):
     with DB_WRITE_LOCK:
         conn = get_conn()
         cur = conn.cursor()
+        cur.execute("SELECT 1 FROM payment_billing_exempt_months WHERE ym=? LIMIT 1", (str(ym),))
+        if cur.fetchone() is not None:
+            conn.close()
+            return
         cur.execute("SELECT notified_days FROM monthly_payments WHERE user_id=? AND ym=?", (user_id, ym))
         row = cur.fetchone()
         cur_days = ""

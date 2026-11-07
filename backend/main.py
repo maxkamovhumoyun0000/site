@@ -45789,6 +45789,18 @@ def _ensure_payment_automation_schema() -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS payment_billing_exempt_months (
+            ym TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        INSERT INTO payment_billing_exempt_months(ym, reason)
+        VALUES ('2026-10', 'October 2026 billing reset; billing starts in November')
+        ON CONFLICT(ym) DO NOTHING
+        """,
+        """
         CREATE TABLE IF NOT EXISTS payment_transactions (
             id BIGSERIAL PRIMARY KEY,
             obligation_id BIGINT,
@@ -47302,11 +47314,13 @@ def _payment_upsert_obligation(
         group_row=group_row,
         discount_info=discount_info,
     )
-    final_amount = float(calc.get("final_payable_amount") or calc.get("calculated_amount") or 0.0)
-    discount_type = str(calc.get("discount_type") or "none")
-    discount_percent = float(calc.get("discount_percent") or 0.0)
-    discount_amount = float(calc.get("discount_amount") or 0.0)
-    original_amount = float(calc.get("base_amount_before_discount") or calc.get("calculated_group_amount") or calc.get("original_price") or 0.0)
+    billing_exemption = _payment_billing_exemption(str(ym))
+    billing_exempt = bool(billing_exemption)
+    final_amount = 0.0 if billing_exempt else float(calc.get("final_payable_amount") or calc.get("calculated_amount") or 0.0)
+    discount_type = "none" if billing_exempt else str(calc.get("discount_type") or "none")
+    discount_percent = 0.0 if billing_exempt else float(calc.get("discount_percent") or 0.0)
+    discount_amount = 0.0 if billing_exempt else float(calc.get("discount_amount") or 0.0)
+    original_amount = 0.0 if billing_exempt else float(calc.get("base_amount_before_discount") or calc.get("calculated_group_amount") or calc.get("original_price") or 0.0)
     resolved_discount_info = discount_info or calc or {}
     is_accountless = 1 if int(user_row.get("login_type") or 0) == 6 else 0
 
@@ -47322,12 +47336,12 @@ def _payment_upsert_obligation(
         (uid, gid, str(ym)),
     )
     existing = cur.fetchone() or {}
-    paid_amount = float(existing.get("paid_amount") or 0.0)
+    paid_amount = 0.0 if billing_exempt else float(existing.get("paid_amount") or 0.0)
     debt_amount = max(0.0, final_amount - paid_amount)
     overpayment_amount = max(0.0, paid_amount - final_amount)
     status = _payment_status_label(final_amount, paid_amount, ym)
     overdue = 1 if _payment_is_month_overdue(ym, debt_amount) else 0
-    closed_at = _now_utc().isoformat() if debt_amount <= 1e-9 and final_amount > 0 else None
+    closed_at = _now_utc().isoformat() if billing_exempt or (debt_amount <= 1e-9 and final_amount > 0) else None
 
     cur.execute(
         """
@@ -47397,7 +47411,9 @@ def _payment_upsert_obligation(
                     "applied_discount_label": str(calc.get("applied_discount_label") or discount_type or "none"),
                     "base_amount_before_discount": float(calc.get("base_amount_before_discount") or original_amount),
                     "final_amount_after_discount": float(calc.get("final_amount_after_discount") or final_amount),
-                    "rounding_delta": float(calc.get("rounding_delta") or 0.0),
+                    "rounding_delta": 0.0 if billing_exempt else float(calc.get("rounding_delta") or 0.0),
+                    "billing_exempt": billing_exempt,
+                    "billing_exemption_reason": str(billing_exemption.get("reason") or "") if billing_exempt else "",
                     "gift_payment_discount_id": int(resolved_discount_info.get("gift_payment_discount_id") or 0),
                     "gift_purchase_history_id": int(resolved_discount_info.get("gift_purchase_history_id") or 0),
                 },
@@ -47409,6 +47425,18 @@ def _payment_upsert_obligation(
             closed_at,
         ),
     )
+    if billing_exempt:
+        cur.execute(
+            """
+            UPDATE payment_monthly_obligations
+            SET original_amount=0, discount_type='none', discount_percent=0,
+                discount_amount=0, final_amount=0, paid_amount=0, debt_amount=0,
+                overpayment_amount=0, status=?, overdue=0, closed_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE user_id=? AND group_id=? AND ym=?
+            """,
+            (PAYMENT_STATUS_PAID, uid, gid, str(ym)),
+        )
     conn.commit()
     cur.execute(
         """
@@ -47422,6 +47450,17 @@ def _payment_upsert_obligation(
     row = dict(cur.fetchone() or {})
     conn.close()
     return row
+
+
+def _payment_billing_exemption(ym: str) -> dict[str, Any]:
+    """Return a configured month-level billing exemption, if any."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT ym, reason FROM payment_billing_exempt_months WHERE ym=? LIMIT 1", (str(ym),))
+        return dict(cur.fetchone() or {})
+    finally:
+        conn.close()
 
 
 def _payment_recalculate_user_month(user_row: dict, ym: str) -> list[dict[str, Any]]:
@@ -47599,11 +47638,14 @@ def _payment_apply_carry_forward_for_obligation(obligation_row: dict) -> dict[st
     ym = str(obligation_row.get("ym") or "")
     if oid <= 0 or uid <= 0 or gid <= 0 or not ym:
         return obligation_row
-    prev_ym = _prev_month_ym(ym)
     _ensure_payment_automation_schema()
     conn = get_conn()
     cur = conn.cursor()
     try:
+        if _payment_billing_exemption(ym):
+            conn.close()
+            return obligation_row
+        prev_ym = _prev_month_ym(ym)
         cur.execute("BEGIN")
         cur.execute(
             """
@@ -52584,6 +52626,9 @@ async def admin_payments_student_confirm(
     if int(target.get("login_type") or 0) not in (1, 2, 6):
         raise HTTPException(status_code=400, detail="Payments are only available for students")
     month_key = _payment_validate_ym(payload.ym)
+    _ensure_payment_automation_schema()
+    if _payment_billing_exemption(month_key):
+        raise HTTPException(status_code=409, detail="This month is excluded from billing; payments start from November 2026")
     amount = _payment_require_positive_amount(payload.amount, field_name="amount")
     payment_method = str(payload.payment_method or "cash").strip().lower()
     if payment_method not in {"cash", "card", "cash_card"}:

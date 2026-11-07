@@ -68,6 +68,11 @@ def _status_label(final_amount: float, paid_amount: float, ym: str) -> str:
     return PAYMENT_STATUS_OVERDUE if overdue else PAYMENT_STATUS_UNPAID
 
 
+def _is_billing_exempt_month(cur, ym: str) -> bool:
+    cur.execute("SELECT 1 FROM payment_billing_exempt_months WHERE ym=? LIMIT 1", (str(ym),))
+    return cur.fetchone() is not None
+
+
 def _ensure_payment_tables() -> None:
     conn = get_conn()
     cur = conn.cursor()
@@ -102,6 +107,18 @@ def _ensure_payment_tables() -> None:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, group_id, ym)
         )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS payment_billing_exempt_months (
+            ym TEXT PRIMARY KEY,
+            reason TEXT NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        INSERT INTO payment_billing_exempt_months(ym, reason)
+        VALUES ('2026-10', 'October 2026 billing reset; billing starts in November')
+        ON CONFLICT(ym) DO NOTHING
         """,
         """
         CREATE TABLE IF NOT EXISTS payment_transactions (
@@ -192,6 +209,7 @@ def _get_or_create_obligation(cur, user_id: int, ym: str, group_id: int | None, 
     gid = int(group_id or 0)
     if gid <= 0:
         return {}
+    billing_exempt = _is_billing_exempt_month(cur, str(ym))
     cur.execute(
         """
         SELECT *
@@ -216,7 +234,7 @@ def _get_or_create_obligation(cur, user_id: int, ym: str, group_id: int | None, 
         VALUES (?, ?, ?, ?, 0, 'none', 0, 0, 0, 0, 0, 0, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON CONFLICT(user_id, group_id, ym) DO NOTHING
         """,
-        (int(user_id), gid, str(ym), (str(subject).strip() if subject else None), PAYMENT_STATUS_UNPAID),
+        (int(user_id), gid, str(ym), (str(subject).strip() if subject else None), PAYMENT_STATUS_PAID if billing_exempt else PAYMENT_STATUS_UNPAID),
     )
     cur.execute(
         """
@@ -236,6 +254,20 @@ def _refresh_obligation(cur, obligation_id: int) -> dict:
     if not row:
         return {}
     ym = str(row.get("ym") or _ym_now())
+    if _is_billing_exempt_month(cur, ym):
+        cur.execute(
+            """
+            UPDATE payment_monthly_obligations
+            SET original_amount=0, discount_type='none', discount_percent=0,
+                discount_amount=0, final_amount=0, paid_amount=0, debt_amount=0,
+                overpayment_amount=0, status=?, overdue=0, closed_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (PAYMENT_STATUS_PAID, int(obligation_id)),
+        )
+        cur.execute("SELECT * FROM payment_monthly_obligations WHERE id=? LIMIT 1", (int(obligation_id),))
+        return dict(cur.fetchone() or {})
     final_amount = float(row.get("final_amount") or 0.0)
     paid_amount = float(row.get("paid_amount") or 0.0)
     debt_amount = max(0.0, final_amount - paid_amount)
@@ -676,6 +708,9 @@ def set_month_paid(
         cur = conn.cursor()
         try:
             cur.execute("BEGIN")
+            if _is_billing_exempt_month(cur, str(ym)):
+                conn.rollback()
+                return
             obligation = _get_or_create_obligation(cur, int(user_id), str(ym), gid, subject)
             oid = int(obligation.get("id") or 0)
             if oid <= 0:
@@ -873,6 +908,13 @@ def mark_notified_day(
 ) -> bool:
     ym = ym or _ym_now()
     _ensure_payment_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if _is_billing_exempt_month(cur, str(ym)):
+            return False
+    finally:
+        conn.close()
     with DB_WRITE_LOCK:
         conn = get_conn()
         cur = conn.cursor()
@@ -976,6 +1018,13 @@ def set_month_payment_dcoin_amount(
     if gid <= 0:
         return False
     _ensure_payment_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if _is_billing_exempt_month(cur, str(ym)):
+            return False
+    finally:
+        conn.close()
     with DB_WRITE_LOCK:
         conn = get_conn()
         cur = conn.cursor()
