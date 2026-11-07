@@ -35601,6 +35601,9 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     is_duel = _duel_is_mode(mode)
     _require_competition_learning_access(user)
     user = _require_student_face_setup_complete(user)
+    from backend.speaking_subscriptions import require_feature, reserve_arena_session, release_arena_session
+
+    arena_access = require_feature(user, "arena")
 
     user_subjects = _normalize_subjects(_user_subjects_from_row(user), fallback=["English"])
     requested_subject = _normalize_subject_label(payload.subject)
@@ -35945,9 +35948,16 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                     finally:
                         conn_check.close()
 
-                if charged_fee > 0 and not already_charged:
-                    if not try_consume_dcoins(user_id, charged_fee, subject, arena_type=bot_mode, change_type=fee_change_type):
-                        raise HTTPException(status_code=409, detail="Insufficient D'Coin balance")
+                quota_session = f"runtime:{session.get('id') or session_id}"
+                quota_reserved = reserve_arena_session(user, quota_session, arena_access.get("daily_limit"))
+                try:
+                    if charged_fee > 0 and not already_charged:
+                        if not try_consume_dcoins(user_id, charged_fee, subject, arena_type=bot_mode, change_type=fee_change_type):
+                            raise HTTPException(status_code=409, detail="Insufficient D'Coin balance")
+                except Exception:
+                    if quota_reserved:
+                        release_arena_session(user, quota_session)
+                    raise
                 usage_date = _now_tashkent_date()
                 if mode.startswith("duel-") or mode == "boss":
                     increment_duel_daily_usage(user_id, bot_mode, usage_date)
@@ -58629,7 +58639,7 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     _require_competition_learning_access(user)
-    from backend.speaking_subscriptions import consume_usage, entitlement, require_feature
+    from backend.speaking_subscriptions import consume_usage, require_feature, reserve_arena_session, release_arena_session
 
     access = require_feature(user, "arena")
     user_id = int(user.get("id") or 0)
@@ -58661,13 +58671,20 @@ async def join_battle(battle_id: str, authorization: str | None = Header(default
                 required_players=int(required_players),
                 expires_at=expiry,
             )
-        joined = join_duel_session(
-            session_id,
-            user_id,
-            int(user.get("telegram_id") or 0) or user_id,
-        )
-        if joined:
-            consume_usage(user, "arena", "day", access.get("daily_limit"))
+        quota_session = f"legacy:{session_id}"
+        quota_reserved = reserve_arena_session(user, quota_session, access.get("daily_limit"))
+        try:
+            joined = join_duel_session(
+                session_id,
+                user_id,
+                int(user.get("telegram_id") or 0) or user_id,
+            )
+        except Exception:
+            if quota_reserved:
+                release_arena_session(user, quota_session)
+            raise
+        if not joined and quota_reserved:
+            release_arena_session(user, quota_session)
         participants = count_duel_participants(session_id)
         if participants >= int(required_players):
             mark_duel_session_started(session_id)

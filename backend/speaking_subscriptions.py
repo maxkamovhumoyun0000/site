@@ -105,6 +105,16 @@ def ensure_tables() -> None:
                 PRIMARY KEY(user_id, feature, window_key)
             )"""
         )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS speaking_entitlement_sessions (
+                user_id BIGINT NOT NULL,
+                feature TEXT NOT NULL,
+                session_key TEXT NOT NULL,
+                window_key TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY(user_id, feature, session_key)
+            )"""
+        )
         conn.commit()
         _SCHEMA_READY = True
     finally:
@@ -261,6 +271,8 @@ def consume_usage_in_transaction(cur: Any, user_id: int, feature: str, window: s
     else:
         key = f"day:{used_now.date().isoformat()}"
         reset = 1
+    if limit <= 0:
+        raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "used": 0, "limit": int(limit), "reset_in_days": reset})
     cur.execute(
         """INSERT INTO speaking_entitlement_usage(user_id, feature, window_key, used)
            VALUES(%s,%s,%s,1)
@@ -279,6 +291,61 @@ def consume_usage_in_transaction(cur: Any, user_id: int, feature: str, window: s
         raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "used": used, "limit": int(limit), "reset_in_days": reset})
     used = int(dict(row).get("used") or 0)
     return {"used": used, "limit": int(limit), "remaining": max(0, int(limit) - used), "reset_in_days": reset}
+
+
+def reserve_arena_session(user: dict[str, Any], session_key: str, daily_limit: int | None) -> bool:
+    """Atomically count one free-tier arena session, including reconnects only once."""
+    if daily_limit is None:
+        return False
+    ensure_tables()
+    now = datetime.now(TASHKENT)
+    window_key = f"day:{now.date().isoformat()}"
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """INSERT INTO speaking_entitlement_sessions(user_id,feature,session_key,window_key)
+               VALUES(%s,'arena',%s,%s) ON CONFLICT DO NOTHING RETURNING session_key""",
+            (int(user.get("id") or 0), str(session_key), window_key),
+        )
+        reserved = bool(cur.fetchone())
+        if reserved:
+            consume_usage_in_transaction(cur, int(user.get("id") or 0), "arena", "day", int(daily_limit), now=now)
+        conn.commit()
+        return reserved
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def release_arena_session(user: dict[str, Any], session_key: str) -> None:
+    """Return a reservation when joining the session did not succeed."""
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """DELETE FROM speaking_entitlement_sessions WHERE user_id=%s AND feature='arena'
+               AND session_key=%s RETURNING window_key""",
+            (int(user.get("id") or 0), str(session_key)),
+        )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                """UPDATE speaking_entitlement_usage SET used=GREATEST(used-1,0),updated_at=NOW()
+                   WHERE user_id=%s AND feature='arena' AND window_key=%s""",
+                (int(user.get("id") or 0), dict(row)["window_key"]),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def consume_usage_windows(user: dict[str, Any], feature: str, limits: dict[str, int | None]) -> None:

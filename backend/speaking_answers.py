@@ -451,12 +451,12 @@ def _existing(user_id: int, client_recording_id: str) -> dict[str, Any] | None:
         conn.close()
 
 
-def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[str, str, dict[str, Any], str]:
+def _exam_step_question(user_id: int, exam_id: int, step_index: int, *, include_kind: bool = False) -> tuple:
     """Return the authenticated exam's own question context and retry key."""
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT status, subject, steps_json FROM speaking_exams WHERE id=%s AND user_id=%s", (exam_id, user_id))
+        cur.execute("SELECT status, subject, kind, steps_json FROM speaking_exams WHERE id=%s AND user_id=%s", (exam_id, user_id))
         row = cur.fetchone()
     except Exception:
         conn.rollback()
@@ -473,7 +473,8 @@ def _exam_step_question(user_id: int, exam_id: int, step_index: int) -> tuple[st
     step = next((s for s in steps if int(s.get("index") or 0) == step_index), None)
     if not step:
         raise HTTPException(status_code=422, detail="Unknown exam question")
-    return str(step.get("question_id") or ""), f"exam-{exam_id}-{step_index}", step, str(row.get("subject") or "english")
+    context = (str(step.get("question_id") or ""), f"exam-{exam_id}-{step_index}", step, str(row.get("subject") or "english"))
+    return (*context, str(row.get("kind") or "")) if include_kind else context
 
 
 def _enforce_limits(user_id: int) -> None:
@@ -513,10 +514,28 @@ async def analyze_speaking_answer(
     user_id = int(user.get("id") or 0)
     from backend.speaking_subscriptions import consume_usage, require_feature
 
-    # Verify the paid entitlement before returning cached results, so a free
-    # account cannot replay a previous recording ID to bypass the feature gate.
-    decision = require_feature(user, "answer_analysis") if exam_id is None else None
-    recording_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", client_recording_id)[:120]
+    # An exam ID is not proof of entitlement: topic-practice exams can be
+    # created independently of a Mock Exam subscription. Resolve the owned
+    # exam and enforce its server-side kind before honoring any cached result.
+    exam_step = None
+    exam_subject = None
+    decision = None
+    if exam_id is not None:
+        question_id, recording_ref, exam_step, exam_subject, exam_kind = _exam_step_question(
+            user_id, int(exam_id), int(step_index or 0), include_kind=True
+        )
+        if exam_kind == "mock":
+            require_feature(user, "mock_exam")
+        elif exam_kind == "challenge":
+            require_feature(user, "daily_challenge")
+        elif exam_kind == "topic":
+            decision = require_feature(user, "answer_analysis")
+        else:
+            raise HTTPException(status_code=422, detail="Unsupported exam type")
+    else:
+        decision = require_feature(user, "answer_analysis")
+        recording_ref = re.sub(r"[^A-Za-z0-9_.:-]", "", client_recording_id)[:120]
+
     cached = _existing(user_id, recording_ref)
     if cached:
         return {"analysis": cached, "cached": True}
@@ -531,14 +550,6 @@ async def analyze_speaking_answer(
     if raw[4:8] != b"ftyp":
         raise HTTPException(status_code=422, detail="Unsupported audio format. Please record again in the app.")
 
-    exam_step = None
-    exam_subject = None
-    if exam_id is not None:
-        # Exam answers: the exam (not the client) decides which question this is.
-        question_id, recording_ref, exam_step, exam_subject = _exam_step_question(user_id, int(exam_id), int(step_index or 0))
-        cached = _existing(user_id, recording_ref)
-        if cached:
-            return {"analysis": cached, "cached": True}
     question_ref = re.sub(r"[^A-Za-z0-9_.-]", "", question_id)[:64]
     numeric_id = int(question_ref) if question_ref.isdigit() else None
     row = _question_row(numeric_id)
@@ -579,7 +590,7 @@ async def analyze_speaking_answer(
             status_code=422,
             detail="We could not hear a clear answer. Please speak a little longer and closer to the microphone.",
         )
-    if exam_id is None:
+    if decision is not None:
         consume_usage(user, "answer_analysis", "day", decision.get("daily_limit"))
     duration = float(duration_seconds or 0)
     system, user_turn = _scoring_prompt(
