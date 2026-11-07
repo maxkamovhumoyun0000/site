@@ -512,7 +512,7 @@ async def analyze_speaking_answer(
     user = _user(authorization)
     ensure_tables()
     user_id = int(user.get("id") or 0)
-    from backend.speaking_subscriptions import consume_usage, require_feature
+    from backend.speaking_subscriptions import consume_usage, release_usage, require_feature
 
     # An exam ID is not proof of entitlement: topic-practice exams can be
     # created independently of a Mock Exam subscription. Resolve the owned
@@ -579,19 +579,34 @@ async def analyze_speaking_answer(
     _enforce_limits(user_id)
     from backend.main import _ai_result_language
 
+    # Reserve the daily unit before invoking the paid transcription provider.
+    # A request above its quota must never incur an AI cost first.
+    usage = (
+        consume_usage(user, "answer_analysis", "day", decision.get("daily_limit"))
+        if decision is not None else None
+    )
+    window_key = str(usage.get("window_key") or "") if usage else ""
+
+    def refund_on_failure() -> None:
+        if window_key:
+            release_usage(user, "answer_analysis", window_key)
+
     started = time.monotonic()
-    transcript = await _transcribe_bytes(raw, "answer.m4a", "en" if subject_key == "english" else "ru")
+    try:
+        transcript = await _transcribe_bytes(raw, "answer.m4a", "en" if subject_key == "english" else "ru")
+    except BaseException:
+        refund_on_failure()
+        raise
     # Some transcribers return a literal silence marker instead of an empty
     # string; never treat that marker as the learner's spoken answer.
     transcript = _normalize_silence_transcript(transcript)
     word_count = len(re.findall(r"[\w'-]+", transcript, re.UNICODE))
     if 0 < word_count < MIN_WORDS:
+        refund_on_failure()
         raise HTTPException(
             status_code=422,
             detail="We could not hear a clear answer. Please speak a little longer and closer to the microphone.",
         )
-    if decision is not None:
-        consume_usage(user, "answer_analysis", "day", decision.get("daily_limit"))
     duration = float(duration_seconds or 0)
     system, user_turn = _scoring_prompt(
         scale=scale, part=part_value, topic=topic, prompt=question_text, bullets=bullets,
@@ -610,11 +625,24 @@ async def analyze_speaking_answer(
         result = normalize_ai_result({'criteria': {key: 0 for key in CRITERIA},
                                       'on_topic': False, 'summary': summary}, scale=scale)
     else:
-        result = normalize_ai_result(await _score(system, user_turn), scale=scale)
+        try:
+            result = normalize_ai_result(await _score(system, user_turn), scale=scale)
+        except BaseException:
+            refund_on_failure()
+            raise
     logger.info("speaking answer analyzed user=%s scale=%s ms=%s", user_id, scale, int((time.monotonic() - started) * 1000))
 
-    conn = get_conn()
-    cur = conn.cursor()
+    try:
+        conn = get_conn()
+    except BaseException:
+        refund_on_failure()
+        raise
+    try:
+        cur = conn.cursor()
+    except BaseException:
+        conn.close()
+        refund_on_failure()
+        raise
     try:
         cur.execute(
             """INSERT INTO speaking_answer_analyses
@@ -633,10 +661,15 @@ async def analyze_speaking_answer(
         )
         saved = cur.fetchone()
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        refund_on_failure()
+        raise
     finally:
         cur.close()
         conn.close()
     if not saved:
+        refund_on_failure()
         # A parallel request for the same recording finished first.
         existing = _existing(user_id, recording_ref)
         if existing:

@@ -245,7 +245,7 @@ def require_feature(user: dict[str, Any], feature: str) -> dict[str, Any]:
     return decision
 
 
-def consume_usage(user: dict[str, Any], feature: str, window: str, limit: int | None) -> dict[str, int]:
+def consume_usage(user: dict[str, Any], feature: str, window: str, limit: int | None) -> dict[str, Any]:
     """Atomically consume quota across all API workers. Unlimited is a no-op."""
     if limit is None:
         return {"used": 0, "limit": 0, "remaining": -1, "reset_in_days": 1}
@@ -290,7 +290,28 @@ def consume_usage_in_transaction(cur: Any, user_id: int, feature: str, window: s
         used = int(dict(cur.fetchone() or {}).get("used") or 0)
         raise HTTPException(status_code=429, detail={"code": "quota_exceeded", "feature": feature, "used": used, "limit": int(limit), "reset_in_days": reset})
     used = int(dict(row).get("used") or 0)
-    return {"used": used, "limit": int(limit), "remaining": max(0, int(limit) - used), "reset_in_days": reset}
+    return {"used": used, "limit": int(limit), "remaining": max(0, int(limit) - used), "reset_in_days": reset, "window_key": key}
+
+
+def release_usage(user: dict[str, Any], feature: str, window_key: str) -> None:
+    """Refund one reserved unit after an operation fails before saving a result."""
+    ensure_tables()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """UPDATE speaking_entitlement_usage
+               SET used=GREATEST(used-1,0), updated_at=NOW()
+               WHERE user_id=%s AND feature=%s AND window_key=%s""",
+            (int(user.get("id") or 0), feature, window_key),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 def reserve_arena_session(user: dict[str, Any], session_key: str, daily_limit: int | None) -> bool:
