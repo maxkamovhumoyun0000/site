@@ -22821,6 +22821,12 @@ def ensure_homework_schema():
                     ("requires_voice_message", "BOOLEAN DEFAULT FALSE"),
                     ("requires_file", "BOOLEAN DEFAULT FALSE"),
                     ("requires_essay", "BOOLEAN DEFAULT FALSE"),
+                    # Type-specific teacher instructions are required by the
+                    # current web/app homework creation flows. Keep these
+                    # nullable so existing homework remains unchanged.
+                    ("essay_prompt", "TEXT"),
+                    ("file_prompt", "TEXT"),
+                    ("voice_prompt", "TEXT"),
                     ("is_voiceroom", "BOOLEAN DEFAULT FALSE"),
                     # A client-generated key makes POST retries safe.  It is
                     # deliberately nullable so existing and manually-created
