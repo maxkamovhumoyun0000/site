@@ -364,6 +364,7 @@ from db import (
     submit_content_test_attempt,
     create_homework,
     get_homework,
+    homework_has_student_submissions,
     update_homework,
     list_homeworks_for_student,
     list_homeworks_for_teacher,
@@ -2501,6 +2502,7 @@ class HomeworkCreateRequest(BaseModel):
     # Reusing this key after a timeout/double tap must return the original
     # homework, not create a second assignment.
     idempotency_key: str | None = Field(default=None, max_length=160)
+    test_questions: list[dict] | None = None
 
 
 class HomeworkSubmitRequest(BaseModel):
@@ -27353,6 +27355,22 @@ async def diamondvoy_homework_start(chat_id: int, authorization: str | None = He
     existing_path = os.path.join(_WIZARD_STATE_DIR, f"{key}.json")
     if os.path.exists(existing_path):
         state = _get_homework_wizard_state(chat_id, user_id)
+        if state.get("completed_homework_id"):
+            state = {
+                "step": "target",
+                "target_type": None,
+                "target_id": None,
+                "booking_id": None,
+                "content_types": [],
+                "deadline_iso": None,
+                "title": None,
+                "description": None,
+                "essay_prompt": None,
+                "file_prompt": None,
+                "voice_prompt": None,
+                "manual_test": None,
+            }
+            _save_homework_wizard_state(chat_id, user_id, state)
     else:
         state = {
             "step": "target",
@@ -27425,8 +27443,16 @@ async def diamondvoy_homework_action(chat_id: int, payload: DiamondVoyWizardActi
     user_id = int(user.get("id") or 0)
     _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     state = _get_homework_wizard_state(chat_id, user_id)
-    
+
     if payload.action == "select_target":
+        available = (await diamondvoy_homework_start(chat_id, authorization)).get("targets", [])
+        allowed = any(
+            (payload.target_group_id and target.get("type") == "group" and int(target.get("id") or 0) == payload.target_group_id)
+            or (payload.target_student_id and target.get("type") == "student" and int(target.get("id") or 0) == payload.target_student_id and int(target.get("booking_id") or 0) == int(payload.target_booking_id or 0))
+            for target in available
+        )
+        if not allowed:
+            raise HTTPException(status_code=403, detail="Homework target is not available to this teacher")
         if payload.target_group_id:
             state["target_type"] = "group"
             state["target_id"] = payload.target_group_id
@@ -27940,13 +27966,50 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
     _diamondvoy_get_chat_for_user_final(chat_id, user_id)
     key = f"{chat_id}_{user_id}"
     state = _get_homework_wizard_state(chat_id, user_id)
+
+    # Preserve the completion receipt for a retry if the client lost the
+    # response after the DB commit. A new `start` explicitly opens a fresh
+    # draft, while a repeated `send` returns this same homework id.
+    if state.get("completed_homework_id"):
+        return {"ok": True, "homework_id": int(state["completed_homework_id"]), "replayed": True}
     
     if not state.get("target_id") or not state.get("deadline_iso") or not state.get("title"):
         raise HTTPException(status_code=400, detail="Missing required homework fields")
+
+    available = (await diamondvoy_homework_start(chat_id, authorization)).get("targets", [])
+    if not any(
+        target.get("type") == state.get("target_type")
+        and int(target.get("id") or 0) == int(state.get("target_id") or 0)
+        and (target.get("type") != "student" or int(target.get("booking_id") or 0) == int(state.get("booking_id") or 0))
+        for target in available
+    ):
+        raise HTTPException(status_code=403, detail="Homework target is no longer available to this teacher")
+    due = _parse_homework_due_at(state.get("deadline_iso"))
+    if due is None or due <= _now_tashkent():
+        raise HTTPException(status_code=422, detail="Homework deadline must be in the future")
         
     c_types = state.get("content_types") or []
     has_test = "test" in c_types or "ai_test" in c_types
     has_list = "text" in c_types or "image" in c_types or "file" in c_types or "voice" in c_types
+    if not c_types or (has_test and not state.get("manual_test")):
+        raise HTTPException(status_code=422, detail="Homework content or test questions are missing")
+    for kind, field in (("text", "essay_prompt"), ("image", "file_prompt"), ("file", "file_prompt"), ("voice", "voice_prompt")):
+        if kind in c_types and not str(state.get(field) or "").strip():
+            raise HTTPException(status_code=422, detail="Homework task instructions are required")
+    if not state.get("request_key"):
+        import uuid
+        state["request_key"] = f"diamondvoy-hw-{uuid.uuid4()}"
+        _save_homework_wizard_state(chat_id, user_id, state)
+    questions = None
+    if has_test:
+        questions = []
+        for raw in state["manual_test"]:
+            question = dict(raw)
+            if "correct_option_index" in question:
+                # Wizard indices are zero based; the content-test normalizer
+                # accepts one based indices for this field.
+                question["correct_option_index"] = int(question["correct_option_index"]) + 1
+            questions.append(question)
     
     if has_test and has_list:
         hk_kind = "both"
@@ -28004,25 +28067,29 @@ async def diamondvoy_homework_send(chat_id: int, authorization: str | None = Hea
         voice_prompt=state.get("voice_prompt"),
         is_voiceroom=is_voiceroom,
         voiceroom_groups=voiceroom_groups,
+        idempotency_key=state["request_key"],
+        test_questions=questions,
     )
     if not hw:
         raise HTTPException(status_code=500, detail="Failed to create homework")
         
     hw_id = hw["id"]
-    if has_test and state.get("manual_test"):
-        save_content_test("homework", hw_id, json.dumps(state["manual_test"]), user_id, title="Homework Test", created_by_role=role)
+    replayed = bool(hw.pop("_idempotent_replay", False))
         
     msg = f"Homework created successfully! [Homework #{hw_id}]"
-    _diamondvoy_insert_message(chat_id, "assistant", msg)
+    if not replayed:
+        _diamondvoy_insert_message(chat_id, "assistant", msg)
     
     try:
         _attach_homework_runtime_fields(hw)
-        await _notify_homework_created(hw, user, _homework_audience_student_ids(hw))
+        if not replayed:
+            await _notify_homework_created(hw, user, _homework_audience_student_ids(hw))
     except Exception as e:
         logger.exception("diamondvoy.homework.send notification failed homework_id=%s", hw_id)
         
     
-    _save_homework_wizard_state(chat_id, user_id, None)
+    state["completed_homework_id"] = int(hw_id)
+    _save_homework_wizard_state(chat_id, user_id, state)
         
     return {"ok": True, "homework_id": hw_id}
 
@@ -38620,6 +38687,9 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
         import datetime
         due_at = (datetime.datetime.utcnow() + datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
     homework_kind = _derive_homework_kind_from_request(payload)
+    deadline = _parse_homework_due_at(due_at)
+    if deadline is None or deadline <= _now_tashkent():
+        raise HTTPException(status_code=422, detail="Homework deadline must be in the future")
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
@@ -38653,6 +38723,16 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
         audience_count = 1
     else:
         raise HTTPException(status_code=400, detail="Select a group or student for homework")
+
+    if payload.is_voiceroom and not group_id:
+        raise HTTPException(status_code=422, detail="VoiceRoom requires a group")
+    if payload.is_voiceroom and group_id and len([row for row in group_members if row.get("role") == "student" or int(row.get("login_type") or 0) in (1, 2, 6)]) < 2:
+        raise HTTPException(status_code=422, detail="VoiceRoom requires at least two students")
+    if payload.is_voiceroom and payload.voiceroom_groups:
+        member_ids = {int(row.get("id") or 0) for row in group_members if row.get("role") == "student" or int(row.get("login_type") or 0) in (1, 2, 6)}
+        pair_ids = [int(pair.get(key) or 0) for pair in payload.voiceroom_groups for key in ("student1_id", "student2_id", "student3_id") if pair.get(key)]
+        if len(member_ids) < 2 or len(pair_ids) != len(set(pair_ids)) or set(pair_ids) != member_ids or any(not pair.get("student1_id") or not pair.get("student2_id") for pair in payload.voiceroom_groups):
+            raise HTTPException(status_code=422, detail="Invalid VoiceRoom group members")
         
     voiceroom_groups = []
     if payload.is_voiceroom and group_id > 0:
@@ -38694,6 +38774,7 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
             is_voiceroom=payload.is_voiceroom or False,
             voiceroom_groups=voiceroom_groups,
             idempotency_key=payload.idempotency_key,
+            test_questions=payload.test_questions,
         )
     except Exception as exc:
         logger.exception("teacher.homework.create failed teacher_id=%s student_id=%s group_id=%s", teacher_id, student_id, group_id)
@@ -38738,10 +38819,41 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
         if group_id > 0 or student_id <= 0 or student_id not in _teacher_student_ids(teacher_id):
             raise HTTPException(status_code=403, detail="Only homework owner or active temporary teacher can edit")
 
+    if bool(payload.is_voiceroom) != bool(homework.get("is_voiceroom")):
+        raise HTTPException(status_code=409, detail="VoiceRoom type cannot be changed after creation")
+
     title = str(payload.title or "").strip()
     description = str(payload.description or "").strip()
     due_at = str(payload.due_at or "").strip()
     homework_kind = _derive_homework_kind_from_request(payload)
+    requested_deadline = _parse_homework_due_at(due_at)
+    existing_deadline = _parse_homework_due_at(homework.get("due_at"))
+    if requested_deadline is None:
+        raise HTTPException(status_code=400, detail="Homework deadline is required")
+    if requested_deadline != existing_deadline and requested_deadline <= _now_tashkent():
+        raise HTTPException(status_code=422, detail="Homework deadline must be in the future")
+    if homework_has_student_submissions(int(homework_id)):
+        current_kind = str(homework.get("homework_kind") or "both").lower()
+        current_requirements = (
+            current_kind,
+            bool(homework.get("requires_voice_message")),
+            bool(homework.get("requires_file")),
+            bool(homework.get("requires_essay")),
+            str(homework.get("essay_prompt") or ""),
+            str(homework.get("file_prompt") or ""),
+            str(homework.get("voice_prompt") or ""),
+        )
+        requested_requirements = (
+            homework_kind,
+            bool(payload.requires_voice_message),
+            bool(payload.requires_file),
+            bool(payload.requires_essay),
+            str(payload.essay_prompt or ""),
+            str(payload.file_prompt or ""),
+            str(payload.voice_prompt or ""),
+        )
+        if current_requirements != requested_requirements:
+            raise HTTPException(status_code=409, detail="Homework content cannot be changed after a student submission")
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
@@ -38764,7 +38876,7 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
             title=title,
             description=description or ("Test homework" if homework_kind == "test" else ""),
             due_at=due_at,
-            image_url=payload.image_url,
+            image_url=payload.image_url if payload.image_url is not None else homework.get("image_url"),
             dcoin_effect=0.0,
             homework_kind=homework_kind,
             requires_voice_message=payload.requires_voice_message or False,
@@ -38776,6 +38888,8 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
             is_voiceroom=payload.is_voiceroom or False,
         )
     except Exception as exc:
+        if isinstance(exc, ValueError) and "after a student submission" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         logger.exception("teacher.homework.update failed teacher_id=%s homework_id=%s", teacher_id, homework_id)
         raise HTTPException(status_code=500, detail=f"Could not update homework: {str(exc)[:220]}") from exc
     if not updated:
@@ -39158,9 +39272,14 @@ async def teacher_homework_list(authorization: str | None = Header(default=None)
     if _apply_homework_deadline_penalties(rows):
         rows = _safe_call(lambda: list_homeworks_for_teacher(int(user.get("id") or 0)), []) or []
     tests: dict[int, bool] = {}
+    content_locks: dict[int, bool] = {}
     for row in rows:
         _attach_homework_runtime_fields(row)
         hid = int(row.get("id") or 0)
+        if hid > 0:
+            if hid not in content_locks:
+                content_locks[hid] = homework_has_student_submissions(hid)
+            row["content_locked"] = content_locks[hid]
         if hid > 0 and hid not in tests:
             tests[hid] = bool(_safe_call(lambda homework_id=hid: get_content_test("homework", homework_id, include_inactive=False, include_answers=False), None))
         sid = int(row.get("submission_student_id") or row.get("student_id") or 0)
@@ -61708,6 +61827,36 @@ async def _manage_save_content_test(content_type: str, content_id: int, payload:
     _require_role(user, {"admin", "teacher", "support"})
     normalized = _normalize_content_route_type(content_type)
     _require_content_test_manage_access(user, normalized, int(content_id))
+    if normalized == "homework" and homework_has_student_submissions(int(content_id)):
+        current_test = _safe_call(lambda: get_content_test("homework", int(content_id), include_inactive=True, include_answers=True), None)
+        current_questions = (current_test or {}).get("questions") or []
+        proposed_questions = payload.questions or []
+
+        def _question_signature(rows: list[dict]) -> list[dict]:
+            signature = []
+            for row in rows:
+                if row.get("kind"):
+                    signature.append({key: value for key, value in row.items() if key not in {"id", "order", "order_index"}})
+                    continue
+                options = [str(option or "").strip() for option in (row.get("options") or [])]
+                correct = str(row.get("correct") or "").strip()
+                index = row.get("correct_option_index")
+                if correct in options:
+                    correct_index = options.index(correct)
+                else:
+                    try:
+                        correct_index = int(index)
+                    except (TypeError, ValueError):
+                        correct_index = -1
+                signature.append({
+                    "question": str(row.get("question") or row.get("question_text") or "").strip(),
+                    "options": options,
+                    "correct_index": correct_index,
+                })
+            return signature
+
+        if _question_signature(current_questions) != _question_signature(proposed_questions):
+            raise HTTPException(status_code=409, detail="Test cannot be changed after a student submission")
     saved = _safe_call(
         lambda: save_content_test(
             normalized,
@@ -61916,6 +62065,8 @@ async def content_test_delete(content_type: str, content_id: int, authorization:
     _require_role(user, {"admin", "teacher", "support"})
     normalized = _normalize_content_route_type(content_type)
     _require_content_test_manage_access(user, normalized, int(content_id))
+    if normalized == "homework" and homework_has_student_submissions(int(content_id)):
+        raise HTTPException(status_code=409, detail="Test cannot be removed after a student submission")
     ok = _safe_call(lambda: deactivate_content_test(normalized, int(content_id)), False)
     if not ok:
         raise HTTPException(status_code=404, detail="Test not found")

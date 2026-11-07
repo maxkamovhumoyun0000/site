@@ -7016,6 +7016,7 @@ function TeacherHomeworkPanel({
   const [reviewModalRow, setReviewModalRow] = useState<GenericRow | null>(null);
   const [reviewImageIndex, setReviewImageIndex] = useState(0);
   const [editingHomeworkId, setEditingHomeworkId] = useState<number | null>(null);
+  const [editingContentLocked, setEditingContentLocked] = useState(false);
   const [deletingHomeworkId, setDeletingHomeworkId] = useState<number | null>(null);
   const [savingHomework, setSavingHomework] = useState(false);
   // Retained until the full homework + test save succeeds.  A delayed POST
@@ -7070,12 +7071,21 @@ function TeacherHomeworkPanel({
   function datetimeLocalValue(raw: unknown) {
     const value = String(raw || "").trim();
     if (!value) return "";
-    return value.replace(" ", "T").slice(0, 16);
+    const normalized = value.replace(" ", "T");
+    if (/(Z|[+-]\d{2}:?\d{2})$/i.test(normalized)) {
+      const parsed = new Date(normalized);
+      if (!Number.isNaN(parsed.getTime())) {
+        const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+        return local.toISOString().slice(0, 16);
+      }
+    }
+    return normalized.slice(0, 16);
   }
 
   function resetHomeworkForm() {
     homeworkCreateRequestKey.current = null;
     setEditingHomeworkId(null);
+    setEditingContentLocked(false);
     setTargetType("group");
     setStudentId(0);
     if (groups[0]?.id) setGroupId(Number(groups[0].id || 0));
@@ -7110,6 +7120,7 @@ function TeacherHomeworkPanel({
     const hid = Number(row.id || 0);
     if (!hid) return;
     setEditingHomeworkId(hid);
+    setEditingContentLocked(Boolean(row.content_locked));
     setTargetType(row.group_id ? "group" : "student");
     setGroupId(Number(row.group_id || 0));
     setStudentId(Number(row.homework_student_id || row.student_id || 0));
@@ -7446,6 +7457,11 @@ function TeacherHomeworkPanel({
                 <p className="text-sm text-ink-500 dark:text-navy-300">
                   {editingHomeworkId ? "Homework turi, deadline va test savollarini yangilang." : "Avval homework turini tanlang, keyin kerakli sozlamalarni kiriting."}
                 </p>
+                {editingHomeworkId && editingContentLocked ? (
+                  <p className="mt-2 rounded-xl border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
+                    {tt("homework.contentLocked", "O‘quvchi homeworkni topshirgan. Sarlavha va deadline tahrirlanadi, vazifa mazmuni va testi qulflangan.")}
+                  </p>
+                ) : null}
               </div>
               <button className="text-ink-400 hover:text-ink-700 dark:text-navy-300 dark:hover:text-white transition-colors" type="button" onClick={() => setCreateOpen(false)}>
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -7455,6 +7471,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresTest ? "is-active" : ""}`}
+            disabled={editingContentLocked}
             onClick={() => {
               const next = !requiresTest;
               setRequiresTest(next);
@@ -7467,6 +7484,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresFile ? "is-active" : ""}`}
+            disabled={editingContentLocked}
             onClick={() => {
               const next = !requiresFile;
               setRequiresFile(next);
@@ -7479,6 +7497,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresEssay ? "is-active" : ""}`}
+            disabled={editingContentLocked}
             onClick={() => {
               const next = !requiresEssay;
               setRequiresEssay(next);
@@ -7491,6 +7510,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresVoiceMessage ? "is-active" : ""}`}
+            disabled={editingContentLocked}
             onClick={() => {
               const next = !requiresVoiceMessage;
               setRequiresVoiceMessage(next);
@@ -7503,6 +7523,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${isVoiceroom ? "is-active" : ""}`}
+            disabled={Boolean(editingHomeworkId)}
             onClick={() => {
               const next = !isVoiceroom;
               setIsVoiceroom(next);
@@ -7587,6 +7608,7 @@ function TeacherHomeworkPanel({
               <input
                 type="file"
                 accept="*/*"
+                disabled={editingContentLocked}
                 onChange={async (event) => {
                   const input = event.currentTarget;
                   const file = event.target.files?.[0];
@@ -7613,7 +7635,7 @@ function TeacherHomeworkPanel({
                 ) : (
                   <a href={resolveAssetUrl(imageUrl)} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
                 )}
-                <button className="btn btn-soft small" onClick={() => setImageUrl("")} type="button">Faylni olib tashlash</button>
+                <button className="btn btn-soft small" onClick={() => setImageUrl("")} type="button" disabled={editingContentLocked}>Faylni olib tashlash</button>
               </div>
             ) : null}
           </>
@@ -7625,33 +7647,35 @@ function TeacherHomeworkPanel({
               <p className="text-sm text-ink-500 dark:text-navy-300">Mavzu va savollar sonini kiriting yoki o‘zingizdagi test matnini joylang. Natijani saqlashdan oldin tahrirlashingiz mumkin.</p>
               <div className="grid grid-3 gap-3 mt-3">
                 <label className="col-span-2">Mavzu
-                  <input value={testTopic} onChange={(event) => setTestTopic(event.target.value)} placeholder="Masalan: Past Simple" />
+                  <input disabled={editingContentLocked} value={testTopic} onChange={(event) => setTestTopic(event.target.value)} placeholder="Masalan: Past Simple" />
                 </label>
                 <label>Savollar soni
-                  <input type="number" min={1} max={50} value={testQuestionCount} onChange={(event) => setTestQuestionCount(Math.max(1, Math.min(50, Number(event.target.value || 1))))} />
+                  <input disabled={editingContentLocked} type="number" min={1} max={50} value={testQuestionCount} onChange={(event) => setTestQuestionCount(Math.max(1, Math.min(50, Number(event.target.value || 1))))} />
                 </label>
               </div>
-              <button type="button" className="btn btn-primary mt-3" disabled={testAiBusy || !testTopic.trim()} onClick={() => runHomeworkTestAi("generate")}>
+              <button type="button" className="btn btn-primary mt-3" disabled={editingContentLocked || testAiBusy || !testTopic.trim()} onClick={() => runHomeworkTestAi("generate")}>
                 {testAiBusy ? "Savollar tayyorlanmoqda…" : "Mavzudan savollar yaratish"}
               </button>
               <label className="block mt-4">Mavjud testni joylang
-                <textarea value={rawTestText} onChange={(event) => setRawTestText(event.target.value)} rows={5} placeholder={"1. Savol matni\nA) ...  B) ...\nTo‘g‘ri javob: B"} />
+                <textarea disabled={editingContentLocked} value={rawTestText} onChange={(event) => setRawTestText(event.target.value)} rows={5} placeholder={"1. Savol matni\nA) ...  B) ...\nTo‘g‘ri javob: B"} />
               </label>
-              <button type="button" className="btn btn-outline mt-2" disabled={testAiBusy || !rawTestText.trim()} onClick={() => runHomeworkTestAi("parse")}>
+              <button type="button" className="btn btn-outline mt-2" disabled={editingContentLocked || testAiBusy || !rawTestText.trim()} onClick={() => runHomeworkTestAi("parse")}>
                 {testAiBusy ? "Matn ajratilmoqda…" : "Matndan savollarni ajratish"}
               </button>
             </div>
-            <AiTestEditor
-              questions={testQuestions}
-              onChange={setTestQuestions}
-              onUploadAsset={async (file) => {
-                const formData = new FormData();
-                formData.append("file", file);
-                const res = await onApiCall("/teacher/library/upload", formData, "POST");
-                return res && res.url ? String(res.url) : null;
-              }}
-              title={tt("homework.testTitle", "Homework testi va mashqlari")}
-            />
+            <fieldset disabled={editingContentLocked} aria-disabled={editingContentLocked} className="min-w-0">
+              <AiTestEditor
+                questions={testQuestions}
+                onChange={setTestQuestions}
+                onUploadAsset={async (file) => {
+                  const formData = new FormData();
+                  formData.append("file", file);
+                  const res = await onApiCall("/teacher/library/upload", formData, "POST");
+                  return res && res.url ? String(res.url) : null;
+                }}
+                title={tt("homework.testTitle", "Homework testi va mashqlari")}
+              />
+            </fieldset>
           </div>
         ) : null}
 
@@ -7674,7 +7698,7 @@ function TeacherHomeworkPanel({
             </div>
             <button
               type="button"
-              disabled={previewingPairs}
+                disabled={previewingPairs || Boolean(editingHomeworkId)}
               onClick={() => previewVoiceRoomPairs(groupId)}
               className="mt-4 px-4 py-2 border border-cyan-500 text-cyan-600 dark:text-cyan-400 font-bold rounded-xl text-sm w-full md:w-auto hover:bg-cyan-50 dark:hover:bg-cyan-500/10 transition-colors"
             >
@@ -7774,6 +7798,7 @@ function TeacherHomeworkPanel({
                     file_prompt: filePrompt.trim() || undefined,
                     voice_prompt: voicePrompt.trim() || undefined,
                     requires_test: requiresTest,
+                    test_questions: !editingHomeworkId && requiresTest ? testQuestions : undefined,
                     requires_voice_message: requiresVoiceMessage,
                     is_voiceroom: isVoiceroom,
                     voiceroom_groups: isVoiceroom ? voiceroomGroups : undefined,
@@ -7785,14 +7810,14 @@ function TeacherHomeworkPanel({
                 if (!saveResult) return;
 
                 const savedHomeworkId = Number((saveResult.item || {}).id || saveResult.id || editingHomeworkId || 0);
-                if (requiresTest && testQuestions.length > 0) {
+                if (editingHomeworkId && requiresTest && testQuestions.length > 0 && !editingContentLocked) {
                   if (!savedHomeworkId) {
                     setPanelError("Homework yaratildi, lekin testni bog'lash uchun ID topilmadi.");
                     return;
                   }
                   const testSave = await onApiCall(`/teacher/homework/${savedHomeworkId}/test`, { questions: testQuestions }, "POST", "Test saqlandi");
                   if (!testSave) return;
-                } else if (editingHomeworkId && !requiresTest) {
+                } else if (editingHomeworkId && !requiresTest && !editingContentLocked) {
                   await onApiCall(`/content-tests/homework/${editingHomeworkId}`, undefined, "DELETE").catch(() => null);
                 }
 

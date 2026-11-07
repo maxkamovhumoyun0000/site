@@ -20705,6 +20705,12 @@ def _normalize_content_test_questions_payload(questions: Any) -> list[dict]:
                 correct_idx -= 1
         except Exception:
             correct_idx = -1
+        # Stored questions expose both a zero-based index and the answer text.
+        # Prefer the text when an existing question is saved again, otherwise
+        # interpreting its index as one-based shifts every answer after A.
+        saved_answer = str(raw.get("correct") or "").strip()
+        if saved_answer in options:
+            correct_idx = options.index(saved_answer)
         if correct_idx < 0:
             correct_raw = str(raw.get("correct") or raw.get("correct_option") or "").strip()
             lower = correct_raw.lower()
@@ -22833,8 +22839,17 @@ def create_homework(
     voiceroom_groups: list[dict] | None = None,
     idempotency_key: str | None = None,
     subject: str | None = None,
+    test_questions: list[dict] | None = None,
 ) -> dict | None:
     ensure_homework_schema()
+    if test_questions is not None:
+        ensure_content_tests_schema()
+        if not test_questions:
+            raise ValueError("Test questions are required")
+        raw_test = _questions_have_ai_kinds(test_questions)
+        prepared_test = test_questions if raw_test else _normalize_content_test_questions_payload(test_questions)
+        if len(prepared_test) != len(test_questions):
+            raise ValueError("Invalid test questions")
     normalized_kind = str(homework_kind or "both").strip().lower()
     if normalized_kind not in {"list", "test", "both"}:
         normalized_kind = "both"
@@ -22925,6 +22940,17 @@ def create_homework(
                         """,
                         (homework_id, s1, s2, s3, room_id)
                     )
+        if test_questions is not None:
+            cur.execute(
+                "INSERT INTO web_content_tests(content_type, content_id, title, questions_json, created_by, created_by_role, is_active, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                ("homework", homework_id, "Homework Test", json.dumps(prepared_test, ensure_ascii=False), int(teacher_id), "teacher", 1),
+            )
+            cur.execute("SELECT id FROM web_content_tests WHERE content_type=? AND content_id=?", ("homework", homework_id))
+            test_id = int((_row_to_dict(cur.fetchone()) or {}).get("id") or 0)
+            if not test_id:
+                raise ValueError("Could not create homework test")
+            if not raw_test:
+                _insert_content_test_questions_tx(cur, test_id, prepared_test)
         conn.commit()
     except Exception:
         # A concurrent insert with this key is not an error for callers — it
@@ -22978,6 +23004,24 @@ def get_homework(homework_id: int) -> dict | None:
         conn.close()
 
 
+def homework_has_student_submissions(homework_id: int) -> bool:
+    ensure_homework_schema()
+    ensure_content_tests_schema()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT 1 FROM web_homework_submissions WHERE homework_id=? LIMIT 1", (int(homework_id),))
+        if cur.fetchone() is not None:
+            return True
+        cur.execute(
+            "SELECT 1 FROM web_content_test_attempts WHERE content_type='homework' AND content_id=? LIMIT 1",
+            (int(homework_id),),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def _homework_visible_window_sql(alias: str = "h") -> str:
     """Homework remains visible until 48 hours after its deadline."""
     prefix = f"{alias}." if alias else ""
@@ -23009,6 +23053,7 @@ def update_homework(
     essay_prompt: str | None = None,
     file_prompt: str | None = None,
     voice_prompt: str | None = None,
+    is_voiceroom: bool = False,
 ) -> dict | None:
     ensure_homework_schema()
     normalized_kind = str(homework_kind or "both").strip().lower()
@@ -23017,6 +23062,23 @@ def update_homework(
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT * FROM web_homeworks WHERE id=? LIMIT 1", (int(homework_id),))
+        current = _row_to_dict(cur.fetchone()) or {}
+        cur.execute("SELECT 1 FROM web_homework_submissions WHERE homework_id=? LIMIT 1", (int(homework_id),))
+        has_submissions = cur.fetchone() is not None
+        if has_submissions:
+            same_content = (
+                str(current.get("homework_kind") or "") == normalized_kind
+                and bool(current.get("requires_voice_message")) == bool(requires_voice_message)
+                and bool(current.get("requires_file")) == bool(requires_file)
+                and bool(current.get("requires_essay")) == bool(requires_essay)
+                and str(current.get("essay_prompt") or "") == str(essay_prompt or "").strip()
+                and str(current.get("file_prompt") or "") == str(file_prompt or "").strip()
+                and str(current.get("voice_prompt") or "") == str(voice_prompt or "").strip()
+                and bool(current.get("is_voiceroom")) == bool(is_voiceroom)
+            )
+            if not same_content:
+                raise ValueError("Homework content cannot be changed after a student submission")
         cur.execute(
             """
             UPDATE web_homeworks
@@ -23032,6 +23094,7 @@ def update_homework(
                 essay_prompt=?,
                 file_prompt=?,
                 voice_prompt=?,
+                is_voiceroom=?,
                 updated_at=CURRENT_TIMESTAMP
             WHERE id=?
             """,
@@ -23048,6 +23111,7 @@ def update_homework(
                 str(essay_prompt or "").strip() or None,
                 str(file_prompt or "").strip() or None,
                 str(voice_prompt or "").strip() or None,
+                bool(is_voiceroom),
                 int(homework_id),
             ),
         )
