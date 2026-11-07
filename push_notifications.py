@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hmac
 import threading
 from typing import Any
 
@@ -56,6 +57,8 @@ from token_encryption import TokenCipher, TokenEncryptionConfigurationError
 # One Firebase Admin `App` instance per slot — see module docstring.
 _firebase_apps: dict[str, Any] = {}
 _firebase_lock = threading.Lock()
+_speaking_schema_lock = threading.Lock()
+_speaking_routing_schema_ready = False
 _init_attempted = False
 # firebase-admin's HTTP session uses a small urllib3 connection pool. Several
 # background notification jobs can run at once in each Uvicorn worker, so bound
@@ -392,7 +395,35 @@ def unregister_device_token(token: str) -> None:
         conn.close()
 
 
-def register_speaking_token(device_id: str, token: str, *, platform: str = "android", user_id: int | None = None) -> None:
+def _speaking_token_update_allowed(existing_user: int | None, incoming_user: int | None, existing_token: str, incoming_token: str) -> bool:
+    """A bound device may rotate for its owner, or transfer only with token proof."""
+    if existing_user is None:
+        return True
+    if incoming_user is not None and int(existing_user) == int(incoming_user):
+        return True
+    return bool(existing_token) and hmac.compare_digest(existing_token, incoming_token)
+
+
+def speaking_push_route_product(user_id: int | None, signed_product: str, claimed_product: str) -> str | None:
+    """Choose a routing label; authenticated sessions override client claims."""
+    value = signed_product if user_id else claimed_product
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"english", "russian"} else None
+
+
+def _ensure_speaking_routing_schema(cur: Any, conn: Any) -> None:
+    global _speaking_routing_schema_ready
+    if _speaking_routing_schema_ready:
+        return
+    with _speaking_schema_lock:
+        if _speaking_routing_schema_ready:
+            return
+        cur.execute("ALTER TABLE speaking_push_tokens ADD COLUMN IF NOT EXISTS product_code TEXT")
+        conn.commit()
+        _speaking_routing_schema_ready = True
+
+
+def register_speaking_token(device_id: str, token: str, *, platform: str = "android", user_id: int | None = None, product_code: str | None = None) -> None:
     """Registers an anonymous device token for Diamond Speaking Questions."""
     from db import get_conn
 
@@ -425,31 +456,33 @@ def register_speaking_token(device_id: str, token: str, *, platform: str = "andr
         cur.execute(
             "ALTER TABLE speaking_push_tokens ADD COLUMN IF NOT EXISTS user_id BIGINT"
         )
+        _ensure_speaking_routing_schema(cur, conn)
         _encrypt_legacy_speaking_tokens(cur, conn, cipher)
+        dev_id = dev_id or f"dev_{hash(tok)}"
+        uid = int(user_id) if user_id else None
+        product = product_code if product_code in {"english", "russian"} else None
+        encrypted = cipher.encrypt(tok)
+        # Serialize claims for an existing installation. The insert handles
+        # concurrent first registrations; the loser locks and checks ownership.
         cur.execute(
-            """
-            INSERT INTO speaking_push_tokens (device_id, token, platform, user_id, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(device_id) DO UPDATE SET
-                -- An unauthenticated call (user_id NULL) must not replace the
-                -- push token of a device already bound to an account: knowing
-                -- or guessing a device_id would otherwise redirect that
-                -- user's private-chat notifications to an attacker's device.
-                token=CASE
-                    WHEN excluded.user_id IS NULL AND speaking_push_tokens.user_id IS NOT NULL
-                        THEN speaking_push_tokens.token
-                    ELSE excluded.token
-                END,
-                platform=CASE
-                    WHEN excluded.user_id IS NULL AND speaking_push_tokens.user_id IS NOT NULL
-                        THEN speaking_push_tokens.platform
-                    ELSE excluded.platform
-                END,
-                user_id=excluded.user_id,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            (dev_id or f"dev_{hash(tok)}", cipher.encrypt(tok), plat, int(user_id) if user_id else None),
+            """INSERT INTO speaking_push_tokens (device_id, token, platform, user_id, product_code, updated_at)
+               VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(device_id) DO NOTHING RETURNING id""",
+            (dev_id, encrypted, plat, uid, product),
         )
+        if not cur.fetchone():
+            cur.execute("SELECT token, user_id FROM speaking_push_tokens WHERE device_id=? FOR UPDATE", (dev_id,))
+            existing = cur.fetchone()
+            if existing:
+                try:
+                    previous_token = cipher.decrypt(str(existing.get("token") or ""))
+                except Exception:
+                    previous_token = ""
+                if _speaking_token_update_allowed(existing.get("user_id"), uid, previous_token, tok):
+                    cur.execute(
+                        "UPDATE speaking_push_tokens SET token=?, platform=?, user_id=?, product_code=COALESCE(?, product_code), updated_at=CURRENT_TIMESTAMP WHERE device_id=?",
+                        (encrypted, plat, uid, product, dev_id),
+                    )
         conn.commit()
     except Exception:
         try:
@@ -478,11 +511,27 @@ def _encrypt_legacy_speaking_tokens(cur: Any, conn: Any, cipher: TokenCipher) ->
         logger.info("push_notifications: migrated %s legacy speaking push token(s) to encrypted storage", len(legacy_rows))
 
 
+def _speaking_product_matches(stored: str | None, requested: str | None) -> bool:
+    """Shared notifications reach all; targeted ones require a known match."""
+    return requested is None or stored == requested
+
+
+def _speaking_competition_product(data: dict[str, Any] | None) -> str | None:
+    """Competition events with a known subject target that product only."""
+    values = data or {}
+    kind = str(values.get("notification_type") or "").lower()
+    subject = str(values.get("subject") or "").strip().lower()
+    if kind.startswith(("competition_", "duel_")) and subject in {"english", "russian"}:
+        return subject
+    return None
+
+
 def send_push_to_speaking_devices(
     title: str,
     body: str,
     *,
     data: dict[str, Any] | None = None,
+    product_code: str | None = None,
 ) -> int:
     """Send to registered devices, using the public topic only as a fallback.
 
@@ -502,8 +551,11 @@ def send_push_to_speaking_devices(
     token_rows: list[dict[str, str]] = []
     try:
         _encrypt_legacy_speaking_tokens(cur, conn, cipher)
-        cur.execute("SELECT token, platform FROM speaking_push_tokens")
+        _ensure_speaking_routing_schema(cur, conn)
+        cur.execute("SELECT token, platform, product_code FROM speaking_push_tokens")
         for row in (cur.fetchall() or []):
+            if not _speaking_product_matches(row.get("product_code"), product_code):
+                continue
             encrypted_token = str(row.get("token") or "")
             if not encrypted_token:
                 continue
@@ -534,7 +586,7 @@ def send_push_to_speaking_devices(
             msg = messaging.Message(
                 notification=messaging.Notification(title=str(title or "")[:180], body=str(body or "")[:500]),
                 data=str_data,
-                topic="speaking_all",
+                topic=f"speaking_{product_code}" if product_code in {"english", "russian"} else "speaking_all",
                 android=messaging.AndroidConfig(priority="high"),
                 apns=messaging.APNSConfig(payload=messaging.APNSPayload(aps=messaging.Aps(sound="default"))),
             )
@@ -553,6 +605,7 @@ def send_push_to_speaking_user(
     body: str,
     *,
     data: dict[str, Any] | None = None,
+    product_code: str | None = None,
 ) -> int:
     """Send a private speaking-chat push only to the recipient's linked devices."""
     from db import get_conn
@@ -560,6 +613,7 @@ def send_push_to_speaking_user(
     uid = int(user_id or 0)
     if uid <= 0:
         return 0
+    product_code = product_code or _speaking_competition_product(data)
     init_firebase()
     if not is_enabled():
         return 0
@@ -572,8 +626,11 @@ def send_push_to_speaking_user(
     cur = conn.cursor()
     token_rows: list[dict[str, str]] = []
     try:
-        cur.execute("SELECT token, platform FROM speaking_push_tokens WHERE user_id=?", (uid,))
+        _ensure_speaking_routing_schema(cur, conn)
+        cur.execute("SELECT token, platform, product_code FROM speaking_push_tokens WHERE user_id=?", (uid,))
         for row in cur.fetchall() or []:
+            if not _speaking_product_matches(row.get("product_code"), product_code):
+                continue
             encrypted_token = str(row.get("token") or "")
             if not encrypted_token:
                 continue
@@ -599,6 +656,7 @@ def send_push_to_speaking_users(
     body: str,
     *,
     data: dict[str, Any] | None = None,
+    product_code: str | None = None,
 ) -> int:
     """Send chat pushes to selected Speaking accounts without broadcasting to a topic."""
     from db import get_conn
@@ -606,6 +664,7 @@ def send_push_to_speaking_users(
     ids = list(dict.fromkeys(int(uid) for uid in (user_ids or []) if int(uid or 0) > 0))
     if not ids:
         return 0
+    product_code = product_code or _speaking_competition_product(data)
     init_firebase()
     if not is_enabled():
         return 0
@@ -619,8 +678,11 @@ def send_push_to_speaking_users(
     token_rows: list[dict[str, str]] = []
     try:
         placeholders = ",".join("?" for _ in ids)
-        cur.execute(f"SELECT token, platform FROM speaking_push_tokens WHERE user_id IN ({placeholders})", tuple(ids))
+        _ensure_speaking_routing_schema(cur, conn)
+        cur.execute(f"SELECT token, platform, product_code FROM speaking_push_tokens WHERE user_id IN ({placeholders})", tuple(ids))
         for row in cur.fetchall() or []:
+            if not _speaking_product_matches(row.get("product_code"), product_code):
+                continue
             try:
                 token = cipher.decrypt(str(row.get("token") or ""))
             except Exception:

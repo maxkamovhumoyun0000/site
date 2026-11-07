@@ -435,12 +435,15 @@ def _question_topic(question_id: int | None) -> tuple[int | None, str]:
     return (int(dict(row)["id"]), str(dict(row)["title"] or "")) if row else (None, "")
 
 
-def _item(cur, item_id: int, user_id: int) -> dict[str, Any]:
-    cur.execute("SELECT * FROM speaking_vocab_notebook WHERE id=%s AND user_id=%s", (int(item_id), int(user_id)))
+def _item(cur, item_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    cur.execute("SELECT * FROM speaking_vocab_notebook WHERE id=%s AND user_id=%s", (int(item_id), int(user.get("id") or 0)))
     row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Notebook item not found")
-    return dict(row)
+    item = dict(row)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, item.get("subject"), paid_feature=True)
+    return item
 
 
 def search_filter(scope: str, query: str) -> tuple[str, list[Any]]:
@@ -507,6 +510,8 @@ async def list_notebook(
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     query = _clean(q, 80)
     where = ["user_id=%s", "subject=%s"]
     params: list[Any] = [user_id, subject_key]
@@ -569,6 +574,8 @@ async def save_to_notebook(payload: SaveRequest, authorization: str | None = Hea
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(payload.subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     term = validate_term(payload.term)
     key = term_key(term)
     context = _clean(payload.context, 600)
@@ -679,7 +686,7 @@ async def update_notebook_item(item_id: int, payload: UpdateRequest, authorizati
     conn = get_conn()
     cur = conn.cursor()
     try:
-        _item(cur, item_id, int(user.get("id") or 0))
+        _item(cur, item_id, user)
         cur.execute(
             f"UPDATE speaking_vocab_notebook SET {', '.join(sets)} WHERE id=%s AND user_id=%s RETURNING *",
             [*params, int(item_id), int(user.get("id") or 0)],
@@ -700,6 +707,7 @@ async def delete_notebook_item(item_id: int, authorization: str | None = Header(
     conn = get_conn()
     cur = conn.cursor()
     try:
+        _item(cur, item_id, user)
         cur.execute(
             "DELETE FROM speaking_vocab_notebook WHERE id=%s AND user_id=%s RETURNING id",
             (int(item_id), int(user.get("id") or 0)),
@@ -723,7 +731,7 @@ async def refresh_notebook_item(item_id: int, authorization: str | None = Header
     conn = get_conn()
     cur = conn.cursor()
     try:
-        item = _item(cur, item_id, user_id)
+        item = _item(cur, item_id, user)
     finally:
         cur.close()
         conn.close()
@@ -768,7 +776,7 @@ async def check_user_example(
     conn = get_conn()
     cur = conn.cursor()
     try:
-        item = _item(cur, item_id, user_id)
+        item = _item(cur, item_id, user)
     finally:
         cur.close()
         conn.close()
@@ -829,6 +837,8 @@ async def notebook_review_queue(
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -907,7 +917,7 @@ async def review_notebook_item(
     conn = get_conn()
     cur = conn.cursor()
     try:
-        item = _item(cur, item_id, user_id)
+        item = _item(cur, item_id, user)
     finally:
         cur.close()
         conn.close()
@@ -1027,6 +1037,8 @@ async def notebook_ai_search(
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     query = _clean(q, 80)
     if len(query) < 2:
         return {"items": [], "blocked": False}

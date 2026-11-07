@@ -230,7 +230,7 @@ def _attach_viewer_state(cur: Any, items: list[dict[str, Any]], user_id: int) ->
             item["duration"] = item["progress_duration_seconds"]
 
 
-def _visible_video(source: str, video_id: int) -> bool:
+def _visible_video(source: str, video_id: int, user: dict[str, Any]) -> bool:
     if source not in {"speaking", "catalog"} or video_id <= 0:
         return False
     conn = get_conn()
@@ -238,17 +238,25 @@ def _visible_video(source: str, video_id: int) -> bool:
     try:
         if source == "speaking":
             cur.execute(
-                "SELECT 1 AS found FROM speaking_videos WHERE id = %s AND is_published = TRUE LIMIT 1",
+                "SELECT subject FROM speaking_videos WHERE id = %s AND is_published = TRUE LIMIT 1",
                 (int(video_id),),
             )
         else:
             cur.execute(
-                """SELECT 1 AS found FROM videos v
+                """SELECT v.* FROM videos v
                    JOIN speaking_video_picks p ON p.video_id = v.id
                    WHERE v.id = %s AND v.is_published = 1 LIMIT 1""",
                 (int(video_id),),
             )
-        return cur.fetchone() is not None
+        row = cur.fetchone()
+        if not row:
+            return False
+        subject = _subject_key(dict(row).get("subject"))
+        # Catalogue videos without a subject remain shared between products.
+        if subject:
+            from backend.speaking_subscriptions import require_product_subject
+            require_product_subject(user, subject)
+        return True
     finally:
         cur.close()
         conn.close()
@@ -278,7 +286,7 @@ async def save_speaking_video_progress(
 
     require_feature(user, "video_lessons")
     ensure_tables()
-    if not _visible_video(source, video_id):
+    if not _visible_video(source, video_id, user):
         raise HTTPException(status_code=404, detail="Video not found")
     duration = int(payload.duration_seconds)
     position = min(int(payload.position_seconds), duration) if duration > 0 else int(payload.position_seconds)
@@ -321,7 +329,7 @@ async def set_speaking_video_bookmark(
 
     require_feature(user, "video_lessons")
     ensure_tables()
-    if not _visible_video(source, video_id):
+    if not _visible_video(source, video_id, user):
         raise HTTPException(status_code=404, detail="Video not found")
     conn = get_conn()
     cur = conn.cursor()
@@ -360,6 +368,8 @@ async def list_speaking_videos(
 
     require_feature(user, "video_lessons")
     viewer_id = int(user.get("id") or 0)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, _subject_key(subject) or "english")
     items = _load(_subject_key(subject) or "english", include_drafts=False, viewer_id=viewer_id)
     return {"items": items, "requires_login": user is None}
 
@@ -374,7 +384,7 @@ async def record_speaking_video_view(source: str, video_id: int, authorization: 
 
     require_feature(user, "video_lessons")
     ensure_tables()
-    if not _visible_video(source, video_id):
+    if not _visible_video(source, video_id, user):
         raise HTTPException(status_code=404, detail="Video not found")
     from backend.main import _REDIS_CLIENT
     from backend.rate_limiting import consume_rate_limit

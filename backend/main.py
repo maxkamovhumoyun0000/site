@@ -8578,6 +8578,8 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
                 raise HTTPException(status_code=403, detail="Account is blocked")
             if is_speaking_app_account(cached_row.get("speaking_app_account")) and cached_row.get("speaking_deleted_at"):
                 raise HTTPException(status_code=401, detail="Session expired. Please login again")
+            from backend.speaking_subscriptions import bind_authenticated_product
+            bind_authenticated_product(token_product, cached_row.get("speaking_app_account"))
             return cached_row
     user_id = payload.get("sub")
     if not user_id or str(user_id).strip() == "" or str(user_id).strip().lower() == "none":
@@ -8596,6 +8598,8 @@ def _user_row_from_bearer(authorization: str | None) -> dict:
         raise HTTPException(status_code=403, detail="Account is blocked")
     if is_speaking_app_account(row.get("speaking_app_account")) and row.get("speaking_deleted_at"):
         raise HTTPException(status_code=401, detail="Session expired. Please login again")
+    from backend.speaking_subscriptions import bind_authenticated_product
+    bind_authenticated_product(token_product, row.get("speaking_app_account"))
     token_telegram_id = str(payload.get("telegram_id") or "").strip()
     if token_telegram_id and _telegram_id_is_env_admin(token_telegram_id):
         token_role = _role_from_login_type(int(row.get("login_type") or 0), str(row.get("login_id") or ""))
@@ -42848,6 +42852,11 @@ async def media_stream_asset(
     if not token_ok:
         viewer = _user_row_from_bearer(authorization)
         if not viewer:
+            raise HTTPException(status_code=401, detail="Invalid or expired media token")
+        # Standalone Speaking accounts must receive a signed media URL from an
+        # authorized catalogue; their legacy login type otherwise resolves to
+        # student and would allow guessing any protected asset ID.
+        if is_speaking_app_account(viewer.get("speaking_app_account")):
             raise HTTPException(status_code=401, detail="Invalid or expired media token")
         _require_role(viewer, {"student", "teacher", "admin", "support"})
 

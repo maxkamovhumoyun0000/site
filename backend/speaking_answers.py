@@ -538,6 +538,8 @@ async def analyze_speaking_answer(
 
     cached = _existing(user_id, recording_ref)
     if cached:
+        from backend.speaking_subscriptions import require_product_subject
+        require_product_subject(user, _subject_key(cached.get("subject")), paid_feature=True)
         return {"analysis": cached, "cached": True}
 
     # Mock-exam answers are covered by the exam entitlement/cadence. The daily
@@ -574,6 +576,8 @@ async def analyze_speaking_answer(
         topic = topic_title.strip()
         question_text = prompt.strip()
         bullets = ""
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     scale = "ielts" if subject_key == "english" else "ten"
 
     _enforce_limits(user_id)
@@ -1084,6 +1088,8 @@ async def speaking_progress(
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     now = datetime.now(timezone.utc)
     conn = get_conn()
     cur = conn.cursor()

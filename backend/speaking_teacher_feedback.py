@@ -584,6 +584,8 @@ async def send_to_teacher(
         info = _question_info(cur, qid)
         analysis = _analysis_for(cur, student_id, recording_ref)
         subject_key = "russian" if str(info.get("subject") or subject).lower().startswith(("rus", "ru")) else "english"
+        from backend.speaking_subscriptions import require_product_subject
+        require_product_subject(user, subject_key, paid_feature=True)
         consume_interval_in_transaction(cur, student_id, "teacher_feedback", feedback_plan.get("interval_days"))
         cur.execute(
             """INSERT INTO speaking_feedback_requests

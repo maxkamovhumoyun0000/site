@@ -351,7 +351,7 @@ def _scale(subject: str) -> tuple[str, float]:
 @router.post("/api/speaking/exams/start")
 async def start_speaking_exam(payload: ExamStartRequest, authorization: str | None = Header(default=None)):
     user = _user(authorization)
-    from backend.speaking_subscriptions import consume_interval_in_transaction, entitlement, require_feature
+    from backend.speaking_subscriptions import consume_interval_in_transaction, entitlement, require_feature, require_product_subject
 
     decision = None
     if payload.kind == "challenge":
@@ -361,6 +361,7 @@ async def start_speaking_exam(payload: ExamStartRequest, authorization: str | No
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject = _subject_key(payload.subject)
+    require_product_subject(user, subject, paid_feature=payload.kind in {"mock", "challenge"})
     if payload.kind != "mock":
         parts = "full"
     elif payload.parts == "mini" or subject == "english":
@@ -497,6 +498,8 @@ async def finish_speaking_exam(
     cur = conn.cursor()
     try:
         exam = _exam_row(cur, exam_id, user_id)
+        from backend.speaking_subscriptions import require_product_subject
+        require_product_subject(user, exam.get("subject"), paid_feature=exam.get("kind") in {"mock", "challenge"})
         if exam.get("status") == "finished":
             return {"exam": _public_exam(exam, cur)}
         steps = json.loads(exam.get("steps_json") or "[]")
@@ -619,6 +622,8 @@ async def list_speaking_exams(
     authorization: str | None = Header(default=None),
 ):
     user = _user(authorization)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, _subject_key(subject))
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
@@ -653,7 +658,10 @@ async def get_speaking_exam(exam_id: int, authorization: str | None = Header(def
     conn = get_conn()
     cur = conn.cursor()
     try:
-        return {"exam": _public_exam(_exam_row(cur, exam_id, int(user.get("id") or 0)), cur)}
+        exam = _exam_row(cur, exam_id, int(user.get("id") or 0))
+        from backend.speaking_subscriptions import require_product_subject
+        require_product_subject(user, exam.get("subject"), paid_feature=exam.get("kind") in {"mock", "challenge"})
+        return {"exam": _public_exam(exam, cur)}
     finally:
         cur.close()
         conn.close()
@@ -705,6 +713,8 @@ async def speaking_challenge_today(
     ensure_tables()
     user_id = int(user.get("id") or 0)
     subject_key = _subject_key(subject)
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, subject_key, paid_feature=True)
     today = _today()
     steps = _build_plan(user_id, subject_key, "challenge", "full", practice=False)
     conn = get_conn()

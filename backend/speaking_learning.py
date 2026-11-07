@@ -470,6 +470,10 @@ def public_tracks(authorization: str | None = Header(default=None)):
         fields=("id","title","description","subject","module_count","passed_modules","final_exam_passed")
         for row in rows:
             item=dict(row) if hasattr(row,"keys") else dict(zip(fields,row))
+            from backend.speaking_contract import is_speaking_app_account
+            from backend.speaking_subscriptions import current_product_code
+            if is_speaking_app_account(user.get("speaking_app_account")) and item.get("subject") != current_product_code():
+                continue
             count=int(item.get("module_count") or 0); passed=int(item.get("passed_modules") or 0)
             final_passed=bool(item.get("final_exam_passed"))
             item["progress_percent"]=round((passed+int(final_passed))*100/(count+1)) if count else 0
@@ -483,6 +487,7 @@ def public_final_exam(track_id: int, authorization: str | None = Header(default=
     user = _user(authorization); ensure_tables(); user_id = int(user.get("id") or 0)
     conn = get_conn(); cur = conn.cursor()
     try:
+        _require_track_subject(cur, track_id, user)
         cur.execute("SELECT id,title FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE", (track_id,))
         track = cur.fetchone()
         if not track:
@@ -519,6 +524,7 @@ def submit_final_exam(track_id: int, payload: SubmitInput, authorization: str | 
     user = _user(authorization); ensure_tables(); user_id = int(user.get("id") or 0)
     conn = get_conn(); cur = conn.cursor()
     try:
+        _require_track_subject(cur, track_id, user)
         cur.execute("SELECT id FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE", (track_id,))
         if not cur.fetchone():
             raise HTTPException(404, "Speaking learning track not found")
@@ -573,7 +579,17 @@ def _module_progress(cur: Any, track_id: int, user_id: int) -> list[dict[str, An
     return modules
 
 
-def _require_unlocked_module(cur: Any, module_id: int, user_id: int) -> None:
+def _require_track_subject(cur: Any, track_id: int, user: dict[str, Any]) -> None:
+    from backend.speaking_subscriptions import require_product_subject
+    cur.execute("SELECT subject FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE", (track_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Speaking learning track not found")
+    subject = row["subject"] if hasattr(row, "keys") else row[0]
+    require_product_subject(user, subject)
+
+
+def _require_unlocked_module(cur: Any, module_id: int, user: dict[str, Any]) -> None:
     cur.execute("""SELECT m.track_id,t.is_published FROM speaking_learning_modules m
         JOIN speaking_learning_tracks t ON t.id=m.track_id WHERE m.id=%s""", (module_id,))
     row = cur.fetchone()
@@ -582,6 +598,8 @@ def _require_unlocked_module(cur: Any, module_id: int, user_id: int) -> None:
     track_id, published = (row["track_id"], row["is_published"]) if hasattr(row, "keys") else row
     if not published:
         raise HTTPException(404, "Speaking learning module not found")
+    _require_track_subject(cur, track_id, user)
+    user_id = int(user.get("id") or 0)
     modules = _module_progress(cur, track_id, user_id)
     module = next((item for item in modules if item["id"] == module_id), None)
     if module is None:
@@ -595,6 +613,7 @@ def public_modules(track_id: int, authorization: str | None = Header(default=Non
     user = _user(authorization); ensure_tables()
     conn=get_conn(); cur=conn.cursor()
     try:
+        _require_track_subject(cur, track_id, user)
         cur.execute("SELECT 1 FROM speaking_learning_tracks WHERE id=%s AND is_published=TRUE", (track_id,))
         if not cur.fetchone():
             raise HTTPException(404, "Speaking learning track not found")
@@ -607,7 +626,7 @@ def public_questions(module_id: int, authorization: str | None = Header(default=
     user = _user(authorization); ensure_tables()
     conn=get_conn(); cur=conn.cursor()
     try:
-        _require_unlocked_module(cur, module_id, int(user.get("id") or 0))
+        _require_unlocked_module(cur, module_id, user)
         cur.execute("""SELECT q.id,q.prompt,q.question_type,q.options_json,q.data_json,q.sort_order FROM speaking_learning_questions q
             JOIN speaking_learning_modules m ON m.id=q.module_id JOIN speaking_learning_tracks t ON t.id=m.track_id
             WHERE q.module_id=%s AND t.is_published=TRUE
@@ -653,7 +672,7 @@ async def check_module_answer(module_id: int, payload: CheckAnswerInput, authori
     user = _user(authorization); ensure_tables(); user_id = int(user.get("id") or 0)
     conn = get_conn(); cur = conn.cursor()
     try:
-        _require_unlocked_module(cur, module_id, user_id)
+        _require_unlocked_module(cur, module_id, user)
         cur.execute("""SELECT q.question_type,q.answer_json,q.data_json,q.explanation,t.subject,q.prompt
             FROM speaking_learning_questions q
             JOIN speaking_learning_modules m ON m.id=q.module_id
@@ -732,7 +751,7 @@ async def check_module_answer(module_id: int, payload: CheckAnswerInput, authori
 def submit_module(module_id: int, payload: SubmitInput, authorization: str | None = Header(default=None)):
     user=_user(authorization); ensure_tables(); user_id=int(user.get("id") or 0); conn=get_conn(); cur=conn.cursor()
     try:
-        _require_unlocked_module(cur, module_id, int(user.get("id") or 0))
+        _require_unlocked_module(cur, module_id, user)
         cur.execute("""SELECT q.id,q.question_type,q.answer_json,q.data_json,q.explanation FROM speaking_learning_questions q
             JOIN speaking_learning_modules m ON m.id=q.module_id JOIN speaking_learning_tracks t ON t.id=m.track_id
             WHERE q.module_id=%s AND t.is_published=TRUE

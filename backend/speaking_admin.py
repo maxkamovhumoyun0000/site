@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Literal
 from datetime import datetime
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -353,6 +353,7 @@ class NotificationSendRequest(BaseModel):
     body: str = Field(..., min_length=5, max_length=500)
     target_part: int | None = None
     target_topic_id: int | None = None
+    product_code: Literal["english", "russian"] | None = None
 
 
 # --- PUBLIC API (FOR FLUTTER APP) ---
@@ -456,6 +457,7 @@ async def get_speaking_content(
 @router.post("/speaking/push-token")
 async def register_speaking_push_token(
     payload: PushTokenRegisterRequest,
+    request: Request,
     authorization: str | None = Header(default=None),
 ):
     """Register device push; authenticated speaking accounts get private-chat routing."""
@@ -464,11 +466,18 @@ async def register_speaking_push_token(
     if authorization:
         from backend.speaking_chats import _require_speaking_user
         user_id = int(_require_speaking_user(authorization).get("id") or 0) or None
+    from backend.speaking_subscriptions import current_product_code
+    # Anonymous device classification is advisory routing metadata only; it
+    # never grants access or affects subscription/entitlement decisions.
+    route_product = push_notifications.speaking_push_route_product(
+        user_id, current_product_code(), request.headers.get("x-speaking-product") or ""
+    )
     push_notifications.register_speaking_token(
         device_id=payload.device_id,
         token=payload.token,
         platform=payload.platform,
         user_id=user_id,
+        product_code=route_product,
     )
     return {"message": "Token registered successfully"}
 
@@ -2470,6 +2479,7 @@ async def send_staff_speaking_notification(
                 title=payload.title,
                 body=payload.body,
                 data=data_payload,
+                product_code=payload.product_code,
             )
         except Exception:
             cur.execute(

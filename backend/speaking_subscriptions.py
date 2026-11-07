@@ -39,6 +39,30 @@ def current_product_code() -> str:
     return _PRODUCT_CODE.get()
 
 
+def bind_authenticated_product(token_product: Any, speaking_account: Any) -> None:
+    """Trust a signed product claim, or English for legacy sessions.
+
+    Old tokens were issued before the separately sold Russian product existed.
+    This does not restrict a linked Student's shared subject content.
+    """
+    product = str(token_product or "").strip().lower()
+    if product in {"english", "russian"}:
+        set_product_code(product)
+    else:
+        set_product_code("english")
+
+
+def require_product_subject(user: dict[str, Any], subject: Any, *, paid_feature: bool = False) -> None:
+    """Bind standalone Speaking accounts to their signed product's subject.
+
+    Student-included shared features and staff retain cross-subject access.
+    Separately purchased features bind linked Student accounts to their product.
+    """
+    if is_speaking_app_account(user.get("speaking_app_account")) or (paid_feature and _student_linked(user)):
+        if normalize_product_code(subject) != current_product_code():
+            raise HTTPException(status_code=404, detail="Content not found")
+
+
 def _plan_rank(plan_code: Any) -> int:
     code = str(plan_code or "").strip().lower()
     return {"plus": 1, "pro": 2}.get(code, 0)

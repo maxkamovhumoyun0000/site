@@ -249,6 +249,11 @@ def _subject_key(value: Any) -> str:
     return "russian" if raw.startswith(("rus", "ru", "рус")) else "english"
 
 
+def _require_plan_subject(user: dict[str, Any], subject: Any, *, paid_feature: bool = True) -> None:
+    from backend.speaking_subscriptions import require_product_subject
+    require_product_subject(user, _subject_key(subject), paid_feature=paid_feature)
+
+
 def _today() -> date:
     return datetime.now(TASHKENT).date()
 
@@ -1118,6 +1123,7 @@ async def current_speaking_plan(subject: str = Query(default="english", max_leng
     require_feature(user, "speaking_plan")
     ensure_tables()
     subject_key = _subject_key(subject)
+    _require_plan_subject(user, subject_key)
     user_id = int(user.get("id") or 0)
     conn = get_conn()
     cur = conn.cursor()
@@ -1152,6 +1158,7 @@ async def create_speaking_plan(payload: PlanCreate, authorization: str | None = 
     decision = require_feature(user, "speaking_plan")
     ensure_tables()
     subject_key = _subject_key(payload.subject)
+    _require_plan_subject(user, subject_key)
     if payload.goal not in GOALS[subject_key]:
         raise HTTPException(status_code=422, detail="Unknown goal")
     if payload.days not in DURATIONS:
@@ -1220,6 +1227,11 @@ async def cancel_speaking_plan(plan_id: int, authorization: str | None = Header(
     conn = get_conn()
     cur = conn.cursor()
     try:
+        cur.execute("SELECT subject FROM speaking_plans WHERE id=%s AND user_id=%s", (int(plan_id), int(user.get("id") or 0)))
+        existing = cur.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Plan not found")
+        _require_plan_subject(user, dict(existing).get("subject"))
         cur.execute(
             "UPDATE speaking_plans SET status='cancelled', updated_at=NOW() WHERE id=%s AND user_id=%s RETURNING id",
             (int(plan_id), int(user.get("id") or 0)),
@@ -1237,6 +1249,8 @@ async def cancel_speaking_plan(plan_id: int, authorization: str | None = Header(
 @router.post("/api/speaking/plans/{plan_id}/prepare")
 async def resume_plan_preparation(plan_id: int, authorization: str | None = Header(default=None)):
     user, _ = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+    require_feature(user, "speaking_plan")
     ensure_tables()
     conn = get_conn()
     cur = conn.cursor()
@@ -1246,6 +1260,7 @@ async def resume_plan_preparation(plan_id: int, authorization: str | None = Head
         plan = cur.fetchone()
         if not plan:
             raise HTTPException(status_code=404, detail="Plan not found")
+        _require_plan_subject(user, dict(plan).get("subject"))
         if dict(plan).get("preparation_status") == "legacy":
             raise HTTPException(status_code=409, detail="Create a new plan to prepare personalised exercises")
     finally:
@@ -1262,6 +1277,7 @@ async def get_exam_date(subject: str = Query(default="english", max_length=32), 
     user, _ = _auth(authorization, USER_ROLES)
     ensure_tables()
     subject_key = _subject_key(subject)
+    _require_plan_subject(user, subject_key, paid_feature=False)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -1277,6 +1293,7 @@ async def set_exam_date(payload: ExamDateUpdate, authorization: str | None = Hea
     user, _ = _auth(authorization, USER_ROLES)
     ensure_tables()
     subject_key = _subject_key(payload.subject)
+    _require_plan_subject(user, subject_key, paid_feature=False)
     exam_date = _validated_exam_date(payload.exam_date)
     user_id = int(user.get("id") or 0)
     conn = get_conn()
@@ -1415,6 +1432,9 @@ def _resume_day_attempt(cur, user_id: int, day: dict[str, Any] | None) -> dict[s
 
 async def _start_attempt(user: dict[str, Any], role: str, *, subject: str, focus: str, day: dict[str, Any] | None,
                          plan: dict[str, Any] | None) -> dict[str, Any]:
+    from backend.speaking_subscriptions import require_feature
+    require_feature(user, "speaking_plan")
+    _require_plan_subject(user, subject)
     user_id = int(user.get("id") or 0)
     conn = get_conn()
     cur = conn.cursor()
@@ -1512,6 +1532,7 @@ async def start_plan_day(day_id: int, authorization: str | None = Header(default
     if not row or int(dict(row)["user_id"]) != int(user.get("id") or 0):
         raise HTTPException(status_code=404, detail="Plan day not found")
     day = dict(row)
+    _require_plan_subject(user, day.get("subject"))
     plan = {"id": day["plan_id"], "user_id": day["user_id"], "subject": day["subject"], "goal": day["goal"],
             "days": day["days"], "started_on": day["started_on"], "status": day["plan_status"]}
     if plan["status"] not in ("active", "completed"):
@@ -1532,6 +1553,7 @@ async def start_focus_practice(payload: FocusStart, authorization: str | None = 
     if not _valid_focus(payload.focus):
         raise HTTPException(status_code=422, detail="Unknown focus")
     subject_key = _subject_key(payload.subject)
+    _require_plan_subject(user, subject_key)
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -1577,6 +1599,8 @@ async def check_plan_answer(
     from backend.rate_limiting import consume_rate_limit
 
     user, _ = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+    require_feature(user, "speaking_plan")
     ensure_tables()
     user_id = int(user.get("id") or 0)
     allowed, retry_after = consume_rate_limit(_REDIS_CLIENT, f"speaking-plan-check:{user_id}", limit=150, window_seconds=3600)
@@ -1586,6 +1610,7 @@ async def check_plan_answer(
     cur = conn.cursor()
     try:
         attempt = _attempt(cur, attempt_id, user_id)
+        _require_plan_subject(user, attempt.get("subject"))
         if attempt["status"] == "finished":
             raise HTTPException(status_code=409, detail="This test is already finished")
         question = _attempt_question(attempt, payload.exam_key)
@@ -1678,6 +1703,8 @@ async def check_plan_practice_answer(attempt_id: int, payload: PracticeAnswer,
         _learning_question_needs_ai_check,
     )
     user, _ = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+    require_feature(user, "speaking_plan")
     ensure_tables()
     if len(json.dumps(payload.answer, ensure_ascii=False)) > 16000:
         raise HTTPException(status_code=422, detail="Answer is too long")
@@ -1685,6 +1712,7 @@ async def check_plan_practice_answer(attempt_id: int, payload: PracticeAnswer,
     cur = conn.cursor()
     try:
         attempt = _attempt(cur, attempt_id, int(user["id"]))
+        _require_plan_subject(user, attempt.get("subject"))
         question = _attempt_question(attempt, payload.exam_key)
         given = payload.answer
         if isinstance(given, dict) and given.get("audio_url"):
@@ -1714,6 +1742,8 @@ async def submit_plan_attempt(attempt_id: int, payload: SubmitAnswers, authoriza
     )
 
     user, _ = _auth(authorization, USER_ROLES)
+    from backend.speaking_subscriptions import require_feature
+    require_feature(user, "speaking_plan")
     ensure_tables()
     user_id = int(user.get("id") or 0)
     submitted: dict[str, Any] = {}
@@ -1725,6 +1755,7 @@ async def submit_plan_attempt(attempt_id: int, payload: SubmitAnswers, authoriza
     cur = conn.cursor()
     try:
         attempt = _attempt(cur, attempt_id, user_id)
+        _require_plan_subject(user, attempt.get("subject"))
         if attempt["status"] == "finished":
             return {
                 "ok": True, "passed": int(attempt["score"] or 0) >= PASSING_SCORE, "score": int(attempt["score"] or 0),
