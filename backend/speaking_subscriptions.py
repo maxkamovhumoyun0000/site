@@ -298,7 +298,11 @@ def entitlement(user: dict[str, Any], feature: str, *, plan_record: Any = _UNSET
         daily = None if paid or linked else 5
         cap, window = (daily, "day") if daily is not None else (None, None)
     elif feature == "voice_room":
-        allowed = True
+        # Public/ordinary VoiceRooms are a Plus/Pro benefit. Accounts linked
+        # to the Student app keep their inherited access (and are not charged
+        # against a second Speaking subscription); homework/study rooms are
+        # explicitly exempted by their calling paths.
+        allowed = paid or linked
         if linked:
             daily = weekly = None
         elif tier == "pro":

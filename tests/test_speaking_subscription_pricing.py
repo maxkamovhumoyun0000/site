@@ -115,11 +115,15 @@ def test_voice_room_quotas_differ_by_tier_and_student_link_stays_unlimited():
     plus = entitlement(user, "voice_room", plan_record={"plan_code": "plus"})
     pro = entitlement(user, "voice_room", plan_record={"plan_code": "pro"})
 
+    assert free["allowed"] is False
     assert (free["daily_limit"], free["weekly_limit"]) == (30, 150)
+    assert plus["allowed"] is True
+    assert pro["allowed"] is True
     assert (plus["daily_limit"], plus["weekly_limit"]) == (60, 300)
     assert (pro["daily_limit"], pro["weekly_limit"]) == (120, 600)
 
     linked_student = {"id": 2, "login_type": 1, "login_id": "student-test", "speaking_app_account": False}
     student = entitlement(linked_student, "voice_room", plan_record=None)
+    assert student["allowed"] is True
     assert student["daily_limit"] is None
     assert student["weekly_limit"] is None

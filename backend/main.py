@@ -38375,13 +38375,28 @@ def _attach_homework_runtime_fields(row: dict) -> dict:
     row["requires_test"] = kind in {"test", "both"} or has_attached_test
     row["proof_images"] = _homework_proof_images_from_row(row)
     row["dpoints_delta"] = float(row.get("dpoints_delta") if row.get("dpoints_delta") is not None else row.get("dcoin_delta") or 0.0)
-    # Deadline o'tib, hech narsa topshirilmagan — avtomatik "qilinmadi".
-    # (test_topshirilgan bo'lsa keyingi qadamda tozalanadi)
+    # A test only completes a test-only assignment. For mixed tasks, the
+    # student still has to submit the essay/file/voice evidence.
     row["deadline_missed"] = bool(
         not (row.get("submission_status") or row.get("submission_student_id") or row.get("reviewed_at"))
         and _homework_deadline_has_passed(row)
     )
     return row
+
+
+def _homework_requires_essay_submission(homework: dict | None) -> bool:
+    """Resolve legacy list assignments as written responses unless another
+    concrete response mode (file, voice, or test-only) was selected."""
+    row = homework or {}
+    if bool(row.get("is_voiceroom")):
+        return False
+    if bool(row.get("requires_essay")):
+        return True
+    return (
+        not bool(row.get("requires_file"))
+        and not bool(row.get("requires_voice_message"))
+        and str(row.get("homework_kind") or "").lower() != "test"
+    )
 
 
 def _homework_test_result_for_student(
@@ -38993,7 +39008,7 @@ async def _ai_auto_grade_submission(homework: dict, submission: dict, student_us
 
         req_voice = bool(homework.get("requires_voice_message"))
         req_file = bool(homework.get("requires_file"))
-        req_essay = bool(homework.get("requires_essay"))
+        req_essay = _homework_requires_essay_submission(homework)
         is_voiceroom = bool(homework.get("is_voiceroom"))
         hw_kind = str(homework.get("homework_kind") or "both").lower()
 
@@ -39306,8 +39321,8 @@ async def teacher_homework_list(authorization: str | None = Header(default=None)
         result = _homework_test_result_for_student(sid, hid)
         row["test_available"] = bool(tests.get(hid))
         row["test_completed"] = bool(result)
-        if row["test_completed"]:
-            row["deadline_missed"] = False  # test topshirilgan — bajarilgan hisoblanadi
+        if row["test_completed"] and str(row.get("homework_kind") or "").lower() == "test":
+            row["deadline_missed"] = False
         row["test_result"] = result
         row["test_correct_count"] = int((result or {}).get("correct_count") or 0)
         row["test_wrong_count"] = int((result or {}).get("wrong_count") or 0)
@@ -39414,13 +39429,27 @@ async def student_homework_list(authorization: str | None = Header(default=None)
             row["_viewer_student_id"] = user_id
     for row in rows:
         _attach_homework_runtime_fields(row)
+        if (
+            str(row.get("submission_note") or "") == "Test auto-submit"
+            and bool(row.get("requires_test"))
+            and str(row.get("homework_kind") or "").lower() != "test"
+        ):
+            # Older clients prematurely created a test placeholder for mixed
+            # homework. Keep that audit row in the DB, but don't expose it as a
+            # completed submission in the student's homework list.
+            row["submission_status"] = None
+            row["submission_note"] = None
+            row["submission_student_id"] = None
+            row["submission_created_at"] = None
+            row["submission_updated_at"] = None
+            row["deadline_missed"] = _homework_deadline_has_passed(row)
         hid = int(row.get("id") or 0)
         test = _safe_call(lambda homework_id=hid: get_content_test("homework", homework_id, include_inactive=False, include_answers=False), None) if hid > 0 else None
         result = _homework_test_result_for_student(user_id, hid, test)
         row["test_available"] = bool(test)
         row["test_completed"] = bool(result)
-        if row["test_completed"]:
-            row["deadline_missed"] = False  # test topshirilgan — bajarilgan hisoblanadi
+        if row["test_completed"] and str(row.get("homework_kind") or "").lower() == "test":
+            row["deadline_missed"] = False
         row["test_result"] = result
         row["test_correct_count"] = int((result or {}).get("correct_count") or 0)
         row["test_wrong_count"] = int((result or {}).get("wrong_count") or 0)
@@ -39510,25 +39539,59 @@ async def student_submit_homework(
     student_group_ids = {int(row.get("id") or 0) for row in (_safe_call(lambda: get_user_groups(user_id), []) or [])}
     if not homework or not (student_owns_homework or (group_id > 0 and group_id in student_group_ids)):
         raise HTTPException(status_code=404, detail="Homework not found")
+    if bool(homework.get("is_voiceroom")):
+        raise HTTPException(status_code=422, detail="VoiceRoom homework must be submitted from its room")
     existing_submission = _safe_call(lambda: get_homework_submission(int(homework_id), user_id), None)
-    if existing_submission:
+    is_test_only = (
+        str(homework.get("homework_kind") or "").lower() == "test"
+        and not homework.get("requires_essay")
+        and not homework.get("requires_file")
+        and not homework.get("requires_voice_message")
+    )
+    # Older releases created a placeholder submission as soon as a test was
+    # completed, even for mixed homework. Let that exact placeholder be
+    # replaced by the student's real written/file/voice submission.
+    stale_test_placeholder = bool(
+        existing_submission
+        and str(existing_submission.get("note") or "") == "Test auto-submit"
+        and homework.get("requires_test")
+        and not is_test_only
+    )
+    if existing_submission and not stale_test_placeholder:
         raise HTTPException(status_code=409, detail="Homework already submitted")
     proof_images = _homework_proof_images_from_payload(payload)
+    note = str(payload.note or "").strip()
+    voice_message_url = str(payload.voice_message_url or "").strip()
+    if _homework_requires_essay_submission(homework) and not note:
+        raise HTTPException(status_code=422, detail="Written answer is required")
+    if homework.get("requires_file") and not proof_images:
+        raise HTTPException(status_code=422, detail="A required file or image is missing")
+    if homework.get("requires_voice_message") and not voice_message_url:
+        raise HTTPException(status_code=422, detail="A required voice recording is missing")
+    if homework.get("requires_test") and not _homework_test_result_for_student(user_id, int(homework_id)):
+        raise HTTPException(status_code=422, detail="Complete the attached test before submitting this homework")
     try:
         submission = upsert_homework_submission(
             homework_id=int(homework_id),
             student_id=user_id,
             status="pending_review",
-            note=(payload.note or "").strip() or None,
+            note=note or None,
             proof_image_url=(proof_images[0] if proof_images else None),
             proof_images_json=json.dumps(proof_images, ensure_ascii=False) if proof_images else None,
-            voice_message_url=payload.voice_message_url,
+            voice_message_url=voice_message_url or None,
         )
     except Exception as exc:
         logger.exception("student.homework.submit failed user_id=%s homework_id=%s", user_id, homework_id)
         raise HTTPException(status_code=500, detail=f"Could not submit homework: {str(exc)[:220]}") from exc
     if not submission:
         raise HTTPException(status_code=422, detail="Could not submit homework")
+    if stale_test_placeholder:
+        # Some DB helpers return the pre-update row when an existing
+        # placeholder is replaced. Read back the canonical submission so the
+        # response and optional grader see the student's actual answer.
+        submission = _safe_call(
+            lambda: get_homework_submission(int(homework_id), user_id), submission
+        ) or submission
     _attach_homework_runtime_fields(submission)
     
     # Submission stays pending unless this teacher explicitly enabled the
@@ -62041,8 +62104,18 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
             homework = _safe_call(lambda: get_homework(int(content_id)), None)
             if homework:
                 _attach_homework_runtime_fields(homework)
+                # Completing the attached test is the complete submission
+                # only for a test-only assignment. Mixed homework must stay
+                # editable until its written/file/voice part is submitted.
+                test_only = (
+                    str(homework.get("homework_kind") or "").lower() == "test"
+                    and not homework.get("requires_essay")
+                    and not homework.get("requires_file")
+                    and not homework.get("requires_voice_message")
+                    and not homework.get("is_voiceroom")
+                )
                 existing_submission = _safe_call(lambda: get_homework_submission(int(content_id), user_id), None)
-                if not existing_submission:
+                if test_only and not existing_submission:
                     submission = upsert_homework_submission(
                         homework_id=int(content_id),
                         student_id=user_id,
@@ -62051,11 +62124,14 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
                         proof_image_url=None,
                         proof_images_json=None,
                     )
-                else:
+                elif test_only:
                     submission = existing_submission
-                if submission:
+                else:
+                    submission = None
+                if submission and test_only:
                     _attach_homework_runtime_fields(submission)
-                    await _notify_homework_submitted(homework, user, submission)
+                    if not existing_submission:
+                        await _notify_homework_submitted(homework, user, submission)
                     if _homework_auto_grade_enabled(homework):
                         await _ai_auto_grade_submission(homework, submission, user)
         except Exception:
@@ -62634,6 +62710,14 @@ async def create_voice_room(payload: VoiceRoomCreateRequest, authorization: str 
     role = _role_from_login_type(
         int(user.get("login_type") or 0), str(user.get("login_id") or "")
     )
+    if role in {"student", "speaking_user"}:
+        from backend.speaking_subscriptions import entitlement
+
+        if not entitlement(user, "voice_room").get("allowed"):
+            raise HTTPException(
+                status_code=403,
+                detail="voice_room_plan_required: Ochiq VoiceRoom uchun Plus yoki Pro tarifi kerak.",
+            )
     allowed_subjects = _user_subjects_from_row(user)
     if role not in {"admin", "speaking_admin"} and not any(
         _normalize_subject_label(item) == requested_subject for item in allowed_subjects
@@ -63068,6 +63152,26 @@ async def websocket_voice_room(websocket: WebSocket, token: str | None = Query(d
                     if not db_room:
                         await _send({"type": "error", "message": "Xona topilmadi."})
                         continue
+
+                    # Public VoiceRooms require a paid plan. Homework and
+                    # private study rooms are exempt; linked Student accounts
+                    # retain their inherited entitlement in `entitlement()`.
+                    if (
+                        not is_homework_room
+                        and not is_study_room
+                        and current_user
+                        and my_role in {"student", "speaking_user"}
+                    ):
+                        from backend.speaking_subscriptions import entitlement
+
+                        voice_access = entitlement(current_user, "voice_room")
+                        if not voice_access.get("allowed"):
+                            await _send({
+                                "type": "error",
+                                "code": "voice_room_plan_required",
+                                "message": "voice_room_plan_required",
+                            })
+                            continue
 
                     room_subject = _normalize_subject_label(str(db_room.get("subject") or ""))
                     is_room_owner = bool(
