@@ -23201,6 +23201,7 @@ def list_homeworks_for_student(student_id: int) -> list[dict]:
 
 def list_homeworks_for_teacher(teacher_id: int) -> list[dict]:
     ensure_homework_schema()
+    ensure_content_tests_schema()
     temp_group_rows = get_groups_with_temporary_access_for_teacher(int(teacher_id))
     temp_group_ids = sorted({
         int(row.get("id") or row.get("group_id") or 0)
@@ -23221,6 +23222,13 @@ def list_homeworks_for_teacher(teacher_id: int) -> list[dict]:
             SELECT
                    h.id, h.teacher_id, h.group_id, h.target_type, h.homework_kind, h.title, h.description,
                    h.due_at, h.image_url, h.dcoin_effect, h.status, h.created_at, h.updated_at, h.is_voiceroom,
+                   CASE WHEN EXISTS (
+                       SELECT 1 FROM web_homework_submissions lock_s
+                       WHERE lock_s.homework_id=h.id
+                   ) OR EXISTS (
+                       SELECT 1 FROM web_content_test_attempts lock_t
+                       WHERE lock_t.content_type='homework' AND lock_t.content_id=h.id
+                   ) THEN 1 ELSE 0 END AS content_locked,
                    h.student_id AS homework_student_id,
                    COALESCE(NULLIF(h.student_id, 0), u.id) AS student_id,
                    s.student_id AS submission_student_id,

@@ -39272,14 +39272,11 @@ async def teacher_homework_list(authorization: str | None = Header(default=None)
     if _apply_homework_deadline_penalties(rows):
         rows = _safe_call(lambda: list_homeworks_for_teacher(int(user.get("id") or 0)), []) or []
     tests: dict[int, bool] = {}
-    content_locks: dict[int, bool] = {}
     for row in rows:
         _attach_homework_runtime_fields(row)
         hid = int(row.get("id") or 0)
         if hid > 0:
-            if hid not in content_locks:
-                content_locks[hid] = homework_has_student_submissions(hid)
-            row["content_locked"] = content_locks[hid]
+            row["content_locked"] = bool(row.get("content_locked"))
         if hid > 0 and hid not in tests:
             tests[hid] = bool(_safe_call(lambda homework_id=hid: get_content_test("homework", homework_id, include_inactive=False, include_answers=False), None))
         sid = int(row.get("submission_student_id") or row.get("student_id") or 0)
