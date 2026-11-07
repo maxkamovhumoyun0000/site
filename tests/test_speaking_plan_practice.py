@@ -68,8 +68,14 @@ personalization._learning_owned_audio_path = lambda url, uid: None
 personalization._grade_learning_question = lambda q, a, saved_ai_ok=False: (
     int(saved_ai_ok if q['kind'] == 'write_sentence' else a == q['correct_answer']), 1)
 
+speaking_subscriptions = types.ModuleType('backend.speaking_subscriptions')
+speaking_subscriptions.require_feature = lambda user, feature: {'allowed': True}
+backend_package = types.ModuleType('backend')
+backend_package.__path__ = []
+
 scope = {'get_conn': Connection, 'HTTPException': HttpError, 're': re, 'json': json,
          '_auth': lambda authorization, roles: ({'id': state['user_id']}, 'speaking_user'),
+         '_require_plan_subject': lambda user, subject: None,
          'ensure_tables': lambda: None, 'USER_ROLES': {'speaking_user'}, 'PASSING_SCORE': 60}
 exec(compile(ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[])), str(source), 'exec'), scope)
 
@@ -82,7 +88,11 @@ class PracticeCheckTests(unittest.TestCase):
             {'kind': 'write_sentence', 'word': 'enjoy'}])})
 
     def run_check(self, key, answer):
-        with patch.dict(sys.modules, {'backend.personalization': personalization}):
+        with patch.dict(sys.modules, {
+            'backend': backend_package,
+            'backend.personalization': personalization,
+            'backend.speaking_subscriptions': speaking_subscriptions,
+        }):
             return asyncio.run(scope['check_plan_practice_answer'](15, types.SimpleNamespace(
                 exam_key=key, answer=answer), 'Bearer test'))
 
