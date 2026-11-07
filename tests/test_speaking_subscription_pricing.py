@@ -127,3 +127,18 @@ def test_voice_room_quotas_differ_by_tier_and_student_link_stays_unlimited():
     assert student["allowed"] is True
     assert student["daily_limit"] is None
     assert student["weekly_limit"] is None
+
+
+def test_speaking_vocabulary_search_is_available_on_every_plan():
+    from backend.speaking_subscriptions import entitlement
+
+    user = {"id": 3, "login_type": 0, "login_id": "speaking-test", "speaking_app_account": True}
+    for plan in (None, {"plan_code": "plus"}, {"plan_code": "pro"}):
+        access = entitlement(user, "vocabulary_search", plan_record=plan)
+        assert access["allowed"] is True
+
+    backend = (ROOT / "backend" / "speaking_admin.py").read_text(encoding="utf-8")
+    endpoint = backend.split("async def search_speaking_vocabulary", 1)[1].split(
+        "@router.", 1
+    )[0]
+    assert 'require_feature(user, "vocabulary_search")' in endpoint

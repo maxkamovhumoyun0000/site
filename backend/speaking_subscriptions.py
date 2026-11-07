@@ -291,7 +291,12 @@ def entitlement(user: dict[str, Any], feature: str, *, plan_record: Any = _UNSET
 
     if feature == "speaking_questions":
         allowed = True
-    elif feature in {"library", "learning_path", "vocabulary_search", "saved_questions", "chats"}:
+    elif feature == "vocabulary_search":
+        # Vocabulary Search is free in Speaking. Keep the lookup/AI fallback
+        # shared with Student; any AI provider cost is controlled by the
+        # existing endpoint rate limits, not by a paid-plan gate.
+        allowed = True
+    elif feature in {"library", "learning_path", "saved_questions", "chats"}:
         allowed = paid or (linked and feature in STUDENT_INCLUDED)
     elif feature == "arena":
         allowed = True
