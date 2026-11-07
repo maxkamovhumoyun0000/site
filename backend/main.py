@@ -58729,6 +58729,13 @@ async def vocabulary(
     role = _require_role(user, {"student", "teacher", "admin", "support"})
     if role == "student":
         _require_student_vocabulary_preview_access(user)
+        # The Student and Speaking apps share this endpoint. A modified
+        # Speaking client must not bypass its subscription by calling the
+        # older Student vocabulary route directly.
+        if is_speaking_app_account(user.get("speaking_app_account")):
+            from backend.speaking_subscriptions import require_feature
+
+            require_feature(user, "vocabulary_search")
 
     subjects = _user_subjects_from_row(user)
     selected_subject = _normalize_subject_label(subject) or (subjects[0] if subjects else "English")
