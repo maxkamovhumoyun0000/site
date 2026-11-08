@@ -1926,8 +1926,8 @@ function sortLandingResultsByRank(rows: GenericRow[]) {
   });
 }
 
-// Move one card every half-second with continuous easing so each slide is visible.
-const MARQUEE_CARD_INTERVAL_S = 0.5;
+// Move one card every 1.5 seconds with continuous easing so each slide is visible.
+const MARQUEE_CARD_INTERVAL_S = 1.5;
 
 function marqueeAnimationStyle(cardCount: number) {
   const steps = Math.max(1, cardCount);
