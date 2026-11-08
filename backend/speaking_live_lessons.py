@@ -295,9 +295,12 @@ async def list_my_live_lessons(authorization: str | None = Header(default=None))
     user = _auth(authorization)
     from backend.main import _role_from_login_type
     from backend.speaking_contract import is_speaking_app_account
+    from backend.speaking_subscriptions import current_product_code
+
+    speaking_account = is_speaking_app_account(user.get("speaking_app_account"))
     if (
         _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
-        or is_speaking_app_account(user.get("speaking_app_account"))
+        or speaking_account
     ):
         from backend.speaking_subscriptions import require_feature
 
@@ -307,13 +310,20 @@ async def list_my_live_lessons(authorization: str | None = Header(default=None))
     conn = get_conn()
     cur = conn.cursor()
     try:
+        subject_filter = (
+            " AND subject=?" if current_product_code() == "russian" else " AND subject IN ('english','cefr')"
+        ) if speaking_account else ""
         cur.execute(
-            """SELECT * FROM speaking_live_lessons
-               WHERE status='live'
+            f"""SELECT * FROM speaking_live_lessons
+               WHERE (status='live'
                   OR starts_at >= ?
-                  OR (starts_at >= ? AND status IN ('completed','cancelled'))
+                  OR (starts_at >= ? AND status IN ('completed','cancelled'))){subject_filter}
                ORDER BY CASE WHEN status='live' THEN 0 ELSE 1 END, starts_at ASC LIMIT 300""",
-            (now.isoformat(), (now - timedelta(days=LESSON_HISTORY_DAYS)).isoformat()),
+            (
+                now.isoformat(),
+                (now - timedelta(days=LESSON_HISTORY_DAYS)).isoformat(),
+                *(["russian"] if speaking_account and current_product_code() == "russian" else []),
+            ),
         )
         rows = [dict(row) for row in (cur.fetchall() or [])]
         return {"lessons": [_lesson(row, now=now) for row in rows], "recording_retention_days": RECORDING_RETENTION_DAYS}

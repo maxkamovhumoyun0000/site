@@ -573,6 +573,8 @@ async def create_live_video_room(
 @router.post("/api/speaking/live-video/rooms/{room_id}/token")
 async def live_video_room_token(room_id: str, authorization: str | None = Header(default=None)):
     user = _require_user(authorization)
+    from backend.speaking_subscriptions import require_product_subject
+
     ensure_live_video_schema()
     url, api_key, api_secret = _livekit_config()
     room_id = _room_id(room_id)
@@ -603,6 +605,9 @@ async def live_video_room_token(room_id: str, authorization: str | None = Header
                 conn.rollback()
             cur = conn.cursor()
             room = _active_room_or_error(cur, room_id)
+
+        # Also validate rooms returned by the compatibility fallback above.
+        require_product_subject(user, room.get("subject"))
 
         if _safe_datetime(room.get("created_at")) and _safe_datetime(room.get("created_at")) < now - timedelta(hours=ROOM_LIFETIME_HOURS):
             cur.execute("UPDATE speaking_live_video_rooms SET status='ended', ended_at=?, last_activity_at=? WHERE id=?", (_iso(now), _iso(now), room_id))
