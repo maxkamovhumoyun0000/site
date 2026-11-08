@@ -304,10 +304,34 @@ def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
             "can_message": False,
             "limited": True,
         }
-    stats = _speaking_stats(user_id)
-    presence = _presence_summary_for_user(user_id)
-    extra = _own_profile_row(user_id)
+    # A profile must remain usable when an optional progress/presence table is
+    # undergoing migration or one stats query fails. These are supplemental
+    # fields; the identity row remains the authoritative profile response.
+    try:
+        stats = _speaking_stats(user_id)
+    except Exception:
+        logger.exception("Optional Speaking profile stats unavailable")
+        stats = {
+            "answers": 0, "mock_exams": 0, "best_mock": {},
+            "streak_current": 0, "streak_best": 0, "badges": [],
+            "badge_progress": [],
+        }
+    try:
+        presence = _presence_summary_for_user(user_id)
+    except Exception:
+        logger.exception("Optional Speaking profile presence unavailable")
+        presence = {"is_online": False, "last_online_at": None}
+    try:
+        extra = _own_profile_row(user_id)
+    except Exception:
+        logger.exception("Optional Speaking profile preferences unavailable")
+        extra = {}
     links_visible = is_me or int(extra.get("links_public") or 0) == 1
+    try:
+        subjects = _subjects(user_id, row)
+    except Exception:
+        logger.exception("Optional Speaking profile subjects unavailable")
+        subjects = []
     return {
         **base,
         "limited": False,
@@ -317,14 +341,41 @@ def _profile_payload(row: dict[str, Any], *, viewer_id: int) -> dict[str, Any]:
             "last_online_at": presence.get("last_online_at"),
         },
         "member_since": _iso(row.get("created_at")),
-        "subjects": _subjects(user_id, row),
-        "levels": _levels(user_id, row),
-        "points": _points(user_id),
+        "subjects": subjects,
+        "levels": _safe_profile_levels(user_id, row),
+        "points": _safe_profile_points(user_id),
         "speaking": stats,
-        "apps": _apps_used(user_id, row, stats["answers"]),
+        "apps": _safe_apps_used(user_id, row, stats["answers"]),
         "telegram_url": (str(row.get("telegram_url") or "").strip() or None) if links_visible else None,
         "instagram_url": (str(row.get("instagram_url") or "").strip() or None) if links_visible else None,
     }
+
+
+def _safe_profile_levels(user_id: int, row: dict[str, Any]) -> list[dict[str, Any]]:
+    try:
+        return _levels(user_id, row)
+    except Exception:
+        logger.exception("Optional Speaking profile levels unavailable")
+        return []
+
+
+def _safe_profile_points(user_id: int) -> dict[str, float]:
+    try:
+        return _points(user_id)
+    except Exception:
+        logger.exception("Optional Speaking profile points unavailable")
+        return {"dcoins": 0.0, "dpoints": 0.0}
+
+
+def _safe_apps_used(user_id: int, row: dict[str, Any], speaking_answers: int) -> dict[str, bool]:
+    try:
+        return _apps_used(user_id, row, speaking_answers)
+    except Exception:
+        logger.exception("Optional Speaking profile app activity unavailable")
+        return {
+            "speaking": is_speaking_app_account(row.get("speaking_app_account")),
+            "student": False, "teacher": False, "website": False, "telegram": False,
+        }
 
 
 def _clear_user_cache(user_id: int) -> None:
@@ -441,8 +492,14 @@ def _own_payload(viewer: dict[str, Any]) -> dict[str, Any]:
     if not row:
         raise HTTPException(status_code=404, detail="Account not found")
     payload = _profile_payload(row, viewer_id=uid)
-    i_blocked, _ = _blocks_of(uid)
-    payload["blocked_count"] = len(i_blocked)
+    try:
+        i_blocked, _ = _blocks_of(uid)
+        payload["blocked_count"] = len(i_blocked)
+    except Exception:
+        # Block management has its own endpoint; a transient block-summary
+        # failure must not turn the entire profile into an offline error.
+        logger.exception("Optional Speaking profile block summary unavailable")
+        payload["blocked_count"] = 0
     payload["can_edit_name"] = is_speaking_app_account(row.get("speaking_app_account"))
     return payload
 

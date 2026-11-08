@@ -351,8 +351,9 @@ def entitlement(user: dict[str, Any], feature: str, *, plan_record: Any = _UNSET
     elif feature == "daily_challenge":
         allowed = paid
     elif feature == "schedule":
-        # Scheduling is intentionally unavailable until its separate rollout.
-        allowed = False
+        # Schedule is currently available to every Speaking account. Keep the
+        # server entitlement aligned with the app's published plan matrix.
+        allowed = True
     else:
         allowed = False
 

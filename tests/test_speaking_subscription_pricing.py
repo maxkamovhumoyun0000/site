@@ -142,3 +142,14 @@ def test_speaking_vocabulary_search_is_available_on_every_plan():
         "@router.", 1
     )[0]
     assert 'require_feature(user, "vocabulary_search")' in endpoint
+
+
+def test_speaking_schedule_is_available_on_every_plan():
+    from backend.speaking_subscriptions import entitlement
+
+    user = {"id": 9, "login_type": 0, "login_id": "speaking-test", "speaking_app_account": True}
+    for plan in (None, {"plan_code": "plus"}, {"plan_code": "pro"}):
+        assert entitlement(user, "schedule", plan_record=plan)["allowed"] is True
+
+    source = (ROOT / "backend" / "speaking_subscriptions.py").read_text(encoding="utf-8")
+    assert 'elif feature == "schedule":\n        # Schedule is currently available to every Speaking account.' in source

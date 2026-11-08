@@ -22,6 +22,18 @@ def test_speaking_profile_uses_real_profile_progress_and_level_sources():
     assert "ensure_tables()" in source
 
 
+def test_optional_profile_sections_do_not_fail_the_owner_identity_payload():
+    source = _read("backend/speaking_social.py")
+    profile = source.split("def _profile_payload(", 1)[1].split("def _clear_user_cache", 1)[0]
+    assert "Optional Speaking profile stats unavailable" in profile
+    assert "Optional Speaking profile presence unavailable" in profile
+    assert "_safe_profile_levels(user_id, row)" in profile
+    assert "_safe_profile_points(user_id)" in profile
+    assert "_safe_apps_used(user_id, row, stats[\"answers\"])" in profile
+    own = source.split("def _own_payload(", 1)[1].split('@router.get("/speaking/profile/me")', 1)[0]
+    assert "Optional Speaking profile block summary unavailable" in own
+
+
 def test_speaking_profile_exposes_owner_scoped_stats_levels_and_badges():
     source = _read("backend/speaking_social.py")
     for path in ("stats", "levels", "badges", "sessions"):
