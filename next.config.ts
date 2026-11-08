@@ -26,6 +26,7 @@ const nextConfig: NextConfig = {
   // Image optimizatsiya cache muddati (1 hafta)
   images: {
     minimumCacheTTL: 604800,
+    formats: ["image/webp"],
   },
 
   // AI import 33-35s ketadi — proxy timeout 90s ga oshirildi

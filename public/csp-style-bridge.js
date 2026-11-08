@@ -4,7 +4,7 @@
   const attribute = "data-csp-style";
   const allowedProperties = new Set([
     "--sway",
-    "accentColor", "alignItems", "alignSelf", "animation", "animationDelay",
+    "accentColor", "alignItems", "alignSelf", "animation", "animationDelay", "animationTimingFunction",
     "animationDuration", "aspectRatio", "backdropFilter", "background", "border",
     "borderBottom", "borderCollapse", "borderColor", "borderLeft", "borderRadius",
     "borderRight", "borderTop", "borderTopColor", "boxShadow", "boxSizing", "color",

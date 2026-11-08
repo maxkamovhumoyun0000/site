@@ -1,16 +1,17 @@
 "use client";
 
+import Image from "next/image";
+
 export function LogoMark({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
   const sizeClass = size === "sm" ? "logo-sm" : size === "lg" ? "logo-lg" : "logo-md";
   return (
     <div className={`logo-mark ${sizeClass}`}>
-      <img
+      <Image
         src="/logo.jpg"
         alt="Diamond Education"
         width={size === "sm" ? 52 : size === "lg" ? 180 : 86}
         height={size === "sm" ? 52 : size === "lg" ? 180 : 86}
         className="w-full h-full object-cover"
-        data-csp-style={JSON.stringify({ display: "block", width: "100%", height: "100%" })}
       />
     </div>
   );

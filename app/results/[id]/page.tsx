@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { PublicShell } from "../../public-shell";
-import { PublicResult, fetchPublicResults, formatPublicDate, toAssetUrl } from "../../public-data";
+import { PublicResult, fetchPublicResult, formatPublicDate, toAssetUrl } from "../../public-data";
 import { PublicDetailSkeleton } from "../../public-skeletons";
 import { getResultPrimaryMedia, getResultVideoUrl, isResultVideoUrl, resultMetricLabel, resultSubjectLabel } from "../../ui/result-card";
 import { useWebLocale, useWebT } from "../../ui/web-i18n";
@@ -23,7 +23,7 @@ export default function ResultDetailPage() {
   const tt = useWebT();
   const params = useParams<{ id: string }>();
   const id = Number(params?.id || 0);
-  const [items, setItems] = useState<PublicResult[]>([]);
+  const [item, setItem] = useState<PublicResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [activeMediaIndex, setActiveMediaIndex] = useState(0);
@@ -34,9 +34,10 @@ export default function ResultDetailPage() {
     async function load() {
       setLoading(true);
       setError("");
+      setItem(null);
       try {
-        const rows = await fetchPublicResults();
-        if (!cancelled) setItems(rows);
+        const row = await fetchPublicResult(id);
+        if (!cancelled) setItem(row);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : tt("public.results.detailLoadError", "Natija tafsilotlarini yuklab bo'lmadi"));
       } finally {
@@ -47,9 +48,7 @@ export default function ResultDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [tt]);
-
-  const item = useMemo(() => items.find((row) => Number(row.id) === id) || null, [items, id]);
+  }, [id, tt]);
   const primaryMedia = useMemo(() => {
     const vUrl = getResultVideoUrl(item || {});
     return vUrl || getResultPrimaryMedia(item || {});

@@ -183,12 +183,18 @@ export function GlobalVoiceRoomProvider({ children }: { children: React.ReactNod
   const fetchRooms = useCallback(async () => {
     try {
       const token = getToken();
-      const headers = token ? { "Authorization": `Bearer ${token}` } : {};
+      if (!token) {
+        setActiveRooms([]);
+        setMyRooms([]);
+        setMySessions([]);
+        return;
+      }
+      const headers = { "Authorization": `Bearer ${token}` };
       
       const [activeRes, myRes, sessionsRes] = await Promise.all([
         fetch("/api/voice-rooms/active", { headers }),
-        token ? fetch("/api/voice-rooms/my", { headers }) : Promise.resolve({ ok: true, json: () => ({ rooms: [] }) }),
-        token ? fetch("/api/voice-rooms/sessions/my", { headers }) : Promise.resolve({ ok: true, json: () => ({ sessions: [] }) })
+        fetch("/api/voice-rooms/my", { headers }),
+        fetch("/api/voice-rooms/sessions/my", { headers })
       ]);
       
       if (activeRes.ok) {

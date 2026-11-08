@@ -103,7 +103,7 @@ export type PublicArticle = {
 async function requestPublicJson<T>(path: string, method: "GET" | "POST" = "GET"): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { method, cache: "no-store" });
+    response = await fetch(`${API_BASE}${path}`, { method, cache: method === "GET" ? "default" : "no-store" });
   } catch (error) {
     throw normalizeNetworkError(error);
   }
@@ -120,6 +120,15 @@ export async function fetchPublicCourses(limit = 300, lang?: string): Promise<Pu
   if (["uz", "ru", "en"].includes(safeLang)) params.set("lang", safeLang);
   const payload = await requestPublicJson<{ items: PublicCourse[] }>(`/public/courses?${params.toString()}`);
   return payload.items || [];
+}
+
+export async function fetchPublicCourse(id: string | number, lang?: string): Promise<PublicCourse> {
+  const safeLang = String(lang || "").trim().toLowerCase().slice(0, 2);
+  const params = new URLSearchParams();
+  if (["uz", "ru", "en"].includes(safeLang)) params.set("lang", safeLang);
+  const serializedParams = params.toString();
+  const query = serializedParams ? `?${serializedParams}` : "";
+  return requestPublicJson<PublicCourse>(`/public/courses/${encodeURIComponent(String(id))}${query}`);
 }
 
 export async function fetchPublicVideos(limit = 200): Promise<GenericRow[]> {
@@ -216,6 +225,10 @@ export async function votePublicVideoComment(commentId: number, action: "like" |
 export async function fetchPublicResults(limit = 400): Promise<PublicResult[]> {
   const payload = await requestPublicJson<{ items: PublicResult[] }>(`/public/results?limit=${Math.max(1, Math.min(400, limit))}`);
   return payload.items || [];
+}
+
+export async function fetchPublicResult(id: string | number): Promise<PublicResult> {
+  return requestPublicJson<PublicResult>(`/public/results/${encodeURIComponent(String(id))}`);
 }
 
 export async function fetchPublicArticles(): Promise<PublicArticle[]> {

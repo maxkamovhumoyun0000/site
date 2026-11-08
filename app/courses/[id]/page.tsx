@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
+import Image from "next/image";
 import { PublicShell } from "../../public-shell";
-import { PublicCourse, fetchPublicCourses, toAssetUrl } from "../../public-data";
+import { PublicCourse, fetchPublicCourse, toAssetUrl } from "../../public-data";
 import { PublicDetailSkeleton } from "../../public-skeletons";
 import { useWebLocale, useWebT } from "../../ui/web-i18n";
 
@@ -30,7 +31,7 @@ function formatPrice(priceText: string, freeLabel: string) {
 export default function CourseDetailPage() {
   const params = useParams<{ id: string }>();
   const id = Number(params?.id || 0);
-  const [items, setItems] = useState<PublicCourse[]>([]);
+  const [item, setItem] = useState<PublicCourse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const locale = useWebLocale();
@@ -41,9 +42,10 @@ export default function CourseDetailPage() {
     async function load() {
       setLoading(true);
       setError("");
+      setItem(null);
       try {
-        const rows = await fetchPublicCourses(300, locale);
-        if (!cancelled) setItems(rows);
+        const row = await fetchPublicCourse(id, locale);
+        if (!cancelled) setItem(row);
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : tt("courses.detail.loadError", "Kurs ma'lumotlarini yuklab bo'lmadi"));
       } finally {
@@ -54,9 +56,7 @@ export default function CourseDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [locale, tt]);
-
-  const item = useMemo(() => items.find((row) => Number(row.id) === id) || null, [items, id]);
+  }, [id, locale, tt]);
   const localizedTitle = item ? String((item as any)[`title_${locale}`] || item.title || "").trim() : "";
   const localizedDescription = item ? String((item as any)[`description_${locale}`] || item.description || "").trim() : "";
 
@@ -93,11 +93,23 @@ export default function CourseDetailPage() {
         <div className="max-w-6xl mx-auto flex flex-col lg:flex-row items-start gap-8 md:gap-12 pb-16">
           <div className="w-full lg:w-1/2 rounded-[2rem] overflow-hidden bg-gray-100 dark:bg-gray-900 shadow-2xl border border-gray-100 dark:border-gray-800 aspect-square sticky top-8">
             {item.cover_image_url ? (
-              <img
-                className="w-full h-full object-cover"
-                src={toAssetUrl(item.cover_image_url)}
-                alt={localizedTitle || tt("courses.detail.title", "Kurs ma'lumoti")}
-              />
+              toAssetUrl(item.cover_image_url).startsWith("/") && !toAssetUrl(item.cover_image_url).startsWith("//") ? (
+                <Image
+                  className="object-cover"
+                  src={toAssetUrl(item.cover_image_url)}
+                  alt={localizedTitle || tt("courses.detail.title", "Kurs ma'lumoti")}
+                  fill
+                  sizes="(max-width: 1024px) 100vw, 50vw"
+                />
+              ) : (
+                <img
+                  className="w-full h-full object-cover"
+                  src={toAssetUrl(item.cover_image_url)}
+                  alt={localizedTitle || tt("courses.detail.title", "Kurs ma'lumoti")}
+                  loading="eager"
+                  decoding="async"
+                />
+              )
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center text-gray-400 bg-gray-100 dark:bg-gray-800">
                 <span className="text-6xl mb-4">📚</span>

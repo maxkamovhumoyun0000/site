@@ -17574,6 +17574,11 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   animation-play-state: paused;
 }
 
+.landing-carousel-paused > .landing-reviews-carousel-track,
+.landing-carousel-paused > .landing-results-marquee-track {
+  animation-play-state: paused;
+}
+
 .landing-review-card {
   display: flex;
   flex: 0 0 auto;
@@ -19404,6 +19409,14 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
 
 .landing-results-marquee-track:hover {
   animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-results-marquee-track,
+  .landing-reviews-carousel-track {
+    animation: none !important;
+    transform: none !important;
+  }
 }
 
 .landing-results-marquee-reverse {

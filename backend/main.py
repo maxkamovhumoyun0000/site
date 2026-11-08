@@ -1012,6 +1012,7 @@ competition_stale_lobbies_task: asyncio.Task[Any] | None = None
 study_room_presence_task: asyncio.Task[Any] | None = None
 system_metrics_task: asyncio.Task[Any] | None = None
 speaking_live_lesson_task: asyncio.Task[Any] | None = None
+webp_original_cleanup_task: asyncio.Task[Any] | None = None
 startup_maintenance_task: asyncio.Task[Any] | None = None
 
 background_scheduler_lock_file: Any | None = None
@@ -20432,7 +20433,7 @@ def _enforce_subject_policy_consistency() -> None:
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task, system_metrics_task, speaking_live_lesson_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, weekly_review_task, weekly_personal_plan_task, competition_stale_lobbies_task, study_room_presence_task, system_metrics_task, speaking_live_lesson_task, webp_original_cleanup_task
     started = time.perf_counter()
 
     def _log_step(label: str, step_started: float) -> None:
@@ -20505,6 +20506,12 @@ async def startup_event() -> None:
         step = time.perf_counter()
         _diamondvoy_cleanup_expired_chats()
         _log_step("diamondvoy_cleanup_expired", step)
+
+        if webp_original_cleanup_task is None or webp_original_cleanup_task.done():
+            webp_original_cleanup_task = asyncio.create_task(
+                _webp_original_cleanup_worker(),
+                name="webp_original_cleanup_worker",
+            )
 
         if diamondvoy_chat_cleanup_task is None or diamondvoy_chat_cleanup_task.done():
             diamondvoy_chat_cleanup_task = asyncio.create_task(
@@ -20633,7 +20640,7 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, system_metrics_task, speaking_live_lesson_task
+    global diamondvoy_chat_cleanup_task, payment_automation_task, startup_maintenance_task, background_scheduler_lock_file, lesson_reminders_task, domain_email_cleanup_task, daily_test_reminder_task, homework_deadline_reminder_task, system_metrics_task, speaking_live_lesson_task, webp_original_cleanup_task
     task = diamondvoy_chat_cleanup_task
     diamondvoy_chat_cleanup_task = None
     ptask = payment_automation_task
@@ -20648,6 +20655,8 @@ async def shutdown_event() -> None:
     homework_deadline_reminder_task = None
     smtask = system_metrics_task
     system_metrics_task = None
+    wtask = webp_original_cleanup_task
+    webp_original_cleanup_task = None
     if not task:
         pass
     else:
@@ -20707,6 +20716,12 @@ async def shutdown_event() -> None:
         smtask.cancel()
         try:
             await smtask
+        except asyncio.CancelledError:
+            pass
+    if wtask:
+        wtask.cancel()
+        try:
+            await wtask
         except asyncio.CancelledError:
             pass
     if background_scheduler_lock_file is not None:
@@ -42084,6 +42099,105 @@ def _image_type_from_signature(raw: bytes) -> tuple[str, str] | None:
     return None
 
 
+def _encode_webp_image(raw: bytes) -> bytes | None:
+    """Downsize and encode a static raster image as WebP using OpenCV."""
+    try:
+        import cv2
+        import numpy as np
+
+        decode_mode = cv2.IMREAD_UNCHANGED if raw.startswith(b"\x89PNG\r\n\x1a\n") else cv2.IMREAD_COLOR
+        image = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), decode_mode)
+        if image is None:
+            return None
+        height, width = image.shape[:2]
+        max_side = 1920
+        if max(height, width) > max_side:
+            scale = max_side / max(height, width)
+            image = cv2.resize(
+                image,
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        ok, encoded = cv2.imencode(
+            ".webp",
+            image,
+            [cv2.IMWRITE_WEBP_QUALITY, 82],
+        )
+        return encoded.tobytes() if ok else None
+    except Exception:
+        logger.warning("webp image conversion unavailable", exc_info=True)
+        return None
+
+
+def _cached_webp_variant(source_path: Path) -> Path | None:
+    """Lazily cache WebP sidecars for existing public JPG/PNG uploads."""
+    if source_path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+        return None
+    try:
+        target_path = source_path.with_name(f"{source_path.name}.webp")
+        if not source_path.is_file():
+            return target_path if target_path.is_file() else None
+        if target_path.is_file() and target_path.stat().st_mtime >= source_path.stat().st_mtime:
+            return target_path
+        encoded = _encode_webp_image(source_path.read_bytes())
+        if not encoded:
+            return None
+        temporary_path = target_path.with_name(f".{target_path.name}.{secrets.token_hex(4)}.tmp")
+        temporary_path.write_bytes(encoded)
+        os.replace(temporary_path, target_path)
+        return target_path
+    except OSError:
+        logger.warning("could not cache WebP variant for %s", source_path, exc_info=True)
+        return None
+    finally:
+        if "temporary_path" in locals():
+            with suppress(OSError):
+                temporary_path.unlink()
+
+
+WEBP_SOURCE_RETENTION_SECONDS = 7 * 24 * 60 * 60
+WEBP_SOURCE_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60
+
+
+def _cleanup_expired_webp_sources(now: float | None = None) -> int:
+    """Remove legacy raster originals only after their cached WebP has aged a week."""
+    cutoff = (time.time() if now is None else float(now)) - WEBP_SOURCE_RETENTION_SECONDS
+    removed = 0
+    for upload_dir in (ARTICLE_UPLOAD_DIR, COURSE_UPLOAD_DIR, RESULT_UPLOAD_DIR, MEDIA_UPLOAD_DIR):
+        try:
+            candidates = tuple(upload_dir.iterdir())
+        except OSError:
+            logger.warning("could not scan image upload directory %s", upload_dir, exc_info=True)
+            continue
+        for source_path in candidates:
+            if source_path.suffix.lower() not in {".jpg", ".jpeg", ".png"} or not source_path.is_file():
+                continue
+            webp_path = source_path.with_name(f"{source_path.name}.webp")
+            try:
+                webp_stat = webp_path.stat()
+                source_stat = source_path.stat()
+                if webp_stat.st_mtime < source_stat.st_mtime or webp_stat.st_mtime > cutoff:
+                    continue
+                source_path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                logger.warning("could not remove expired image source %s", source_path, exc_info=True)
+    if removed:
+        logger.info("webp_source_cleanup removed=%s retention_days=7", removed)
+    return removed
+
+
+async def _webp_original_cleanup_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_cleanup_expired_webp_sources)
+        except Exception:
+            logger.exception("WebP original cleanup worker failed")
+        await asyncio.sleep(WEBP_SOURCE_CLEANUP_INTERVAL_SECONDS)
+
+
 async def _upload_web_image(file: UploadFile, upload_dir: Path, prefix: str) -> str:
     allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     original_name = Path(file.filename or "").name
@@ -42099,6 +42213,11 @@ async def _upload_web_image(file: UploadFile, upload_dir: Path, prefix: str) -> 
     if not detected or (ext not in {detected[0], ".jpeg"}):
         raise HTTPException(status_code=422, detail="Yuklangan fayl haqiqiy qo‘llab-quvvatlanadigan rasm emas.")
     ext = detected[0]
+    if ext in {".jpg", ".png"}:
+        webp_raw = await asyncio.to_thread(_encode_webp_image, raw)
+        if webp_raw:
+            raw = webp_raw
+            ext = ".webp"
     filename = f"{prefix}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(5)}{ext}"
     upload_dir.mkdir(parents=True, exist_ok=True)
     path = upload_dir / filename
@@ -42206,10 +42325,46 @@ async def list_public_courses(response: Response, limit: int = Query(default=60,
     return {"items": _list_courses(include_drafts=False, limit=int(limit), lang=_content_locale(lang))}
 
 
+@app.get("/public/courses/{course_id}")
+async def get_public_course(course_id: int, response: Response, lang: str | None = Query(default=None)):
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+    course = _get_course_by_id(int(course_id), lang=_content_locale(lang))
+    if not course or str(course.get("status") or "").strip().lower() != "published":
+        raise HTTPException(status_code=404, detail="Course not found")
+    return course
+
+
 @app.get("/public/results")
 async def list_public_results(response: Response, limit: int = Query(default=80, ge=1, le=400)):
     response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
     return {"items": _list_results(include_drafts=False, limit=int(limit))}
+
+
+@app.get("/public/results/{result_id}")
+async def get_public_result(result_id: int, response: Response):
+    response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=300"
+    _ensure_web_tables()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        type_placeholders = ", ".join(["?"] * len(PUBLIC_RESULT_TYPES))
+        cur.execute(
+            f"""
+            SELECT *
+            FROM web_results
+            WHERE id=?
+              AND LOWER(COALESCE(status, 'draft'))='published'
+              AND result_type IN ({type_placeholders})
+            LIMIT 1
+            """,
+            (int(result_id), *PUBLIC_RESULT_TYPES),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Result not found")
+        return _serialize_result(dict(row))
+    finally:
+        conn.close()
 
 
 @app.get("/public/videos")
@@ -42712,11 +42867,14 @@ async def article_image_file(filename: str):
     if safe != filename:
         raise HTTPException(status_code=404, detail="Image not found")
     file_path = ARTICLE_UPLOAD_DIR / safe
-    if not file_path.exists() or not file_path.is_file():
+    webp_path = await asyncio.to_thread(_cached_webp_variant, file_path)
+    if (not file_path.exists() or not file_path.is_file()) and not webp_path:
         placeholder = _image_placeholder_response("public, max-age=60")
         if placeholder is not None:
             return placeholder
         raise HTTPException(status_code=404, detail="Image not found")
+    if webp_path:
+        return FileResponse(str(webp_path), media_type="image/webp", headers={"Cache-Control": "public, max-age=604800, immutable"})
     return FileResponse(str(file_path))
 
 
@@ -42737,13 +42895,15 @@ async def course_image_file(filename: str):
     if safe != filename:
         raise HTTPException(status_code=404, detail="Image not found")
     file_path = COURSE_UPLOAD_DIR / safe
-    if not file_path.exists() or not file_path.is_file():
+    webp_path = await asyncio.to_thread(_cached_webp_variant, file_path)
+    if (not file_path.exists() or not file_path.is_file()) and not webp_path:
         placeholder = _image_placeholder_response("public, max-age=60")
         if placeholder is not None:
             return placeholder
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(
-        str(file_path),
+        str(webp_path or file_path),
+        media_type="image/webp" if webp_path else None,
         headers={"Cache-Control": "public, max-age=604800, immutable"},
     )
 
@@ -42757,6 +42917,12 @@ async def upload_result_image(
     _require_role(user, {"admin"})
     filename, content_type = await _upload_web_file(file, RESULT_UPLOAD_DIR, "result", max_size_mb=100)
     is_image = content_type.startswith("image/")
+    if is_image:
+        source_path = RESULT_UPLOAD_DIR / filename
+        webp_path = await asyncio.to_thread(_cached_webp_variant, source_path)
+        if webp_path:
+            filename = webp_path.name
+            content_type = "image/webp"
     return {"url": f"/results/media/{filename}", "content_type": content_type, "is_image": is_image}
 
 
@@ -42767,14 +42933,15 @@ async def result_media_file(filename: str):
     if safe != filename:
         raise HTTPException(status_code=404, detail="Media not found")
     file_path = RESULT_UPLOAD_DIR / safe
-    if not file_path.exists() or not file_path.is_file():
+    webp_path = await asyncio.to_thread(_cached_webp_variant, file_path)
+    if (not file_path.exists() or not file_path.is_file()) and not webp_path:
         placeholder = _image_placeholder_response("public, max-age=60")
         if placeholder is not None:
             return placeholder
         raise HTTPException(status_code=404, detail="Media not found")
     return FileResponse(
-        str(file_path),
-        media_type=mimetypes.guess_type(safe)[0] or "application/octet-stream",
+        str(webp_path or file_path),
+        media_type="image/webp" if webp_path else mimetypes.guess_type(safe)[0] or "application/octet-stream",
         headers={"Cache-Control": "public, max-age=604800, immutable"},
     )
 
@@ -42851,6 +43018,12 @@ async def admin_upload_media(
                 file_path.unlink()
             raise HTTPException(status_code=422, detail="Fayl turi noto'g'ri. Faqat PNG, JPG, WEBP yoki GIF rasm yuklash mumkin.")
         content_type = derived_type
+        if derived_type in {"image/jpeg", "image/png"}:
+            webp_path = await asyncio.to_thread(_cached_webp_variant, file_path)
+            if webp_path:
+                filename = webp_path.name
+                file_path = webp_path
+                content_type = "image/webp"
     size_bytes = int(file_path.stat().st_size) if file_path.exists() else 0
 
     asset = create_media_asset(
@@ -42937,14 +43110,15 @@ async def media_public_asset(asset_id: int):
     if "svg" in content_type or Path(stored_name).suffix.lower() in {".svg", ".svgz", ".html", ".htm", ".xml"}:
         raise HTTPException(status_code=403, detail="Public access allowed only for raster image assets")
     file_path = MEDIA_UPLOAD_DIR / stored_name
-    if not file_path.exists() or not file_path.is_file():
+    webp_path = await asyncio.to_thread(_cached_webp_variant, file_path)
+    if (not file_path.exists() or not file_path.is_file()) and not webp_path:
         placeholder = _image_placeholder_response()
         if placeholder is not None:
             return placeholder
         raise HTTPException(status_code=404, detail=_clean_media_missing_detail(asset))
     return FileResponse(
-        str(file_path),
-        media_type=content_type or mimetypes.guess_type(stored_name)[0] or "application/octet-stream",
+        str(webp_path or file_path),
+        media_type="image/webp" if webp_path else content_type or mimetypes.guess_type(stored_name)[0] or "application/octet-stream",
         headers={
             "Cache-Control": "public, max-age=300, stale-while-revalidate=60",
             "X-Content-Type-Options": "nosniff",

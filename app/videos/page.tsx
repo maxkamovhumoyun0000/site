@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { PublicShell } from "../public-shell";
 import { fetchPublicVideos, API_BASE, GenericRow } from "../public-data";
 import { PublicListSkeleton } from "../public-skeletons";
@@ -18,6 +19,9 @@ function VideoCard({ video, onVideoClick }: { video: GenericRow; onVideoClick?: 
   const tt = useWebT();
   const subject = String(video.subject || "").trim();
   const subjectLabel = subject ? tt(`public.subject.${subject}`, subject) : tt("common.general", "Umumiy");
+  const thumbnailSource = video.thumbnail_url
+    ? String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)
+    : "";
   return (
     <div
       className="group relative flex flex-col bg-white border border-line rounded-2xl shadow-premium overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer w-full"
@@ -33,11 +37,11 @@ function VideoCard({ video, onVideoClick }: { video: GenericRow; onVideoClick?: 
           <svg className="w-10 h-10 text-white drop-shadow-md" fill="currentColor" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
         </div>
         {video.thumbnail_url ? (
-          <img
-            src={String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)}
-            alt={video.title || tt("videos.defaultTitle", "Video dars")}
-            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-          />
+          thumbnailSource.startsWith("/") && !thumbnailSource.startsWith("//") ? (
+            <Image fill sizes="(max-width: 640px) 50vw, 240px" src={thumbnailSource} alt={video.title || tt("videos.defaultTitle", "Video dars")} className="object-cover transition-transform duration-300 group-hover:scale-105" />
+          ) : (
+            <img src={thumbnailSource} alt={video.title || tt("videos.defaultTitle", "Video dars")} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" decoding="async" />
+          )
         ) : (
           <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-soft to-line">
             <span className="text-3xl opacity-20">▶️</span>

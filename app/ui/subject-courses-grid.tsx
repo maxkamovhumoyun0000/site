@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import { PublicCourseGroup, cutText, toAssetUrl } from "../public-data";
 import { useWebT, useWebLocale } from "./web-i18n";
 
@@ -60,11 +61,14 @@ export function SubjectCoursesGrid({ group }: { group: PublicCourseGroup }) {
           >
             <div className="relative aspect-square overflow-hidden bg-gray-100 dark:bg-gray-900">
               {course.cover_image_url ? (
-                <img
-                  className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110"
-                  src={toAssetUrl(course.cover_image_url)}
-                  alt={localizedTitle}
-                />
+                (() => {
+                  const src = toAssetUrl(course.cover_image_url);
+                  return src.startsWith("/") && !src.startsWith("//") ? (
+                    <Image fill sizes="(max-width: 640px) 50vw, 240px" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" src={src} alt={localizedTitle} />
+                  ) : (
+                    <img className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" src={src} alt={localizedTitle} loading="lazy" decoding="async" />
+                  );
+                })()
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-gray-800 dark:to-gray-900">
                   <span className="text-6xl opacity-20 transition-transform duration-700 group-hover:scale-110 group-hover:rotate-6">📚</span>

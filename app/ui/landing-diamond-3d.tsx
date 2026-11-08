@@ -695,6 +695,9 @@ export function LandingDiamond3D() {
   const [rippleActive, setRippleActive] = useState(false);
   const [pointer, setPointer] = useState<PointerTilt>({ x: 0, y: 0 });
   const [spinImpulse, setSpinImpulse] = useState({ value: 0, time: 0 });
+  const [isInViewport, setIsInViewport] = useState(false);
+  const [isDocumentVisible, setIsDocumentVisible] = useState(true);
+  const [isAnimationDisabled, setIsAnimationDisabled] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const pointerActive = useRef(false);
@@ -728,12 +731,22 @@ export function LandingDiamond3D() {
     return () => observer.disconnect();
   }, []);
 
-  // IntersectionObserver to reset the diamond when it is scrolled out of viewport
+  useEffect(() => {
+    const syncAnimationPreference = () => {
+      setIsAnimationDisabled(localStorage.getItem("diamond_3d_disabled") === "true");
+    };
+    syncAnimationPreference();
+    window.addEventListener("diamond_3d_toggled", syncAnimationPreference);
+    return () => window.removeEventListener("diamond_3d_toggled", syncAnimationPreference);
+  }, []);
+
+  // Pause the continuously animated WebGL scene while it is offscreen or the tab is hidden.
   useEffect(() => {
     if (typeof window === "undefined" || !containerRef.current) return;
 
     const observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
+        setIsInViewport(entry.isIntersecting);
         if (!entry.isIntersecting) {
           setStage("idle");
           setClicks(0);
@@ -746,7 +759,13 @@ export function LandingDiamond3D() {
     });
 
     observer.observe(containerRef.current);
-    return () => observer.disconnect();
+    const updateDocumentVisibility = () => setIsDocumentVisible(!document.hidden);
+    updateDocumentVisibility();
+    document.addEventListener("visibilitychange", updateDocumentVisibility);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", updateDocumentVisibility);
+    };
   }, [clearAllTimers]);
 
   useEffect(() => {
@@ -924,6 +943,7 @@ export function LandingDiamond3D() {
 
       <Canvas
         className="hero-v2-diamond-canvas"
+        frameloop={isInViewport && isDocumentVisible && !isAnimationDisabled ? "always" : "demand"}
         shadows={false}
         dpr={Math.min(typeof window !== "undefined" ? window.devicePixelRatio : 1, 1.5)}
         camera={{ position: [0, 0, 15], fov: 9, near: 0.1, far: 100 }}

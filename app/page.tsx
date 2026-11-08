@@ -2,6 +2,7 @@
 
 import { Fragment, FormEvent, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import Image from "next/image";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { migrateBrowserSessionToCookie, storeBrowserSessionToken } from "@/lib/auth-session";
@@ -1925,44 +1926,50 @@ function sortLandingResultsByRank(rows: GenericRow[]) {
   });
 }
 
-// Constant pixels-per-second for all marquees — ensures uniform speed regardless of item count
-const MARQUEE_SPEED_PX_S = 80;
+// Move one card per 2-second beat; using steps keeps the carousel calm and predictable.
+const MARQUEE_CARD_INTERVAL_S = 2;
+
+function marqueeAnimationStyle(cardCount: number) {
+  const steps = Math.max(1, cardCount);
+  return {
+    animationDuration: `${steps * MARQUEE_CARD_INTERVAL_S}s`,
+    animationTimingFunction: `steps(${steps}, end)`,
+  };
+}
+
+function duplicateMarqueeItems<T>(items: T[], minimumCards = 12): T[] {
+  if (!items.length) return [];
+  const copies = Math.max(2, Math.ceil(minimumCards / items.length));
+  return Array.from({ length: copies }, () => items).flat();
+}
+
+function useCarouselVisibility() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [isVisible, setIsVisible] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), { rootMargin: "120px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, isVisible] as const;
+}
 
 function LandingResultsCarousel({ groupId, items, index = 0 }: { groupId: string; items: GenericRow[]; index?: number }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [animDuration, setAnimDuration] = useState(45);
-
+  const [carouselRef, isVisible] = useCarouselVisibility();
   // Duplicate items for seamless infinite marquee scrolling
-  const duplicatedItems = useMemo(
-    () => [...items, ...items, ...items, ...items].slice(0, Math.max(12, items.length * 4)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items.length]
-  );
+  const duplicatedItems = useMemo(() => duplicateMarqueeItems(items), [items]);
   // Even index: left-to-right (normal), odd index: right-to-left (reverse)
   const isReverse = index % 2 !== 0;
-
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
-    const recalc = () => {
-      // The animation moves by -50% of track width → half-width is the travel distance
-      const halfPx = el.scrollWidth / 2;
-      setAnimDuration(Math.max(6, halfPx / MARQUEE_SPEED_PX_S));
-    };
-    recalc();
-    const ro = new ResizeObserver(recalc);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [duplicatedItems.length]);
 
   if (!items || !items.length) return null;
 
   return (
-    <div className="landing-results-marquee-wrapper">
+    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
       <div
-        ref={trackRef}
         className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
+        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
       >
         {duplicatedItems.map((item, idx) => (
           <ResultCard item={item} compact key={`result-${groupId}-${item.id}-${idx}`} />
@@ -1982,36 +1989,17 @@ const COURSE_SUBJECT_COLORS: Record<string, string> = {
 };
 
 function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [animDuration, setAnimDuration] = useState(45);
+  const [carouselRef, isVisible] = useCarouselVisibility();
   const locale = useWebLocale();
-  const duplicatedItems = useMemo(
-    () => [...items, ...items, ...items, ...items].slice(0, Math.max(16, items.length * 4)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items.length]
-  );
-
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
-    const recalc = () => {
-      const halfPx = el.scrollWidth / 2;
-      setAnimDuration(Math.max(6, halfPx / MARQUEE_SPEED_PX_S));
-    };
-    recalc();
-    const ro = new ResizeObserver(recalc);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [duplicatedItems.length]);
+  const duplicatedItems = useMemo(() => duplicateMarqueeItems(items, 16), [items]);
 
   if (!items || !items.length) return null;
 
   return (
-    <div className="landing-results-marquee-wrapper">
+    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
       <div
-        ref={trackRef}
         className="landing-results-marquee-track"
-        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
+        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
       >
         {duplicatedItems.map((course, idx) => {
           const subject = String(course.subject || "").trim();
@@ -2026,13 +2014,14 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
             >
               <div className="relative aspect-square bg-surface-soft dark:bg-navy-800 overflow-hidden">
                 {course.cover_image_url ? (
-                  <img
-                    src={toAssetUrl(String(course.cover_image_url))}
-                    alt={localizedTitle}
-                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108"
-                    loading="lazy"
-                    decoding="async"
-                  />
+                  (() => {
+                    const src = toAssetUrl(String(course.cover_image_url));
+                    return src.startsWith("/") && !src.startsWith("//") ? (
+                      <Image fill sizes="(max-width: 640px) 240px, 268px" src={src} alt={localizedTitle} className="object-cover transition-transform duration-500 group-hover:scale-108" />
+                    ) : (
+                      <img src={src} alt={localizedTitle} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108" loading="lazy" decoding="async" />
+                    );
+                  })()
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-cyan-50 to-blue-100 dark:from-navy-800 dark:to-navy-700">
                     <span className="text-5xl opacity-20">📚</span>
@@ -2062,29 +2051,11 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
 }
 
 function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: GenericRow[]; index?: number; onVideoClick?: () => void }) {
+  const [carouselRef, isVisible] = useCarouselVisibility();
   const tt = useWebT();
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [animDuration, setAnimDuration] = useState(45);
 
-  const duplicatedItems = useMemo(
-    () => [...items, ...items, ...items, ...items].slice(0, Math.max(12, items.length * 4)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [items.length]
-  );
+  const duplicatedItems = useMemo(() => duplicateMarqueeItems(items), [items]);
   const isReverse = index % 2 !== 0;
-
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
-    const recalc = () => {
-      const halfPx = el.scrollWidth / 2;
-      setAnimDuration(Math.max(6, halfPx / MARQUEE_SPEED_PX_S));
-    };
-    recalc();
-    const ro = new ResizeObserver(recalc);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [duplicatedItems.length]);
 
   function formatViews(views: number | undefined | null) {
     if (!views) return "0 views";
@@ -2096,11 +2067,10 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
   if (!items || !items.length) return null;
 
   return (
-    <div className="landing-results-marquee-wrapper">
+    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
       <div
-        ref={trackRef}
         className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
+        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
       >
         {duplicatedItems.map((video, idx) => (
           <div
@@ -2113,13 +2083,14 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
                 <svg className="w-10 h-10 text-white drop-shadow-md" fill="currentColor" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
               </div>
               {video.thumbnail_url ? (
-                <img
-                  src={String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)}
-                  alt={video.title || "Video"}
-                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  loading="lazy"
-                  decoding="async"
-                />
+                (() => {
+                  const src = String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url);
+                  return src.startsWith("/") && !src.startsWith("//") ? (
+                    <Image fill sizes="(max-width: 640px) 170px, 190px" src={src} alt={video.title || "Video"} className="object-cover transition-transform duration-300 group-hover:scale-105" />
+                  ) : (
+                    <img src={src} alt={video.title || "Video"} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" decoding="async" />
+                  );
+                })()
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-soft to-line">
                   <span className="text-3xl opacity-20">▶️</span>
@@ -2164,35 +2135,16 @@ type LandingTestimonial = {
 };
 
 function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [animDuration, setAnimDuration] = useState(45);
-
-  const duplicatedItems = useMemo(
-    () => [...items, ...items, ...items, ...items].slice(0, Math.max(10, items.length * 4)),
-    [items],
-  );
-
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
-    const recalc = () => {
-      const halfPx = el.scrollWidth / 2;
-      setAnimDuration(Math.max(8, halfPx / MARQUEE_SPEED_PX_S));
-    };
-    recalc();
-    const ro = new ResizeObserver(recalc);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [duplicatedItems.length]);
+  const [carouselRef, isVisible] = useCarouselVisibility();
+  const duplicatedItems = useMemo(() => duplicateMarqueeItems(items, 10), [items]);
 
   if (!items.length) return null;
 
   return (
-    <div className="landing-reviews-carousel-wrapper">
+    <div ref={carouselRef} className={`landing-reviews-carousel-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
       <div
-        ref={trackRef}
         className="landing-reviews-carousel-track"
-        data-csp-style={JSON.stringify({ animationDuration: `${animDuration}s` })}
+        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
       >
         {duplicatedItems.map((testimonial, idx) => (
           <article className="landing-review-card" key={`landing-review-card-${testimonial.name}-${idx}`}>
