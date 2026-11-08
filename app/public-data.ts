@@ -4,10 +4,13 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 // marks media as cacheable for a week. Bumping this value makes browsers fetch
 // the intact file again without touching the original upload or its database
 // record.
-const UPLOADED_MEDIA_CACHE_VERSION = "20260912-2";
+const UPLOADED_MEDIA_CACHE_VERSION = "20261108-1";
 
 function withUploadedMediaCacheVersion(url: string): string {
-  if (!/\/(?:courses\/images|results\/media)\//i.test(url)) return url;
+  if (!/\/(?:articles\/images|courses\/images|media\/public|profile\/images|results\/media)\//i.test(url)) return url;
+  if (/[?&]asset_v=/.test(url)) {
+    return url.replace(/([?&]asset_v=)[^&]*/, `$1${UPLOADED_MEDIA_CACHE_VERSION}`);
+  }
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}asset_v=${UPLOADED_MEDIA_CACHE_VERSION}`;
 }
@@ -254,7 +257,8 @@ export function toAssetUrl(value?: string | null): string {
   // are already resolved untouched so a re-render can never create
   // `/api/api/...`, which otherwise makes existing media look as if it was
   // deleted.
-  if (/^(https?:|data:|blob:)/i.test(raw)) return raw;
+  if (/^(data:|blob:)/i.test(raw)) return raw;
+  if (/^https?:/i.test(raw)) return withUploadedMediaCacheVersion(raw);
   if (raw.startsWith("/assets/")) return raw;
   const resolved = API_BASE && API_BASE !== "/" && (raw === API_BASE || raw.startsWith(`${API_BASE}/`))
     ? raw

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { PublicShell } from "../public-shell";
-import { fetchPublicVideos, API_BASE, GenericRow } from "../public-data";
+import { fetchPublicVideos, GenericRow, toAssetUrl } from "../public-data";
 import { PublicListSkeleton } from "../public-skeletons";
 import { useWebT } from "../ui/web-i18n";
 
@@ -19,9 +19,7 @@ function VideoCard({ video, onVideoClick }: { video: GenericRow; onVideoClick?: 
   const tt = useWebT();
   const subject = String(video.subject || "").trim();
   const subjectLabel = subject ? tt(`public.subject.${subject}`, subject) : tt("common.general", "Umumiy");
-  const thumbnailSource = video.thumbnail_url
-    ? String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url)
-    : "";
+  const thumbnailSource = video.thumbnail_url ? toAssetUrl(String(video.thumbnail_url)) : "";
   return (
     <div
       className="group relative flex flex-col bg-white border border-line rounded-2xl shadow-premium overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer w-full"

@@ -1926,14 +1926,14 @@ function sortLandingResultsByRank(rows: GenericRow[]) {
   });
 }
 
-// Move one card per 2-second beat; using steps keeps the carousel calm and predictable.
-const MARQUEE_CARD_INTERVAL_S = 2;
+// Move one card every half-second with continuous easing so each slide is visible.
+const MARQUEE_CARD_INTERVAL_S = 0.5;
 
 function marqueeAnimationStyle(cardCount: number) {
   const steps = Math.max(1, cardCount);
   return {
     animationDuration: `${steps * MARQUEE_CARD_INTERVAL_S}s`,
-    animationTimingFunction: `steps(${steps}, end)`,
+    animationTimingFunction: "linear",
   };
 }
 
