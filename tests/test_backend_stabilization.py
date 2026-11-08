@@ -450,6 +450,60 @@ async def test_student_submit_homework_window_closed(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
+async def test_student_submit_mixed_homework_persists_note_file_and_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(api, "_user_row_from_bearer", lambda _auth: _student_user(11))
+    monkeypatch.setattr(
+        api,
+        "get_homework",
+        lambda _hid: {
+            "id": 7,
+            "student_id": 11,
+            "group_id": 0,
+            "homework_kind": "list",
+            "requires_essay": True,
+            "requires_file": True,
+            "requires_voice_message": True,
+            "requires_test": False,
+            "is_voiceroom": False,
+            "has_test": False,
+        },
+    )
+    monkeypatch.setattr(api, "get_user_groups", lambda _uid: [])
+    monkeypatch.setattr(api, "get_homework_submission", lambda _hid, _uid: None)
+    monkeypatch.setattr(api, "_attach_homework_runtime_fields", lambda row: row)
+    monkeypatch.setattr(api, "_homework_auto_grade_enabled", lambda _homework: False)
+
+    saved: dict = {}
+
+    def _save(**kwargs):
+        saved.update(kwargs)
+        return {"id": 70, **kwargs}
+
+    monkeypatch.setattr(api, "upsert_homework_submission", _save)
+
+    async def _notify(*_args):
+        return None
+
+    monkeypatch.setattr(api, "_notify_homework_submitted", _notify)
+
+    result = await api.student_submit_homework(
+        7,
+        api.HomeworkSubmitRequest(
+            note="My written answer",
+            proof_images=["https://example.test/homework.png"],
+            voice_message_url="https://example.test/homework.m4a",
+        ),
+        authorization="Bearer test",
+    )
+
+    assert result["message"] == "Homework submitted"
+    assert saved["note"] == "My written answer"
+    assert saved["proof_image_url"] == "https://example.test/homework.png"
+    assert saved["proof_images_json"] == '["https://example.test/homework.png"]'
+    assert saved["voice_message_url"] == "https://example.test/homework.m4a"
+
+
+@pytest.mark.asyncio
 async def test_holiday_cancel_auto_mode_rejects_non_holiday(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api, "_user_row_from_bearer", lambda _auth: _admin_user())
     monkeypatch.setattr(

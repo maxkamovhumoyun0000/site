@@ -39613,6 +39613,12 @@ async def student_submit_homework(
             detail="Complete all required homework parts before submitting: "
             + ", ".join(missing_requirements),
         )
+    # Persist the student's actual written answer and recording URL. These
+    # values must come from the validated request (not unbound locals); mixed
+    # homework otherwise fails at submit time with NameError and loses the
+    # other submitted parts as well.
+    note = str(payload.note or "").strip()
+    voice_message_url = str(payload.voice_message_url or "").strip()
     try:
         submission = upsert_homework_submission(
             homework_id=int(homework_id),
