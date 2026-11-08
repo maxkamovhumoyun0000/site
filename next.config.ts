@@ -25,6 +25,15 @@ const nextConfig: NextConfig = {
 
   // Image optimizatsiya cache muddati (1 hafta)
   images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/api/articles/images/**" },
+      { pathname: "/api/courses/images/**" },
+      { pathname: "/api/media/public/**" },
+      { pathname: "/api/profile/images/**" },
+      { pathname: "/api/results/images/**" },
+      { pathname: "/api/results/media/**" },
+    ],
     minimumCacheTTL: 604800,
     formats: ["image/webp"],
   },
