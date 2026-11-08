@@ -40,14 +40,15 @@ fi
 maintenance_enabled=0
 previous_next=""
 had_previous_next=0
+maintenance_ends_at=""
 set_platform_maintenance() {
   local enabled="$1"
-  .venv/bin/python - "$enabled" <<'PY'
+  local ends_at="${2:-}"
+  .venv/bin/python - "$enabled" "$ends_at" <<'PY'
 import sys
-from datetime import datetime, timedelta, timezone
 from db import update_app_version_settings
 enabled = 1 if sys.argv[1] == "1" else 0
-ends_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z") if enabled else ""
+ends_at = sys.argv[2] if enabled else ""
 update_app_version_settings({
     "platform_maintenance_enabled": enabled,
     "platform_maintenance_ends_at": ends_at,
@@ -60,8 +61,17 @@ PY
 set_site_maintenance() {
   local enabled="$1"
   if [[ "$enabled" == "1" ]]; then
+    local ends_at="${2:-}"
+    if [[ ! "$ends_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+      echo "Refusing to enable static maintenance without a UTC end timestamp." >&2
+      return 1
+    fi
     install -D -m 0644 scripts/maintenance.html "$CADDY_MAINTENANCE_PAGE"
-    install -m 0644 scripts/caddy-maintenance-active.caddy "$CADDY_MAINTENANCE_ROUTE"
+    sed "s/__MAINTENANCE_ENDS_AT__/$ends_at/g" scripts/caddy-maintenance-active.caddy > "$CADDY_MAINTENANCE_ROUTE"
+    if grep -q '__MAINTENANCE_ENDS_AT__' "$CADDY_MAINTENANCE_ROUTE"; then
+      echo "Maintenance end-time placeholder was not rendered." >&2
+      return 1
+    fi
   else
     install -m 0644 scripts/caddy-maintenance-inactive.caddy "$CADDY_MAINTENANCE_ROUTE"
   fi
@@ -166,8 +176,9 @@ npm ci
 # visitors get a real localized page throughout the frontend build/restart.
 ensure_caddy_maintenance_route
 maintenance_enabled=1
-set_site_maintenance 1
-set_platform_maintenance 1
+maintenance_ends_at="$(date -u -d '+30 minutes' '+%Y-%m-%dT%H:%M:%SZ')"
+set_platform_maintenance 1 "$maintenance_ends_at"
+set_site_maintenance 1 "$maintenance_ends_at"
 systemctl restart "${BACKEND_SERVICES[@]}"
 wait_for_http "http://127.0.0.1:3001/health/ready"
 

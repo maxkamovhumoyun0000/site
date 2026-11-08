@@ -22907,7 +22907,7 @@ def create_homework(
         if not homework_subject and student_id:
             cur.execute(
                 "SELECT DISTINCT g.subject FROM user_groups ug JOIN groups g ON g.id=ug.group_id "
-                "WHERE ug.user_id=? AND (ug.left_date IS NULL OR ug.left_date='') "
+                "WHERE ug.user_id=? AND (ug.left_date IS NULL OR TRIM(CAST(ug.left_date AS TEXT))='') "
                 "AND TRIM(COALESCE(g.subject,''))<>'' LIMIT 2",
                 (int(student_id),),
             )
@@ -23384,7 +23384,15 @@ def upsert_homework_submission(
                 )
             )
             conn.commit()
-            return existing
+            # Return the saved row, not the pre-update snapshot. Callers use
+            # this result immediately for API responses and optional grading;
+            # returning `existing` made fresh text/files/audio appear absent.
+            cur.execute(
+                "SELECT * FROM web_homework_submissions WHERE homework_id=? AND student_id=? LIMIT 1",
+                (int(homework_id), int(student_id)),
+            )
+            updated = _row_to_dict(cur.fetchone())
+            return updated or None
         cur.execute(
             """
             INSERT INTO web_homework_submissions(

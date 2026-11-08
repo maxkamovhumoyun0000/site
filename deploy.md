@@ -241,6 +241,14 @@ taqiqlanadi. Birinchi activation Caddy konfiguratsiyasiga idempotent import
 qo‘shadi, `caddy validate` bilan tekshiradi va `caddy reload` bilan qo‘llaydi;
 to‘liq server reboot qilinmaydi.
 
+Developer maintenance sahifasidagi yagona **Umumiy platforma maintenance**
+tugmasi sayt, Student, Teacher hamda English/Russian Speaking ilovalarini bir
+vaqtda yoqadi yoki o‘chiradi. Barcha klientlar bitta
+`platform_maintenance_enabled` holati va bitta `platform_maintenance_ends_at`
+vaqtini oladi; eski Student/Teacher alohida flaglari moslik uchun bazada
+saqlanadi, ammo maintenance holatini belgilamaydi. Release paytida Caddy
+fallback javoblari ham ayni UTC tugash vaqtini qaytaradi.
+
 ## Eski Frontend Build Cache'ini Tozalash (faqat avariya tiklash uchun)
 
 Frontend buildidan **oldin** faqat Next.js'ning `/root/diamond-site/.next/`

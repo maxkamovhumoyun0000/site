@@ -22072,23 +22072,20 @@ function DeveloperMaintenancePanel() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  const update = (role: "student" | "teacher", key: string, value: unknown) => {
-    setSettings((previous) => ({ ...previous, [role]: { ...(previous[role] || {}), [key]: value } }));
+  const updatePlatform = (key: string, value: unknown) => {
+    setSettings((previous) => ({ ...previous, platform: { ...(previous.platform || {}), [key]: value } }));
   };
   const save = async () => {
     setSaving(true);
     setError("");
     try {
       const payload: GenericRow = {};
-      for (const role of ["student", "teacher"] as const) {
-        const item = (settings[role] || {}) as GenericRow;
-        payload[role] = {
-          maintenance_enabled: Boolean(item.enabled),
-          maintenance_starts_at: item.starts_at ? new Date(String(item.starts_at)).toISOString() : "",
-          maintenance_ends_at: item.ends_at ? new Date(String(item.ends_at)).toISOString() : "",
-          maintenance_message_uz: String(item.message_uz || ""),
-        };
-      }
+      const platform = (settings.platform || {}) as GenericRow;
+      payload.platform_maintenance_enabled = Boolean(platform.enabled);
+      payload.platform_maintenance_ends_at = platform.ends_at ? new Date(String(platform.ends_at)).toISOString() : "";
+      payload.platform_maintenance_message_uz = String(platform.message_uz || "");
+      payload.platform_maintenance_message_ru = String(platform.message_ru || "");
+      payload.platform_maintenance_message_en = String(platform.message_en || "");
       const result = await requestJson<GenericRow>("/developer/mobile-maintenance", { method: "POST", token: localStorage.getItem("diamond_token") || "", body: payload, timeoutMs: 15000 });
       setSettings(result || {});
     } catch (saveError) {
@@ -22104,18 +22101,18 @@ function DeveloperMaintenancePanel() {
       <button type="button" className="btn btn-primary small" onClick={save} disabled={saving || loading}>{saving ? "Saqlanmoqda…" : "Saqlash"}</button>
     </div>
     {error ? <p className="mb-3 rounded-xl border border-red-300 bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p> : null}
-    <div className="grid gap-4 lg:grid-cols-2">
-      {(["student", "teacher"] as const).map((role) => {
-        const item = (settings[role] || {}) as GenericRow;
-        const title = role === "student" ? "🎓 Student App" : "👨‍🏫 Teacher App";
-        return <div key={role} className="rounded-2xl border border-line bg-surface-soft p-4 dark:border-white/10 dark:bg-white/[0.04]">
-          <div className="flex items-center justify-between gap-3"><strong className="text-base text-navy-900 dark:text-white">{title}</strong><label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => update(role, "enabled", event.target.checked)} /> Yoqilgan</label></div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Boshlanish<input type="datetime-local" value={datetimeLocalValue(item.starts_at)} onChange={(event) => update(role, "starts_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Tugash<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => update(role, "ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label></div>
-          <label className="mt-3 block text-xs font-bold text-ink-600 dark:text-slate-300">Ilovadagi xabar<textarea value={String(item.message_uz || "")} onChange={(event) => update(role, "message_uz", event.target.value)} maxLength={500} rows={3} placeholder="Rejali texnik ishlar olib borilmoqda." className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label>
-          <p className="mt-2 text-xs font-medium text-ink-500">Holat: {item.active ? "hozir foydalanuvchilarga ko‘rsatilmoqda" : item.enabled ? "vaqt kelganda avtomatik yoqiladi" : "o‘chiq"}</p>
-        </div>;
-      })}
-    </div>
+    {(() => {
+      const item = (settings.platform || {}) as GenericRow;
+      return <div className="mb-4 rounded-2xl border border-cyan-300 bg-cyan-50/70 p-4 dark:border-cyan-500/30 dark:bg-cyan-950/20">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><strong className="text-base text-navy-900 dark:text-white">🌐 Umumiy maintenance — barcha ilovalar</strong><p className="mt-1 text-xs text-ink-600 dark:text-slate-300">Sayt, Student, Teacher va ikkala Speaking app bir xil umumiy flag va tugash vaqtini oladi.</p><p className="mt-1 text-xs font-bold text-cyan-700 dark:text-cyan-300">Holat: {item.active ? "faol — hammasida" : item.enabled ? "rejalashtirilgan" : "o‘chiq"}</p></div>
+          <label className="flex items-center gap-2 text-sm font-bold"><input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => updatePlatform("enabled", event.target.checked)} /> Hammasida yoqish</label>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-xs font-bold text-ink-600 dark:text-slate-300">Umumiy tugash vaqti (Toshkent UTC+5)<input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => updatePlatform("ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label><p className="rounded-xl bg-white/70 p-3 text-xs leading-5 text-ink-600 dark:bg-white/[0.04] dark:text-slate-300">Bu vaqt taxminiy. Umumiy rejim vaqt o‘tgani uchungina emas, switch o‘chirilganda yoki release muvaffaqiyatli yakunlanganda yopiladi.</p></div>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">{([["message_uz", "O‘zbekcha"], ["message_ru", "Ruscha"], ["message_en", "English"]] as const).map(([key, label]) => <label key={key} className="text-xs font-bold text-ink-600 dark:text-slate-300">Xabar ({label})<textarea value={String(item[key] || "")} onChange={(event) => updatePlatform(key, event.target.value)} maxLength={500} rows={2} className="mt-1 w-full rounded-xl border border-line bg-transparent px-3 py-2 text-sm" /></label>)}</div>
+      </div>;
+    })()}
+    <p className="rounded-2xl border border-line bg-surface-soft px-4 py-3 text-sm font-medium text-ink-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">Alohida Student/Teacher maintenance tugmalari olib tashlangan: barcha web va mobil ilovalar faqat yuqoridagi umumiy boshqaruvga bo‘ysunadi.</p>
   </section>;
 }
 

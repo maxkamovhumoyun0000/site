@@ -22603,10 +22603,6 @@ def _normalize_app_version_settings_payload(payload: dict[str, Any] | None) -> d
 
 
 def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | None = None) -> dict[str, Any]:
-    role = "teacher" if str(app_name or "").strip().lower() == "teacher" else "student"
-    enabled = bool(int(settings.get(f"{role}_maintenance_enabled") or 0))
-    starts_at = str(settings.get(f"{role}_maintenance_starts_at") or "").strip()
-    ends_at = str(settings.get(f"{role}_maintenance_ends_at") or "").strip()
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
     def parse(value: str) -> datetime | None:
@@ -22618,27 +22614,23 @@ def _maintenance_state(settings: dict[str, Any], app_name: str, now: datetime | 
         except ValueError:
             return None
 
-    start = parse(starts_at)
-    end = parse(ends_at)
-    active = enabled and (start is None or current >= start) and (end is None or current < end)
-    platform_active = bool(int(settings.get("platform_maintenance_enabled") or 0))
-    if platform_active:
+    # Maintenance is one platform-wide switch. Legacy student/teacher-specific
+    # flags are intentionally ignored so stale per-app settings cannot leave
+    # one client blocked after the shared maintenance has ended.
+    active = bool(int(settings.get("platform_maintenance_enabled") or 0))
+    ends_at = ""
+    if active:
         platform_end = parse(str(settings.get("platform_maintenance_ends_at") or "").strip())
-        # Old maintenance records can contain a stale student/teacher ETA.
-        # Never show a past estimate while the global maintenance flag is on.
+        # Never expose a stale/past ETA while the shared maintenance is active.
         if platform_end is None or platform_end <= current:
             platform_end = current + timedelta(minutes=30)
         ends_at = platform_end.isoformat().replace("+00:00", "Z")
-    elif not active:
-        # Do not leave a disabled/scheduled maintenance window's old timestamp
-        # visible to clients as if it were the current completion estimate.
-        ends_at = ""
     return {
-        "enabled": enabled or platform_active,
-        "active": active or platform_active,
-        "starts_at": starts_at,
+        "enabled": active,
+        "active": active,
+        "starts_at": "",
         "ends_at": ends_at,
-        "message_uz": str(settings.get("platform_maintenance_message_uz") or settings.get(f"{role}_maintenance_message_uz") or "").strip(),
+        "message_uz": str(settings.get("platform_maintenance_message_uz") or "Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.").strip(),
         "message_ru": str(settings.get("platform_maintenance_message_ru") or "Технические работы ведутся. Мы скоро вернёмся.").strip(),
         "message_en": str(settings.get("platform_maintenance_message_en") or "Technical work is in progress. We will be back shortly.").strip(),
     }
@@ -38357,6 +38349,69 @@ def _homework_proof_images_from_payload(payload: HomeworkSubmitRequest) -> list[
     return out[:12]
 
 
+def _homework_flag_enabled(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _homework_submission_missing_requirements(
+    homework: dict[str, Any],
+    payload: HomeworkSubmitRequest,
+    student_id: int,
+) -> list[str]:
+    """Validate every required part of a mixed homework before accepting it.
+
+    The app gates its submit button for convenience, but the API must enforce
+    the same contract so older clients or direct requests cannot submit only
+    one part of a test + writing/upload/voice assignment.
+    """
+    kind = _normalize_homework_kind(homework.get("homework_kind"))
+    is_voiceroom = _homework_flag_enabled(homework.get("is_voiceroom"))
+    requires_file = _homework_flag_enabled(homework.get("requires_file"))
+    requires_voice = _homework_flag_enabled(homework.get("requires_voice_message"))
+    # Historical list assignments represented a written response in the
+    # generic note field even before explicit requirement flags existed.
+    requires_essay = _homework_flag_enabled(homework.get("requires_essay")) or (
+        not is_voiceroom and kind != "test" and not requires_file and not requires_voice
+    )
+    requires_test = _homework_flag_enabled(homework.get("requires_test")) or kind in {"test", "both"}
+
+    missing: list[str] = []
+    voiceroom_completed = False
+    if is_voiceroom:
+        from db import get_conn
+
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                "SELECT status FROM web_homework_voiceroom_groups "
+                "WHERE homework_id=%s AND (student1_id=%s OR student2_id=%s OR student3_id=%s) LIMIT 1",
+                (int(homework.get("id") or 0), int(student_id), int(student_id), int(student_id)),
+            )
+            room = cur.fetchone()
+            room_values = room.values() if isinstance(room, dict) else room
+            voiceroom_completed = bool(room_values and str(next(iter(room_values), "")).lower() == "completed")
+        finally:
+            conn.close()
+        if not voiceroom_completed:
+            missing.append("completed VoiceRoom session")
+    if requires_essay and not str(payload.note or "").strip():
+        missing.append("written response")
+    if requires_file and not _homework_proof_images_from_payload(payload):
+        missing.append("required file or image")
+    # A completed VoiceRoom records the speaking response for all members of
+    # the pair; do not force students to record the same voice answer again.
+    if requires_voice and not voiceroom_completed and not str(payload.voice_message_url or "").strip():
+        missing.append("voice recording")
+    if requires_test and not _homework_test_result_for_student(
+        int(student_id), int(homework.get("id") or 0)
+    ):
+        missing.append("completed test")
+    return missing
+
+
 def _attach_homework_runtime_fields(row: dict) -> dict:
     kind = _normalize_homework_kind(row.get("homework_kind"))
     hw_id = int(row.get("id") or row.get("homework_id") or 0)
@@ -39504,17 +39559,6 @@ async def student_submit_voiceroom_homework(
             
         conn.commit()
 
-        homework = _safe_call(lambda: get_homework(int(homework_id)), None)
-        if homework and _homework_auto_grade_enabled(homework):
-            for sid in students:
-                sub = _safe_call(lambda s_id=sid: get_homework_submission(int(homework_id), s_id), None)
-                stu_u = _safe_call(lambda s_id=sid: get_user_by_id(s_id), None) or {"id": sid}
-                if sub:
-                    try:
-                        await _ai_auto_grade_submission(homework, sub, stu_u)
-                    except Exception as e:
-                        logger.exception("AI auto grade failed for voiceroom submission homework_id=%s sid=%s: %s", homework_id, sid, e)
-
         return {"success": True}
     except Exception as e:
         conn.rollback()
@@ -39560,16 +39604,15 @@ async def student_submit_homework(
     if existing_submission and not stale_test_placeholder:
         raise HTTPException(status_code=409, detail="Homework already submitted")
     proof_images = _homework_proof_images_from_payload(payload)
-    note = str(payload.note or "").strip()
-    voice_message_url = str(payload.voice_message_url or "").strip()
-    if _homework_requires_essay_submission(homework) and not note:
-        raise HTTPException(status_code=422, detail="Written answer is required")
-    if homework.get("requires_file") and not proof_images:
-        raise HTTPException(status_code=422, detail="A required file or image is missing")
-    if homework.get("requires_voice_message") and not voice_message_url:
-        raise HTTPException(status_code=422, detail="A required voice recording is missing")
-    if homework.get("requires_test") and not _homework_test_result_for_student(user_id, int(homework_id)):
-        raise HTTPException(status_code=422, detail="Complete the attached test before submitting this homework")
+    missing_requirements = _homework_submission_missing_requirements(
+        homework, payload, user_id
+    )
+    if missing_requirements:
+        raise HTTPException(
+            status_code=422,
+            detail="Complete all required homework parts before submitting: "
+            + ", ".join(missing_requirements),
+        )
     try:
         submission = upsert_homework_submission(
             homework_id=int(homework_id),
@@ -39596,7 +39639,7 @@ async def student_submit_homework(
     
     # Submission stays pending unless this teacher explicitly enabled the
     # automatic checker.  This prevents the old "submitted = checked" state.
-    if _homework_auto_grade_enabled(homework):
+    if not _homework_flag_enabled(homework.get("is_voiceroom")) and _homework_auto_grade_enabled(homework):
         await _ai_auto_grade_submission(homework, submission, user)
 
     try:

@@ -1006,8 +1006,8 @@ export function DeveloperMaintenanceView() {
     load();
   }, [load]);
 
-  const update = (role: "student" | "teacher", key: string, value: unknown) => {
-    setSettings((previous) => ({ ...previous, [role]: { ...(previous[role] || {}), [key]: value } }));
+  const updatePlatform = (key: string, value: unknown) => {
+    setSettings((previous) => ({ ...previous, platform: { ...(previous.platform || {}), [key]: value } }));
     setSuccess(false);
   };
 
@@ -1017,17 +1017,12 @@ export function DeveloperMaintenanceView() {
     setSuccess(false);
     try {
       const payload: GenericRow = {};
-      for (const role of ["student", "teacher"] as const) {
-        const item = (settings[role] || {}) as GenericRow;
-        payload[role] = {
-          maintenance_enabled: Boolean(item.enabled),
-          maintenance_starts_at: item.starts_at ? new Date(String(item.starts_at)).toISOString() : "",
-          maintenance_ends_at: item.ends_at ? new Date(String(item.ends_at)).toISOString() : "",
-          maintenance_message_uz: String(item.message_uz || ""),
-          maintenance_message_ru: String(item.message_ru || ""),
-          maintenance_message_en: String(item.message_en || ""),
-        };
-      }
+      const platform = (settings.platform || {}) as GenericRow;
+      payload.platform_maintenance_enabled = Boolean(platform.enabled);
+      payload.platform_maintenance_ends_at = platform.ends_at ? new Date(String(platform.ends_at)).toISOString() : "";
+      payload.platform_maintenance_message_uz = String(platform.message_uz || "");
+      payload.platform_maintenance_message_ru = String(platform.message_ru || "");
+      payload.platform_maintenance_message_en = String(platform.message_en || "");
       const result = await requestJson<GenericRow>("/developer/mobile-maintenance", {
         method: "POST",
         token: localStorage.getItem("diamond_token") || "",
@@ -1074,95 +1069,41 @@ export function DeveloperMaintenanceView() {
         </div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {(["student", "teacher"] as const).map((role) => {
-          const item = (settings[role] || {}) as GenericRow;
-          const title = role === "student" ? "🎓 Student App & Web" : "👨‍🏫 Teacher App & Web";
-          return (
-            <div
-              key={role}
-              className="rounded-3xl border border-line bg-surface p-5 shadow-sm dark:border-white/10 dark:bg-white/[0.03]"
-            >
-              <div className="flex items-center justify-between gap-3 border-b border-line pb-4 dark:border-white/10">
-                <div>
-                  <strong className="text-lg text-navy-900 dark:text-white">{title}</strong>
-                  <p className="mt-0.5 text-xs text-ink-500 dark:text-slate-400">
-                    Holat:{" "}
-                    <span className="font-bold text-cyan-600 dark:text-cyan-300">
-                      {item.active ? "● Hozir faol (foydalanuvchilarga ko'rsatilmoqda)" : item.enabled ? "Rejalashtirilgan" : "O'chiq"}
-                    </span>
-                  </p>
-                </div>
-                <label className="flex items-center gap-2 text-sm font-bold cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(item.enabled)}
-                    onChange={(event) => update(role, "enabled", event.target.checked)}
-                  />
-                  <span>Rejimni Yoqish</span>
-                </label>
+      {(() => {
+        const item = (settings.platform || {}) as GenericRow;
+        return (
+          <section className="rounded-3xl border border-cyan-300 bg-cyan-50/70 p-5 shadow-sm dark:border-cyan-500/30 dark:bg-cyan-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-cyan-200 pb-4 dark:border-cyan-500/20">
+              <div>
+                <strong className="text-lg text-navy-900 dark:text-white">🌐 Umumiy platforma maintenance</strong>
+                <p className="mt-1 text-sm text-ink-600 dark:text-slate-300">Bitta tugma bilan sayt, Student, Teacher va English/Russian Speaking ilovalarida bir vaqtda yoqiladi yoki o‘chadi.</p>
+                <p className="mt-1 text-xs font-bold text-cyan-700 dark:text-cyan-300">Holat: {item.active ? "● barcha ilovalarda faol" : item.enabled ? "rejalashtirilgan" : "o‘chiq"}</p>
               </div>
-
-              <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                <label className="text-xs font-bold text-ink-600 dark:text-slate-300">
-                  Boshlanish vaqti (Toshkent UTC+5)
-                  <input
-                    type="datetime-local"
-                    value={datetimeLocalValue(item.starts_at)}
-                    onChange={(event) => update(role, "starts_at", event.target.value)}
-                    className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-                  />
-                </label>
-                <label className="text-xs font-bold text-ink-600 dark:text-slate-300">
-                  Tugash vaqti (Toshkent UTC+5)
-                  <input
-                    type="datetime-local"
-                    value={datetimeLocalValue(item.ends_at)}
-                    onChange={(event) => update(role, "ends_at", event.target.value)}
-                    className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-                  />
-                </label>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <label className="block text-xs font-bold text-ink-600 dark:text-slate-300">
-                  Xabar matni (O'zbekcha)
-                  <textarea
-                    value={String(item.message_uz || "")}
-                    onChange={(event) => update(role, "message_uz", event.target.value)}
-                    maxLength={500}
-                    rows={2}
-                    placeholder="Rejali texnik ishlar olib borilmoqda. Tez orada qaytamiz."
-                    className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-                  />
-                </label>
-                <label className="block text-xs font-bold text-ink-600 dark:text-slate-300">
-                  Xabar matni (Ruscha)
-                  <textarea
-                    value={String(item.message_ru || "")}
-                    onChange={(event) => update(role, "message_ru", event.target.value)}
-                    maxLength={500}
-                    rows={2}
-                    placeholder="Проводятся плановые технические работы."
-                    className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-                  />
-                </label>
-                <label className="block text-xs font-bold text-ink-600 dark:text-slate-300">
-                  Xabar matni (Inglizcha)
-                  <textarea
-                    value={String(item.message_en || "")}
-                    onChange={(event) => update(role, "message_en", event.target.value)}
-                    maxLength={500}
-                    rows={2}
-                    placeholder="Scheduled maintenance in progress. We'll be back shortly."
-                    className="mt-1 w-full rounded-xl border border-line bg-surface-soft px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white"
-                  />
-                </label>
-              </div>
+              <label className="flex cursor-pointer items-center gap-2 text-sm font-bold">
+                <input type="checkbox" checked={Boolean(item.enabled)} onChange={(event) => updatePlatform("enabled", event.target.checked)} />
+                Umumiy rejimni yoqish
+              </label>
             </div>
-          );
-        })}
-      </div>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <label className="text-xs font-bold text-ink-600 dark:text-slate-300">Umumiy tugash vaqti (Toshkent UTC+5)
+                <input type="datetime-local" value={datetimeLocalValue(item.ends_at)} onChange={(event) => updatePlatform("ends_at", event.target.value)} className="mt-1 w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white" />
+              </label>
+              <div className="rounded-xl bg-white/70 p-3 text-xs leading-5 text-ink-600 dark:bg-white/[0.04] dark:text-slate-300">Ilovalar API’dan bir xil `active` va `ends_at` oladi. Tugash vaqti taxminiy; umumiy rejim faqat shu switch o‘chirilganda yoki ish muvaffaqiyatli yakunlanganda o‘chadi.</div>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              {([["message_uz", "Xabar (O‘zbekcha)"], ["message_ru", "Xabar (Ruscha)"], ["message_en", "Xabar (English)"]] as const).map(([key, label]) => (
+                <label key={key} className="text-xs font-bold text-ink-600 dark:text-slate-300">{label}
+                  <textarea value={String(item[key] || "")} onChange={(event) => updatePlatform(key, event.target.value)} maxLength={500} rows={2} className="mt-1 w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm dark:border-white/10 dark:bg-white/[0.04] dark:text-white" />
+                </label>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
+
+      <p className="rounded-2xl border border-line bg-surface-soft px-4 py-3 text-sm font-medium text-ink-600 dark:border-white/10 dark:bg-white/[0.04] dark:text-slate-300">
+        Alohida Student/Teacher maintenance tugmalari olib tashlangan: barcha web va mobil ilovalar faqat yuqoridagi umumiy boshqaruvga bo‘ysunadi.
+      </p>
     </div>
   );
 }

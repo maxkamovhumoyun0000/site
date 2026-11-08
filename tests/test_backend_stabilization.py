@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 import backend.main as api
 import gamified_tests
+import db as database
 
 
 def _student_user(user_id: int = 11) -> dict:
@@ -53,6 +54,16 @@ def test_homework_window_policy_assignment_and_submission_anchor(monkeypatch: py
 
     monkeypatch.setattr(api, "_now_utc", lambda: datetime(2026, 1, 28, 12, 0, tzinfo=timezone.utc))
     assert api._homework_window_open(homework, submission) is False
+
+
+def test_single_student_homework_subject_query_handles_timestamp_left_date() -> None:
+    # PostgreSQL stores left_date as a timestamp. Comparing that column
+    # directly with '' raises "invalid input syntax for type timestamp".
+    source_constants = database.create_homework.__code__.co_consts
+    assert any(
+        isinstance(value, str) and "TRIM(CAST(ug.left_date AS TEXT))=''" in value
+        for value in source_constants
+    )
 
 
 def test_filter_homeworks_with_open_window(monkeypatch: pytest.MonkeyPatch) -> None:

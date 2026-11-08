@@ -1,9 +1,9 @@
 handle /api/platform-maintenance {
-	respond `{"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}` 200
+	respond `{"active":true,"ends_at":"__MAINTENANCE_ENDS_AT__","message_uz":"Texnik ishlar olib borilmoqda. Taxminan 30 daqiqa ichida qaytamiz.","message_ru":"Проводятся технические работы. Ориентировочно вернёмся через 30 минут.","message_en":"Technical work is in progress. We expect to be back in about 30 minutes."}` 200
 }
 
 handle /api/app-version-check {
-	respond `{"force_update":false,"maintenance":{"enabled":true,"active":true,"message_uz":"Texnik ishlar olib borilmoqda. Tez orada ishga tushamiz.","message_ru":"Проводятся технические работы. Мы скоро вернёмся.","message_en":"Technical work is in progress. We will be back shortly."}}` 200
+	respond `{"force_update":false,"maintenance":{"enabled":true,"active":true,"starts_at":"","ends_at":"__MAINTENANCE_ENDS_AT__","message_uz":"Texnik ishlar olib borilmoqda. Taxminan 30 daqiqa ichida qaytamiz.","message_ru":"Проводятся технические работы. Ориентировочно вернёмся через 30 минут.","message_en":"Technical work is in progress. We expect to be back in about 30 minutes."}}` 200
 }
 
 handle {

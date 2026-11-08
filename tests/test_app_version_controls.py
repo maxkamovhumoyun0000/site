@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import backend.main as api
 import diamondvoy_helpers as diamondvoy
 import pytest
@@ -51,6 +53,38 @@ def test_maintenance_window_is_active_only_inside_its_configured_interval() -> N
 
     assert active["active"] is True
     assert before["active"] is False
+
+
+def test_global_maintenance_is_identical_for_student_teacher_and_speaking() -> None:
+    settings = {
+        "platform_maintenance_enabled": 1,
+        "platform_maintenance_ends_at": "2026-10-02T10:00:00Z",
+        "platform_maintenance_message_uz": "Umumiy texnik ishlar",
+        "platform_maintenance_message_ru": "Общие технические работы",
+        "platform_maintenance_message_en": "Platform maintenance",
+    }
+    now = api.datetime(2026, 10, 2, 9, 0, tzinfo=api.timezone.utc)
+
+    states = [
+        api._maintenance_state(settings, app, now=now)
+        for app in ("student", "teacher", "speaking")
+    ]
+
+    assert all(state["active"] is True for state in states)
+    assert {state["ends_at"] for state in states} == {"2026-10-02T10:00:00Z"}
+    assert {state["message_uz"] for state in states} == {"Umumiy texnik ishlar"}
+
+
+def test_static_release_maintenance_contract_includes_shared_end_time() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    caddy = (repo / "scripts/caddy-maintenance-active.caddy").read_text()
+    release_script = (repo / "scripts/activate_production_release.sh").read_text()
+
+    assert caddy.count("__MAINTENANCE_ENDS_AT__") == 2
+    assert '"ends_at":"__MAINTENANCE_ENDS_AT__"' in caddy
+    assert 'maintenance_ends_at="$(date -u -d' in release_script
+    assert 'set_platform_maintenance 1 "$maintenance_ends_at"' in release_script
+    assert 'set_site_maintenance 1 "$maintenance_ends_at"' in release_script
 
 
 def test_maintenance_settings_payload_accepts_only_safe_app_specific_fields() -> None:
