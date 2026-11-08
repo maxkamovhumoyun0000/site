@@ -17566,17 +17566,8 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   align-items: stretch;
   gap: 14px;
   width: max-content;
-  animation: marquee-scroll 45s linear infinite;
+  animation: none;
   padding: 8px 0;
-}
-
-.landing-reviews-carousel-track:hover {
-  animation-play-state: paused;
-}
-
-.landing-carousel-paused > .landing-reviews-carousel-track,
-.landing-carousel-paused > .landing-results-marquee-track {
-  animation-play-state: paused;
 }
 
 .landing-review-card {
@@ -19403,12 +19394,8 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   align-items: stretch;
   gap: 16px;
   width: max-content;
-  animation: marquee-scroll 45s linear infinite;
+  animation: none;
   padding: 10px 0;
-}
-
-.landing-results-marquee-track:hover {
-  animation-play-state: paused;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -19417,10 +19404,6 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
     animation: none !important;
     transform: none !important;
   }
-}
-
-.landing-results-marquee-reverse {
-  animation-direction: reverse;
 }
 
 .landing-results-marquee-track > a {
@@ -19434,15 +19417,6 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   .landing-results-marquee-track > a {
     /* faqat tinch holatida ikkitasi sigsin -> roughly 50vw minus gap */
     width: calc(45vw - 10px);
-  }
-}
-
-@keyframes marquee-scroll {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(calc(-50% - 8px)); /* 50% of the track + half the gap to loop perfectly */
   }
 }
 

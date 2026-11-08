@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, FormEvent, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
+import { Fragment, FormEvent, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject, type SyntheticEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import Image from "next/image";
 import { createPortal } from "react-dom";
@@ -1926,16 +1926,9 @@ function sortLandingResultsByRank(rows: GenericRow[]) {
   });
 }
 
-// Move one card every 1.5 seconds with continuous easing so each slide is visible.
-const MARQUEE_CARD_INTERVAL_S = 1.5;
-
-function marqueeAnimationStyle(cardCount: number) {
-  const steps = Math.max(1, cardCount);
-  return {
-    animationDuration: `${steps * MARQUEE_CARD_INTERVAL_S}s`,
-    animationTimingFunction: "linear",
-  };
-}
+// Each card glides into place, then stays still for 1.5 seconds.
+const MARQUEE_CARD_PAUSE_MS = 1500;
+const MARQUEE_CARD_SLIDE_MS = 500;
 
 function duplicateMarqueeItems<T>(items: T[], minimumCards = 12): T[] {
   if (!items.length) return [];
@@ -1949,32 +1942,97 @@ function useCarouselVisibility() {
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), { rootMargin: "120px" });
+    const observer = new IntersectionObserver(([entry]) => setIsVisible(entry.isIntersecting), { rootMargin: "200px 0px" });
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
   return [ref, isVisible] as const;
 }
 
+function useCarouselMotion(
+  trackRef: RefObject<HTMLDivElement | null>,
+  isNearViewport: boolean,
+  cardCount: number,
+  direction: 1 | -1 = -1,
+) {
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track || !isNearViewport || cardCount < 2 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const cards = Array.from(track.children).slice(0, cardCount);
+    if (cards.length < cardCount) return;
+    const gap = Number.parseFloat(window.getComputedStyle(track).columnGap || "0") || 0;
+    const cycleWidth = cards.reduce((total, card) => total + card.getBoundingClientRect().width + gap, 0);
+    if (!Number.isFinite(cycleWidth) || cycleWidth <= 0) return;
+
+    const stepMs = MARQUEE_CARD_SLIDE_MS + MARQUEE_CARD_PAUSE_MS;
+    const duration = stepMs * cardCount;
+    const origin = direction < 0 ? 0 : -cycleWidth;
+    const frames: Keyframe[] = [];
+    for (let index = 0; index < cardCount; index += 1) {
+      const startOffset = (index * stepMs) / duration;
+      const endOffset = (index * stepMs + MARQUEE_CARD_SLIDE_MS) / duration;
+      const startX = origin + direction * index * (cycleWidth / cardCount);
+      const endX = origin + direction * (index + 1) * (cycleWidth / cardCount);
+      frames.push({
+        transform: `translate3d(${startX}px, 0, 0)`,
+        offset: startOffset,
+        easing: "cubic-bezier(0.22, 0.61, 0.36, 1)",
+      });
+      frames.push({ transform: `translate3d(${endX}px, 0, 0)`, offset: endOffset, easing: "linear" });
+    }
+
+    const animation = track.animate(frames, { duration, iterations: Infinity });
+    const wrapper = track.parentElement;
+    let isHovered = false;
+    const pause = () => animation.pause();
+    const resume = () => {
+      if (!isHovered && !document.hidden) animation.play();
+    };
+    const handleMouseEnter = () => {
+      isHovered = true;
+      pause();
+    };
+    const handleMouseLeave = () => {
+      isHovered = false;
+      resume();
+    };
+    const handleVisibilityChange = () => (document.hidden ? pause() : resume());
+
+    wrapper?.addEventListener("mouseenter", handleMouseEnter);
+    wrapper?.addEventListener("mouseleave", handleMouseLeave);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    if (document.hidden) pause();
+
+    return () => {
+      wrapper?.removeEventListener("mouseenter", handleMouseEnter);
+      wrapper?.removeEventListener("mouseleave", handleMouseLeave);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      animation.cancel();
+    };
+  }, [trackRef, isNearViewport, cardCount, direction]);
+}
+
 function LandingResultsCarousel({ groupId, items, index = 0 }: { groupId: string; items: GenericRow[]; index?: number }) {
   const [carouselRef, isVisible] = useCarouselVisibility();
+  const trackRef = useRef<HTMLDivElement>(null);
   // Duplicate items for seamless infinite marquee scrolling
   const duplicatedItems = useMemo(() => duplicateMarqueeItems(items), [items]);
   // Even index: left-to-right (normal), odd index: right-to-left (reverse)
   const isReverse = index % 2 !== 0;
+  useCarouselMotion(trackRef, isVisible, items.length, isReverse ? 1 : -1);
 
   if (!items || !items.length) return null;
 
   return (
-    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
-      <div
-        className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
-      >
-        {duplicatedItems.map((item, idx) => (
-          <ResultCard item={item} compact key={`result-${groupId}-${item.id}-${idx}`} />
-        ))}
-      </div>
+    <div ref={carouselRef} className="landing-results-marquee-wrapper">
+      {isVisible ? (
+        <div ref={trackRef} className="landing-results-marquee-track">
+          {duplicatedItems.map((item, idx) => (
+            <ResultCard item={item} compact key={`result-${groupId}-${item.id}-${idx}`} />
+          ))}
+        </div>
+      ) : <div aria-hidden="true" className="h-[390px] rounded-3xl bg-slate-100/70 dark:bg-white/5 animate-pulse" />}
     </div>
   );
 }
@@ -1990,17 +2048,16 @@ const COURSE_SUBJECT_COLORS: Record<string, string> = {
 
 function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
   const [carouselRef, isVisible] = useCarouselVisibility();
+  const trackRef = useRef<HTMLDivElement>(null);
   const locale = useWebLocale();
   const duplicatedItems = useMemo(() => duplicateMarqueeItems(items, 16), [items]);
+  useCarouselMotion(trackRef, isVisible, items.length);
 
   if (!items || !items.length) return null;
 
   return (
-    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
-      <div
-        className="landing-results-marquee-track"
-        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
-      >
+    <div ref={carouselRef} className="landing-results-marquee-wrapper">
+      {isVisible ? <div ref={trackRef} className="landing-results-marquee-track">
         {duplicatedItems.map((course, idx) => {
           const subject = String(course.subject || "").trim();
           const subjectColor = COURSE_SUBJECT_COLORS[subject] || "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
@@ -2016,11 +2073,7 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
                 {course.cover_image_url ? (
                   (() => {
                     const src = toAssetUrl(String(course.cover_image_url));
-                    return src.startsWith("/") && !src.startsWith("//") ? (
-                      <Image fill sizes="(max-width: 640px) 240px, 268px" src={src} alt={localizedTitle} className="object-cover transition-transform duration-500 group-hover:scale-108" />
-                    ) : (
-                      <img src={src} alt={localizedTitle} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108" loading="lazy" decoding="async" />
-                    );
+                    return <img src={src} alt={localizedTitle} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-108" loading="lazy" decoding="async" />;
                   })()
                 ) : (
                   <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-cyan-50 to-blue-100 dark:from-navy-800 dark:to-navy-700">
@@ -2045,17 +2098,19 @@ function LandingCoursesCarousel({ items }: { items: GenericRow[] }) {
             </a>
           );
         })}
-      </div>
+      </div> : <div aria-hidden="true" className="h-[430px] rounded-3xl bg-slate-100/70 dark:bg-white/5 animate-pulse" />}
     </div>
   );
 }
 
 function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: GenericRow[]; index?: number; onVideoClick?: () => void }) {
   const [carouselRef, isVisible] = useCarouselVisibility();
+  const trackRef = useRef<HTMLDivElement>(null);
   const tt = useWebT();
 
   const duplicatedItems = useMemo(() => duplicateMarqueeItems(items), [items]);
   const isReverse = index % 2 !== 0;
+  useCarouselMotion(trackRef, isVisible, items.length, isReverse ? 1 : -1);
 
   function formatViews(views: number | undefined | null) {
     if (!views) return "0 views";
@@ -2067,11 +2122,8 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
   if (!items || !items.length) return null;
 
   return (
-    <div ref={carouselRef} className={`landing-results-marquee-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
-      <div
-        className={`landing-results-marquee-track${isReverse ? " landing-results-marquee-reverse" : ""}`}
-        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
-      >
+    <div ref={carouselRef} className="landing-results-marquee-wrapper">
+      {isVisible ? <div ref={trackRef} className="landing-results-marquee-track">
         {duplicatedItems.map((video, idx) => (
           <div
             className="group relative flex flex-col bg-white border border-line rounded-2xl shadow-premium overflow-hidden transition-all duration-300 hover:-translate-y-1 cursor-pointer shrink-0 w-[170px] sm:w-[190px]"
@@ -2084,12 +2136,8 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
               </div>
               {video.thumbnail_url ? (
                 (() => {
-                  const src = String(video.thumbnail_url).startsWith("/") ? `${API_BASE}${video.thumbnail_url}` : String(video.thumbnail_url);
-                  return src.startsWith("/") && !src.startsWith("//") ? (
-                    <Image fill sizes="(max-width: 640px) 170px, 190px" src={src} alt={video.title || "Video"} className="object-cover transition-transform duration-300 group-hover:scale-105" />
-                  ) : (
-                    <img src={src} alt={video.title || "Video"} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" decoding="async" />
-                  );
+                  const src = toAssetUrl(String(video.thumbnail_url));
+                  return <img src={src} alt={video.title || "Video"} className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105" loading="lazy" decoding="async" />;
                 })()
               ) : (
                 <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-surface-soft to-line">
@@ -2121,7 +2169,7 @@ function LandingVideosCarousel({ items, index = 0, onVideoClick }: { items: Gene
             </div>
           </div>
         ))}
-      </div>
+      </div> : <div aria-hidden="true" className="h-[320px] rounded-3xl bg-slate-100/70 dark:bg-white/5 animate-pulse" />}
     </div>
   );
 }
@@ -2136,16 +2184,15 @@ type LandingTestimonial = {
 
 function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
   const [carouselRef, isVisible] = useCarouselVisibility();
+  const trackRef = useRef<HTMLDivElement>(null);
   const duplicatedItems = useMemo(() => duplicateMarqueeItems(items, 10), [items]);
+  useCarouselMotion(trackRef, isVisible, items.length);
 
   if (!items.length) return null;
 
   return (
-    <div ref={carouselRef} className={`landing-reviews-carousel-wrapper${isVisible ? "" : " landing-carousel-paused"}`}>
-      <div
-        className="landing-reviews-carousel-track"
-        data-csp-style={JSON.stringify(marqueeAnimationStyle(Math.max(1, Math.ceil(duplicatedItems.length / 2))))}
-      >
+    <div ref={carouselRef} className="landing-reviews-carousel-wrapper">
+      {isVisible ? <div ref={trackRef} className="landing-reviews-carousel-track">
         {duplicatedItems.map((testimonial, idx) => (
           <article className="landing-review-card" key={`landing-review-card-${testimonial.name}-${idx}`}>
             <div className="landing-review-card-head">
@@ -2169,7 +2216,7 @@ function LandingReviewsCarousel({ items }: { items: LandingTestimonial[] }) {
             <p className="landing-review-quote">&quot;{testimonial.quote}&quot;</p>
           </article>
         ))}
-      </div>
+      </div> : <div aria-hidden="true" className="h-[210px] rounded-3xl bg-slate-100/70 dark:bg-white/5 animate-pulse" />}
     </div>
   );
 }

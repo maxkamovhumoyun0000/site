@@ -2,7 +2,6 @@
 
 import type { PublicResult } from "../public-data";
 import { formatPublicDate, toAssetUrl } from "../public-data";
-import Image from "next/image";
 import { useWebLocale, useWebT } from "./web-i18n";
 
 export const RESULT_TYPES = ["IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet"] as const;
@@ -164,23 +163,13 @@ export function ResultCard({
             </div>
           </>
         ) : resolvedMedia && isImage ? (
-          resolvedMedia.startsWith("/") && !resolvedMedia.startsWith("//") ? (
-            <Image
-              src={resolvedMedia}
-              alt={title}
-              fill
-              sizes="(max-width: 640px) 45vw, 220px"
-              className="w-full h-full object-cover block transition-transform duration-500 group-hover:scale-105"
-            />
-          ) : (
-            <img
-              src={resolvedMedia}
-              alt={title}
-              className="w-full h-full object-cover block transition-transform duration-500 group-hover:scale-105"
-              loading="lazy"
-              decoding="async"
-            />
-          )
+          <img
+            src={resolvedMedia}
+            alt={title}
+            className="w-full h-full object-cover block transition-transform duration-500 group-hover:scale-105"
+            loading="lazy"
+            decoding="async"
+          />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center text-gray-400">
             <div className="w-16 h-16 bg-blue-50 dark:bg-gray-800 rounded-full flex items-center justify-center mb-4 text-blue-500">

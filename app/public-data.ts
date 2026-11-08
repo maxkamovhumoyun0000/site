@@ -4,7 +4,7 @@ export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 // marks media as cacheable for a week. Bumping this value makes browsers fetch
 // the intact file again without touching the original upload or its database
 // record.
-const UPLOADED_MEDIA_CACHE_VERSION = "20261108-1";
+const UPLOADED_MEDIA_CACHE_VERSION = "20261108-2";
 
 function withUploadedMediaCacheVersion(url: string): string {
   if (!/\/(?:articles\/images|courses\/images|media\/public|profile\/images|results\/media)\//i.test(url)) return url;
