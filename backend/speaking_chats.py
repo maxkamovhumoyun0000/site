@@ -174,7 +174,7 @@ def _require_speaking_user(authorization: str | None, *, require_chat_feature: b
     if int(user.get("blocked") or 0) == 1 or int(user.get("access_enabled", 1) or 0) != 1:
         raise HTTPException(status_code=403, detail="Speaking account is unavailable")
     from backend.main import _role_from_login_type
-    from backend.speaking_contract import is_speaking_app_account
+    from speaking_contract import is_speaking_app_account
     if require_chat_feature and (
         _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
         or is_speaking_app_account(user.get("speaking_app_account"))

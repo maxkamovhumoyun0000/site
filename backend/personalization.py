@@ -8152,7 +8152,7 @@ def _speaking_lp_endpoint(endpoint: Callable[..., Any]) -> Callable[..., Any]:
         if endpoint.__module__ == __name__ and endpoint.__name__.startswith("student_"):
             authorization = kwargs.get("authorization")
             user = _user(authorization)
-            from backend.speaking_contract import is_speaking_app_account
+            from speaking_contract import is_speaking_app_account
             if _role(user) == "student" or is_speaking_app_account(user.get("speaking_app_account")):
                 from backend.speaking_subscriptions import require_feature
 

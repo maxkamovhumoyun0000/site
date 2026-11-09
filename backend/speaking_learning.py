@@ -36,7 +36,7 @@ def _user(authorization: str | None, *, staff: bool = False) -> dict[str, Any]:
     from backend.main import _require_role, _role_from_login_type, _user_row_from_bearer
     user = _user_row_from_bearer(authorization)
     _require_role(user, STAFF_ROLES if staff else {"speaking_user", "student", "teacher", "speaking_admin", "admin", "superadmin", "developer"})
-    from backend.speaking_contract import is_speaking_app_account
+    from speaking_contract import is_speaking_app_account
     if not staff and (
         _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
         or is_speaking_app_account(user.get("speaking_app_account"))
@@ -470,7 +470,7 @@ def public_tracks(authorization: str | None = Header(default=None)):
         fields=("id","title","description","subject","module_count","passed_modules","final_exam_passed")
         for row in rows:
             item=dict(row) if hasattr(row,"keys") else dict(zip(fields,row))
-            from backend.speaking_contract import is_speaking_app_account
+            from speaking_contract import is_speaking_app_account
             from backend.speaking_subscriptions import current_product_code
             if is_speaking_app_account(user.get("speaking_app_account")) and item.get("subject") != current_product_code():
                 continue

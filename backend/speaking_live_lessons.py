@@ -294,7 +294,7 @@ def _audit(lesson_id: int, actor_id: int, action: str, details: dict[str, Any] |
 async def list_my_live_lessons(authorization: str | None = Header(default=None)):
     user = _auth(authorization)
     from backend.main import _role_from_login_type
-    from backend.speaking_contract import is_speaking_app_account
+    from speaking_contract import is_speaking_app_account
     from backend.speaking_subscriptions import current_product_code
 
     speaking_account = is_speaking_app_account(user.get("speaking_app_account"))
