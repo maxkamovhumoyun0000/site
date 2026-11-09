@@ -164,7 +164,7 @@ def _ensure_schema() -> None:
             conn.close()
 
 
-def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
+def _require_speaking_user(authorization: str | None, *, require_chat_feature: bool = True) -> dict[str, Any]:
     _, user_from_bearer = _main_helpers()
     user = user_from_bearer(authorization)
     if not _can_use_chat(user):
@@ -175,7 +175,7 @@ def _require_speaking_user(authorization: str | None) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Speaking account is unavailable")
     from backend.main import _role_from_login_type
     from backend.speaking_contract import is_speaking_app_account
-    if (
+    if require_chat_feature and (
         _role_from_login_type(user.get("login_type"), str(user.get("login_id") or "")) == "student"
         or is_speaking_app_account(user.get("speaking_app_account"))
     ):

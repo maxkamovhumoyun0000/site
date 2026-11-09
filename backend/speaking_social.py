@@ -82,6 +82,12 @@ def _viewer(authorization: str | None) -> dict[str, Any]:
     return _require_speaking_user(authorization)
 
 
+def _profile_viewer(authorization: str | None) -> dict[str, Any]:
+    from backend.speaking_chats import _require_speaking_user
+
+    return _require_speaking_user(authorization, require_chat_feature=False)
+
+
 def _blocks_of(user_id: int) -> tuple[set[int], set[int]]:
     """(ids the user blocked, ids that blocked the user)."""
     from backend.main import community_safety
@@ -507,20 +513,20 @@ def _own_payload(viewer: dict[str, Any]) -> dict[str, Any]:
 @router.get("/speaking/profile/me")
 @router.get("/api/speaking/profile/me")
 async def speaking_profile_me(authorization: str | None = Header(default=None)):
-    return {"user": _own_payload(_viewer(authorization))}
+    return {"user": _own_payload(_profile_viewer(authorization))}
 
 
 @router.get("/speaking/profile/stats")
 @router.get("/api/speaking/profile/stats")
 async def speaking_profile_stats(authorization: str | None = Header(default=None)):
-    viewer = _viewer(authorization)
+    viewer = _profile_viewer(authorization)
     return {"stats": _speaking_stats(int(viewer.get("id") or 0))}
 
 
 @router.get("/speaking/profile/levels")
 @router.get("/api/speaking/profile/levels")
 async def speaking_profile_levels(authorization: str | None = Header(default=None)):
-    viewer = _viewer(authorization)
+    viewer = _profile_viewer(authorization)
     user_id = int(viewer.get("id") or 0)
     row = _user_row(user_id)
     if not row:
@@ -531,7 +537,7 @@ async def speaking_profile_levels(authorization: str | None = Header(default=Non
 @router.get("/speaking/profile/badges")
 @router.get("/api/speaking/profile/badges")
 async def speaking_profile_badges(authorization: str | None = Header(default=None)):
-    viewer = _viewer(authorization)
+    viewer = _profile_viewer(authorization)
     stats = _speaking_stats(int(viewer.get("id") or 0))
     return {"items": stats["badge_progress"], "earned_keys": stats["badges"]}
 
@@ -539,7 +545,7 @@ async def speaking_profile_badges(authorization: str | None = Header(default=Non
 @router.get("/speaking/profile/sessions")
 @router.get("/api/speaking/profile/sessions")
 async def speaking_profile_sessions(authorization: str | None = Header(default=None)):
-    _viewer(authorization)
+    _profile_viewer(authorization)
     from backend.main import list_user_sessions
 
     return await list_user_sessions(authorization)
@@ -570,7 +576,7 @@ async def update_speaking_profile_credentials(
         verify_password,
     )
 
-    viewer = _viewer(authorization)
+    viewer = _profile_viewer(authorization)
     user_id = int(viewer.get("id") or 0)
     if user_id <= 0 or not is_speaking_app_account(viewer.get("speaking_app_account")):
         raise HTTPException(status_code=403, detail="Only a standalone Speaking account can change credentials here")
@@ -675,7 +681,7 @@ async def update_speaking_profile_credentials(
 async def update_speaking_profile_me(payload: ProfileUpdateRequest, authorization: str | None = Header(default=None)):
     from backend.community_safety import validate_public_text
 
-    viewer = _viewer(authorization)
+    viewer = _profile_viewer(authorization)
     uid = int(viewer.get("id") or 0)
     ensure_tables()
     updates: list[str] = []

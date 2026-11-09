@@ -1044,8 +1044,6 @@ def _require_lp_student(user: dict[str, Any]) -> None:
     """Student Learning Path access: each app sees only its own Learning Path."""
     _require(user, {"student"})
     speaking_account = _is_speaking_app_user(user)
-    if _lp_is_speaking() and not speaking_account:
-        raise HTTPException(status_code=403, detail="Speaking Learning Path is available only in the Speaking app")
     if not _lp_is_speaking() and speaking_account:
         raise HTTPException(status_code=403, detail="Speaking app accounts use the Speaking Learning Path")
 
