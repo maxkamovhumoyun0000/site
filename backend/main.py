@@ -316,7 +316,6 @@ from db import (
     set_standard_admin_account_credentials,
     student_has_active_upcoming_booking,
     set_support_booking_attendance,
-    set_teacher_ai_generation_permission,
     set_video_upload_permission,
     ensure_mobile_telegram_login_schema,
     get_video_upload_permission,
@@ -3549,6 +3548,8 @@ def _ensure_admin_perf_indexes_once() -> None:
 
 
 def _scope_users_for_admin(admin_ref_id: int, users: list[dict], login_type_filter: tuple[int, ...] | None = None) -> list[dict]:
+    if _is_limited_admin(admin_ref_id):
+        return [u for u in users if login_type_filter is None or int(u.get("login_type") or 0) in login_type_filter]
     if _is_general_admin_scope(admin_ref_id):
         if login_type_filter is None:
             return users
@@ -3589,6 +3590,8 @@ def _scope_groups_for_admin(admin_ref_id: int, groups: list[dict]) -> list[dict]
 def _can_manage_user(admin_ref_id: int, user_row: dict | None) -> bool:
     if not user_row:
         return False
+    if _is_limited_admin(admin_ref_id):
+        return True
     if _is_general_admin_scope(admin_ref_id):
         return True
     if int(user_row.get("login_type") or 0) in (1, 2):
@@ -3605,6 +3608,8 @@ def _can_manage_user_globally(admin_ref_id: int, user_row: dict | None) -> bool:
     """
     if not user_row:
         return False
+    if _is_limited_admin(admin_ref_id):
+        return True
     if _is_general_admin_scope(admin_ref_id):
         return True
     if int(user_row.get("login_type") or 0) in (1, 2, 6):
@@ -6176,9 +6181,9 @@ def _normalize_subject_label(value: str | None) -> str | None:
     if not raw:
         return None
     low = raw.lower()
-    if low in {"english", "eng", "ingliz", "en"}:
+    if low in {"english", "eng", "ingliz", "ingliz tili", "en"}:
         return "English"
-    if low in {"russian", "rus", "ru", "русский", "russian language"}:
+    if low in {"russian", "rus", "rus tili", "ru", "русский", "russian language"}:
         return "Russian"
     if low in {"matematika", "math", "mathematics"}:
         return "Matematika"
@@ -8707,6 +8712,26 @@ def _guard_authorization(request: Request) -> str | None:
     if cookie_token and (not bearer or bearer.lower().startswith(WEB_AUTH_COOKIE_MARKER)):
         return f"Bearer {cookie_token}"
     return header or None
+
+
+@app.middleware("http")
+async def limited_admin_group_payment_guard(request: Request, call_next):
+    path = str(request.url.path or "").rstrip("/")
+    blocked = any(path == prefix or path.startswith(prefix + "/") for prefix in (
+        "/admin/groups", "/groups", "/admin/payments", "/admin/receipts", "/admin/family-groups", "/admin/attendance",
+    )) or (path.startswith("/admin/users/") and "/group-pricing/" in path)
+    if blocked:
+        authorization = _guard_authorization(request)
+        if authorization:
+            try:
+                user = _user_row_from_bearer(authorization)
+                role = _role_from_login_type(int(user.get("login_type") or 1), str(user.get("login_id") or ""))
+                ref = _admin_ref_id(user) if role == "admin" else 0
+                if _is_limited_admin(ref) and not _is_main_admin(ref):
+                    return JSONResponse(status_code=403, content={"detail": "Groups and payments are unavailable to branch admins"})
+            except HTTPException:
+                pass
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -18223,9 +18248,9 @@ def _build_role_boot_payload(user: dict, role: str, economy_rules_payload: dict[
             "group_count": len(scoped_groups),
         },
         "recent_users": [_serialize_user_row_light(u) for u in scoped_users[:8]],
-        "groups": _serialize_group_rows_bulk(scoped_groups[:12]),
+        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else _serialize_group_rows_bulk(scoped_groups[:12]),
         "reviews": [_serialize_review_row(r, include_private=True) for r in _safe_call(lambda: _list_admin_review_rows(limit=120), []) or []],
-        "payment_alerts": _payment_alerts,
+        "payment_alerts": None if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else _payment_alerts,
         "permissions": {
             "can_generate_ai": True,
         },
@@ -20244,7 +20269,7 @@ def _build_admin_payload(user: dict) -> dict:
         },
         "leaderboard": _leaderboard_payload(limit=30),
         "users": users,
-        "groups": groups[:250],
+        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else groups[:250],
         "bookings": bookings[:200],
         "pending_bookings": pending[:120],
         "support_metrics": support_metrics,
@@ -20273,13 +20298,13 @@ def _build_admin_payload(user: dict) -> dict:
         "dpoint_settings_updated_at": _runtime_settings_updated_at(),
         "dpoint_settings_audit": _list_economy_settings_audit(80),
         "dpoint_deduction_history": _list_dpoint_deduction_history(100),
-        "payment_alerts": payment_alerts,
+        "payment_alerts": None if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else payment_alerts,
         "notifications": admin_notifications,
     }
 
 
 def _ensure_teacher_ai_permission(user: dict) -> int:
-    """Teachers may use the AI generator only when an admin enabled it for them."""
+    """Language teachers have automatic access to AI generation."""
     uid = int(user.get("id") or 0)
     if uid <= 0 or not bool(_safe_call(lambda: get_teacher_ai_generation_permission(uid), False)):
         raise HTTPException(status_code=403, detail="AI generation permission denied")
@@ -20306,7 +20331,7 @@ def _enforce_ai_generator_rate_limit(user: dict, role: str) -> None:
 def _require_teacher_generator_subject(user: dict, subject: str) -> str:
     req_subject = _normalize_subject_label(subject) or "English"
     allowed_subjects = _teacher_subject_choices(user)
-    if req_subject not in allowed_subjects:
+    if req_subject not in {"English", "Russian"} or req_subject not in allowed_subjects:
         raise HTTPException(status_code=403, detail=f"You can only generate tests for your assigned subjects: {', '.join(allowed_subjects)}")
     return req_subject
 
@@ -45007,10 +45032,10 @@ async def set_teacher_permissions(teacher_id: int, payload: TeacherPermissionReq
     permission_target = _safe_call(lambda: get_user_by_id(int(teacher_id)), None)
     if not permission_target or int(permission_target.get("login_type") or 0) not in (3, 5):
         raise HTTPException(status_code=404, detail="Teacher not found")
+    if payload.can_generate_ai is not None:
+        raise HTTPException(status_code=400, detail="AI access is determined by teacher subject")
     if payload.can_upload_daily_tests is not None:
         set_daily_test_upload_permission(int(teacher_id), bool(payload.can_upload_daily_tests))
-    if payload.can_generate_ai is not None:
-        set_teacher_ai_generation_permission(int(teacher_id), bool(payload.can_generate_ai))
     if payload.can_upload_books is not None:
         set_book_upload_permission(int(teacher_id), bool(payload.can_upload_books))
     if payload.can_upload_videos is not None:
@@ -45313,7 +45338,7 @@ async def admin_search_recipients(q: str = Query(default=""), authorization: str
 
     return {
         "users": [_serialize_user_row(r) for r in users if _match_user(r)][:300],
-        "groups": [_serialize_group_row(g) for g in groups if _match_group(g)][:120],
+        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else [_serialize_group_row(g) for g in groups if _match_group(g)][:120],
     }
 
 
@@ -45368,12 +45393,12 @@ async def admin_user_detail(user_id: int, authorization: str | None = Header(def
             recommended_peer_admin_id = peers[0]
     return {
         "user": _serialize_user_row(target),
-        "groups": [_serialize_group_row(g) for g in groups],
-        "pricing_overrides": [
+        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else [_serialize_group_row(g) for g in groups],
+        "pricing_overrides": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else [
             item for item in _list_student_group_pricing_overrides(int(user_id))
             if int(item.get("group_id") or 0) in {int(group.get("id") or 0) for group in groups if _can_manage_group(admin_ref, group)}
         ],
-        "subject_levels": _student_subject_levels_from_groups(int(user_id)),
+        "subject_levels": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else _student_subject_levels_from_groups(int(user_id)),
         "teachers": [_serialize_user_row(t) for t in teachers],
         "daily_test_history": test_history,
         "placement_results": [r for r in placement_results if r],
@@ -54896,6 +54921,10 @@ async def admin_update_user(user_id: int, payload: AdminUserUpdateRequest, autho
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
     admin_ref = _admin_ref_id(user)
+    if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) and any(
+        value is not None for value in (payload.family_discount_enabled, payload.multi_group_discount_opt_in, payload.referral_student_id, payload.free_access)
+    ):
+        raise HTTPException(status_code=403, detail="Payment settings are unavailable to branch admins")
     target = _safe_call(lambda: get_user_by_id(int(user_id)), None)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")

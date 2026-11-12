@@ -60,16 +60,6 @@ def build_admin_teacher_detail_reply(teacher: dict, lang: str) -> tuple[str, Inl
             ],
             [
                 InlineKeyboardButton(
-                    text=(
-                        t(lang, "admin_btn_teacher_ai_disable")
-                        if teacher.get("can_generate_ai")
-                        else t(lang, "admin_btn_teacher_ai_enable")
-                    ),
-                    callback_data=f"t_toggle_ai_{teacher_id}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text=t(lang, "admin_teacher_daily_tests_history_btn"),
                     callback_data=f"teacher_daily_tests_history_{teacher_id}",
                 )

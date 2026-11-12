@@ -3883,11 +3883,12 @@ def get_teacher_ai_generation_permission(teacher_id: int) -> bool:
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT login_type, can_generate_ai FROM users WHERE id=?", (teacher_id,))
+        cur.execute("SELECT login_type, subject FROM users WHERE id=?", (teacher_id,))
         row = cur.fetchone()
-        if not row:
+        if not row or int(row["login_type"] or 0) != 3:
             return False
-        return bool(row["can_generate_ai"])
+        subjects = [s.strip().lower() for s in str(row["subject"] or "").split(",")]
+        return any(s in {"english", "eng", "ingliz", "ingliz tili", "en", "russian", "rus", "rus tili", "ru", "русский", "russian language"} for s in subjects)
     except Exception:
         return False
     finally:

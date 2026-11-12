@@ -70,7 +70,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
   // Standalone Speaking registrations use the same verified identity in the
   // mobile client and on the website, without inheriting school-only gates.
   speaking_user: ["home", "arena", "profile"],
-  teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "voice-rooms", "profile"],
+  teacher: ["home", "student-insights", "learning-paths", "pomodoro", "study-room", "chats", "groups", "substitutions", "attendance", "performance", "students", "analytics", "dcoin", "homework", "materials", "kpi", "leaderboard", "videos", "books", "generator", "voice-rooms", "profile"],
   admin: ["home", "study-room", "chats", "users", "groups", "family-groups", "payments", "purchases", "homework", "leaderboard", "kpi", "attendance", "analytics", "holidays", "broadcasts", "surveys", "domain-email", "admin-callbacks", "voice-rooms", "profile"],
   // Limited admins get the full branch-operations workspace shown in the
   // admin navigation. Backend mutation routes still enforce branch scope.
@@ -79,14 +79,10 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "study-room",
     "chats",
     "users",
-    "groups",
-    "family-groups",
-    "payments",
     "purchases",
     "homework",
     "leaderboard",
     "kpi",
-    "attendance",
     "analytics",
     "holidays",
     "broadcasts",

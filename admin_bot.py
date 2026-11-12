@@ -170,6 +170,11 @@ async def _admin_only_callback_gate(handler, event: CallbackQuery, data):
         except Exception:
             pass
         return None
+    if int(user.id) in LIMITED_ADMIN_CHAT_IDS and int(user.id) not in ADMIN_CHAT_IDS:
+        action = str(event.data or "").lower()
+        if any(part in action for part in ("group", "grp_", "grp:", "pay_", "pay:", "payment", "receipt", "attendance")):
+            await event.answer("Guruh va to'lovlar filial admini uchun yopiq.", show_alert=True)
+            return None
     return await handler(event, data)
 
 
@@ -451,6 +456,8 @@ def _can_manage_user(admin_id: int, user: dict | None) -> bool:
     """
     if not user:
         return False
+    if _is_limited_admin(admin_id):
+        return True
     if _is_general_admin_scope(admin_id):
         return True
     if user.get("login_type") in (1, 2, 6):
@@ -470,6 +477,8 @@ def _can_manage_group(admin_id: int, group: dict | None) -> bool:
     """
     if not group:
         return False
+    if _is_limited_admin(admin_id) and not _is_main_admin(admin_id):
+        return False
     if _is_general_admin_scope(admin_id):
         return True
     if group.get("owner_admin_id") == admin_id:
@@ -479,6 +488,8 @@ def _can_manage_group(admin_id: int, group: dict | None) -> bool:
 
 
 def _scope_users_for_admin(admin_id: int, users: list[dict], login_type_filter: tuple[int, ...] | None = None) -> list[dict]:
+    if _is_limited_admin(admin_id):
+        return [u for u in users if login_type_filter is None or u.get("login_type") in login_type_filter]
     if _is_general_admin_scope(admin_id):
         if login_type_filter is None:
             return users
@@ -504,6 +515,8 @@ def _scope_users_for_admin(admin_id: int, users: list[dict], login_type_filter: 
 
 
 def _scope_groups_for_admin(admin_id: int, groups: list[dict]) -> list[dict]:
+    if _is_limited_admin(admin_id) and not _is_main_admin(admin_id):
+        return []
     if _is_general_admin_scope(admin_id):
         return groups
     shared_group_ids = _shared_group_ids_for_limited_admin(admin_id)
@@ -7410,87 +7423,17 @@ async def handle_toggle_daily_tests_permission(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data.startswith("t_toggle_ai_"))
 async def handle_toggle_ai_permission(callback: CallbackQuery):
-    teacher_id = int(callback.data.split("_")[-1])
-    admin_id = callback.from_user.id
-    lang = _admin_lang_from_callback(callback)
-
-    teacher = get_user_by_id(teacher_id)
-    if not teacher:
-        await callback.answer(t(lang, 'admin_auto_msg_53'))
-        return
-
-    if not _can_manage_user(admin_id, teacher):
-        await callback.answer(t(lang, 'permission_denied_short'), show_alert=True)
-        return
-
-    from db import set_teacher_ai_generation_permission
-    current = bool(teacher.get('can_generate_ai'))
-    set_teacher_ai_generation_permission(teacher_id, not current)
-
-    # Re-open detail page to reflect updated state.
-    await handle_teacher_detail(callback)
+    await callback.answer("AI ruxsati o'qituvchi faniga ko'ra avtomatik belgilanadi.", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("admin_ai_request_approve_"))
 async def handle_admin_ai_request_approve(callback: CallbackQuery):
-    teacher_id = int(callback.data.split("_")[-1])
-    admin_id = callback.from_user.id
-    lang = _admin_lang_from_callback(callback)
-
-    teacher = get_user_by_id(teacher_id)
-    if not teacher:
-        await callback.answer(t(lang, 'admin_auto_msg_53'))
-        return
-
-    if not _can_manage_user(admin_id, teacher):
-        await callback.answer(t(lang, 'permission_denied_short'), show_alert=True)
-        return
-
-    from db import set_teacher_ai_generation_permission
-    set_teacher_ai_generation_permission(teacher_id, True)
-
-    await callback.answer(t(lang, "admin_ai_access_approved_alert"))
-    await handle_teacher_detail(callback)
-
-    # Notify teacher (best-effort) — teacher's UI language, not admin's
-    try:
-        tid = teacher.get("telegram_id")
-        if tid:
-            t_lang = detect_lang_from_user(teacher)
-            await bot.send_message(int(tid), t(t_lang, "admin_ai_access_approved_msg"))
-    except Exception:
-        pass
+    await callback.answer("AI ruxsati o'qituvchi faniga ko'ra avtomatik belgilanadi.", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("admin_ai_request_deny_"))
 async def handle_admin_ai_request_deny(callback: CallbackQuery):
-    teacher_id = int(callback.data.split("_")[-1])
-    admin_id = callback.from_user.id
-    lang = _admin_lang_from_callback(callback)
-
-    teacher = get_user_by_id(teacher_id)
-    if not teacher:
-        await callback.answer(t(lang, 'admin_auto_msg_53'))
-        return
-
-    if not _can_manage_user(admin_id, teacher):
-        await callback.answer(t(lang, 'permission_denied_short'), show_alert=True)
-        return
-
-    from db import set_teacher_ai_generation_permission
-    set_teacher_ai_generation_permission(teacher_id, False)
-
-    await callback.answer(t(lang, "admin_ai_access_rejected_alert"))
-    await handle_teacher_detail(callback)
-
-    # Notify teacher (best-effort) — teacher's UI language, not admin's
-    try:
-        tid = teacher.get("telegram_id")
-        if tid:
-            t_lang = detect_lang_from_user(teacher)
-            await bot.send_message(int(tid), t(t_lang, "admin_ai_access_rejected_msg"))
-    except Exception:
-        pass
+    await callback.answer("AI ruxsati o'qituvchi faniga ko'ra avtomatik belgilanadi.", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("teacher_daily_tests_history_"))

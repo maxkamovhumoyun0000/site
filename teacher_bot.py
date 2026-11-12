@@ -2082,35 +2082,7 @@ async def handle_teacher_dcoin_lb_page(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == 'teacher_ai_request_access')
 async def handle_teacher_ai_request_access(callback: CallbackQuery):
-    user = get_user_by_telegram(str(callback.from_user.id))
-    lang = detect_lang_from_user(user or callback.from_user)
-    if not user:
-        await callback.answer()
-        return
-
-    # Notify all admins (best-effort)
-    req_teacher_id = user['id']
-    req_teacher = user
-    req_name = f"{req_teacher.get('first_name','')} {req_teacher.get('last_name','')}".strip()
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=t(lang, 'btn_yes'), callback_data=f'admin_ai_request_approve_{req_teacher_id}')],
-            [InlineKeyboardButton(text=t(lang, 'btn_no'), callback_data=f'admin_ai_request_deny_{req_teacher_id}')],
-        ]
-    )
-    for admin_id in ALL_ADMIN_IDS:
-        try:
-            await bot.send_message(
-                int(admin_id),
-                f"🤖 AI ruxsati so‘rovi\n\nO'qituvchi: {req_name}\nID: {req_teacher_id}\n\nTasdiqlash uchun tugmani bosing.",
-                reply_markup=kb,
-            )
-        except Exception:
-            pass
-
-    await callback.answer()
-    await callback.message.answer(t(lang, 'teacher_ai_request_sent'))
+    await callback.answer("AI ruxsati o'qituvchi faniga ko'ra avtomatik belgilanadi.", show_alert=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("daily_tests_level_"))
