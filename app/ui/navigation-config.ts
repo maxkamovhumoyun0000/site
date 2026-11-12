@@ -54,8 +54,6 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "arena",
     "arena-boss",
     "duel-1v1",
-    "duel-3v3",
-    "duel-5v5",
     "voice-rooms",
     "study-room",
     "chats",
@@ -121,7 +119,7 @@ export const HIDDEN_SECTION_IDS = new Set([
 
 // Daily and teacher-run group arenas are retired. This protects against a
 // stale section list returned by an older client or backend response.
-export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "arena", "my-mistakes", "mistake-notebook", "notes"]);
+export const RETIRED_SECTION_IDS = new Set(["arena-daily", "arena-group", "duel-3v3", "duel-5v5", "arena", "my-mistakes", "mistake-notebook", "notes"]);
 
 export const SECTION_ALIAS: Record<string, string> = {
   dashboard: "home",

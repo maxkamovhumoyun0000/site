@@ -30,7 +30,7 @@ import time
 import zipfile
 import smtplib
 from contextlib import contextmanager, suppress
-from functools import lru_cache
+from functools import lru_cache, wraps
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -3074,6 +3074,52 @@ class RedisSyncSet:
     def clear(self):
         _REDIS_CLIENT.delete(self.key)
 
+
+class CompetitionCacheDict(RedisSyncDict):
+    """Optional hints only: competition state lives in PostgreSQL."""
+
+    def get(self, key, default=None):
+        try:
+            return super().get(key, default)
+        except _redis_lib.exceptions.RedisError:
+            return default
+
+    def __setitem__(self, key, value):
+        try:
+            super().__setitem__(key, value)
+        except _redis_lib.exceptions.RedisError:
+            pass
+
+    def __delitem__(self, key):
+        try:
+            super().__delitem__(key)
+        except _redis_lib.exceptions.RedisError:
+            pass
+
+    def __contains__(self, key):
+        try:
+            return super().__contains__(key)
+        except _redis_lib.exceptions.RedisError:
+            return False
+
+    def items(self):
+        try:
+            return super().items()
+        except _redis_lib.exceptions.RedisError:
+            return []
+
+    def keys(self):
+        try:
+            return super().keys()
+        except _redis_lib.exceptions.RedisError:
+            return []
+
+    def clear(self):
+        try:
+            super().clear()
+        except _redis_lib.exceptions.RedisError:
+            pass
+
 BROADCAST_TASKS: dict[int, asyncio.Task] = {}
 GRAMMAR_QUIZ_SESSIONS = RedisSyncDict("GRAMMAR_QUIZ_SESSIONS:")
 VOCAB_QUIZ_SESSIONS = RedisSyncDict("VOCAB_QUIZ_SESSIONS:")
@@ -3083,9 +3129,9 @@ VOCAB_WEB_QUIZ_FIXED_COUNT = 20
 VOCAB_WEB_QUIZ_TYPES = ("multiple_choice", "gap_filling", "definition")
 
 WEB_DUEL_QUEUES = RedisSyncDict("WEB_DUEL_QUEUES:")
-WEB_DUEL_PLAYER_SESSION = RedisSyncDict("WEB_DUEL_PLAYER_SESSION:")
-WEB_COMPETITION_SESSIONS = RedisSyncDict("WEB_COMPETITION_SESSIONS:")
-WEB_COMPETITION_PENDING_BY_KEY = RedisSyncDict("WEB_COMPETITION_PENDING_BY_KEY:")
+WEB_DUEL_PLAYER_SESSION = CompetitionCacheDict("WEB_DUEL_PLAYER_SESSION:")
+WEB_COMPETITION_SESSIONS = CompetitionCacheDict("WEB_COMPETITION_SESSIONS:")
+WEB_COMPETITION_PENDING_BY_KEY = CompetitionCacheDict("WEB_COMPETITION_PENDING_BY_KEY:")
 WEB_COMPETITION_PRESTART_SENT = RedisSyncSet("WEB_COMPETITION_PRESTART_SENT:")
 _DAILY_ARENA_SCHEDULE_CACHE: tuple[float, dict[str, str]] | None = None
 WEB_COMPETITION_LOCK = asyncio.Lock()
@@ -31495,12 +31541,46 @@ def _competition_finalists_target(mode: str) -> int:
     return 4 if str(mode or "") == "daily" else 0
 
 
-def _competition_queue_key(mode: str, subject: str, level: str) -> str:
+def _competition_queue_key(mode: str, subject: str, level: str, question_count: int | None = None, difficulty: str | None = None) -> str:
     if mode in {"daily", "boss"}:
-        return f"{mode}|{subject}"
-    if mode.startswith("duel-"):
-        return f"{mode}|{subject}"
-    return f"{mode}|{subject}|{level}"
+        key = f"{mode}|{subject}"
+    elif mode.startswith("duel-"):
+        key = f"{mode}|{subject}"
+    else:
+        key = f"{mode}|{subject}|{level}"
+    count = int(question_count or _competition_question_count(mode))
+    difficulty_name = str(difficulty or _competition_default_difficulty(mode)).strip().title()
+    if count != _competition_question_count(mode) or difficulty_name != _competition_default_difficulty(mode):
+        key += f"|{count}|{difficulty_name.lower()}"
+    return key
+
+
+def _competition_group_level(session: dict[str, Any]) -> str:
+    levels = ["BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED"]
+    aliases = {"A1": "BEGINNER", "A2": "ELEMENTARY", "B1": "PRE-INTERMEDIATE", "B2": "INTERMEDIATE", "C1": "UPPER-INTERMEDIATE"}
+    indices = []
+    waiting_ids = {int(row.get("user_id") or 0) for row in _competition_waiting_participants(session)}
+    for row in session.get("participants") or []:
+        if int(row.get("user_id") or 0) not in waiting_ids:
+            continue
+        level = str(row.get("level") or session.get("level") or "PRE-INTERMEDIATE").strip().upper()
+        level = aliases.get(level, level)
+        indices.append(levels.index(level) if level in levels else 2)
+    if not indices:
+        return "PRE-INTERMEDIATE"
+    return levels[(2 * sum(indices) + len(indices)) // (2 * len(indices))]
+
+
+def _competition_match_generation_level(session: dict[str, Any], mode: str, stage: int, difficulty: str) -> str:
+    if mode not in {"boss", "duel-1v1"}:
+        return _competition_generation_level(str(session.get("level") or "PRE-INTERMEDIATE"), mode, stage, difficulty)
+    levels = ["BEGINNER", "ELEMENTARY", "PRE-INTERMEDIATE", "INTERMEDIATE", "UPPER-INTERMEDIATE", "ADVANCED"]
+    index = levels.index(_competition_group_level(session))
+    selected = str(difficulty or _competition_default_difficulty(mode)).strip().lower()
+    default = _competition_default_difficulty(mode).lower()
+    scale = {"easy": 0, "medium": 1, "hard": 2}
+    offset = scale.get(selected, scale[default]) - scale[default]
+    return levels[max(0, min(len(levels) - 1, index + offset))]
 
 
 @contextmanager
@@ -31562,8 +31642,7 @@ def _competition_queue_advisory_lock(queue_key: str):
                 conn.close()
         except Exception:
             pass
-        conn = None
-        cur = None
+        raise HTTPException(status_code=503, detail="Competition queue temporarily unavailable")
     try:
         yield
     finally:
@@ -31582,6 +31661,35 @@ def _competition_queue_advisory_lock(queue_key: str):
                 conn.close()
         except Exception:
             pass
+
+
+@contextmanager
+def _competition_user_start_lock(user_id: int):
+    """Prevent the same account starting two lobbies on different workers."""
+    conn = None
+    key = f"competition_user:{int(user_id)}"
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(hashtext(?)) AS acquired", (key,))
+        row = cur.fetchone()
+    except Exception:
+        if conn:
+            conn.close()
+        logger.exception("competition user start lock unavailable user_id=%s", user_id)
+        raise HTTPException(status_code=503, detail="Competition temporarily unavailable")
+    if not row or not row.get("acquired"):
+        conn.close()
+        raise HTTPException(status_code=409, detail="Competition start already in progress; please retry")
+    try:
+        yield
+    finally:
+        try:
+            cur.execute("SELECT pg_advisory_unlock(hashtext(?))", (key,))
+            conn.commit()
+        except Exception:
+            logger.exception("competition user start unlock failed user_id=%s", user_id)
+        conn.close()
 
 
 def _group_arena_today_presence(group_id: int) -> tuple[str, list[dict[str, Any]], bool, str]:
@@ -31628,73 +31736,68 @@ def _competition_cleanup_stale_pending(now: datetime | None = None) -> None:
         conn.close()
 
     for sid, payload_json in db_sessions:
-        session = WEB_COMPETITION_SESSIONS.get(sid)
-        if not session and payload_json:
-            try:
-                session = json.loads(payload_json)
-                WEB_COMPETITION_SESSIONS[sid] = session
-            except Exception:
-                continue
-        if not session:
-            continue
-
-        mode = str(session.get("mode") or "")
-        phase = _competition_session_phase(session)
-        
-        if phase in {"pending", "generating"}:
-            if _competition_expire_waiting_session_if_needed(session, now_dt):
+        with _competition_session_advisory_lock(sid):
+            session = _competition_load_session_from_db(sid)
+            if not session:
                 continue
             
-            created = _parse_utc_timestamp(str(session.get("created_at") or "")) or now_dt
-            if created < stale_cutoff:
-                if _duel_is_mode(mode):
-                    _duel_refund_pending_session(session, "Queue expired")
-                else:
-                    _competition_refund_entry_fee(session)
-                    session["status"] = "finished"
-                    session["finalized"] = True
-                    session["result"] = {"winners": [], "by_user": {}, "error": "Queue expired"}
-                    notify_rows = _competition_waiting_participants(session) if _duel_is_mode(mode) else _competition_joined_participants(session)
-                    for row in notify_rows:
-                        WEB_DUEL_PLAYER_SESSION.pop(int(row.get("user_id") or 0), None)
-                    WEB_COMPETITION_PENDING_BY_KEY.pop(str(session.get("queue_key") or ""), None)
-                    _duel_persist_session(session)
-                continue
+            mode = str(session.get("mode") or "")
+            phase = _competition_session_phase(session)
                 
-            if session.get("status") == "generating":
-                if created + timedelta(minutes=8) < now_dt:
+            if phase in {"pending", "generating"}:
+                if _competition_expire_waiting_session_if_needed(session, now_dt):
+                    continue
+
+                created = _parse_utc_timestamp(str(session.get("created_at") or "")) or now_dt
+                if created < stale_cutoff:
                     if _duel_is_mode(mode):
-                        _duel_refund_pending_session(session, "Generation timed out")
+                        _duel_refund_pending_session(session, "Queue expired")
                     else:
                         _competition_refund_entry_fee(session)
                         session["status"] = "finished"
                         session["finalized"] = True
-                        session["result"] = {"winners": [], "by_user": {}, "error": "Generation timed out"}
-                        for row in session.get("participants") or []:
+                        session["result"] = {"winners": [], "by_user": {}, "error": "Queue expired"}
+                        notify_rows = _competition_waiting_participants(session) if _duel_is_mode(mode) else _competition_joined_participants(session)
+                        for row in notify_rows:
                             WEB_DUEL_PLAYER_SESSION.pop(int(row.get("user_id") or 0), None)
                         WEB_COMPETITION_PENDING_BY_KEY.pop(str(session.get("queue_key") or ""), None)
                         _duel_persist_session(session)
                     continue
 
-        elif phase == "active" or session.get("status") == "running":
-            started_val = session.get("started_at")
-            if started_val:
-                started_dt = _parse_utc_timestamp(str(started_val))
-                if started_dt:
-                    max_duration = 45 if mode == "daily" else 20
-                    if started_dt + timedelta(minutes=max_duration) < now_dt:
-                        logger.info("Expiring stale running session_id=%s mode=%s started_at=%s", sid, mode, started_val)
-                        for row in session.get("participants") or []:
-                            uid = int(row.get("user_id") or 0)
-                            if uid > 0 and str(row.get("status") or "active").strip().lower() == "active":
-                                row["status"] = "left"
-                                row["left_at"] = now_dt.isoformat()
-                                row["left_reason"] = "stale_cleanup"
-                                _competition_finish_user_remaining_questions(session, uid, reason="stale_cleanup")
-                        if mode == "daily":
-                            _competition_finalize_daily_stage(session)
+                if session.get("status") == "generating":
+                    if created + timedelta(minutes=8) < now_dt:
+                        if _duel_is_mode(mode):
+                            _duel_refund_pending_session(session, "Generation timed out")
                         else:
-                            _competition_finalize_non_daily(session)
+                            _competition_refund_entry_fee(session)
+                            session["status"] = "finished"
+                            session["finalized"] = True
+                            session["result"] = {"winners": [], "by_user": {}, "error": "Generation timed out"}
+                            for row in session.get("participants") or []:
+                                WEB_DUEL_PLAYER_SESSION.pop(int(row.get("user_id") or 0), None)
+                            WEB_COMPETITION_PENDING_BY_KEY.pop(str(session.get("queue_key") or ""), None)
+                            _duel_persist_session(session)
+                        continue
+
+            elif phase == "active" or session.get("status") == "running":
+                started_val = session.get("started_at")
+                if started_val:
+                    started_dt = _parse_utc_timestamp(str(started_val))
+                    if started_dt:
+                        max_duration = 45 if mode == "daily" else 20
+                        if started_dt + timedelta(minutes=max_duration) < now_dt:
+                            logger.info("Expiring stale running session_id=%s mode=%s started_at=%s", sid, mode, started_val)
+                            for row in session.get("participants") or []:
+                                uid = int(row.get("user_id") or 0)
+                                if uid > 0 and str(row.get("status") or "active").strip().lower() == "active":
+                                    row["status"] = "left"
+                                    row["left_at"] = now_dt.isoformat()
+                                    row["left_reason"] = "stale_cleanup"
+                                    _competition_finish_user_remaining_questions(session, uid, reason="stale_cleanup")
+                            if mode == "daily":
+                                _competition_finalize_daily_stage(session)
+                            else:
+                                _competition_finalize_non_daily(session)
 
     for key, session_id in list(WEB_COMPETITION_PENDING_BY_KEY.items()):
         if session_id not in WEB_COMPETITION_SESSIONS:
@@ -33854,6 +33957,7 @@ def _competition_persist_session_db(session: dict[str, Any] | None) -> None:
         except Exception:
             pass
         logger.exception("competition session persist failed session_id=%s", sid)
+        raise HTTPException(status_code=503, detail="Competition session temporarily unavailable")
     finally:
         conn.close()
 
@@ -33943,7 +34047,7 @@ def _competition_load_session_from_db(session_id: str) -> dict[str, Any] | None:
         return _duel_cache_session(data)
     except Exception:
         logger.exception("competition session load failed session_id=%s", sid)
-        return None
+        raise HTTPException(status_code=503, detail="Competition session temporarily unavailable")
     finally:
         conn.close()
 
@@ -33970,18 +34074,25 @@ def _competition_load_active_session_for_user(user_id: int) -> dict[str, Any] | 
             (int(user_id),),
         )
         for row in cur.fetchall() or []:
-            session = _competition_load_session_from_db(str(row.get("session_id") or ""))
-            if not session:
-                continue
-            if _competition_session_unusable_for_user(session, user_id):
-                continue
-            return session
+            sid = str(row.get("session_id") or "")
+            with _competition_session_advisory_lock(sid):
+                session = _competition_load_session_from_db(sid)
+                if not session or _competition_session_unusable_for_user(session, user_id):
+                    continue
+                return session
         return None
     finally:
         conn.close()
 
 
-def _competition_find_pending_session(queue_key: str) -> dict[str, Any] | None:
+def _competition_settings_match(session: dict[str, Any], count: int, difficulty: str) -> bool:
+    mode = str(session.get("mode") or "")
+    session_count = int(session.get("question_count") or _competition_question_count(mode))
+    session_difficulty = str(session.get("difficulty") or _competition_default_difficulty(mode)).strip().title()
+    return session_count == int(count) and session_difficulty == str(difficulty).strip().title()
+
+
+def _competition_find_pending_session(queue_key: str, count: int | None = None, difficulty: str | None = None) -> dict[str, Any] | None:
     _ensure_web_competition_runtime_schema()
     conn = get_conn()
     cur = conn.cursor()
@@ -33998,9 +34109,9 @@ def _competition_find_pending_session(queue_key: str) -> dict[str, Any] | None:
         )
         for row in cur.fetchall() or []:
             session = _competition_load_session_from_db(str(row.get("session_id") or ""))
-            if _competition_session_unusable_for_matching(session):
+            if session and count is not None and not _competition_settings_match(session, count, difficulty or ""):
                 continue
-            if _competition_session_has_join_slot(session):
+            if session and _competition_session_phase(session) == "pending" and len(_competition_waiting_participants(session)) < int(session.get("max_players") or session.get("required_players") or 1):
                 return session
         return None
     finally:
@@ -35468,7 +35579,7 @@ def _competition_finalize_daily_stage(session: dict[str, Any]) -> dict[str, Any]
 async def _competition_start_generation(session_id: str, stage: int | None = None, generation_token: str | None = None) -> None:
     session: dict[str, Any] | None = None
     with _competition_session_advisory_lock(session_id):
-        session = _competition_load_session_from_db(session_id) or WEB_COMPETITION_SESSIONS.get(session_id)
+        session = _competition_load_session_from_db(session_id)
         if not session or _competition_session_phase(session) in {"active", "finished"}:
             return
 
@@ -35594,7 +35705,7 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
             questions = await _runtime_generate_questions(
                 created_by=created_by,
                 subject=str(session.get("subject") or "English"),
-                level=_competition_generation_level(str(session.get("level") or "PRE-INTERMEDIATE"), mode, target_stage, difficulty),
+                level=_competition_match_generation_level(session, mode, target_stage, difficulty),
                 count=question_count,
                 mode=mode,
                 competition_session_id=str(session.get("id") or None),
@@ -35701,7 +35812,6 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
             elif mode == "daily":
                 row["status"] = "eliminated"
         _duel_persist_session(session)
-    _duel_persist_session(session)
     logger.info(
         "competition.generation_completed session_id=%s mode=%s stage=%s question_count=%s",
         str(session.get("id") or session_id),
@@ -35711,7 +35821,18 @@ async def _competition_start_generation(session_id: str, stage: int | None = Non
     )
 
 
+def _competition_lock_start_user(handler):
+    @wraps(handler)
+    async def wrapped(payload, authorization=None):
+        user = _user_row_from_bearer(authorization)
+        _require_role(user, {"student"})
+        with _competition_user_start_lock(int(user.get("id") or 0)):
+            return await handler(payload, authorization)
+    return wrapped
+
+
 @app.post("/competition/runtime/start")
+@_competition_lock_start_user
 async def competition_runtime_start(payload: CompetitionStartRequest, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
@@ -35748,76 +35869,75 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
             existing_session_id = str(db_existing.get("id") or "")
     existing = None
     if existing_session_id:
-        existing = WEB_COMPETITION_SESSIONS.get(existing_session_id)
-        if not existing:
+        existing = _competition_load_session_from_db(existing_session_id)
+    if existing:
+        with _competition_session_advisory_lock(existing_session_id):
             existing = _competition_load_session_from_db(existing_session_id)
             if existing:
-                WEB_COMPETITION_SESSIONS[existing_session_id] = existing
-    if existing:
-        if _competition_session_unusable_for_user(existing, user_id):
-            WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
-            existing_session_id = ""
-        elif existing_session_id and _competition_session_phase(existing) != "finished":
-            if not _competition_session_matches_request(existing, mode, subject, payload.group_id):
-                existing_phase = _competition_session_phase(existing)
-                if _competition_session_is_stale_for_switch(existing):
-                    logger.info(
-                        "competition.start detached stale mismatch user_id=%s old_session_id=%s old_mode=%s old_subject=%s requested_mode=%s requested_subject=%s phase=%s",
-                        user_id,
-                        str(existing.get("id") or ""),
-                        str(existing.get("mode") or ""),
-                        str(existing.get("subject") or ""),
-                        mode,
-                        subject,
-                        existing_phase,
-                    )
-                    _competition_detach_user_from_session(existing, user_id, "stale_session_switched")
+                if _competition_session_unusable_for_user(existing, user_id):
+                    WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
                     existing_session_id = ""
-                elif existing_phase in {"pending", "generating"} and not existing.get("started_at"):
-                    if _duel_is_mode(existing.get("mode")):
-                        _duel_leave_pending_session(existing, user_id)
-                    else:
-                        _competition_leave_pending_session(existing, user_id, reason="switched_competition")
+                elif existing_session_id and _competition_session_phase(existing) != "finished":
+                    if not _competition_session_matches_request(existing, mode, subject, payload.group_id):
+                        existing_phase = _competition_session_phase(existing)
+                        if _competition_session_is_stale_for_switch(existing):
+                            logger.info(
+                                "competition.start detached stale mismatch user_id=%s old_session_id=%s old_mode=%s old_subject=%s requested_mode=%s requested_subject=%s phase=%s",
+                                user_id,
+                                str(existing.get("id") or ""),
+                                str(existing.get("mode") or ""),
+                                str(existing.get("subject") or ""),
+                                mode,
+                                subject,
+                                existing_phase,
+                            )
+                            _competition_detach_user_from_session(existing, user_id, "stale_session_switched")
+                            existing_session_id = ""
+                        elif existing_phase in {"pending", "generating"} and not existing.get("started_at"):
+                            if _duel_is_mode(existing.get("mode")):
+                                _duel_leave_pending_session(existing, user_id)
+                            else:
+                                _competition_leave_pending_session(existing, user_id, reason="switched_competition")
+                            WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
+                        else:
+                            logger.info(
+                                "competition.start active mismatch user_id=%s old_session_id=%s old_mode=%s old_subject=%s requested_mode=%s requested_subject=%s phase=%s",
+                                user_id,
+                                str(existing.get("id") or ""),
+                                str(existing.get("mode") or ""),
+                                str(existing.get("subject") or ""),
+                                mode,
+                                subject,
+                                existing_phase,
+                            )
+                            raise HTTPException(
+                                status_code=409,
+                                detail={
+                                    "code": "active_session_mismatch",
+                                    "message": "Active competition session does not match selected mode or subject",
+                                    "existing": {
+                                        "session_id": str(existing.get("id") or ""),
+                                        "mode": existing.get("mode"),
+                                        "subject": existing.get("subject"),
+                                        "group_id": existing.get("group_id"),
+                                        "phase": existing_phase,
+                                    },
+                                },
+                            )
+                    if existing_session_id and _competition_session_matches_request(existing, mode, subject, payload.group_id) and _competition_session_phase(existing) != "finished":
+                        if _competition_user_left_or_blocked(existing, user_id):
+                            WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
+                            raise HTTPException(status_code=423, detail="This arena or duel was already left or blocked")
+                        snapshot = _competition_snapshot(existing, user_id=user_id)
+                        return _attach_proctoring_payload(
+                            user,
+                            snapshot,
+                            test_type=str(existing.get("mode") or payload.mode),
+                            test_attempt_ref=str(existing.get("id") or ""),
+                            test_route=f"/?role=student&section={_competition_section_for_mode(str(existing.get('mode') or payload.mode))}",
+                        )
+                elif existing_session_id:
                     WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
-                else:
-                    logger.info(
-                        "competition.start active mismatch user_id=%s old_session_id=%s old_mode=%s old_subject=%s requested_mode=%s requested_subject=%s phase=%s",
-                        user_id,
-                        str(existing.get("id") or ""),
-                        str(existing.get("mode") or ""),
-                        str(existing.get("subject") or ""),
-                        mode,
-                        subject,
-                        existing_phase,
-                    )
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "code": "active_session_mismatch",
-                            "message": "Active competition session does not match selected mode or subject",
-                            "existing": {
-                                "session_id": str(existing.get("id") or ""),
-                                "mode": existing.get("mode"),
-                                "subject": existing.get("subject"),
-                                "group_id": existing.get("group_id"),
-                                "phase": existing_phase,
-                            },
-                        },
-                    )
-            if existing_session_id and _competition_session_matches_request(existing, mode, subject, payload.group_id) and _competition_session_phase(existing) != "finished":
-                if _competition_user_left_or_blocked(existing, user_id):
-                    WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
-                    raise HTTPException(status_code=423, detail="This arena or duel was already left or blocked")
-                snapshot = _competition_snapshot(existing, user_id=user_id)
-                return _attach_proctoring_payload(
-                    user,
-                    snapshot,
-                    test_type=str(existing.get("mode") or payload.mode),
-                    test_attempt_ref=str(existing.get("id") or ""),
-                    test_route=f"/?role=student&section={_competition_section_for_mode(str(existing.get('mode') or payload.mode))}",
-                )
-        elif existing_session_id:
-            WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
 
     if mode == "group":
         group_id = int(payload.group_id or 0)
@@ -35959,7 +36079,7 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
     charged_fee = _competition_entry_fee(mode)
     requested_question_count = int(payload.question_count or _competition_question_count(mode))
     requested_difficulty = str(payload.difficulty or _competition_default_difficulty(mode)).strip().title()
-    queue_key = _competition_queue_key(mode, subject, level)
+    queue_key = _competition_queue_key(mode, subject, level, requested_question_count, requested_difficulty)
     should_start_generation = False
     generation_token = ""
     created_new_session = False
@@ -35975,18 +36095,14 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
             # selected queue is still validated below before it is reused.
             pending_session_id = WEB_COMPETITION_PENDING_BY_KEY.get(queue_key)
             if pending_session_id:
-                pending_session = WEB_COMPETITION_SESSIONS.get(pending_session_id)
-                if not pending_session:
-                    pending_session = _competition_load_session_from_db(pending_session_id)
-                    if pending_session:
-                        WEB_COMPETITION_SESSIONS[pending_session_id] = pending_session
-                if pending_session and not _competition_session_unusable_for_matching(pending_session) and _competition_session_has_join_slot(pending_session):
+                pending_session = _competition_load_session_from_db(pending_session_id)
+                if pending_session and _competition_session_phase(pending_session) == "pending" and _competition_settings_match(pending_session, requested_question_count, requested_difficulty):
                     session = pending_session
                     session_id = str(pending_session.get("id") or "")
                 else:
                     WEB_COMPETITION_PENDING_BY_KEY.pop(queue_key, None)
             if not session:
-                session = _competition_find_pending_session(queue_key)
+                session = _competition_find_pending_session(queue_key, requested_question_count, requested_difficulty)
                 if session:
                     session_id = str(session.get("id") or "")
 
@@ -36033,79 +36149,83 @@ async def competition_runtime_start(payload: CompetitionStartRequest, authorizat
                 created_new_session = True
                 _duel_persist_session(session)
 
-            participants = session.setdefault("participants", [])
-            existing_participant = next((row for row in participants if int(row.get("user_id") or 0) == user_id), None)
-            existing_status = str((existing_participant or {}).get("status") or "active").lower()
-            inactive_rejoin = bool(existing_participant and existing_status in {"left", "cancelled", "finished", "eliminated", "blocked", "failed"})
-            phase = _competition_session_phase(session)
-            reactivated_participant = False
-            if inactive_rejoin:
-                if phase == "pending":
-                    existing_participant["status"] = "active"
-                    existing_participant["joined_at"] = _now_utc().isoformat()
-                    existing_participant.pop("left_at", None)
-                    existing_participant.pop("left_reason", None)
-                    inactive_rejoin = False
-                    reactivated_participant = True
-                else:
-                    WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
-                    raise HTTPException(status_code=423, detail="This lobby or session was already left or blocked")
-            if not existing_participant:
-                current_joined = len(_competition_waiting_participants(session))
-                if phase != "pending":
-                    raise HTTPException(status_code=409, detail="This arena has already started")
-                if current_joined >= max_players:
-                    raise HTTPException(status_code=409, detail="Arena queue is full")
-                if (mode.startswith("duel-") or mode == "boss") and not can_start_duel_today(user_id, bot_mode, _now_tashkent_date(), limit_per_day=COMPETITION_DAILY_JOIN_LIMIT):
-                    limit_label = f"{bot_mode} duel" if mode.startswith("duel-") else "Boss Arena"
-                    raise HTTPException(status_code=429, detail=f"Daily limit reached for {limit_label}")
-                fee_change_type = f"arena_fee:{bot_mode}:{session.get('id') or session_id}" if is_duel else None
-                already_charged = user_id in [int(uid) for uid in session.setdefault("charged_user_ids", [])]
-                if is_duel and not already_charged and fee_change_type:
-                    conn_check = get_conn()
+            with _competition_session_advisory_lock(session_id):
+                session = _competition_load_session_from_db(session_id)
+                if not session or _competition_session_phase(session) != "pending":
+                    raise HTTPException(status_code=409, detail="Competition lobby changed; please retry")
+                if not created_new_session and (_competition_session_unusable_for_matching(session) or not _competition_session_has_join_slot(session)):
+                    raise HTTPException(status_code=409, detail="Competition lobby changed; please retry")
+                participants = session.setdefault("participants", [])
+                existing_participant = next((row for row in participants if int(row.get("user_id") or 0) == user_id), None)
+                existing_status = str((existing_participant or {}).get("status") or "active").lower()
+                inactive_rejoin = bool(existing_participant and existing_status in {"left", "cancelled", "finished", "eliminated", "blocked", "failed"})
+                phase = _competition_session_phase(session)
+                reactivated_participant = False
+                if inactive_rejoin:
+                    if phase == "pending":
+                        existing_participant["status"] = "active"
+                        existing_participant["joined_at"] = _now_utc().isoformat()
+                        existing_participant.pop("left_at", None)
+                        existing_participant.pop("left_reason", None)
+                        inactive_rejoin = False
+                        reactivated_participant = True
+                    else:
+                        WEB_DUEL_PLAYER_SESSION.pop(user_id, None)
+                        raise HTTPException(status_code=423, detail="This lobby or session was already left or blocked")
+                if not existing_participant or reactivated_participant:
+                    current_joined = len(_competition_waiting_participants(session))
+                    if phase != "pending":
+                        raise HTTPException(status_code=409, detail="This arena has already started")
+                    if current_joined >= max_players:
+                        raise HTTPException(status_code=409, detail="Arena queue is full")
+                    if (mode.startswith("duel-") or mode == "boss") and not can_start_duel_today(user_id, bot_mode, _now_tashkent_date(), limit_per_day=COMPETITION_DAILY_JOIN_LIMIT):
+                        limit_label = f"{bot_mode} duel" if mode.startswith("duel-") else "Boss Arena"
+                        raise HTTPException(status_code=429, detail=f"Daily limit reached for {limit_label}")
+                    fee_change_type = f"arena_fee:{bot_mode}:{session.get('id') or session_id}" if is_duel else None
+                    already_charged = user_id in [int(uid) for uid in session.setdefault("charged_user_ids", [])]
+                    if is_duel and not already_charged and fee_change_type:
+                        conn_check = get_conn()
+                        try:
+                            cur_check = conn_check.cursor()
+                            cur_check.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=? LIMIT 1", (user_id, fee_change_type))
+                            already_charged = bool(cur_check.fetchone())
+                        finally:
+                            conn_check.close()
+
+                    quota_session = f"runtime:{session.get('id') or session_id}"
+                    quota_reserved = reserve_arena_session(user, quota_session, arena_access.get("daily_limit"))
                     try:
-                        cur_check = conn_check.cursor()
-                        cur_check.execute("SELECT 1 FROM diamond_history WHERE user_id=? AND change_type=? LIMIT 1", (user_id, fee_change_type))
-                        already_charged = bool(cur_check.fetchone())
-                    finally:
-                        conn_check.close()
+                        if charged_fee > 0 and not already_charged:
+                            if not try_consume_dcoins(user_id, charged_fee, subject, arena_type=bot_mode, change_type=fee_change_type):
+                                raise HTTPException(status_code=409, detail="Insufficient D'Coin balance")
+                    except Exception:
+                        if quota_reserved:
+                            release_arena_session(user, quota_session)
+                        raise
+                    usage_date = _now_tashkent_date()
+                    if mode.startswith("duel-") or mode == "boss":
+                        increment_duel_daily_usage(user_id, bot_mode, usage_date)
+                        session.setdefault("usage_dates", {})[str(user_id)] = usage_date
+                    if existing_participant:
+                        existing_participant.update({"name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date, "level": level})
+                    else:
+                        participants.append({"user_id": user_id, "name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date, "level": level})
+                    joined_now = True
+                    if charged_fee > 0 and user_id not in [int(uid) for uid in session.setdefault("charged_user_ids", [])]:
+                        session.setdefault("charged_user_ids", []).append(user_id)
+                    if charged_fee > 0:
+                        session["refunded_user_ids"] = [int(uid) for uid in (session.get("refunded_user_ids") or []) if int(uid) != int(user_id)]
+                    _competition_touch_wait_deadline(session)
+                    _duel_persist_session(session)
+                WEB_DUEL_PLAYER_SESSION[user_id] = str(session.get("id") or session_id)
 
-                quota_session = f"runtime:{session.get('id') or session_id}"
-                quota_reserved = reserve_arena_session(user, quota_session, arena_access.get("daily_limit"))
-                try:
-                    if charged_fee > 0 and not already_charged:
-                        if not try_consume_dcoins(user_id, charged_fee, subject, arena_type=bot_mode, change_type=fee_change_type):
-                            raise HTTPException(status_code=409, detail="Insufficient D'Coin balance")
-                except Exception:
-                    if quota_reserved:
-                        release_arena_session(user, quota_session)
-                    raise
-                usage_date = _now_tashkent_date()
-                if mode.startswith("duel-") or mode == "boss":
-                    increment_duel_daily_usage(user_id, bot_mode, usage_date)
-                    session.setdefault("usage_dates", {})[str(user_id)] = usage_date
-                participants.append({"user_id": user_id, "name": _display_name(user), "status": "active", "joined_at": _now_utc().isoformat(), "usage_date": usage_date, "level": level})
-                joined_now = True
-                if charged_fee > 0 and user_id not in [int(uid) for uid in session.setdefault("charged_user_ids", [])]:
-                    session.setdefault("charged_user_ids", []).append(user_id)
-                if charged_fee > 0:
-                    session["refunded_user_ids"] = [int(uid) for uid in (session.get("refunded_user_ids") or []) if int(uid) != int(user_id)]
-                _competition_touch_wait_deadline(session)
-                _duel_persist_session(session)
-            elif reactivated_participant:
-                joined_now = True
-                _competition_touch_wait_deadline(session)
-                _duel_persist_session(session)
-
-            WEB_DUEL_PLAYER_SESSION[user_id] = str(session.get("id") or session_id)
-
-            joined_count = len(_competition_waiting_participants(session))
-            start_threshold = required_players
-            if phase == "pending" and joined_count >= start_threshold:
-                token = _competition_prepare_generation(session, target_stage=1)
-                if token:
-                    should_start_generation = True
-                    generation_token = token
+                joined_count = len(_competition_waiting_participants(session))
+                start_threshold = required_players
+                if phase == "pending" and joined_count >= start_threshold:
+                    token = _competition_prepare_generation(session, target_stage=1)
+                    if token:
+                        should_start_generation = True
+                        generation_token = token
 
     if mode == "daily" and session:
         asyncio.create_task(_competition_notify_daily_prestart(session))
@@ -36146,15 +36266,14 @@ async def competition_runtime_my_active(
     else:
         sess = _competition_load_session_from_db(sid)
     if sess:
-        if _competition_session_unusable_for_matching(sess):
-            WEB_DUEL_PLAYER_SESSION.pop(uid, None)
-            return {"active": False, "expired": True, "refunded": True}
-        if _competition_session_phase(sess) == "active":
-            with _competition_session_advisory_lock(sid):
-                sess = _competition_load_session_from_db(sid)
-                if sess and _competition_session_phase(sess) == "active":
-                    _competition_auto_skip_due_questions(sess)
-                    _competition_restore_runtime_participant_if_needed(sess, uid, source="my_active")
+        with _competition_session_advisory_lock(sid):
+            sess = _competition_load_session_from_db(sid)
+            if sess and _competition_session_unusable_for_matching(sess):
+                WEB_DUEL_PLAYER_SESSION.pop(uid, None)
+                return {"active": False, "expired": True, "refunded": True}
+            if sess and _competition_session_phase(sess) == "active":
+                _competition_auto_skip_due_questions(sess)
+                _competition_restore_runtime_participant_if_needed(sess, uid, source="my_active")
     if not sess:
         WEB_DUEL_PLAYER_SESSION.pop(uid, None)
         return {"active": False}
@@ -36321,7 +36440,13 @@ async def competition_runtime_history_review(
 async def _competition_ensure_session_for_user(session_id: str, user: dict) -> dict[str, Any]:
     uid = int(user.get("id") or 0)
     # 1. Direct session lookup by requested session_id
-    sess = _competition_load_session_from_db(session_id)
+    with _competition_session_advisory_lock(session_id):
+        sess = _competition_load_session_from_db(session_id)
+        if sess and not _competition_participant_row(sess, uid):
+            raise HTTPException(status_code=404, detail="Competition session not found")
+        if sess and _competition_session_phase(sess) != "finished":
+            if _competition_session_unusable_for_user(sess, uid):
+                sess = None
     if sess:
         if not _competition_participant_row(sess, uid):
             raise HTTPException(status_code=404, detail="Competition session not found")
@@ -36329,19 +36454,20 @@ async def _competition_ensure_session_for_user(session_id: str, user: dict) -> d
         if direct_phase == "finished":
             if _competition_participant_row(sess, uid) or _competition_user_result(sess, uid) or (sess.get("result") or {}).get("error"):
                 return sess
-        elif not _competition_session_unusable_for_user(sess, uid):
+        else:
             return sess
 
     # 2. Check active session stored in memory for user
     active_sid = WEB_DUEL_PLAYER_SESSION.get(uid)
     if active_sid:
-        active_sess = _competition_load_session_from_db(active_sid)
-        if active_sess and not _competition_session_unusable_for_user(active_sess, uid):
-            return active_sess
+        with _competition_session_advisory_lock(active_sid):
+            active_sess = _competition_load_session_from_db(active_sid)
+            if active_sess and not _competition_session_unusable_for_user(active_sess, uid):
+                return active_sess
 
     # 3. Active session lookup in DB
     active_sess = _competition_load_active_session_for_user(uid)
-    if active_sess and not _competition_session_unusable_for_user(active_sess, uid):
+    if active_sess:
         WEB_DUEL_PLAYER_SESSION[uid] = str(active_sess.get("id") or "")
         return active_sess
 
@@ -36356,7 +36482,7 @@ async def competition_runtime_leave(session_id: str, authorization: str | None =
     _require_competition_learning_access(user)
     uid = int(user.get("id") or 0)
     with _competition_session_advisory_lock(session_id):
-        sess = _competition_load_session_from_db(session_id) or _competition_load_active_session_for_user(uid)
+        sess = _competition_load_session_from_db(session_id)
         if not sess:
             WEB_DUEL_PLAYER_SESSION.pop(uid, None)
             return {"cancelled": True, "refunded": False, "phase": "finished", "status": "finished"}
@@ -37012,7 +37138,7 @@ async def competition_runtime_result(session_id: str, authorization: str | None 
     actual_sid = str(sess.get("id") or session_id)
     if _competition_session_phase(sess) == "active":
         with _competition_session_advisory_lock(actual_sid):
-            sess = await _competition_ensure_session_for_user(actual_sid, user)
+            sess = _competition_load_session_from_db(actual_sid)
             if sess and _competition_session_phase(sess) == "active":
                 _competition_auto_skip_due_questions(sess)
     own = _competition_user_result(sess, uid)
