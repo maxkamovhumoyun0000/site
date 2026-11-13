@@ -18771,15 +18771,19 @@ body.gift-roulette-active :is(.dashboard-sidebar, .mobile-bottom-nav, .bottom-na
   gap: 6px;
   margin-left: 20px;
   overflow-x: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
   min-width: 0;
   flex: 1 1 0;
   transition: opacity 0.2s ease;
-  -webkit-mask-image: linear-gradient(to right, transparent 0px, black 6px, black calc(100% - 16px), transparent 100%);
-  mask-image: linear-gradient(to right, transparent 0px, black 6px, black calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 .topbar-desktop-nav::-webkit-scrollbar {
-  display: none;
+  height: 5px;
+}
+.topbar-desktop-nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line);
 }
 
 /* When sidebar drawer is open, hide the header nav */

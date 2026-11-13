@@ -8763,9 +8763,9 @@ def _guard_authorization(request: Request) -> str | None:
 @app.middleware("http")
 async def limited_admin_group_payment_guard(request: Request, call_next):
     path = str(request.url.path or "").rstrip("/")
-    blocked = any(path == prefix or path.startswith(prefix + "/") for prefix in (
-        "/admin/groups", "/groups", "/admin/payments", "/admin/receipts", "/admin/family-groups", "/admin/attendance",
-    )) or (path.startswith("/admin/users/") and "/group-pricing/" in path)
+    # Student-wide pricing changes remain a general-admin operation. Group,
+    # attendance, receipt and payment routes enforce their own branch scopes.
+    blocked = path.startswith("/admin/users/") and "/group-pricing/" in path
     if blocked:
         authorization = _guard_authorization(request)
         if authorization:
@@ -18294,7 +18294,7 @@ def _build_role_boot_payload(user: dict, role: str, economy_rules_payload: dict[
             "group_count": len(scoped_groups),
         },
         "recent_users": [_serialize_user_row_light(u) for u in scoped_users[:8]],
-        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else _serialize_group_rows_bulk(scoped_groups[:12]),
+        "groups": _serialize_group_rows_bulk(scoped_groups[:12]),
         "reviews": [_serialize_review_row(r, include_private=True) for r in _safe_call(lambda: _list_admin_review_rows(limit=120), []) or []],
         "payment_alerts": None if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else _payment_alerts,
         "permissions": {
@@ -20315,7 +20315,7 @@ def _build_admin_payload(user: dict) -> dict:
         },
         "leaderboard": _leaderboard_payload(limit=30),
         "users": users,
-        "groups": [] if _is_limited_admin(admin_ref) and not _is_main_admin(admin_ref) else groups[:250],
+        "groups": groups[:250],
         "bookings": bookings[:200],
         "pending_bookings": pending[:120],
         "support_metrics": support_metrics,
@@ -52854,6 +52854,7 @@ async def admin_payments_jobs(
 ):
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"admin"})
+    _assert_general_admin_for_payment_globals(_admin_ref_id(user), "payment_jobs_view")
     _ensure_payment_automation_schema()
     today_iso = _now_tashkent_date()
     conn = get_conn()
@@ -54029,8 +54030,13 @@ def _family_group_access_allowed(admin_ref: int, acting_user: dict, group_row: d
     created_by_current_admin = int(group_row.get("created_by_admin_id") or 0) == int(acting_user.get("id") or 0)
     if not members:
         return (True, []) if created_by_current_admin else (False, [])
-    if any(not _can_manage_user(admin_ref, row) for row in members):
-        return False, []
+    for row in members:
+        user_id = int(row.get("user_id") or 0)
+        if not _student_in_manageable_payment_group(admin_ref, user_id):
+            return False, []
+        student_groups = _safe_call(lambda uid=user_id: get_user_groups(uid), []) or []
+        if any(not _can_manage_group(admin_ref, group) for group in student_groups):
+            return False, []
     return True, members
 
 
@@ -54090,6 +54096,8 @@ async def admin_family_groups_create(payload: FamilyGroupCreateRequest, authoriz
         if not member or int(member.get("login_type") or 0) not in (1, 2, 6):
             raise HTTPException(status_code=404, detail="Family member not found")
         if not _can_manage_user(admin_ref, member):
+            raise HTTPException(status_code=403, detail="Permission denied")
+        if not _is_general_admin_scope(admin_ref) and not _student_in_manageable_payment_group(admin_ref, uid):
             raise HTTPException(status_code=403, detail="Permission denied")
         member_groups = _safe_call(lambda target_uid=uid: get_user_groups(int(target_uid)), []) or []
         if any(not _can_manage_group(admin_ref, group) for group in member_groups):
@@ -54246,6 +54254,8 @@ async def admin_family_groups_add_member(
     if not target or int(target.get("login_type") or 0) not in (1, 2, 6):
         raise HTTPException(status_code=400, detail="Only student/accountless users can be family members")
     if not _can_manage_user_globally(admin_ref, target):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if not _is_general_admin_scope(admin_ref) and not _student_in_manageable_payment_group(admin_ref, int(payload.user_id)):
         raise HTTPException(status_code=403, detail="Permission denied")
     target_groups = _safe_call(lambda: get_user_groups(int(payload.user_id)), []) or []
     if any(not _can_manage_group(admin_ref, group) for group in target_groups):
@@ -55831,6 +55841,8 @@ async def teacher_delete_group(group_id: int, authorization: str | None = Header
         raise HTTPException(status_code=404, detail="Group not found")
     uid = int(user.get("id") or 0)
     role = _role(user)
+    if role == "admin" and not _can_manage_group(_admin_ref_id(user), group):
+        raise HTTPException(status_code=403, detail="Permission denied")
     if role != "admin" and int(group.get("teacher_id") or 0) != uid and int(group.get("support_id") or 0) != uid:
         raise HTTPException(status_code=403, detail="Siz bu guruhni o'chira olmaysiz")
     affected = delete_group(gid)
@@ -59019,9 +59031,9 @@ async def create_group(payload: GroupCreateRequest, authorization: str | None = 
     if payload.lesson_date is not None and not _normalize_lesson_days(payload.lesson_date):
         raise HTTPException(status_code=400, detail="lesson_date must be MWF or TTS")
     effective_owner_admin_id = int(admin_ref)
-    if payload.owner_admin_id is not None and int(payload.owner_admin_id) > 0:
+    if _is_general_admin_scope(admin_ref) and payload.owner_admin_id is not None and int(payload.owner_admin_id) > 0:
         effective_owner_admin_id = int(payload.owner_admin_id)
-    elif payload.owner_branch in (1, 2):
+    elif _is_general_admin_scope(admin_ref) and payload.owner_branch in (1, 2):
         limited_ids = [int(x) for x in LIMITED_ADMIN_CHAT_IDS if int(x or 0) > 0]
         if payload.owner_branch <= len(limited_ids):
             effective_owner_admin_id = limited_ids[payload.owner_branch - 1]
@@ -59103,10 +59115,12 @@ async def add_group_member(
 async def group_members(group_id: int, authorization: str | None = Header(default=None)):
     user = _user_row_from_bearer(authorization)
     role = _require_role(user, {"admin", "teacher", "support"})
+    group = _safe_call(lambda: get_group(int(group_id)), None)
     if role in {"teacher", "support"}:
-        group = _safe_call(lambda: get_group(int(group_id)), None)
         if not group or not _teacher_can_manage_group(user, group):
             raise HTTPException(status_code=403, detail="Teacher can only view own or temporary groups")
+    elif not _can_manage_group(_admin_ref_id(user), group):
+        raise HTTPException(status_code=403, detail="Permission denied")
     members = _safe_call(lambda: get_group_users(int(group_id)), []) or []
     return {"items": [_serialize_user_row(m) for m in members]}
 

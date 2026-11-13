@@ -24533,7 +24533,7 @@ function DashboardShell({
   const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
   const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin" || activeRole === "limited_admin"
-    ? primaryAdminSections
+    ? orderedSections.filter((item) => item !== "chats" && item !== "profile")
     : activeRole === "developer"
     ? primaryDeveloperSections
     : activeRole === "speaking_admin"
@@ -25088,7 +25088,7 @@ function DashboardShell({
   const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
     if (item === "chats" || item === "notifications" || item === "profile") return false;
-    if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
+    if (activeRole !== "admin" && activeRole !== "limited_admin" && !isNarrowDesktop && desktopHeaderSections.has(item)) return false;
     return true;
   });
 
