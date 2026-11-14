@@ -24529,11 +24529,11 @@ function DashboardShell({
   // Adminning eng ko'p ishlatiladigan yo'llari bir joyda: desktop header va
   // telefonning pastki navigatsiyasi. Shu elementlar drawer/sidebar ichida
   // qaytarilmaydi.
-  const primaryAdminSections = ["home", "users", "groups", "payments", "chats"].filter((item) => orderedSections.includes(item));
+  const primaryAdminSections = ["home", "users", "payments", "groups", "attendance"].filter((item) => orderedSections.includes(item));
   const primaryDeveloperSections = ["home", "developer-server", "developer-deploy", "developer-maintenance", "developer-attendance", "developer-flags", "developer-audit"].filter((item) => orderedSections.includes(item));
   const primarySpeakingAdminSections = ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule"].filter((item) => orderedSections.includes(item));
   const topbarSections = activeRole === "admin" || activeRole === "limited_admin"
-    ? orderedSections.filter((item) => item !== "chats" && item !== "profile")
+    ? primaryAdminSections
     : activeRole === "developer"
     ? primaryDeveloperSections
     : activeRole === "speaking_admin"
@@ -25087,8 +25087,9 @@ function DashboardShell({
 
   const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
-    if (item === "chats" || item === "notifications" || item === "profile") return false;
-    if (activeRole !== "admin" && activeRole !== "limited_admin" && !isNarrowDesktop && desktopHeaderSections.has(item)) return false;
+    if (item === "notifications" || item === "profile") return false;
+    if (item === "chats" && activeRole !== "admin" && activeRole !== "limited_admin") return false;
+    if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
     return true;
   });
 
@@ -25396,7 +25397,7 @@ function DashboardShell({
           </div>
           <div className="topbar-user-actions">
             <div className="topbar-menu-wrap">
-              {!isMobileLayout && (
+              {!isMobileLayout && activeRole !== "admin" && activeRole !== "limited_admin" && (
                 <button
                   className={`btn btn-soft small topbar-icon-btn topbar-chat-btn mr-2 ${currentSection === "chats" ? "active" : ""}`}
                   onClick={() => handleNavigate("chats")}
