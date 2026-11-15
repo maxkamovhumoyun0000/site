@@ -370,6 +370,7 @@ from db import (
     upsert_homework_submission,
     get_homework_submission,
     review_homework_submission,
+    review_homework_submission_with_points,
     get_teacher_homework_settings,
     upsert_teacher_homework_settings,
     record_homework_deadline_penalty,
@@ -38565,8 +38566,6 @@ def _homework_submission_missing_requirements(
             missing.append("completed VoiceRoom session")
     if requires_essay and not str(payload.note or "").strip():
         missing.append("written response")
-    if requires_file and not _homework_proof_images_from_payload(payload):
-        missing.append("required file or image")
     # A completed VoiceRoom records the speaking response for all members of
     # the pair; do not force students to record the same voice answer again.
     if requires_voice and not voiceroom_completed and not str(payload.voice_message_url or "").strip():
@@ -38954,8 +38953,6 @@ async def teacher_create_homework(payload: HomeworkCreateRequest, authorization:
         raise HTTPException(status_code=400, detail="Homework title is required")
     if payload.requires_essay and not str(payload.essay_prompt or "").strip() and not description:
         raise HTTPException(status_code=422, detail="Written task instructions are required")
-    if payload.requires_file and not str(payload.file_prompt or "").strip() and not description:
-        raise HTTPException(status_code=422, detail="File task instructions are required")
     if payload.requires_voice_message and not str(payload.voice_prompt or "").strip() and not description:
         raise HTTPException(status_code=422, detail="Voice task instructions are required")
     if not description:
@@ -39091,35 +39088,11 @@ async def teacher_update_homework(homework_id: int, payload: HomeworkCreateReque
         raise HTTPException(status_code=400, detail="Homework deadline is required")
     if requested_deadline != existing_deadline and requested_deadline <= _now_tashkent():
         raise HTTPException(status_code=422, detail="Homework deadline must be in the future")
-    if homework_has_student_submissions(int(homework_id)):
-        current_kind = str(homework.get("homework_kind") or "both").lower()
-        current_requirements = (
-            current_kind,
-            bool(homework.get("requires_voice_message")),
-            bool(homework.get("requires_file")),
-            bool(homework.get("requires_essay")),
-            str(homework.get("essay_prompt") or ""),
-            str(homework.get("file_prompt") or ""),
-            str(homework.get("voice_prompt") or ""),
-        )
-        requested_requirements = (
-            homework_kind,
-            bool(payload.requires_voice_message),
-            bool(payload.requires_file),
-            bool(payload.requires_essay),
-            str(payload.essay_prompt or ""),
-            str(payload.file_prompt or ""),
-            str(payload.voice_prompt or ""),
-        )
-        if current_requirements != requested_requirements:
-            raise HTTPException(status_code=409, detail="Homework content cannot be changed after a student submission")
     requires_upload = homework_kind in {"list", "both"}
     if not title:
         raise HTTPException(status_code=400, detail="Homework title is required")
     if payload.requires_essay and not str(payload.essay_prompt or "").strip() and not description:
         raise HTTPException(status_code=422, detail="Written task instructions are required")
-    if payload.requires_file and not str(payload.file_prompt or "").strip() and not description:
-        raise HTTPException(status_code=422, detail="File task instructions are required")
     if payload.requires_voice_message and not str(payload.voice_prompt or "").strip() and not description:
         raise HTTPException(status_code=422, detail="Voice task instructions are required")
     if not description:
@@ -39648,8 +39621,25 @@ async def student_homework_list(authorization: str | None = Header(default=None)
         rows = _safe_call(lambda: list_homeworks_for_student(user_id), []) or []
         for row in rows:
             row["_viewer_student_id"] = user_id
+    voice_files_by_homework: dict[int, list[str]] = {}
+    if any(bool(row.get("is_voiceroom")) for row in rows):
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT homework_id, files_json FROM web_homework_voice_attachments WHERE student_id=%s", (user_id,))
+            for draft_row in cur.fetchall() or []:
+                draft_row = dict(draft_row)
+                try:
+                    voice_files_by_homework[int(draft_row["homework_id"])] = json.loads(draft_row.get("files_json") or "[]")
+                except (ValueError, TypeError):
+                    pass
+        finally:
+            conn.close()
     for row in rows:
         _attach_homework_runtime_fields(row)
+        if row.get("is_voiceroom"):
+            files = voice_files_by_homework.get(int(row.get("id") or 0), [])
+            row["proof_images"] = list(dict.fromkeys([*(row.get("proof_images") or []), *files]))
         if (
             str(row.get("submission_note") or "") == "Test auto-submit"
             and bool(row.get("requires_test"))
@@ -39680,6 +39670,56 @@ async def student_homework_list(authorization: str | None = Header(default=None)
     return {"items": rows}
 
 
+class VoiceRoomAttachmentRequest(BaseModel):
+    proof_images: list[str]
+
+
+@app.post("/student/homework/{homework_id}/voiceroom-files")
+async def student_save_voiceroom_files(homework_id: int, payload: VoiceRoomAttachmentRequest, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_role(user, {"student"})
+    student_id = int(user.get("id") or 0)
+    homework = _safe_call(lambda: get_homework(int(homework_id)), None)
+    if not homework or not homework.get("is_voiceroom"):
+        raise HTTPException(status_code=404, detail="Voice Room homework not found")
+    new_files = list(dict.fromkeys(str(url).strip() for url in payload.proof_images if str(url).strip()))
+    if not new_files or len(new_files) > 12:
+        raise HTTPException(status_code=422, detail="Select up to 12 files")
+    for url in new_files:
+        name = url.removeprefix("/homework/files/")
+        if url != f"/homework/files/{name}" or Path(name).name != name or not name.startswith(f"homework_file_{student_id}_") or not (HOMEWORK_UPLOAD_DIR / name).is_file():
+            raise HTTPException(status_code=422, detail="Invalid uploaded file")
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM web_homework_voiceroom_groups WHERE homework_id=%s AND (student1_id=%s OR student2_id=%s OR student3_id=%s) FOR UPDATE", (homework_id, student_id, student_id, student_id))
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="Student is not assigned to this Voice Room")
+        cur.execute("INSERT INTO web_homework_voice_attachments(homework_id, student_id, files_json) VALUES (%s,%s,'[]') ON CONFLICT(homework_id,student_id) DO NOTHING", (homework_id, student_id))
+        cur.execute("SELECT files_json FROM web_homework_voice_attachments WHERE homework_id=%s AND student_id=%s FOR UPDATE", (homework_id, student_id))
+        current = cur.fetchone()
+        current = dict(current) if current else {}
+        files = list(dict.fromkeys([*json.loads(current.get("files_json") or "[]"), *new_files]))
+        if len(files) > 12:
+            raise HTTPException(status_code=422, detail="Maximum 12 files")
+        encoded = json.dumps(files, ensure_ascii=False)
+        cur.execute("UPDATE web_homework_voice_attachments SET files_json=%s, updated_at=CURRENT_TIMESTAMP WHERE homework_id=%s AND student_id=%s", (encoded, homework_id, student_id))
+        cur.execute("SELECT proof_images_json, proof_image_url FROM web_homework_submissions WHERE homework_id=%s AND student_id=%s FOR UPDATE", (homework_id, student_id))
+        submission = cur.fetchone()
+        if submission:
+            submission = dict(submission)
+            existing = json.loads(submission.get("proof_images_json") or "[]")
+            combined = list(dict.fromkeys([*existing, *files]))
+            cur.execute("UPDATE web_homework_submissions SET proof_images_json=%s, proof_image_url=%s, updated_at=CURRENT_TIMESTAMP WHERE homework_id=%s AND student_id=%s", (json.dumps(combined, ensure_ascii=False), submission.get("proof_image_url") or combined[0], homework_id, student_id))
+        conn.commit()
+        return {"proof_images": files}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 class VoiceRoomSubmitRequest(BaseModel):
     recorded_audio_url: str
 
@@ -39689,7 +39729,6 @@ async def student_submit_voiceroom_homework(
     payload: VoiceRoomSubmitRequest,
     authorization: str | None = Header(default=None)
 ):
-    from db import _user_row_from_bearer, get_conn, upsert_homework_submission
     user = _user_row_from_bearer(authorization)
     _require_role(user, {"student"})
     student_id = int(user.get("id") or 0)
@@ -39699,7 +39738,7 @@ async def student_submit_voiceroom_homework(
     try:
         # Get the voiceroom group for this homework
         cur.execute(
-            "SELECT student1_id, student2_id, student3_id FROM web_homework_voiceroom_groups WHERE homework_id=%s AND (student1_id=%s OR student2_id=%s OR student3_id=%s)",
+            "SELECT student1_id, student2_id, student3_id FROM web_homework_voiceroom_groups WHERE homework_id=%s AND (student1_id=%s OR student2_id=%s OR student3_id=%s) FOR UPDATE",
             (homework_id, student_id, student_id, student_id)
         )
         vg = cur.fetchone()
@@ -39715,12 +39754,17 @@ async def student_submit_voiceroom_homework(
         students = [int(sid) for sid in vg_values if sid and int(sid) > 0]
         
         for sid in students:
+            cur.execute("SELECT files_json FROM web_homework_voice_attachments WHERE homework_id=%s AND student_id=%s", (homework_id, sid))
+            draft_row = cur.fetchone()
+            draft_files = json.loads(dict(draft_row).get("files_json") or "[]") if draft_row else []
             upsert_homework_submission(
                 homework_id=homework_id,
                 student_id=sid,
                 status="completed",
                 note="Voice Room orqali yozib olingan.",
                 voice_message_url=payload.recorded_audio_url,
+                proof_image_url=draft_files[0] if draft_files else None,
+                proof_images_json=json.dumps(draft_files, ensure_ascii=False) if draft_files else None,
             )
             
         conn.commit()
@@ -39752,20 +39796,13 @@ async def student_submit_homework(
     if bool(homework.get("is_voiceroom")):
         raise HTTPException(status_code=422, detail="VoiceRoom homework must be submitted from its room")
     existing_submission = _safe_call(lambda: get_homework_submission(int(homework_id), user_id), None)
-    is_test_only = (
-        str(homework.get("homework_kind") or "").lower() == "test"
-        and not homework.get("requires_essay")
-        and not homework.get("requires_file")
-        and not homework.get("requires_voice_message")
-    )
-    # Older releases created a placeholder submission as soon as a test was
-    # completed, even for mixed homework. Let that exact placeholder be
-    # replaced by the student's real written/file/voice submission.
+    # An automatically submitted test can accept optional attachments until
+    # a teacher (or the automatic grader) has reviewed it.
     stale_test_placeholder = bool(
         existing_submission
         and str(existing_submission.get("note") or "") == "Test auto-submit"
         and homework.get("requires_test")
-        and not is_test_only
+        and not existing_submission.get("reviewed_at")
     )
     if existing_submission and not stale_test_placeholder:
         raise HTTPException(status_code=409, detail="Homework already submitted")
@@ -39856,8 +39893,7 @@ async def teacher_review_homework(
         submission = _safe_call(lambda: upsert_homework_submission(int(homework_id), student_id, "missed", "O'qituvchi tomonidan belgilandi"), None)
         if not submission:
             raise HTTPException(status_code=404, detail="Submission not found")
-    if submission.get("reviewed_at"):
-        raise HTTPException(status_code=409, detail="Homework already reviewed")
+    already_reviewed = bool(submission.get("reviewed_at"))
     requested_delta = float(payload.dpoint_delta if payload.dpoint_delta is not None else payload.dcoin_delta or 0.0)
     group = _safe_call(lambda: get_group(group_id), None) if group_id > 0 else None
     subj = group.get("subject") if group else None
@@ -39872,30 +39908,21 @@ async def teacher_review_homework(
         # explicit override.
         if (
             is_test_homework
+            and not already_reviewed
             and str(payload.status or "done").lower() == "done"
             and abs(dpoint_delta) < 1e-9
         ):
             test_result = _homework_test_result_for_student(student_id, int(homework_id))
             dpoint_delta = _homework_test_review_dpoints(test_result)
-    if dpoint_delta != 0:
-        try:
-            add_dpoints(
-                student_id,
-                dpoint_delta,
-                subject=(_user_subjects_from_row(_safe_call(lambda: get_user_by_id(student_id), {}) or {}) or ["English"])[0],
-                change_type="teacher_homework_review",
-            )
-        except Exception as exc:
-            logger.exception("teacher.homework.review dpoint failed teacher_id=%s homework_id=%s student_id=%s", teacher_id, homework_id, student_id)
-            raise HTTPException(status_code=500, detail="Could not apply homework D'point reward") from exc
     try:
-        reviewed = review_homework_submission(
+        reviewed = review_homework_submission_with_points(
             homework_id=int(homework_id),
             student_id=student_id,
             reviewed_by=teacher_id,
             status=str(payload.status or "done"),
-            dcoin_delta=dpoint_delta,
+            dpoint_delta=dpoint_delta,
             review_note=(payload.review_note or "").strip() or None,
+            subject=(_user_subjects_from_row(_safe_call(lambda: get_user_by_id(student_id), {}) or {}) or ["English"])[0],
         )
     except Exception as exc:
         logger.exception("teacher.homework.review failed teacher_id=%s homework_id=%s student_id=%s", teacher_id, homework_id, student_id)
@@ -62352,36 +62379,6 @@ async def _manage_save_content_test(content_type: str, content_id: int, payload:
     _require_role(user, {"admin", "teacher", "support"})
     normalized = _normalize_content_route_type(content_type)
     _require_content_test_manage_access(user, normalized, int(content_id))
-    if normalized == "homework" and homework_has_student_submissions(int(content_id)):
-        current_test = _safe_call(lambda: get_content_test("homework", int(content_id), include_inactive=True, include_answers=True), None)
-        current_questions = (current_test or {}).get("questions") or []
-        proposed_questions = payload.questions or []
-
-        def _question_signature(rows: list[dict]) -> list[dict]:
-            signature = []
-            for row in rows:
-                if row.get("kind"):
-                    signature.append({key: value for key, value in row.items() if key not in {"id", "order", "order_index"}})
-                    continue
-                options = [str(option or "").strip() for option in (row.get("options") or [])]
-                correct = str(row.get("correct") or "").strip()
-                index = row.get("correct_option_index")
-                if correct in options:
-                    correct_index = options.index(correct)
-                else:
-                    try:
-                        correct_index = int(index)
-                    except (TypeError, ValueError):
-                        correct_index = -1
-                signature.append({
-                    "question": str(row.get("question") or row.get("question_text") or "").strip(),
-                    "options": options,
-                    "correct_index": correct_index,
-                })
-            return signature
-
-        if _question_signature(current_questions) != _question_signature(proposed_questions):
-            raise HTTPException(status_code=409, detail="Test cannot be changed after a student submission")
     saved = _safe_call(
         lambda: save_content_test(
             normalized,
@@ -62437,16 +62434,13 @@ async def _student_submit_content_test_endpoint(content_type: str, content_id: i
     existing = _safe_call(lambda: get_content_test_result(user_id, normalized, int(content_id)), None)
     if existing:
         raise HTTPException(status_code=409, detail="Test already submitted")
-    result = _safe_call(
-        lambda: submit_content_test_attempt(
-            user_id,
-            normalized,
-            int(content_id),
-            payload.answers or {},
+    try:
+        result = submit_content_test_attempt(
+            user_id, normalized, int(content_id), payload.answers or {},
             subject=_content_test_subject(normalized, int(content_id), user),
-        ),
-        None,
-    )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="Test not found")
     # Library/book tests are deliberately excluded from the mistake notebook.
@@ -62603,8 +62597,6 @@ async def content_test_delete(content_type: str, content_id: int, authorization:
     _require_role(user, {"admin", "teacher", "support"})
     normalized = _normalize_content_route_type(content_type)
     _require_content_test_manage_access(user, normalized, int(content_id))
-    if normalized == "homework" and homework_has_student_submissions(int(content_id)):
-        raise HTTPException(status_code=409, detail="Test cannot be removed after a student submission")
     ok = _safe_call(lambda: deactivate_content_test(normalized, int(content_id)), False)
     if not ok:
         raise HTTPException(status_code=404, detail="Test not found")

@@ -21041,7 +21041,9 @@ def _parse_questions_json(raw: Any) -> list[dict]:
 
 
 def _insert_content_test_questions_tx(cur, test_id: int, questions: list[dict]) -> None:
-    cur.execute("DELETE FROM web_content_test_questions WHERE test_id=?", (int(test_id),))
+    # Keep old question IDs for submitted answer history; active questions use
+    # the positive test ID, historical versions use its negative counterpart.
+    cur.execute("UPDATE web_content_test_questions SET test_id=-test_id WHERE test_id=?", (int(test_id),))
     for index, question in enumerate(questions):
         options = [str(opt or "").strip() for opt in (question.get("options") or [])]
         cur.execute(
@@ -21303,7 +21305,7 @@ def save_content_test(
         # o'qishda questions_json dan xom holicha olinadi. Eski MCQ qatorlarini tozalaymiz.
         if raw_questions and _questions_have_ai_kinds(questions):
             try:
-                cur.execute("DELETE FROM web_content_test_questions WHERE test_id=?", (int(test_id),))
+                cur.execute("UPDATE web_content_test_questions SET test_id=-test_id WHERE test_id=?", (int(test_id),))
             except Exception:
                 pass
         else:
@@ -21493,6 +21495,20 @@ def submit_content_test_attempt(
         existing["already_submitted"] = True
         return existing
     questions = test.get("questions") or []
+    if normalized_type == "homework" and answers:
+        answer_ids = {int(key) for key in answers if str(key).isdigit()}
+        current_ids = {int(q.get("id") or 0) for q in questions}
+        possible_stale = answer_ids - current_ids - set(range(len(questions) + 1))
+        if possible_stale:
+            conn = get_conn()
+            try:
+                cur = conn.cursor()
+                for question_id in possible_stale:
+                    cur.execute("SELECT 1 FROM web_content_test_questions WHERE id=? AND test_id=?", (question_id, -int(test.get("id") or 0)))
+                    if cur.fetchone():
+                        raise ValueError("Test o‘zgartirilgan. Davom etish uchun testni qayta oching.")
+            finally:
+                conn.close()
     correct = 0
     wrong = 0
     skipped = 0
@@ -21726,6 +21742,10 @@ def _ensure_homework_schema_full() -> None:
                 """,
             ],
         )
+        cur.execute("""CREATE TABLE IF NOT EXISTS web_homework_voice_attachments (
+            homework_id BIGINT NOT NULL, student_id BIGINT NOT NULL,
+            files_json TEXT NOT NULL DEFAULT '[]', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY(homework_id, student_id))""")
         _ensure_table_columns(
             cur,
             "web_homework_submissions",
@@ -23101,23 +23121,6 @@ def update_homework(
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT * FROM web_homeworks WHERE id=? LIMIT 1", (int(homework_id),))
-        current = _row_to_dict(cur.fetchone()) or {}
-        cur.execute("SELECT 1 FROM web_homework_submissions WHERE homework_id=? LIMIT 1", (int(homework_id),))
-        has_submissions = cur.fetchone() is not None
-        if has_submissions:
-            same_content = (
-                str(current.get("homework_kind") or "") == normalized_kind
-                and bool(current.get("requires_voice_message")) == bool(requires_voice_message)
-                and bool(current.get("requires_file")) == bool(requires_file)
-                and bool(current.get("requires_essay")) == bool(requires_essay)
-                and str(current.get("essay_prompt") or "") == str(essay_prompt or "").strip()
-                and str(current.get("file_prompt") or "") == str(file_prompt or "").strip()
-                and str(current.get("voice_prompt") or "") == str(voice_prompt or "").strip()
-                and bool(current.get("is_voiceroom")) == bool(is_voiceroom)
-            )
-            if not same_content:
-                raise ValueError("Homework content cannot be changed after a student submission")
         cur.execute(
             """
             UPDATE web_homeworks
@@ -23540,6 +23543,38 @@ def review_homework_submission(
         conn.commit()
     finally:
         conn.close()
+    return get_homework_submission(int(homework_id), int(student_id))
+
+
+def review_homework_submission_with_points(
+    homework_id: int, student_id: int, reviewed_by: int, status: str,
+    dpoint_delta: float, review_note: str | None, subject: str | None,
+) -> dict | None:
+    """Replace a review and apply only its change in points in one transaction."""
+    ensure_homework_schema()
+    ensure_dpoints_schema()
+    with DB_WRITE_LOCK:
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT * FROM web_homework_submissions WHERE homework_id=? AND student_id=? FOR UPDATE", (int(homework_id), int(student_id)))
+            current = _row_to_dict(cur.fetchone())
+            if not current:
+                conn.rollback()
+                return None
+            previous = float(current.get("dpoints_delta") if current.get("dpoints_delta") is not None else current.get("dcoin_delta") or 0) if current.get("reviewed_at") else 0.0
+            adjustment = float(dpoint_delta) - previous
+            if adjustment and not add_dpoints_tx(cur, int(student_id), adjustment, subject=subject, change_type="teacher_homework_review"):
+                raise ValueError("Could not update homework points")
+            cur.execute("""UPDATE web_homework_submissions SET status=?, dcoin_delta=?, dpoints_delta=?, review_note=?, reviewed_by=?, reviewed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE homework_id=? AND student_id=?""", (
+                "not_done" if str(status or "").lower() == "not_done" else "done",
+                float(dpoint_delta), float(dpoint_delta), review_note, int(reviewed_by), int(homework_id), int(student_id)))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
     return get_homework_submission(int(homework_id), int(student_id))
 
 def get_student_attendance_history(user_id: int, limit_months: int = 5) -> list[dict]:

@@ -6311,7 +6311,7 @@ function StudentHomework() {
     }
   }
 
-  async function uploadProof(homeworkId: number, files: FileList | File[]) {
+  async function uploadProof(homeworkId: number, files: FileList | File[], voiceRoom = false) {
     if (submitting[homeworkId] || uploading[homeworkId]) return;
     setError("");
     setSubmitNote("");
@@ -6321,7 +6321,14 @@ function StudentHomework() {
       for (const file of Array.from(files).slice(0, 8)) {
         nextUrls.push(await uploadHomeworkFile(file));
       }
-      setProofDraft((prev) => ({ ...prev, [homeworkId]: [...(prev[homeworkId] || []), ...nextUrls].slice(0, 12) }));
+      if (voiceRoom) {
+        const token = localStorage.getItem("diamond_token");
+        if (!token) throw new Error("Tizimga qayta kiring");
+        await requestJson(`/student/homework/${homeworkId}/voiceroom-files`, { method: "POST", token, body: { proof_images: nextUrls } });
+        await load({ force: true });
+      } else {
+        setProofDraft((prev) => ({ ...prev, [homeworkId]: [...(prev[homeworkId] || []), ...nextUrls].slice(0, 12) }));
+      }
       setSuccess((prev) => ({ ...prev, [homeworkId]: tt("homework.imagesUploaded", "Fayllar yuklandi.") }));
     } catch (err) {
       setSuccess((prev) => ({ ...prev, [homeworkId]: "" }));
@@ -6610,7 +6617,8 @@ function StudentHomework() {
         const requiresEssay = Boolean(row.requires_essay);
         const requiresTest = Boolean(row.requires_test || row.test_available);
         const requiresVoiceMessage = Boolean(row.requires_voice_message);
-        const locked = reviewed || hasSubmission;
+        const testPlaceholder = String(row.submission_note || "") === "Test auto-submit";
+        const locked = reviewed || (hasSubmission && !testPlaceholder);
         const isUploading = Boolean(uploading[hid]);
         const isSubmitting = Boolean(submitting[hid]);
         const isRecording = recordingHomeworkId === hid;
@@ -6719,22 +6727,22 @@ function StudentHomework() {
                   </div>
                 </section>
               ) : null}
-              {!isVoiceroom && requiresFile ? (
+              {true ? (
               <>
               <div className="homework-action-panel homework-action-panel-single">
                 <div>
                   <span className="homework-action-label">{tt("homework.files", "Fayllar")}</span>
                   <label className="btn btn-soft small homework-upload-btn">
-                    {locked ? tt("homework.lockedSubmitted", "Topshirilgan") : isUploading ? tt("common.loading", "Yuklanmoqda...") : proofUrls.length ? tt("homework.addMoreImages", "Yana fayl qo'shish") : tt("homework.selectImage", "Fayl tanlash")}
+                    {locked && !isVoiceroom ? tt("homework.lockedSubmitted", "Topshirilgan") : isUploading ? tt("common.loading", "Yuklanmoqda...") : proofUrls.length ? tt("homework.addMoreImages", "Yana fayl qo'shish") : tt("homework.selectImage", "Fayl tanlash")}
                       <input
                         type="file"
                         accept="*/*"
                         multiple
-                        disabled={isUploading || isSubmitting || locked}
+                        disabled={isUploading || isSubmitting || (locked && !isVoiceroom)}
                       onChange={async (event) => {
                         const files = event.target.files;
                         if (!files?.length) return;
-                        await uploadProof(hid, files);
+                        await uploadProof(hid, files, isVoiceroom);
                         event.currentTarget.value = "";
                       }}
                     />
@@ -6837,7 +6845,7 @@ function StudentHomework() {
               ) : null}
               <div className="row-between" data-csp-style={JSON.stringify({ marginTop: 14 })}>
                 {!isVoiceroom ? (() => {
-                  const missingUpload = requiresFile && (!proofDraft[hid] || proofDraft[hid].length === 0);
+                  const missingUpload = false;
                   const missingVoice = requiresVoiceMessage && !voiceDraft[hid];
                   const hasEssayText = Boolean(noteValue.trim());
                   const missingEssay = (requiresEssay || (!requiresFile && !requiresVoiceMessage && !requiresTest)) && !hasEssayText;
@@ -7000,6 +7008,7 @@ function TeacherHomeworkPanel({
   const [selectedHomeworkId, setSelectedHomeworkId] = useState<number | null>(null);
   const [filterStatus, setFilterStatus] = useState<"all" | "pending" | "done" | "not-done">("all");
   const [createOpen, setCreateOpen] = useState(false);
+  const [homeworkStep, setHomeworkStep] = useState(0);
   const [submissionsModalOpen, setSubmissionsModalOpen] = useState(false);
   const [studentsLoaded, setStudentsLoaded] = useState(false);
   const [testQuestions, setTestQuestions] = useState<any[]>([]);
@@ -7083,6 +7092,7 @@ function TeacherHomeworkPanel({
 
   function resetHomeworkForm() {
     homeworkCreateRequestKey.current = null;
+    setHomeworkStep(0);
     setEditingHomeworkId(null);
     setEditingContentLocked(false);
     setTargetType("group");
@@ -7119,7 +7129,8 @@ function TeacherHomeworkPanel({
     const hid = Number(row.id || 0);
     if (!hid) return;
     setEditingHomeworkId(hid);
-    setEditingContentLocked(Boolean(row.content_locked));
+    setHomeworkStep(0);
+    setEditingContentLocked(false);
     setTargetType(row.group_id ? "group" : "student");
     setGroupId(Number(row.group_id || 0));
     setStudentId(Number(row.homework_student_id || row.student_id || 0));
@@ -7279,14 +7290,14 @@ function TeacherHomeworkPanel({
   async function submitReview(row: GenericRow, reviewStudentId: number, reviewKey: string) {
     setReviewBusy((prev) => ({ ...prev, [reviewKey]: true }));
     try {
-      const delta = reviewDelta[reviewKey] ?? 0;
+      const delta = reviewDelta[reviewKey] ?? Number(row.dpoints_delta ?? row.dcoin_delta ?? 0);
       const reviewed = await onApiCall(
         `/teacher/homework/${Number(row.id)}/review`,
         {
           student_id: reviewStudentId || undefined,
-          status: reviewStatus[reviewKey] || "done",
+          status: reviewStatus[reviewKey] || (row.reviewed_at && row.submission_status === "not_done" ? "not_done" : "done"),
           dpoint_delta: delta,
-          review_note: reviewNote[reviewKey] || "",
+          review_note: reviewNote[reviewKey] ?? String(row.review_note || ""),
         },
         "POST",
         "Homework reviewed",
@@ -7449,7 +7460,7 @@ function TeacherHomeworkPanel({
       </section>
       <ModalPortal open={createOpen}>
         <div className="overlay-modal-backdrop" onClick={() => setCreateOpen(false)}>
-          <article className="overlay-modal-card admin-wide-modal homework-create-modal" onClick={(event) => event.stopPropagation()}>
+          <article className="overlay-modal-card admin-wide-modal homework-create-modal stitch-homework" onClick={(event) => event.stopPropagation()}>
             <div className="row-between gap-3">
               <div>
                 <h3>{editingHomeworkId ? "Homeworkni tahrirlash" : "Homework yuklash"}</h3>
@@ -7458,7 +7469,7 @@ function TeacherHomeworkPanel({
                 </p>
                 {editingHomeworkId && editingContentLocked ? (
                   <p className="mt-2 rounded-xl border border-amber-300/70 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-400/30 dark:bg-amber-400/10 dark:text-amber-100">
-                    {tt("homework.contentLocked", "O‘quvchi homeworkni topshirgan. Sarlavha va deadline tahrirlanadi, vazifa mazmuni va testi qulflangan.")}
+                    {tt("homework.contentLocked", "O‘quvchi topshirgan test natijalarini saqlash uchun test savollari qulflangan.")}
                   </p>
                 ) : null}
               </div>
@@ -7466,6 +7477,12 @@ function TeacherHomeworkPanel({
                 <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
+            {panelError ? <p role="alert" className="mt-3 rounded-xl border border-red-300 bg-red-50 p-3 text-sm text-red-700">{panelError}</p> : null}
+            <div className="hw-steps" aria-label="Vazifa yaratish bosqichlari">
+              {['Kimga beriladi?', 'Vazifa mazmuni', 'Tekshirish'].map((label, index) => <div key={label} className={index === homeworkStep ? 'hw-step active' : 'hw-step'}><span>{index + 1}</span>{label}</div>)}
+            </div>
+            <div hidden={homeworkStep !== 1}>
+            <h4>Topshiriq formatlari</h4>
             <div data-csp-style={JSON.stringify({ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "12px", marginBottom: "16px" })}>
           <button
             type="button"
@@ -7480,7 +7497,7 @@ function TeacherHomeworkPanel({
             <strong>Test</strong>
             <em>Savollar alohida test viewerda ochiladi.</em>
           </button>
-          <button
+          {false && <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresFile ? "is-active" : ""}`}
             disabled={editingContentLocked}
@@ -7492,11 +7509,11 @@ function TeacherHomeworkPanel({
           >
             <strong>Fayl topshirig'i</strong>
             <em>Student rasm, dokument yoki fayl yuklaydi.</em>
-          </button>
+          </button>}
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresEssay ? "is-active" : ""}`}
-            disabled={editingContentLocked}
+            disabled={false}
             onClick={() => {
               const next = !requiresEssay;
               setRequiresEssay(next);
@@ -7509,7 +7526,7 @@ function TeacherHomeworkPanel({
           <button
             type="button"
             className={`homework-type-toggle homework-type-switch ${requiresVoiceMessage ? "is-active" : ""}`}
-            disabled={editingContentLocked}
+            disabled={false}
             onClick={() => {
               const next = !requiresVoiceMessage;
               setRequiresVoiceMessage(next);
@@ -7537,21 +7554,23 @@ function TeacherHomeworkPanel({
             <em>Guruhni avtomat 2 kishilik xonalarga bo'ladi va ular suhbatlashib topshiradi.</em>
           </button>
         </div>
+        </div>
+        <div hidden={homeworkStep !== 0}><h4>Kimga tayinlanadi?</h4>
         <div className="grid grid-3 homework-create-grid">
           <label>
-            Target <span className="text-red-500">*</span>
+            Kimga <span className="text-red-500">*</span>
             <select value={targetType} disabled={Boolean(editingHomeworkId)} onChange={(event) => {
               const nextTarget = event.target.value as "group" | "student";
               setTargetType(nextTarget);
               if (nextTarget === "student") loadHomeworkStudents().catch((err) => setPanelError(err instanceof Error ? err.message : "Students could not load"));
             }}>
-              <option value="group">Group</option>
-              <option value="student">Single student</option>
+              <option value="group">Guruhga</option>
+              <option value="student">Bitta o‘quvchiga</option>
             </select>
           </label>
           {targetType === "group" ? (
             <label>
-              Group <span className="text-red-500">*</span>
+              Guruh <span className="text-red-500">*</span>
               <input
                 value={homeworkGroupSearch}
                 onChange={(event) => setHomeworkGroupSearch(event.target.value)}
@@ -7570,15 +7589,15 @@ function TeacherHomeworkPanel({
           ) : (
           <div className="grid gap-3">
           <label>
-            Student search
+            O‘quvchini qidirish
             <input
               value={homeworkStudentSearch}
               onChange={(event) => setHomeworkStudentSearch(event.target.value)}
-              placeholder="Name / login / phone"
+              placeholder="Ism, login yoki telefon"
             />
           </label>
           <label>
-            Student <span className="text-red-500">*</span>
+            O‘quvchi <span className="text-red-500">*</span>
             <select value={studentId} disabled={Boolean(editingHomeworkId)} onChange={(event) => setStudentId(Number(event.target.value || 0))}>
               {editingHomeworkId && studentId && !filteredHomeworkStudents.some((row) => Number(row.id || 0) === Number(studentId)) ? (
                 <option value={studentId}>{`Student #${studentId}`}</option>
@@ -7591,23 +7610,29 @@ function TeacherHomeworkPanel({
           </div>
           )}
           <label>
-            Deadline <span className="text-red-500">*</span>
+            Topshirish muddati <span className="text-red-500">*</span>
             <input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
           </label>
         </div>
+        </div>
+        <div hidden={homeworkStep !== 1}>
         <label>
-          Title <span className="text-red-500">*</span>
+          Vazifa nomi <span className="text-red-500">*</span>
           <input value={title} onChange={(event) => setTitle(event.target.value)} />
         </label>
         <p className="text-xs text-ink-500">Har bir topshiriq turini tanlab, uning alohida ko‘rsatmasini kiriting.</p>
-        {requiresFile ? (
+        <div className="hw-instructions">
+          {requiresEssay ? <button type="button" className="btn btn-soft small" onClick={() => setInstructionDialog("essay")}>Yozma topshiriq ko‘rsatmasini tahrirlash</button> : null}
+          {requiresVoiceMessage ? <button type="button" className="btn btn-soft small" onClick={() => setInstructionDialog("voice")}>Ovozli javob ko‘rsatmasini tahrirlash</button> : null}
+          {requiresFile ? <button type="button" className="btn btn-soft small" onClick={() => setInstructionDialog("file")}>Fayl ko‘rsatmasini tahrirlash</button> : null}
+        </div>
+        {true ? (
           <>
             <label>
               Ixtiyoriy fayl / rasm
               <input
                 type="file"
                 accept="*/*"
-                disabled={editingContentLocked}
                 onChange={async (event) => {
                   const input = event.currentTarget;
                   const file = event.target.files?.[0];
@@ -7634,7 +7659,7 @@ function TeacherHomeworkPanel({
                 ) : (
                   <a href={resolveAssetUrl(imageUrl)} target="_blank" rel="noreferrer" className="btn btn-outline" data-csp-style={JSON.stringify({ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', margin: '0.5rem 0' })}>📄 Faylni ko'rish</a>
                 )}
-                <button className="btn btn-soft small" onClick={() => setImageUrl("")} type="button" disabled={editingContentLocked}>Faylni olib tashlash</button>
+                <button className="btn btn-soft small" onClick={() => setImageUrl("")} type="button">Faylni olib tashlash</button>
               </div>
             ) : null}
           </>
@@ -7706,6 +7731,8 @@ function TeacherHomeworkPanel({
           </div>
         ) : null}
 
+          </div>
+          {homeworkStep === 2 ? <div className="hw-summary"><h4>Vazifa xulosasi</h4><p><strong>Qabul qiluvchi:</strong> {targetType === "group" ? groups.find((g) => Number(g.id) === groupId)?.name : students.find((st) => Number(st.id) === studentId)?.full_name}</p><p><strong>Vazifa nomi:</strong> {title || "—"}</p><p><strong>Muddati:</strong> {dueAt || "—"}</p><p><strong>Formatlar:</strong> {[requiresEssay && "Yozma javob", requiresVoiceMessage && "Ovozli javob", requiresTest && "Interaktiv test", isVoiceroom && "Voice Room", requiresFile && "Fayl topshirig‘i"].filter(Boolean).join(", ") || "—"}</p><p><strong>Fayl:</strong> {imageUrl ? "Biriktirilgan" : "Biriktirilmagan"}</p>{essayPrompt ? <p><strong>Yozma topshiriq:</strong> {essayPrompt}</p> : null}{voicePrompt ? <p><strong>Ovozli topshiriq:</strong> {voicePrompt}</p> : null}{requiresTest ? <p><strong>Test:</strong> {testQuestions.length} ta savol</p> : null}</div> : null}
           {instructionDialog ? (
             <div className="overlay-modal-backdrop" onClick={() => setInstructionDialog(null)}>
               <section className="overlay-modal-card" role="dialog" aria-modal="true" aria-label="Topshiriq ko‘rsatmasi" onClick={(event) => event.stopPropagation()}>
@@ -7726,11 +7753,27 @@ function TeacherHomeworkPanel({
               </section>
             </div>
           ) : null}
+          <div className="hw-footer">
+          {homeworkStep > 0 ? <button type="button" className="btn btn-outline" onClick={() => setHomeworkStep(homeworkStep - 1)}>Orqaga</button> : null}
           <button
             type="button"
             className="w-full rounded-xl bg-cyan-500 py-3.5 text-sm font-black text-white hover:bg-cyan-600 shadow-premium transition-all mt-6"
             disabled={imageUploading || savingHomework}
             onClick={async () => {
+              if (homeworkStep === 0) {
+                if (!dueAt || (targetType === 'group' ? !groupId : !studentId)) {
+                  setPanelError('Guruh yoki o‘quvchini va topshirish muddatini tanlang.');
+                  return;
+                }
+                setPanelError(''); setHomeworkStep(1); return;
+              }
+              if (homeworkStep === 1) {
+                if (!title.trim()) { setPanelError('Vazifa nomini kiriting.'); return; }
+                if (!requiresFile && !requiresEssay && !requiresTest && !requiresVoiceMessage && !isVoiceroom) { setPanelError('Kamida bitta vazifa turini tanlang.'); return; }
+                if ((requiresEssay && !essayPrompt.trim()) || (requiresVoiceMessage && !voicePrompt.trim())) { setPanelError('Tanlangan topshiriq uchun ko‘rsatma kiriting.'); return; }
+                if (requiresTest && (!testQuestions.length || validateAiQuestions(testQuestions))) { setPanelError('Test savollarini tekshiring.'); return; }
+                setPanelError(''); setHomeworkStep(2); return;
+              }
               if (!requiresFile && !requiresEssay && !requiresTest && !requiresVoiceMessage && !isVoiceroom) {
                 setPanelError("Homework turi uchun kamida bittasini tanlang.");
                 emitUiToast("Homework turi uchun kamida bittasini tanlang.", "error");
@@ -7755,7 +7798,6 @@ function TeacherHomeworkPanel({
                 return;
               }
               if (requiresEssay && !essayPrompt.trim()) return setPanelError("Yozma javob uchun mavzu va talablarni kiriting.");
-              if (requiresFile && !filePrompt.trim()) return setPanelError("Fayl topshirig‘i uchun aniq ko‘rsatma kiriting.");
               if (requiresVoiceMessage && !voicePrompt.trim()) return setPanelError("Ovozli javob uchun mavzu kiriting.");
               if (!dueAt) {
                 setPanelError("Deadline majburiy.");
@@ -7787,7 +7829,7 @@ function TeacherHomeworkPanel({
                       ? legacyDescription
                       : [title.trim(), essayPrompt.trim(), filePrompt.trim(), voicePrompt.trim()].filter(Boolean).join(" — "),
                     due_at: dueAt || null,
-                    image_url: imageUrl || null,
+                    image_url: imageUrl,
                     dcoin_effect: 0,
                     dpoint_effect: 0,
                     homework_kind: homeworkKindFromToggles(),
@@ -7837,8 +7879,9 @@ function TeacherHomeworkPanel({
               }
             }}
           >
-            {imageUploading ? "Fayl yuklanmoqda..." : savingHomework ? "Saqlanmoqda..." : editingHomeworkId ? "Homeworkni saqlash" : "Create Homework"}
+            {imageUploading ? "Fayl yuklanmoqda..." : savingHomework ? "Saqlanmoqda..." : homeworkStep < 2 ? "Davom etish" : editingHomeworkId ? "O‘zgarishlarni saqlash" : "Uyga vazifani yaratish"}
           </button>
+          </div>
           </article>
         </div>
       </ModalPortal>
@@ -8328,7 +8371,7 @@ function TeacherHomeworkPanel({
 	                      </button>
 	                    ) : null}
 	                    <select
-	                      value={reviewStatus[reviewKey] || "done"}
+	                      value={reviewStatus[reviewKey] || (row.reviewed_at && row.submission_status === "not_done" ? "not_done" : "done")}
 	                      onChange={(event) => setReviewStatus((prev) => ({ ...prev, [reviewKey]: event.target.value as "done" | "not_done" }))}
 	                      disabled={reviewBusyNow}
 	                    >
@@ -8340,14 +8383,14 @@ function TeacherHomeworkPanel({
 	                        type="number"
 	                        min={-500}
 	                        max={500}
-	                        value={reviewDelta[reviewKey] ?? 0}
+	                        value={reviewDelta[reviewKey] ?? Number(row.dpoints_delta ?? row.dcoin_delta ?? 0)}
 	                        onChange={(event) => setReviewDelta((prev) => ({ ...prev, [reviewKey]: Number(event.target.value || 0) }))}
 	                        disabled={reviewBusyNow}
 	                        placeholder="D'point"
 	                      />
 	                    ) : null}
 	                    <textarea
-	                      value={reviewNote[reviewKey] || ""}
+	                      value={reviewNote[reviewKey] ?? String(row.review_note || "")}
 	                      onChange={(event) => setReviewNote((prev) => ({ ...prev, [reviewKey]: event.target.value }))}
 	                      placeholder={tt('homework.reviewNote', 'Review note')}
 	                      disabled={reviewBusyNow}
