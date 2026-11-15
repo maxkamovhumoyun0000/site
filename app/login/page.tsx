@@ -9,6 +9,33 @@ const TELEGRAM_BOT_SYNC_PREF_PREFIX = "diamond_tg_bot_sync_pref_";
 const TELEGRAM_MANUAL_LOGOUT_PREFIX = "diamond_tg_manual_logout_";
 const LOGIN_REQUEST_TIMEOUT_MS = 30000;
 const TELEGRAM_AUTO_LOGIN_TIMEOUT_MS = 15000;
+type LoginSession = {
+  session_id: string;
+  source?: string;
+  device_model?: string | null;
+  last_seen_at?: string | null;
+  created_at?: string | null;
+};
+type LoginSessionLimit = {
+  message: string;
+  session_limit: number;
+  sessions: LoginSession[];
+};
+
+function sessionDate(value?: string | null) {
+  if (!value) return "Ma’lumot mavjud emas";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Ma’lumot mavjud emas" : date.toLocaleString("uz-UZ", { dateStyle: "medium", timeStyle: "short" });
+}
+
+function sessionSource(source?: string) {
+  switch ((source || "").toLowerCase()) {
+    case "teacher": return "Teacher ilovasi";
+    case "student": return "Student ilovasi";
+    case "speaking": return "Speaking ilovasi";
+    default: return "Veb-sayt yoki boshqa qurilma";
+  }
+}
 type TelegramWebApp = {
   initData?: string;
   initDataUnsafe?: {
@@ -87,6 +114,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sessionLimit, setSessionLimit] = useState<LoginSessionLimit | null>(null);
+  const [selectedSessions, setSelectedSessions] = useState<string[]>([]);
   const [qrBusy, setQrBusy] = useState(false);
   const [qrError, setQrError] = useState("");
   const [scannerActive, setScannerActive] = useState(false);
@@ -370,8 +399,7 @@ export default function LoginPage() {
     };
   }, [scannerActive, consumeQrLogin]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function attemptLogin(revokeSessionIds: string[] = []) {
     setError("");
     setLoading(true);
     try {
@@ -391,6 +419,7 @@ export default function LoginPage() {
             login_id: loginId,
             password,
             device_id: deviceId || null,
+            ...(revokeSessionIds.length ? { revoke_session_ids: revokeSessionIds } : {}),
             ...getTelegramMiniAppSyncPayload(),
           }),
         });
@@ -399,7 +428,21 @@ export default function LoginPage() {
       }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = String(body.detail || "Kirish amalga oshmadi");
+        const rawDetail = body.detail;
+        if (response.status === 409 && rawDetail && typeof rawDetail === "object" && rawDetail.code === "session_limit" && Array.isArray(rawDetail.sessions)) {
+          const sessions: LoginSession[] = rawDetail.sessions
+            .filter((item: unknown): item is LoginSession => Boolean(item && typeof item === "object" && typeof (item as LoginSession).session_id === "string" && (item as LoginSession).session_id))
+            .slice(0, 20);
+          setSessionLimit({
+            message: typeof rawDetail.message === "string" ? rawDetail.message : "Davom etish uchun eski sessiyani tanlang.",
+            session_limit: Number(rawDetail.session_limit) || 0,
+            sessions,
+          });
+          setSelectedSessions([]);
+          if (!sessions.length) setError("Sessiyalar ro‘yxati yuklanmadi. Qayta urinib ko‘ring.");
+          return;
+        }
+        const detail = typeof rawDetail === "string" ? rawDetail : typeof rawDetail?.message === "string" ? rawDetail.message : "Kirish amalga oshmadi";
         if (response.status === 403 && detail.toLowerCase().includes("account is blocked")) {
           const locale = String(localStorage.getItem("diamond_locale") || "uz").toLowerCase();
           throw new Error(locale.startsWith("ru") ? "Ваш аккаунт заблокирован. Обратитесь к администратору." : locale.startsWith("en") ? "Your account is blocked. Please contact the administrator." : "Akkauntingiz bloklangan. Administratorga murojaat qiling.");
@@ -407,6 +450,7 @@ export default function LoginPage() {
         throw new Error(detail);
       }
       const token = String(body.access_token || "");
+      setSessionLimit(null);
       completeLogin(token);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
@@ -419,6 +463,13 @@ export default function LoginPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    setSessionLimit(null);
+    setSelectedSessions([]);
+    void attemptLogin();
   }
 
   return (
@@ -503,6 +554,40 @@ export default function LoginPage() {
           ) : null}
         </section>
       </section>
+
+      {sessionLimit ? (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-navy-950/80 p-4 backdrop-blur-sm" role="presentation">
+          <div role="dialog" aria-modal="true" aria-labelledby="session-limit-title" className="w-full max-w-lg max-h-[90dvh] overflow-y-auto rounded-3xl border border-white/20 bg-[#101f4d] p-5 text-white shadow-2xl sm:p-7">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="session-limit-title" className="text-xl font-bold">Faol sessiyalar</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-200">{sessionLimit.message}</p>
+              </div>
+              <button type="button" aria-label="Oynani yopish" disabled={loading} onClick={() => { setSessionLimit(null); setSelectedSessions([]); setError(""); }} className="rounded-lg px-3 py-2 text-xl text-white hover:bg-white/10 disabled:opacity-50">×</button>
+            </div>
+            <p className="mt-4 text-sm text-slate-300">Kirish uchun chiqarmoqchi bo‘lgan sessiyani tanlang. Tanlangan qurilmada akkauntdan chiqiladi.</p>
+            <div className="mt-4 space-y-2" aria-label="Faol sessiyalar ro‘yxati">
+              {sessionLimit.sessions.map((session) => {
+                const selected = selectedSessions.includes(session.session_id);
+                return (
+                  <button key={session.session_id} type="button" aria-pressed={selected} disabled={loading} onClick={() => setSelectedSessions((previous) => selected ? previous.filter((id) => id !== session.session_id) : previous.length < 3 ? [...previous, session.session_id] : previous)} className={`flex w-full items-center gap-3 rounded-2xl border p-4 text-left transition-colors disabled:opacity-60 ${selected ? "border-cyan-300 bg-cyan-400/15" : "border-white/15 bg-white/5 hover:bg-white/10"}`}>
+                    <span aria-hidden="true" className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${selected ? "border-cyan-300 bg-cyan-300 text-navy-950" : "border-slate-400"}`}>{selected ? "✓" : ""}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words text-sm font-bold">{session.device_model || sessionSource(session.source)}</span>
+                      <span className="mt-1 block text-xs text-slate-300">{session.device_model ? `${sessionSource(session.source)} · ` : ""}Oxirgi faollik: {sessionDate(session.last_seen_at || session.created_at)}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            {error ? <p role="alert" className="mt-3 rounded-xl border border-red-400/40 bg-red-500/20 px-3 py-2 text-sm text-red-100">{error}</p> : null}
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button type="button" disabled={loading} onClick={() => { setSessionLimit(null); setSelectedSessions([]); setError(""); }} className="rounded-xl border border-white/25 px-5 py-3 text-sm font-semibold hover:bg-white/10 disabled:opacity-50">Bekor qilish</button>
+              <button type="button" disabled={loading || selectedSessions.length < Math.max(1, sessionLimit.sessions.length - sessionLimit.session_limit + 1)} onClick={() => void attemptLogin(selectedSessions)} className="rounded-xl bg-cyan-300 px-5 py-3 text-sm font-bold text-navy-950 hover:bg-cyan-200 disabled:cursor-not-allowed disabled:opacity-50">{loading ? "Tekshirilmoqda..." : "Tanlangan sessiyadan chiqish va kirish"}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showQrPanel ? (
         <section className="fixed inset-0 z-[200] bg-black">
