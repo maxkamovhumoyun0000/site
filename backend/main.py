@@ -350,6 +350,7 @@ from db import (
     purchase_gift_with_tickets_atomic,
     record_gift_payment_discount,
     get_active_gift_payment_discount,
+    list_gift_payment_discounts_for_month,
     expire_other_gift_payment_discounts,
     get_diamondvoy_limit_boost_summary,
     purchase_book_with_dcoins,
@@ -1103,6 +1104,7 @@ SECTIONS_BY_ROLE: dict[str, list[str]] = {
         "developer-server",
         "developer-deploy",
         "developer-maintenance",
+        "developer-app-versions",
         "developer-attendance",
         "developer-flags",
         "developer-audit",
@@ -23562,6 +23564,24 @@ async def admin_update_version_settings(payload: dict, authorization: str | None
     normalized = _normalize_app_version_settings_payload(payload)
     version_only = {key: value for key, value in normalized.items() if "_maintenance_" not in key}
     updated = update_app_version_settings(version_only)
+    return _app_version_settings_response(updated)
+
+
+@app.get("/developer/app-version-settings")
+async def developer_get_version_settings(authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    return _app_version_settings_response(get_app_version_settings())
+
+
+@app.post("/developer/app-version-settings")
+async def developer_update_version_settings(payload: dict, authorization: str | None = Header(default=None)):
+    user = _user_row_from_bearer(authorization)
+    _require_developer_access(user)
+    normalized = _normalize_app_version_settings_payload(payload)
+    allowed = {f"min_{role}_{field}" for role in ("student", "teacher") for field in ("version", "build")}
+    allowed.update(f"{role}_{store}_store_url" for role in ("student", "teacher") for store in ("play", "app"))
+    updated = update_app_version_settings({key: value for key, value in normalized.items() if key in allowed})
     return _app_version_settings_response(updated)
 
 
@@ -51379,6 +51399,20 @@ async def admin_payments_export(
     return StreamingResponse(bio, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers=headers)
 
 
+def _payment_paginate_rows(rows: list[dict[str, Any]], page: int | None, legacy_limit: int = 500) -> list[dict[str, Any]]:
+    if page is None:
+        return rows[:legacy_limit]
+    offset = (int(page) - 1) * 10
+    return rows[offset:offset + 10]
+
+
+def _payment_paginate_overdue(rows: list[dict[str, Any]], page: int | None, search: str | None) -> tuple[list[dict[str, Any]], int]:
+    term = str(search or "").strip().casefold()
+    filtered = [row for row in rows if not term or term in f"{row.get('full_name') or ''} {row.get('phone') or ''} {row.get('login_id') or ''}".casefold()]
+    filtered.sort(key=lambda row: (-float(row.get("debt_amount") or 0), str(row.get("full_name") or "").casefold(), int(row.get("id") or 0)))
+    return _payment_paginate_rows(filtered, page, legacy_limit=800), len(filtered)
+
+
 @app.get("/admin/payments/stats")
 async def admin_payments_stats(
     ym: str | None = Query(default=None),
@@ -51389,6 +51423,9 @@ async def admin_payments_stats(
     payment_method: str | None = Query(default=None),
     date_from: str | None = Query(default=None),
     date_to: str | None = Query(default=None),
+    overdue_page: int | None = Query(default=None, ge=1),
+    group_page: int | None = Query(default=None, ge=1),
+    overdue_search: str | None = Query(default=None, max_length=200),
     authorization: str | None = Header(default=None),
 ):
     started_at = time.perf_counter()
@@ -51905,6 +51942,8 @@ async def admin_payments_stats(
             len(teacher_comparison),
         )
 
+    overdue_page_rows, overdue_total = _payment_paginate_overdue(late_students, overdue_page, overdue_search)
+    group_page_rows = _payment_paginate_rows(group_comparison, group_page)
     return {
         "ym": month_key,
         "period": {
@@ -51928,10 +51967,12 @@ async def admin_payments_stats(
             "paid": paid_students[:800],
             "unpaid": unpaid_students[:800],
             "partial": partial_students[:800],
-            "overdue": late_students[:800],
+            "overdue": overdue_page_rows,
             "overpayment": overpay_students[:800],
         },
-        "group_comparison": group_comparison[:500],
+        "group_comparison": group_page_rows,
+        "overdue_total": overdue_total,
+        "group_comparison_total": len(group_comparison),
         "teacher_comparison": teacher_comparison[:500],
         "chart_data": {
             "series": chart_series,
@@ -52019,6 +52060,7 @@ async def admin_payments_preview(
         int(admin_ref),
         selected_group_id if selected_group_id > 0 else None,
     )
+    result["gift_discounts"] = list_gift_payment_discounts_for_month(int(user_id), month_key)
     return result
 
 
@@ -52129,6 +52171,9 @@ async def admin_payments_dashboard(
     group_id: int | None = Query(default=None),
     status: str | None = Query(default=None),
     include_items: bool = Query(default=True),
+    overdue_page: int | None = Query(default=None, ge=1),
+    group_page: int | None = Query(default=None, ge=1),
+    overdue_search: str | None = Query(default=None, max_length=200),
     authorization: str | None = Header(default=None),
 ):
     user = _user_row_from_bearer(authorization)
@@ -52410,6 +52455,8 @@ async def admin_payments_dashboard(
             uid = int(row.get("user_id") or 0)
             if uid > 0:
                 row["referral_status"] = referral_map.get(uid)
+    overdue_page_rows, overdue_total = _payment_paginate_overdue(overdue_rows, overdue_page, overdue_search)
+    group_page_rows = _payment_paginate_rows(group_comparison, group_page)
     return {
         "ym": month_key,
         "stats": {
@@ -52427,13 +52474,15 @@ async def admin_payments_dashboard(
             "refund_total": round(total_refund, 2),
             "overpayment_total": round(total_over, 2),
         },
-        "group_comparison": group_comparison[:500],
+        "group_comparison": group_page_rows,
+        "group_comparison_total": len(group_comparison),
+        "overdue_total": overdue_total,
         "teacher_comparison": teacher_comparison[:500],
         "status_lists": {
             "paid": paid_rows[:800],
             "unpaid": unpaid_rows[:800],
             "partial": partial_rows[:800],
-            "overdue": overdue_rows[:800],
+            "overdue": overdue_page_rows,
             "overpayment": overpay_rows[:800],
         },
         "items": filtered[:800] if include_items else [],

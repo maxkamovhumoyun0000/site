@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { API_BASE } from "../public-data";
 import { SectionTitle } from "./primitives";
 import { useWebT } from "./web-i18n";
+import { DiamondVoyAppVersionWizard } from "./app-version-control";
 import {
   alertLocalPrinterPaperOut,
   localPrintAgentHealth,
@@ -329,6 +330,14 @@ export function DeveloperHomeView({ onNavigate }: { onNavigate: (section: string
       icon: "⏸",
       badge: "Mobil & Web",
       color: "from-amber-600/10 to-orange-600/10 border-amber-500/30 text-amber-600 dark:text-amber-400",
+    },
+    {
+      id: "developer-app-versions",
+      title: tt("section.developer-app-versions", "Ilova versiyalari"),
+      desc: "Student va Teacher ilovalari uchun minimal versiya va yangilash havolalari.",
+      icon: "↻",
+      badge: "Force Update",
+      color: "from-indigo-600/10 to-blue-600/10 border-indigo-500/30 text-indigo-600 dark:text-indigo-400",
     },
     {
       id: "developer-attendance",
@@ -1859,6 +1868,8 @@ export function DeveloperWorkspace({
   section?: string;
   onNavigate: (section: string) => void;
 }) {
+  const versionApiFetch = useCallback((path: string, options?: { method?: string; body?: unknown }) =>
+    requestJson(path, { ...options, token: localStorage.getItem("diamond_token") || "" }), []);
   switch (section) {
     case "developer-deploy":
       return <DeveloperDeployView />;
@@ -1866,6 +1877,8 @@ export function DeveloperWorkspace({
       return <DeveloperServerView />;
     case "developer-maintenance":
       return <DeveloperMaintenanceView />;
+    case "developer-app-versions":
+      return <DiamondVoyAppVersionWizard apiFetch={versionApiFetch} endpoint="/developer/app-version-settings" />;
     case "developer-attendance":
       return <DeveloperAttendanceReopenView />;
     case "developer-flags":

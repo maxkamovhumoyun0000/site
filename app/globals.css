@@ -9764,6 +9764,22 @@ button.btn.btn-primary:active {
 }
 
 /* ── PMC: student header ── */
+.pmc-discount-notice {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid #a78bfa;
+  border-radius: 16px;
+  color: #4c1d95;
+  background: #f5f3ff;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+[data-theme="dark"] .pmc-discount-notice {
+  color: #e9d5ff;
+  background: #30214d;
+  border-color: #8b5cf6;
+}
 .pmc-student-header {
   display: flex;
   align-items: center;

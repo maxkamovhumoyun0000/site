@@ -16253,6 +16253,8 @@ function AdminSection({
   const [paymentsSelectorIsMobile, setPaymentsSelectorIsMobile] = useState(false);
   const [paymentsStatsSearch, setPaymentsStatsSearch] = useState("");
   const [paymentsStudentListMode, setPaymentsStudentListMode] = useState<"paid" | "unpaid" | "partial" | "overdue" | "overpayment" | "">("");
+  const [paymentsOverduePage, setPaymentsOverduePage] = useState(1);
+  const [paymentsGroupComparisonPage, setPaymentsGroupComparisonPage] = useState(1);
   const [paymentsSelectedGroupId, setPaymentsSelectedGroupId] = useState<number>(0);
   const [paymentsStudentItems, setPaymentsStudentItems] = useState<GenericRow[]>([]);
   const [paymentsStudentTotal, setPaymentsStudentTotal] = useState(0);
@@ -16261,6 +16263,7 @@ function AdminSection({
   const [paymentsStudentListLoading, setPaymentsStudentListLoading] = useState(false);
   const [paymentsSelectedStudentId, setPaymentsSelectedStudentId] = useState<number>(0);
   const [paymentsCalcModal, setPaymentsCalcModal] = useState<GenericRow | null>(null);
+  const paymentsCalcRequestRef = useRef(0);
   const [paymentsCalcPopupOpen, setPaymentsCalcPopupOpen] = useState(false);
   const [paymentsDetail, setPaymentsDetail] = useState<GenericRow | null>(null);
   const [paymentsStudentsLoading, setPaymentsStudentsLoading] = useState(false);
@@ -17336,6 +17339,9 @@ function AdminSection({
     setPaymentsGeneralError("");
     const params = new URLSearchParams();
     params.set("ym", paymentsMonthFilter);
+    params.set("overdue_page", String(paymentsOverduePage));
+    params.set("group_page", String(paymentsGroupComparisonPage));
+    if (deferredPaymentsStatsSearch.trim()) params.set("overdue_search", deferredPaymentsStatsSearch.trim());
     if (paymentsDateFrom) params.set("date_from", paymentsDateFrom);
     if (paymentsDateTo) params.set("date_to", paymentsDateTo);
     if (deferredPaymentsTeacherFilter.trim()) params.set("teacher_name", deferredPaymentsTeacherFilter.trim());
@@ -17356,6 +17362,9 @@ function AdminSection({
       if (canUseFastDashboard) {
         const dashboardParams = new URLSearchParams();
         dashboardParams.set("ym", paymentsMonthFilter);
+        dashboardParams.set("overdue_page", String(paymentsOverduePage));
+        dashboardParams.set("group_page", String(paymentsGroupComparisonPage));
+        if (deferredPaymentsStatsSearch.trim()) dashboardParams.set("overdue_search", deferredPaymentsStatsSearch.trim());
         // This request only needs aggregate cards and scoped comparisons; the
         // paged student list is loaded separately. Avoid returning hundreds
         // of full obligation rows on every filter refresh.
@@ -17474,6 +17483,8 @@ function AdminSection({
             pie: { paid: totalPaid, debt: totalDebt, overpayment: totalOverpay, paid_amount: totalPaid, debt_amount: totalDebt, overpayment_amount: totalOverpay },
           },
           group_comparison: dashboardGroupComparison.length ? dashboardGroupComparison : comparisonFrom("group_name"),
+          group_comparison_total: Number(dashboard.group_comparison_total || 0),
+          overdue_total: Number(dashboard.overdue_total || 0),
           teacher_comparison: dashboardTeacherComparison.length ? dashboardTeacherComparison : comparisonFrom("teacher_name"),
           jobs: dashboard.jobs || [],
           fast_path: true,
@@ -17502,7 +17513,7 @@ function AdminSection({
   function _derivePaymentConfirmDraft() {
     setPaymentsConfirmDraft((prev) => ({
       ...prev,
-      ym: "",
+      ym: paymentsMonthFilter,
       groupId: 0,
       amount: "",
       cashAmount: "",
@@ -17530,6 +17541,7 @@ function AdminSection({
     const token = localStorage.getItem("diamond_token");
     const selectedStudentId = Number(studentIdArg || paymentsSelectedStudentId || 0);
     if (!token || !selectedStudentId) return;
+    const requestId = ++paymentsCalcRequestRef.current;
     setPaymentsCalcLoading(true);
     setPaymentsSelectedStudentId(selectedStudentId);
     try {
@@ -17545,12 +17557,13 @@ function AdminSection({
           { token },
         ),
       ]);
+      if (requestId !== paymentsCalcRequestRef.current) return;
       setPaymentsCalcModal(calcPayload || null);
       setPaymentsDetail(detailPayload || null);
       _derivePaymentConfirmDraft();
       setPaymentsCalcPopupOpen(true);
     } finally {
-      setPaymentsCalcLoading(false);
+      if (requestId === paymentsCalcRequestRef.current) setPaymentsCalcLoading(false);
     }
   }
 
@@ -17969,6 +17982,17 @@ function AdminSection({
       setPaymentsSelectorTab("students");
     }
   }, [section, paymentsSelectorIsMobile, paymentsSelectedGroupId]);
+  useEffect(() => {
+    setPaymentsOverduePage(1);
+    setPaymentsGroupComparisonPage(1);
+  }, [paymentsMonthFilter, paymentsDateFrom, paymentsDateTo, deferredPaymentsTeacherFilter, deferredPaymentsGroupQuery, paymentsSubjectFilter, paymentsMethodFilter]);
+  useEffect(() => {
+    setPaymentsOverduePage(1);
+  }, [deferredPaymentsStatsSearch]);
+  useEffect(() => {
+    if (section !== "payments") return;
+    loadPaymentsStats().catch(() => null);
+  }, [section, paymentsOverduePage, paymentsGroupComparisonPage, deferredPaymentsStatsSearch]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (section !== "payments") return;
     const selectedGroupId = paymentsSelectedGroupId > 0 ? paymentsSelectedGroupId : undefined;
@@ -19365,7 +19389,7 @@ function AdminSection({
       return byName && byTeacher && byLessonDay && bySubject;
     });
     const selectedGroup = groups.find((group) => Number(group.id || 0) === Number(paymentsSelectedGroupId || 0)) || null;
-    const groupComparisonRows = rawGroupComparisonRows.length
+    const groupComparisonRows = rawGroupComparisonRows.length || paymentsStats.group_comparison_total !== undefined
       ? rawGroupComparisonRows
       : selectedGroup
         ? [{
@@ -19553,11 +19577,29 @@ function AdminSection({
         || `${String(row.full_name || row.login_id || "")} ${String(row.phone || "")}`.toLowerCase().includes(String(deferredPaymentsStatsSearch || "").trim().toLowerCase()),
     );
     const calcRows = ((paymentsCalcModal?.items || []) as GenericRow[]).filter((row) => Number(row.group_id || 0) > 0);
+    const giftDiscounts = (paymentsCalcModal?.gift_discounts || []) as GenericRow[];
+    const discountLabel = (source: unknown) => {
+      switch (String(source || "none").toLowerCase()) {
+        case "gift_payment_discount": return pt("discountGift", "Sovg'adan olingan chegirma");
+        case "multi_group": return pt("discountMultiGroup", "Bir nechta guruh chegirmasi");
+        case "family": return pt("discountFamily", "Oilaviy chegirma");
+        case "free_access": return pt("discountFreeAccess", "Bepul ta'lim");
+        case "student_group_override": return pt("discountPersonal", "Shaxsiy guruh chegirmasi");
+        case "student_group_fixed_price": return pt("discountFixedPrice", "Shaxsiy kelishilgan narx");
+        default: return String(source || "").replace(/_/g, " ") || pt("discount", "Chegirma");
+      }
+    };
     const detailMonths = ((paymentsDetail?.overview?.months || []) as GenericRow[]);
     const activeDetailMonth =
       detailMonths.find((row) => String(row.ym || "") === String(paymentsConfirmDraft.ym || "")) ||
       ((paymentsDetail?.overview?.current_month || null) as GenericRow | null);
     const detailRows = ((activeDetailMonth?.items || []) as GenericRow[]);
+    const discountRows = calcRows.map((row) => {
+      const saved = detailRows.find((item) => Number(item.group_id || 0) === Number(row.group_id || 0));
+      return saved && String(activeDetailMonth?.ym || "") === String(paymentsCalcModal?.ym || "")
+        ? { ...row, discount_type: saved.discount_type, discount_percent: saved.discount_percent, discount_amount: saved.discount_amount }
+        : row;
+    });
     const paymentsDetailUser = ((paymentsDetail?.user || paymentsDetail?.student || {}) as GenericRow);
     const paymentDetailTransactions = ((paymentsDetail?.overview?.transactions || []) as GenericRow[]).slice(0, 20);
     const paymentDetailStudentName = String(paymentsDetailUser.full_name || paymentsDetailUser.login_id || (paymentsSelectedStudentId ? `#${paymentsSelectedStudentId}` : "-"));
@@ -20105,13 +20147,13 @@ function AdminSection({
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               {pt("groupComparison", "Guruhlar solishtiruvi")}
             </h3>
-            <span className="pp-count-chip">{groupComparisonRows.length} ta</span>
+            <span className="pp-count-chip">{Number(paymentsStats.group_comparison_total ?? groupComparisonRows.length)} ta</span>
           </div>
           {groupComparisonRows.length === 0 ? (
             <div className="pp-empty pp-empty-sm"><p>{pt("noGroupComparison", "Ma'lumot yo'q.")}</p></div>
           ) : (
             <div className="pp-compare-grid">
-              {groupComparisonRows.slice(0, 120).map((row) => {
+              {groupComparisonRows.map((row) => {
                 const pct = Number(row.completion_percent || 0);
                 const pctClass = pct >= 90 ? "pp-cg-high" : pct >= 50 ? "pp-cg-mid" : "pp-cg-low";
                 return (
@@ -20135,6 +20177,13 @@ function AdminSection({
                   </article>
                 );
               })}
+            </div>
+          )}
+          {Number(paymentsStats.group_comparison_total || 0) > 10 && (
+            <div className="pp-pagination">
+              <button className="btn btn-soft" disabled={paymentsGroupComparisonPage <= 1 || paymentsStatsLoading} onClick={() => setPaymentsGroupComparisonPage((page) => Math.max(1, page - 1))}>{tt("common.prev", "Oldingi")}</button>
+              <span className="pp-page-info">{paymentsGroupComparisonPage} / {Math.ceil(Number(paymentsStats.group_comparison_total) / 10)}</span>
+              <button className="btn btn-soft" disabled={paymentsGroupComparisonPage >= Math.ceil(Number(paymentsStats.group_comparison_total) / 10) || paymentsStatsLoading} onClick={() => setPaymentsGroupComparisonPage((page) => page + 1)}>{tt("common.next", "Keyingi")}</button>
             </div>
           )}
         </section>
@@ -20297,12 +20346,21 @@ function AdminSection({
               })}
               {!filteredSelectedStudentList.length && <div className="pp-empty pp-empty-sm"><p>{pt("noStudentsForStatus", "Student topilmadi.")}</p></div>}
             </div>
+            {paymentsStudentListMode === "overdue" && Number(paymentsStats.overdue_total || 0) > 10 && (
+              <div className="pp-pagination">
+                <button className="btn btn-soft" disabled={paymentsOverduePage <= 1 || paymentsStatsLoading} onClick={() => setPaymentsOverduePage((page) => Math.max(1, page - 1))}>{tt("common.prev", "Oldingi")}</button>
+                <span className="pp-page-info">{paymentsOverduePage} / {Math.ceil(Number(paymentsStats.overdue_total) / 10)} · {Number(paymentsStats.overdue_total)} ta</span>
+                <button className="btn btn-soft" disabled={paymentsOverduePage >= Math.ceil(Number(paymentsStats.overdue_total) / 10) || paymentsStatsLoading} onClick={() => setPaymentsOverduePage((page) => page + 1)}>{tt("common.next", "Keyingi")}</button>
+              </div>
+            )}
           </section>
         ) : null}
         {paymentsCalcModal ? (
             <PaymentModalPortal
               open={paymentsCalcPopupOpen}
               onClose={() => {
+                paymentsCalcRequestRef.current += 1;
+                setPaymentsCalcLoading(false);
                 setPaymentsCalcPopupOpen(false);
                 setPaymentsCalcModal(null);
                 setPaymentsSelectedStudentId(0);
@@ -20317,6 +20375,8 @@ function AdminSection({
                   </div>
                   <PaymentModalCloseButton
                     onClick={() => {
+                      paymentsCalcRequestRef.current += 1;
+                      setPaymentsCalcLoading(false);
                       setPaymentsCalcPopupOpen(false);
                       setPaymentsCalcModal(null);
                       setPaymentsSelectedStudentId(0);
@@ -20342,6 +20402,24 @@ function AdminSection({
                     <span>{paymentsConfirmDraft.ym || paymentsMonthFilter}</span>
                   </div>
                 </section>
+
+                {(discountRows.some((row) => Number(row.discount_percent || 0) > 0 || String(row.discount_type || "") === "student_group_fixed_price") || giftDiscounts.length > 0) && (
+                  <section className="pmc-discount-notice" aria-label={pt("discount", "Chegirma")}>
+                    <strong>🏷️ {pt("discountsForMonth", "Shu oydagi chegirmalar")}</strong>
+                    {discountRows.map((row) => {
+                      const source = String(row.discount_type || "none");
+                      const percent = Number(row.discount_percent || 0);
+                      if (percent <= 0 && source !== "student_group_fixed_price") return null;
+                      return <div key={`discount-${row.group_id}`}><b>{String(row.group_name || `#${row.group_id}`)}</b>: {discountLabel(source)}{percent > 0 ? ` · ${percent}%` : ""}{Number(row.discount_amount || 0) > 0 ? ` · −${Number(row.discount_amount).toFixed(2)}` : ""}</div>;
+                    })}
+                    {giftDiscounts.map((gift) => {
+                      const status = String(gift.status || "").toLowerCase();
+                      const applied = status === "active" || status === "applied";
+                      const statusText = applied ? pt("giftDiscountActive", "faol; guruhlar bo'yicha qo'llanishi yuqorida ko'rsatilgan") : status === "not_applied_lower_than_existing" ? pt("giftDiscountLower", "kattaroq yoki teng chegirma borligi uchun qo'llanmagan") : status === "not_applied_month_already_paid" ? pt("giftDiscountPaid", "oy to'lovi to'langani uchun qo'llanmagan") : status === "not_applied_partial_payment_exists" ? pt("giftDiscountPartial", "qisman to'lov borligi uchun qo'llanmagan") : status.startsWith("expired") ? pt("giftDiscountExpired", "amal qilish muddati tugagan yoki boshqa chegirma bilan almashtirilgan") : pt("giftDiscountNotApplied", "qo'llanmagan");
+                      return <div key={`gift-discount-${gift.id}`}>🎁 {String(gift.gift_title || pt("giftDiscount", "Sovg'a"))} · {Number(gift.discount_percent || 0)}% — {statusText}</div>;
+                    })}
+                  </section>
+                )}
 
                 {/* ── Summary totals strip ── */}
                 <section className="pmc-summary-strip">
@@ -20371,13 +20449,13 @@ function AdminSection({
                       </strong>
                     </div>
                   )}
-                  {Number(paymentsCalcModal.discount_percent || 0) > 0 && (
+                  {Number(paymentsCalcModal.discount_amount || 0) > 0 && (
                     <div className="pmc-summary-item">
                       <span className="pmc-summary-label">
-                        {pt("groupCard.discount", "Chegirma ({pct}%)", { pct: Number(paymentsCalcModal.discount_percent || 0).toFixed(1) })}
+                        {pt("totalDiscount", "Jami chegirma")}
                       </span>
                       <strong className="pmc-summary-value pmc-val-discount">
-                        -{Number(Number(paymentsCalcModal.original_total_amount || 0) - Number(paymentsCalcModal.final_payable_amount || paymentsCalcModal.total_payable_amount || 0)).toFixed(2)}
+                        -{Number(paymentsCalcModal.discount_amount || 0).toFixed(2)}
                       </strong>
                     </div>
                   )}
@@ -20518,7 +20596,12 @@ function AdminSection({
                       <input
                         type="month"
                         value={paymentsConfirmDraft.ym}
-                        onChange={(event) => setPaymentsConfirmDraft((prev) => ({ ...prev, ym: event.target.value }))}
+                        onChange={(event) => {
+                          const ym = event.target.value;
+                          paymentsCalcRequestRef.current += 1;
+                          setPaymentsConfirmDraft((prev) => ({ ...prev, ym, groupId: 0, amount: "", cashAmount: "", cardAmount: "" }));
+                          if (ym) setPaymentsMonthFilter(ym);
+                        }}
                       />
                     </label>
                     <label className="pmc-field">
@@ -20604,14 +20687,14 @@ function AdminSection({
                     <div className="pmc-action-buttons">
                       <button
                         className="btn btn-primary"
-                        disabled={paymentsConfirmBusy || !paymentsConfirmDraft.groupId || !canConfirmPayment}
+                        disabled={paymentsCalcLoading || String(paymentsCalcModal.ym || "") !== String(paymentsConfirmDraft.ym || "") || paymentsConfirmBusy || !paymentsConfirmDraft.groupId || !canConfirmPayment}
                         onClick={() => confirmStudentPayment().catch(() => null)}
                       >
                         {paymentsConfirmBusy ? pt("confirming", "Tasdiqlanmoqda...") : pt("confirmPayment", "To'lovni tasdiqlash")}
                       </button>
                       <button
                         className="btn btn-soft"
-                        disabled={paymentsRefundBusy || !refundableTxForConfirm || refundableAmountForConfirm <= 0}
+                        disabled={paymentsCalcLoading || String(paymentsCalcModal.ym || "") !== String(paymentsConfirmDraft.ym || "") || paymentsRefundBusy || !refundableTxForConfirm || refundableAmountForConfirm <= 0}
                         onClick={() => refundSelectedPayment().catch(() => null)}
                       >
                         {paymentsRefundBusy ? pt("refunding", "Qaytarilmoqda...") : pt("refund", "Qaytarish")}

@@ -22231,6 +22231,24 @@ def get_active_gift_payment_discount(user_id: int, ym: str) -> dict | None:
         conn.close()
 
 
+def list_gift_payment_discounts_for_month(user_id: int, ym: str) -> list[dict]:
+    ensure_gifts_schema()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT d.id, d.discount_percent, d.status, g.title AS gift_title
+               FROM web_gift_payment_discounts d
+               LEFT JOIN web_gifts g ON g.id=d.gift_id
+               WHERE d.user_id=? AND d.ym=?
+               ORDER BY d.id DESC""",
+            (int(user_id), str(ym or "").strip()),
+        )
+        return [_row_to_dict(row) for row in (cur.fetchall() or [])]
+    finally:
+        conn.close()
+
+
 def get_diamondvoy_limit_boost_summary(user_id: int) -> dict[str, Any]:
     """Return all currently-active DiamondVoy message-limit bonuses for a student."""
     ensure_gifts_schema()
