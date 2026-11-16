@@ -26268,7 +26268,28 @@ def _diamondvoy_speaking_system_prompt(user: dict, lang: str) -> str | None:
             "Savolning o‘ziga darhol va to‘liq javob ber. O‘quv reja, guruh, o‘qituvchi, uy vazifasi yoki to‘lovlarni tilga olma "
             "va foydalanuvchiga biror narsasi yo‘qligini aytma. Shaxsiy natijalarni to‘qima. Aniqlikni yaxshilasa Markdown ishlat."
         )
-    return base_prompt + _diamondvoy_rich_markup_instructions(lc)
+    identity_and_web = {
+        "uz": (
+            " Diamondvoyni kim yaratgani so'ralsa, uni Diamond Education o'quv markazi uchun Maxkamov Xumoyun yaratganini ayt; "
+            "u markaz rahbari, IELTS 7 olgan va hozir KIUT universitetida Software Engineering yo'nalishining 1-kursida o'qiydi. "
+            "Tug'ilgan sanasi 01.07.2008. Markaz kurslari bo'yicha joriy ma'lumotni https://diamond-education.uz rasmiy saytidan ol. "
+            "Joriy ma'lumot kerak bo'lsa, faqat server bergan internet qidiruv vositasidan foydalan; qidiruv bo'lmasa, internetni tekshirganingni aytma "
+            "va manbalarni to'qima."
+        ),
+        "ru": (
+            " Если спрашивают, кто создал Diamondvoy, отвечай: его создал Хумаюн Махкамов для образовательного центра Diamond Education; "
+            "он руководитель центра, получил IELTS 7 и учится на первом курсе Software Engineering в KIUT. Дата рождения — 01.07.2008. "
+            "Текущие сведения о курсах бери с https://diamond-education.uz. Для актуальных вопросов используй только серверный веб-поиск; "
+            "не утверждай, что проверил интернет, если поиск не выполнялся, и не выдумывай источники."
+        ),
+        "en": (
+            " If asked who created Diamondvoy, say it was created by Xumoyun Maxkamov for the Diamond Education learning center; "
+            "he leads the center, scored 7 on IELTS, and is a first-year Software Engineering student at KIUT. His date of birth is 01 July 2008. "
+            "Get current course information from https://diamond-education.uz. Use only the server-provided web-search tool for current facts; "
+            "never claim to have checked the internet if no search ran, and never invent sources."
+        ),
+    }.get(lc, "")
+    return base_prompt + identity_and_web + _diamondvoy_rich_markup_instructions(lc)
 
 
 def _diamondvoy_resolve_mode(requested_mode: str, user_text: str) -> str:
@@ -26291,6 +26312,14 @@ def _diamondvoy_resolve_mode(requested_mode: str, user_text: str) -> str:
         r"(internetdan|manbalar?\b|manba\s+keltir|qidir(ib|ing|)|izlab\s+top|"
         r"latest|current|today|right\s+now|recent|news|source(s)?\b|search\s+the\s+web|"
         r"сейчас|сегодня|последн|актуальн|источник|найди|поиск|новост|202[5-9])",
+        text,
+    ):
+        return "web_search"
+    # Course catalogue, pricing and schedules change over time. When a user
+    # asks about Diamond Education's offerings, ground the answer in the
+    # official site instead of relying on the model's static weights.
+    if re.search(r"(diamond\s*education|diamond-education\.uz|diamondvoy|markaz|o'quv\s*markaz|учебн\w*\s*центр|learning\s*cent(?:er|re))", text) and re.search(
+        r"(kurs|course|обучени|курс|narx|price|цена|jadval|schedule|расписан|to'lov|payment|оплат)",
         text,
     ):
         return "web_search"
@@ -26471,7 +26500,7 @@ async def _diamondvoy_run_generation_job(
                 pass
 
         if not streamed:
-            if mode in {"web_search", "deep_research"}:
+            if mode in {"web_search", "deep_research"} and not image_urls:
                 async def web_answer_stream():
                     async with aiohttp.ClientSession() as session:
                         answer = await _xai_generate_text_with_web_search(
@@ -26502,6 +26531,8 @@ async def _diamondvoy_run_generation_job(
                     streamed += chunk
                     _save_diamondvoy_gen_job({"job_id": job_id, "chat_id": chat_id, "user_id": user_id, "status": "running", "content": streamed, "chat_title": current_chat_title})
             elif image_urls:
+                if mode in {"web_search", "deep_research"}:
+                    ai_user_text += "\nWeb search was not performed for this image request. Do not claim to have searched the web; explain this if current sources are needed."
                 vision_images = [_chat_media_data_url(url) for url in image_urls]
                 async with aiohttp.ClientSession() as session:
                     gen = _xai_generate_text_stream_with_images(

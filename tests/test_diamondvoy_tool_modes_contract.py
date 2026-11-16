@@ -41,3 +41,15 @@ def test_speaking_diamondvoy_does_not_substitute_fake_answers_on_api_errors() ->
     assert "_createRichFallbackResponse" not in page
     assert "Cambridge English (https://cambridgeenglish.org)" not in page
 
+
+def test_diamondvoy_identity_and_web_search_limits_are_in_all_app_prompts() -> None:
+    helpers = (ROOT / "diamondvoy_helpers.py").read_text(encoding="utf-8")
+    backend = (ROOT / "backend/main.py").read_text(encoding="utf-8")
+
+    assert "Maxkamov Xumoyun" in helpers
+    assert "https://diamond-education.uz" in helpers
+    assert "faqat server taqdim etgan internet qidiruv vositasidan foydalan" in helpers
+    assert "use only the server-provided web-search tool" in helpers
+    assert "используй только предоставленный сервером инструмент веб-поиска" in helpers
+    assert "Course catalogue, pricing and schedules change over time" in backend
+
