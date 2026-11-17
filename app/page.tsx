@@ -8507,9 +8507,9 @@ function AdminDomainEmailPanel({
     return () => { cancelled = true; };
   }, [apiFetch, tt]);
 
-  const loadInbox = useCallback(() => {
+  const loadInbox = useCallback((silent = false) => {
     let cancelled = false;
-    setInboxLoading(true);
+    if (!silent) setInboxLoading(true);
     setInboxError("");
     const query = new URLSearchParams({
       page: String(page),
@@ -8544,7 +8544,7 @@ function AdminDomainEmailPanel({
           if ("Notification" in window && Notification.permission === "granted") {
             new Notification("📬 Yangi domen email keldi!", { body: "Inboxni tekshiring" });
           }
-          loadInbox();
+          loadInbox(true);
         }
         if (currentReceived) lastReceivedRef.current = currentReceived;
       }).catch(() => null);
@@ -16112,6 +16112,8 @@ function AdminSection({
 }) {
   const tt = useWebT();
   const stats = data.stats || {};
+  const domainEmailApiFetch = useCallback((path: string, options?: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: GenericRow }) =>
+    requestJson<GenericRow>(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body }), []);
   const isMainAdminScope = Boolean(data.admin_scope?.is_main_admin);
   const isLimitedAdminScope = Boolean(data.admin_scope?.is_limited_admin) && !isMainAdminScope;
   const canManageGlobalPaymentConfig = !isLimitedAdminScope;
@@ -21892,7 +21894,7 @@ function AdminSection({
   }
 
   if (section === "domain-email") {
-    return <AdminDomainEmailPanel apiFetch={(path, options) => requestJson(path, { method: options?.method, token: localStorage.getItem("diamond_token") || "", body: options?.body })} />;
+    return <AdminDomainEmailPanel apiFetch={domainEmailApiFetch} />;
   }
 
   if (section === "holidays") {
