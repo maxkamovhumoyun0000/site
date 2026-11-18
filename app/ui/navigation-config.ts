@@ -94,7 +94,7 @@ export const DEFAULT_SECTIONS: Record<Role, string[]> = {
     "voice-rooms",
     "profile",
   ],
-  media: ["home", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
+  media: ["home", "chats", "videos", "books", "grammar", "vocabulary-bank", "courses", "gifts", "reviews", "generator", "results", "competitions-history", "dpoint-settings", "userbot", "profile"],
   speaking_admin: ["home", "speaking-topics", "speaking-learning-paths", "speaking-schedule", "speaking-subscriptions", "speaking-videos", "speaking-plan-tests", "speaking-writing", "speaking-feedback", "speaking-users", "speaking-notifications", "profile"],
   developer: [
     "home",

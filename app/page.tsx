@@ -1129,7 +1129,7 @@ function resolveRoleSections(role: Role, backendSections?: string[], userSubject
   // admin section list. Media itself is deliberately an allow-list.
   // These sections belong only to the media workspace. `profile` is shared
   // by every role and must remain reachable for ordinary admins as well.
-  const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home" && section !== "profile"));
+  const mediaOnly = new Set(DEFAULT_SECTIONS.media.filter((section) => section !== "home" && section !== "profile" && section !== "chats"));
   const baseSections = DEFAULT_SECTIONS[role] || [];
   let list = role === "media" || role === "limited_admin" || role === "speaking_admin" || role === "speaking_user"
     ? [...baseSections]
@@ -25216,7 +25216,7 @@ function DashboardShell({
   const desktopHeaderSections = new Set(topbarSections);
   const desktopDrawerSections = orderedSections.filter((item) => {
     if (item === "notifications" || item === "profile") return false;
-    if (item === "chats" && activeRole !== "admin" && activeRole !== "limited_admin") return false;
+    if (item === "chats" && activeRole !== "admin" && activeRole !== "limited_admin" && activeRole !== "media") return false;
     if (!isNarrowDesktop && desktopHeaderSections.has(item)) return false;
     return true;
   });
