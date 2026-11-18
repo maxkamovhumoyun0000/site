@@ -83,9 +83,10 @@ export default function ResultDetailPage() {
       { label: tt("common.type", "Turi"), value: tt(`admin.results.type.${item.result_type || ""}`, item.result_type || tt("public.results.result", "Natija")) },
       { label: tt("common.date", "Sana"), value: displayDate },
     ];
-    if (type === "Milliy Sertifikat") rows.push({ label: tt("common.subject", "Fan"), value: localizedSubject || item.subject });
+    if (type === "Boshqa sertifikat") rows.push({ label: "Sertifikat", value: item.level_text });
+    if (type === "Milliy Sertifikat" || type === "Boshqa sertifikat") rows.push({ label: tt("common.subject", "Fan"), value: localizedSubject || item.subject });
     if (type === "IELTS") rows.push({ label: tt("admin.results.band", "Band"), value: item.score_text });
-    if (type === "CEFR" || type === "Milliy Sertifikat") rows.push({ label: tt("admin.results.score", "Ball"), value: item.score_text });
+    if (type === "CEFR" || type === "Milliy Sertifikat" || type === "Boshqa sertifikat") rows.push({ label: tt("admin.results.score", "Ball"), value: item.score_text });
     if (isUniversity) {
       rows.push(
         { label: tt("admin.results.universityName", "Universitet nomi"), value: item.university_name },

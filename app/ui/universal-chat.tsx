@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { resolveLocale, useWebT } from "./web-i18n";
 import { renderDiamondvoyMarkdown } from "./diamondvoy-markdown";
+import { DiamondvoyResultWizard } from "./diamondvoy-result-wizard";
 import { SharedTestEditor } from "./shared-test-editor";
 import { TestCompletionActions, diamondvoyTestContextKey, type TestReviewItem } from "./test-completion-actions";
 import {
@@ -3393,6 +3394,9 @@ export function UniversalChat({
                   ) : (() => {
                     try {
                       const parsed = JSON.parse(message.content);
+                      if (parsed.type === "wizard_trigger" && parsed.wizard === "result" && typeof parsed.wizard_id === "string") {
+                        return <DiamondvoyResultWizard chatId={activeChatId!} wizardId={parsed.wizard_id} apiFetch={apiFetch} />;
+                      }
                       if (parsed.type === "wizard_trigger" && parsed.wizard === "homework") {
                         return <DiamondVoyHomeworkWizard chatId={activeChatId!} apiFetch={apiFetch} onSuccess={() => {
                           loadAiMessages(activeChatId!).catch(() => null);
@@ -3474,6 +3478,7 @@ export function UniversalChat({
         className="border-t-2 border-slate-200 dark:border-navy-800 bg-white/95 dark:bg-navy-950/95 backdrop-blur-md px-4 sm:px-6 py-3.5 pb-[calc(env(safe-area-inset-bottom)+14px)]"
       >
         {ComposerImages}
+        {(role === "media" || isAdmin) && <button type="button" disabled={sending} onClick={() => sendDiamondvoyMessage("/natija-qoshish").catch(() => null)} className="mb-2 rounded-xl border border-cyan-300 bg-cyan-50 px-3 py-1.5 text-xs font-bold text-cyan-900 disabled:opacity-50 dark:border-cyan-700 dark:bg-cyan-950 dark:text-cyan-100">＋ Natija qo‘shish</button>}
         <div className="mb-2 flex flex-wrap items-center gap-2" role="group" aria-label="Diamondvoy javob rejimi">
           <span className="text-xs font-bold text-ink-500 dark:text-navy-300">{tt("chat.modeLabel", "Javob rejimi:")}</span>
           <button type="button" disabled={diamondvoyMemoryLoading} onClick={() => openDiamondvoyMemory().catch(() => null)} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-ink-700 hover:border-[#002DFF] disabled:opacity-50 dark:border-navy-700 dark:bg-navy-900 dark:text-white">{tt("chat.memory", "Xotira & kontekst")}</button>

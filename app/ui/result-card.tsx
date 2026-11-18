@@ -4,7 +4,7 @@ import type { PublicResult } from "../public-data";
 import { formatPublicDate, toAssetUrl } from "../public-data";
 import { useWebLocale, useWebT } from "./web-i18n";
 
-export const RESULT_TYPES = ["IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet"] as const;
+export const RESULT_TYPES = ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat", "Rus tili", "Universitet"] as const;
 export const NATIONAL_CERTIFICATE_SUBJECTS = ["Matematika", "Rus tili", "Ona tili"] as const;
 
 const VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov", ".m4v", ".ogg"];
@@ -57,6 +57,7 @@ export function resultMetricLabel(item: PublicResult | Record<string, any>) {
   if (type === "IELTS") return `IELTS: ${score || "-"}`;
   if (type === "CEFR") return `CEFR: ${score || "-"}`;
   if (type === "Milliy Sertifikat") return `Milliy Sertifikat: ${score || "-"}`;
+  if (type === "Boshqa sertifikat") return [String(item?.level_text || "Sertifikat"), score].filter(Boolean).join(": ");
   if (type === "Rus tili") return "Rus tili (Video)";
   if (type === "Universitet") {
     const grant = Number(item?.grant_percent);
@@ -73,7 +74,7 @@ export function resultSubjectLabel(item: PublicResult | Record<string, any>) {
   if (type === "Universitet") {
     return String(item?.university_name || "").trim();
   }
-  if (type === "Milliy Sertifikat") {
+  if (type === "Milliy Sertifikat" || type === "Boshqa sertifikat") {
     return String(item?.subject || "").trim();
   }
   return "";

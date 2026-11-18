@@ -11,6 +11,7 @@ const RESULT_CATEGORY_META = [
   { type: "IELTS", titleKey: "results.category.ielts.title", subtitleKey: "results.category.ielts.subtitle", title: "IELTS", subtitle: "Xalqaro IELTS sertifikatlari va band natijalari." },
   { type: "CEFR", titleKey: "results.category.cefr.title", subtitleKey: "results.category.cefr.subtitle", title: "CEFR", subtitle: "CEFR bo'yicha tasdiqlangan natijalar." },
   { type: "Milliy Sertifikat", titleKey: "results.category.national.title", subtitleKey: "results.category.national.subtitle", title: "Milliy Sertifikat", subtitle: "Fanlar bo'yicha milliy sertifikat natijalari." },
+  { type: "Boshqa sertifikat", titleKey: "results.category.other.title", subtitleKey: "results.category.other.subtitle", title: "Boshqa sertifikatlar", subtitle: "Boshqa fan va sertifikatlar bo‘yicha natijalar." },
   { type: "Rus tili", titleKey: "results.category.russian.title", subtitleKey: "results.category.russian.subtitle", title: "Rus tili", subtitle: "Rus tili bo'yicha talaba video natijalari." },
   { type: "Universitet", titleKey: "results.category.university.title", subtitleKey: "results.category.university.subtitle", title: "Universitet", subtitle: "Universitetga qabul va grant natijalari." },
 ];

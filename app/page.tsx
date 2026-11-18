@@ -15373,7 +15373,7 @@ function AdminCoursesPanel({
   );
 }
 
-const ADMIN_RESULT_TYPES = ["IELTS", "CEFR", "Milliy Sertifikat", "Rus tili", "Universitet"];
+const ADMIN_RESULT_TYPES = ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat", "Rus tili", "Universitet"];
 const ADMIN_RESULT_SUBJECTS = ["Matematika", "Rus tili", "Ona tili"];
 
 function normalizeAdminResultType(value?: string | null) {
@@ -15395,6 +15395,7 @@ function AdminResultsPanel({
   const [resultType, setResultType] = useState("IELTS");
   const [subjectText, setSubjectText] = useState("Matematika");
   const [scoreText, setScoreText] = useState("");
+  const [certificateName, setCertificateName] = useState("");
   const [universityName, setUniversityName] = useState("");
   const [universityScope, setUniversityScope] = useState<"foreign" | "local">("foreign");
   const [universityCountry, setUniversityCountry] = useState("");
@@ -15496,6 +15497,7 @@ function AdminResultsPanel({
     setResultType(nextResultType);
     setSubjectText(String(item.subject || "Matematika"));
     setScoreText(String(item.score_text || ""));
+    setCertificateName(String(item.level_text || ""));
     setUniversityName(String(item.university_name || ""));
     setUniversityScope(nextUniversityScope);
     setUniversityCountry(String(item.university_country || ""));
@@ -15516,6 +15518,7 @@ function AdminResultsPanel({
     setResultType("IELTS");
     setSubjectText("Matematika");
     setScoreText("");
+    setCertificateName("");
     setUniversityName("");
     setUniversityScope("foreign");
     setUniversityCountry("");
@@ -15535,6 +15538,7 @@ function AdminResultsPanel({
     setResultType("IELTS");
     setSubjectText("Matematika");
     setScoreText("");
+    setCertificateName("");
     setUniversityName("");
     setUniversityScope("foreign");
     setUniversityCountry("");
@@ -15550,19 +15554,19 @@ function AdminResultsPanel({
 
   async function saveResult() {
     const nextResultType = normalizeAdminResultType(resultType);
-    const showScoreField = nextResultType === "IELTS" || nextResultType === "CEFR" || nextResultType === "Milliy Sertifikat";
+    const showScoreField = ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat"].includes(nextResultType);
     const parsedGrantPercent = Number(grantPercent);
     const payload = {
       student_name: studentName,
       result_type: nextResultType,
-      subject: nextResultType === "Milliy Sertifikat" ? subjectText : "",
+      subject: ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat"].includes(nextResultType) ? subjectText : "",
       university_name: nextResultType === "Universitet" ? universityName : "",
       university_scope: nextResultType === "Universitet" ? universityScope : null,
       university_country: nextResultType === "Universitet" && universityScope === "foreign" ? universityCountry : "",
       university_city: nextResultType === "Universitet" ? universityCity : "",
       grant_percent: nextResultType === "Universitet" && grantPercent.trim() && Number.isFinite(parsedGrantPercent) ? parsedGrantPercent : null,
       score_text: showScoreField ? scoreText : "",
-      level_text: "",
+      level_text: nextResultType === "Boshqa sertifikat" ? certificateName : "",
       exam_date: examDate || null,
       description,
       image_url: imageUrl,
@@ -15580,8 +15584,8 @@ function AdminResultsPanel({
     await reloadResults();
   }
   const normalizedResultType = normalizeAdminResultType(resultType);
-  const showSubjectField = normalizedResultType === "Milliy Sertifikat";
-  const showScoreField = normalizedResultType === "IELTS" || normalizedResultType === "CEFR" || normalizedResultType === "Milliy Sertifikat";
+  const showSubjectField = ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat"].includes(normalizedResultType);
+  const showScoreField = ["IELTS", "CEFR", "Milliy Sertifikat", "Boshqa sertifikat"].includes(normalizedResultType);
   const showUniversityFields = normalizedResultType === "Universitet";
   const primaryUploadAccept = normalizedResultType === "Rus tili" ? "video/*,.mov,.mp4" : "image/*";
   const primaryUploadLabel = normalizedResultType === "Rus tili"
@@ -15728,7 +15732,7 @@ function AdminResultsPanel({
                     onChange={(event) => {
                       const next = normalizeAdminResultType(event.target.value);
                       setResultType(next);
-                      if (next !== "Milliy Sertifikat") setSubjectText("Matematika");
+                      if (next === "Rus tili" || next === "Universitet") setSubjectText("");
 
                       if (next !== "Universitet") {
                         setUniversityName("");
@@ -15753,15 +15757,11 @@ function AdminResultsPanel({
                 {showSubjectField ? (
                   <label>
                     {tt("common.subject", "Fan")}
-                    <select value={subjectText} onChange={(event) => setSubjectText(event.target.value)}>
-                      {ADMIN_RESULT_SUBJECTS.map((option) => (
-                        <option key={option} value={option}>
-                          {tt(`admin.results.subject.${option}`, option)}
-                        </option>
-                      ))}
-                    </select>
+                    <input value={subjectText} onChange={(event) => setSubjectText(event.target.value)} list="result-subject-options" />
+                    <datalist id="result-subject-options">{ADMIN_RESULT_SUBJECTS.map((option) => <option key={option} value={option} />)}</datalist>
                   </label>
                 ) : null}
+                {normalizedResultType === "Boshqa sertifikat" ? <label>Sertifikat nomi<input value={certificateName} onChange={(event) => setCertificateName(event.target.value)} /></label> : null}
                 {showScoreField ? (
                   <label>
                     {scoreFieldLabel}

@@ -16477,6 +16477,7 @@ def delete_diamondvoy_chats_older_than_hours(hours: int = 168) -> int:
                 SELECT c.id FROM diamondvoy_chats c
                 JOIN users u ON u.id = c.user_id
                 WHERE COALESCE(c.persistent, 0)=0
+                  AND NOT EXISTS (SELECT 1 FROM diamondvoy_result_wizards w WHERE w.chat_id=c.id AND w.result_id IS NULL)
                   AND ((u.login_type != 3 AND c.updated_at < ?)
                     OR (u.login_type = 3 AND c.updated_at < ?))
             )
@@ -16490,6 +16491,7 @@ def delete_diamondvoy_chats_older_than_hours(hours: int = 168) -> int:
                 SELECT c.id FROM diamondvoy_chats c
                 JOIN users u ON u.id = c.user_id
                 WHERE COALESCE(c.persistent, 0)=0
+                  AND NOT EXISTS (SELECT 1 FROM diamondvoy_result_wizards w WHERE w.chat_id=c.id AND w.result_id IS NULL)
                   AND ((u.login_type != 3 AND c.updated_at < ?)
                     OR (u.login_type = 3 AND c.updated_at < ?))
             )
